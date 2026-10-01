@@ -106,7 +106,7 @@ Grab the build for your system from the [latest release](https://github.com/ludo
 `.dmg` for macOS (Apple Silicon or Intel), `.exe`/`.msi` for Windows, `.AppImage`/`.deb`/`.rpm` for Linux.
 ffmpeg is bundled. kimchi checks for updates on launch and installs them in one click (updates are signed).
 
-The macOS build is signed with a Developer ID and notarized by Apple (from 0.1.1), so it opens like any other app.
+The macOS build isn't notarized yet: the first time, right-click the app → Open.
 
 ## Development
 
