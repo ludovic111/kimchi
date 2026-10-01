@@ -330,6 +330,7 @@
   .inspector {
     min-width: 0;
     min-height: 0;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     background: var(--surface);
@@ -403,6 +404,9 @@
     display: flex;
     gap: 6px;
     align-items: center;
+  }
+  .row :global(.seg) {
+    width: 132px;
   }
   .row2 > :global(*) {
     flex: 1;

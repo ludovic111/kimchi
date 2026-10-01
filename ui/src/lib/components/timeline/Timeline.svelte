@@ -496,7 +496,8 @@
   .timeline {
     min-height: 0;
     display: grid;
-    grid-template-rows: 42px 1fr;
+    grid-template-rows: 42px minmax(0, 1fr);
+    overflow: hidden;
     background: var(--surface);
   }
   .toolbar {

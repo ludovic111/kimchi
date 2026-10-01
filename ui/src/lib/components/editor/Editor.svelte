@@ -137,13 +137,15 @@
   .editor {
     height: 100%;
     display: grid;
-    grid-template-rows: var(--topbar-h) 1fr auto var(--tl);
+    grid-template-rows: var(--topbar-h) minmax(0, 1fr) auto var(--tl);
+    overflow: hidden;
     background: var(--bg);
   }
   .workspace {
     min-height: 0;
     display: grid;
-    grid-template-columns: var(--left) auto 1fr auto var(--right);
+    grid-template-columns: var(--left) auto minmax(0, 1fr) auto var(--right);
+    overflow: hidden;
   }
   .drop {
     position: fixed;

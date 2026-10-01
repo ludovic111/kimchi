@@ -236,8 +236,9 @@
   .preview {
     min-width: 0;
     min-height: 0;
+    overflow: hidden;
     display: grid;
-    grid-template-rows: 1fr auto;
+    grid-template-rows: minmax(0, 1fr) auto;
     background:
       radial-gradient(60% 60% at 50% 40%, rgba(255, 255, 255, 0.025), transparent),
       var(--bg-sunken);
@@ -312,6 +313,7 @@
     line-height: 1.15;
     display: -webkit-box;
     -webkit-line-clamp: 3;
+    line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }

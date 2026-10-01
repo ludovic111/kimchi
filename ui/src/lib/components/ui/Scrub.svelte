@@ -67,7 +67,7 @@
 </script>
 
 <div class="scrub" class:editing>
-  <span class="label" onpointerdown={down}>{label}</span>
+  <span class="label" role="presentation" onpointerdown={down}>{label}</span>
   {#if editing}
     <input
       use:focus
@@ -80,7 +80,7 @@
       }}
     />
   {:else}
-    <span class="value mono" onpointerdown={down}>{fmt(value)}<i>{unit}</i></span>
+    <span class="value mono" role="presentation" onpointerdown={down}>{fmt(value)}<i>{unit}</i></span>
   {/if}
 </div>
 

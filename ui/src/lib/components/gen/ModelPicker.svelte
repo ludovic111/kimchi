@@ -32,15 +32,27 @@
     query = "";
   }
 
-  $effect(() => {
-    if (open) queueMicrotask(() => input?.focus());
-  });
+  // Fixed positioning so the popover escapes the panel's scroll clipping.
+  let place = $state("");
+  function toggle() {
+    open = !open;
+    if (!open || !el) return;
+    const r = el.getBoundingClientRect();
+    const above = r.top - 16;
+    const below = window.innerHeight - r.bottom - 16;
+    const height = Math.min(460, Math.max(above, below));
+    const left = Math.max(8, r.left - 8);
+    place = above >= below
+      ? `left:${left}px;bottom:${window.innerHeight - r.top + 10}px;max-height:${height}px`
+      : `left:${left}px;top:${r.bottom + 10}px;max-height:${height}px`;
+    queueMicrotask(() => input?.focus());
+  }
 </script>
 
 <svelte:window onpointerdown={(e) => open && !el?.contains(e.target as Node) && (open = false)} />
 
 <div class="picker" bind:this={el}>
-  <button class="trigger" onclick={() => (open = !open)} aria-haspopup="listbox" aria-expanded={open}>
+  <button class="trigger" onclick={toggle} aria-haspopup="listbox" aria-expanded={open}>
     {#if gen.model}
       <span class="pk {kindOf(gen.model.provider)}">
         {#if kindOf(gen.model.provider) === "local"}<Cpu size={11} />{:else}<Cloud size={11} />{/if}
@@ -58,7 +70,7 @@
   </button>
 
   {#if open}
-    <div class="pop" role="listbox">
+    <div class="pop" role="listbox" style={place}>
       <div class="search">
         <Search size={14} />
         <input bind:this={input} bind:value={query} placeholder="Search {gen.available.length} models" onkeydown={(e) => e.stopPropagation()} />
@@ -154,18 +166,15 @@
     white-space: nowrap;
   }
   .pop {
-    position: absolute;
-    left: -8px;
-    bottom: calc(100% + 10px);
+    position: fixed;
     width: min(400px, calc(100vw - 40px));
-    max-height: 460px;
     display: flex;
     flex-direction: column;
     border-radius: var(--r-lg);
     background: rgba(30, 28, 26, 0.97);
     backdrop-filter: blur(20px);
     box-shadow: var(--shadow-lift);
-    z-index: 60;
+    z-index: 160;
     animation: rise 0.18s var(--ease);
     overflow: hidden;
   }

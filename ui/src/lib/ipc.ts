@@ -18,47 +18,59 @@ import type { SubmitArgs } from "./bindings/SubmitArgs";
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** `invoke`, or demo data when running in a plain browser (`npm run ui:dev`). */
+async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (isTauri) return invoke<T>(cmd, args);
+  const { mockInvoke } = await import("./mock");
+  return mockInvoke(cmd, args);
+}
+
+function on<T>(event: string, f: (payload: T) => void): Promise<UnlistenFn> {
+  if (!isTauri) return Promise.resolve(() => {});
+  return listen<T>(event, (e) => f(e.payload));
+}
+
 export const api = {
-  appInfo: () => invoke<AppInfo>("app_info"),
+  appInfo: () => call<AppInfo>("app_info"),
 
-  listProjects: () => invoke<ProjectSummary[]>("list_projects"),
-  createProject: (name: string, settings?: ProjectSettings) => invoke<ProjectView>("create_project", { name, settings }),
-  openProject: (id: string) => invoke<ProjectView>("open_project", { id }),
-  closeProject: () => invoke<void>("close_project"),
-  deleteProject: (id: string) => invoke<void>("delete_project", { id }),
-  duplicateProject: (id: string) => invoke<ProjectSummary>("duplicate_project", { id }),
-  currentProject: () => invoke<ProjectView | null>("current_project"),
-  applyEdit: (edit: Edit, coalesce?: string) => invoke<EditResponse>("apply_edit", { edit, coalesce }),
-  applyEdits: (edits: Edit[]) => invoke<EditResponse>("apply_edits", { edits }),
-  undo: () => invoke<ProjectView>("undo"),
-  redo: () => invoke<ProjectView>("redo"),
+  listProjects: () => call<ProjectSummary[]>("list_projects"),
+  createProject: (name: string, settings?: ProjectSettings) => call<ProjectView>("create_project", { name, settings }),
+  openProject: (id: string) => call<ProjectView>("open_project", { id }),
+  closeProject: () => call<void>("close_project"),
+  deleteProject: (id: string) => call<void>("delete_project", { id }),
+  duplicateProject: (id: string) => call<ProjectSummary>("duplicate_project", { id }),
+  currentProject: () => call<ProjectView | null>("current_project"),
+  applyEdit: (edit: Edit, coalesce?: string) => call<EditResponse>("apply_edit", { edit, coalesce }),
+  applyEdits: (edits: Edit[]) => call<EditResponse>("apply_edits", { edits }),
+  undo: () => call<ProjectView>("undo"),
+  redo: () => call<ProjectView>("redo"),
 
-  importMedia: (paths: string[]) => invoke<Asset[]>("import_media", { paths }),
-  clipFrame: (clipId: string, time: number) => invoke<string>("clip_frame", { clipId, time }),
-  writePng: (name: string, dataUrl: string) => invoke<string>("write_png", { name, dataUrl }),
-  readPeaks: (path: string) => invoke<ArrayBuffer>("read_peaks", { path }),
+  importMedia: (paths: string[]) => call<Asset[]>("import_media", { paths }),
+  clipFrame: (clipId: string, time: number) => call<string>("clip_frame", { clipId, time }),
+  writePng: (name: string, dataUrl: string) => call<string>("write_png", { name, dataUrl }),
+  readPeaks: (path: string) => call<ArrayBuffer>("read_peaks", { path }),
 
-  genProviders: () => invoke<ProviderStatus[]>("gen_providers"),
-  genSetKey: (provider: string, key: string | null) => invoke<ProviderStatus[]>("gen_set_key", { provider, key }),
+  genProviders: () => call<ProviderStatus[]>("gen_providers"),
+  genSetKey: (provider: string, key: string | null) => call<ProviderStatus[]>("gen_set_key", { provider, key }),
   genSetSettings: (provider: string, settings: ProviderSettings) =>
     invoke<ProviderStatus[]>("gen_set_settings", { provider, settings }),
-  genCheck: (provider: string) => invoke<string>("gen_check", { provider }),
-  genModels: (provider: string | null, refresh = false) => invoke<ModelInfo[]>("gen_models", { provider, refresh }),
-  genJobs: () => invoke<Job[]>("gen_jobs"),
-  genCancel: (jobId: string) => invoke<void>("gen_cancel", { jobId }),
-  genClear: () => invoke<Job[]>("gen_clear"),
-  genSubmit: (args: SubmitArgs) => invoke<Job>("gen_submit", { args }),
+  genCheck: (provider: string) => call<string>("gen_check", { provider }),
+  genModels: (provider: string | null, refresh = false) => call<ModelInfo[]>("gen_models", { provider, refresh }),
+  genJobs: () => call<Job[]>("gen_jobs"),
+  genCancel: (jobId: string) => call<void>("gen_cancel", { jobId }),
+  genClear: () => call<Job[]>("gen_clear"),
+  genSubmit: (args: SubmitArgs) => call<Job>("gen_submit", { args }),
 
   exportStart: (settings: ExportSettings, overlays: Record<string, string>) =>
     invoke<string>("export_start", { settings, overlays }),
-  exportCancel: (id: string) => invoke<void>("export_cancel", { id }),
+  exportCancel: (id: string) => call<void>("export_cancel", { id }),
 };
 
 export const events = {
-  projectChanged: (f: (v: ProjectView) => void) => listen<ProjectView>("project-changed", (e) => f(e.payload)),
-  job: (f: (j: Job) => void) => listen<Job>("gen-job", (e) => f(e.payload)),
-  exportProgress: (f: (e: ExportEvent) => void) => listen<ExportEvent>("export-progress", (e) => f(e.payload)),
-  toast: (f: (msg: string) => void) => listen<string>("toast", (e) => f(e.payload)),
+  projectChanged: (f: (v: ProjectView) => void) => on<ProjectView>("project-changed", f),
+  job: (f: (j: Job) => void) => on<Job>("gen-job", f),
+  exportProgress: (f: (e: ExportEvent) => void) => on<ExportEvent>("export-progress", f),
+  toast: (f: (msg: string) => void) => on<string>("toast", f),
 };
 
 export type { UnlistenFn };
@@ -66,7 +78,7 @@ export type { UnlistenFn };
 /** URL the webview can load for a file on disk. */
 export function fileUrl(path: string | null | undefined): string {
   if (!path) return "";
-  return isTauri ? convertFileSrc(path) : path;
+  return isTauri ? convertFileSrc(path) : path.replace(/^\/?(.*)$/, "/$1");
 }
 
 /** Normalises errors thrown by `invoke` (plain strings) and JS errors. */

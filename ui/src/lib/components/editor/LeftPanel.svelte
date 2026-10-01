@@ -36,6 +36,8 @@
 <style>
   .left {
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
     display: grid;
     grid-template-columns: 52px 1fr;
     background: var(--surface);

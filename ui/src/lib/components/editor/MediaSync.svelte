@@ -34,10 +34,12 @@
   });
 </script>
 
+<!-- Seeks issued before the media has data are dropped, so land again once it does. -->
 {#if kind === "video"}
-  <video bind:this={el} {src} preload="auto" playsinline {style} class:hidden={!active}></video>
+  <!-- svelte-ignore a11y_media_has_caption -->
+  <video bind:this={el} {src} preload="auto" playsinline muted={muted} {style} class:hidden={!active} onloadeddata={() => el && (el.currentTime = target)}></video>
 {:else}
-  <audio bind:this={el} {src} preload="auto"></audio>
+  <audio bind:this={el} {src} preload="auto" onloadeddata={() => el && (el.currentTime = target)}></audio>
 {/if}
 
 <style>

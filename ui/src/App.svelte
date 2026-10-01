@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, events, isTauri, message } from "$lib/ipc";
+  import { api, events, message } from "$lib/ipc";
   import { editor } from "$lib/state/editor.svelte";
   import { gen } from "$lib/state/gen.svelte";
   import { ui } from "$lib/state/ui.svelte";
@@ -13,10 +13,6 @@
   let booted = $state(false);
 
   onMount(() => {
-    if (!isTauri) {
-      booted = true;
-      return;
-    }
     const offs = [
       events.projectChanged((v) => {
         if (editor.project?.id === v.project.id) editor.set(v);

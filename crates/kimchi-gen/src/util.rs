@@ -26,10 +26,20 @@ pub async fn send(cx: &Ctx, req: reqwest::RequestBuilder) -> GenResult<reqwest::
     }
     let code = status.as_u16();
     let body = resp.text().await.unwrap_or_default();
+    // Several APIs answer 400/403/422 when a safety filter trips; that's not a key problem.
+    if matches!(code, 400 | 403 | 422) && looks_moderated(&body) {
+        return Err(GenError::Moderated(error_message(&body)));
+    }
     if code == 401 || code == 403 {
         return Err(GenError::Unauthorized { provider: cx.provider.clone(), status: code });
     }
     Err(GenError::Http { provider: cx.provider.clone(), status: code, message: error_message(&body) })
+}
+
+/// Heuristic for safety-filter refusals across providers.
+pub fn looks_moderated(body: &str) -> bool {
+    let b = body.to_ascii_lowercase();
+    ["moderat", "content policy", "safety", "nsfw", "flagged", "content_filter", "responsible ai"].iter().any(|k| b.contains(k))
 }
 
 /// [`send`] + JSON decode.
@@ -292,6 +302,12 @@ mod tests {
     fn data_urls() {
         let (mime, data) = parse_data_url("data:image/png;base64,aGVsbG8=").unwrap();
         assert_eq!((mime.as_str(), &data[..]), ("image/png", &b"hello"[..]));
+    }
+
+    #[test]
+    fn moderation_heuristic() {
+        assert!(looks_moderated(r#"{"error":{"code":"moderation_blocked"}}"#));
+        assert!(!looks_moderated(r#"{"error":"invalid api key"}"#));
     }
 
     #[test]

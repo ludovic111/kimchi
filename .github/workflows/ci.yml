@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main, kimchi]
+  pull_request:
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: ffmpeg
+        run: ${{ runner.os == 'Linux' && 'sudo apt-get update && sudo apt-get install -y ffmpeg' || 'brew install ffmpeg' }}
+      - name: Test core crates
+        run: cargo test -p kimchi-core -p kimchi-gen -p kimchi-media
+      - name: Clippy
+        run: cargo clippy -p kimchi-core -p kimchi-gen -p kimchi-media --all-targets -- -D warnings
+
+  ui:
+    name: UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run ui:build
