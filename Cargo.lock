@@ -2184,6 +2184,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kimchi-cli"
+version = "0.1.0"
+dependencies = [
+ "kimchi-core",
+ "kimchi-gen",
+ "kimchi-media",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "kimchi-core"
 version = "0.1.0"
 dependencies = [

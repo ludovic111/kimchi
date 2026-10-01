@@ -86,6 +86,8 @@ class GenState {
   draft = $state<Draft>(freshDraft());
 
   ready = $derived(this.providers.filter((p) => p.ready));
+  /** Usable now: cloud providers with a key, local servers that answered with models. */
+  connected = $derived(this.ready.filter((p) => p.info.kind === "cloud" || this.models.some((m) => m.provider === p.info.id)));
   active = $derived(this.jobs.filter((j) => j.status === "queued" || j.status === "running"));
   task = $derived<Task>(taskFor(this.draft));
   available = $derived(this.models.filter((m) => m.tasks.includes(this.task)));

@@ -34,7 +34,7 @@
   };
 </script>
 
-<header class="bar drag">
+<header class="bar drag" data-tauri-drag-region>
   <div class="left">
     <button class="home" onclick={home} data-tip="All projects" aria-label="All projects">
       <ChevronLeft size={15} />

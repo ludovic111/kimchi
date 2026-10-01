@@ -87,7 +87,7 @@
 </div>
 
 <div class="scroll">
-  {#if !gen.ready.length}
+  {#if !gen.connected.length && !gen.loadingModels}
     <div class="connect">
       <div class="glow"><Sparkles size={18} /></div>
       <strong>Connect a model</strong>

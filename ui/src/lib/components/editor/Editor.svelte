@@ -12,7 +12,7 @@
   import Splitter from "../ui/Splitter.svelte";
   import ExportDialog from "../dialogs/ExportDialog.svelte";
   import CommandPalette from "../dialogs/CommandPalette.svelte";
-  import { importDialog } from "./actions";
+  import { addText, importDialog } from "./actions";
 
   let dropping = $state(false);
 
@@ -104,6 +104,9 @@
         break;
       case "m":
         editor.edit({ op: "add_marker", time: editor.playhead, label: "" });
+        break;
+      case "t":
+        addText();
         break;
     }
   }

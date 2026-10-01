@@ -77,7 +77,8 @@
     }
   }
 
-  const status = (p: ProviderStatus) => (p.ready ? "ready" : !p.settings.enabled ? "off" : p.info.needs_key ? "nokey" : "ready");
+  const status = (p: ProviderStatus) =>
+    !p.settings.enabled ? "off" : gen.connected.some((c) => c.info.id === p.info.id) ? "ready" : p.info.needs_key ? "nokey" : "offline";
 </script>
 
 <Dialog open={ui.settingsOpen} onclose={() => (ui.settingsOpen = false)} title="Models & keys" subtitle="Keys are stored in your system keychain and only sent to the provider they belong to." width={860}>

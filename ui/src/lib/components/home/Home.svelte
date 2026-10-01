@@ -96,15 +96,15 @@
 </script>
 
 <div class="home">
-  <header class="drag">
+  <header class="drag" data-tauri-drag-region>
     <div class="brand">
       <Mark size={22} />
       <span>kimchi</span>
     </div>
     <button class="keys" onclick={() => ui.openSettings()}>
       <KeyRound size={14} />
-      {#if gen.ready.length}
-        {gen.ready.length} model provider{gen.ready.length > 1 ? "s" : ""} connected
+      {#if gen.connected.length}
+        {gen.connected.length} model provider{gen.connected.length > 1 ? "s" : ""} connected
       {:else}
         Connect a model provider
       {/if}
@@ -153,7 +153,7 @@
           </div>
         </div>
       </form>
-      {#if !gen.ready.length && loaded}
+      {#if !gen.connected.length && loaded}
         <button class="nudge" onclick={() => ui.openSettings()}>
           <Sparkles size={14} />
           <span>Bring your own key — OpenRouter, fal, Replicate, OpenAI, Google… — or point kimchi at ComfyUI on your machine.</span>
