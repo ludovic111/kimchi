@@ -1,6 +1,10 @@
 <p align="center">
   <img src="brand/icon.png" width="112" alt="kimchi" />
 </p>
+<p align="center">
+  <a href="https://github.com/ludovic111/kimchi/releases/latest">Download</a> ·
+  <a href="https://github.com/sponsors/ludovic111">Sponsor</a>
+</p>
 
 <h1 align="center">kimchi</h1>
 
@@ -94,9 +98,18 @@ ui/              Svelte 5 interface (thin: every edit is applied in Rust)
 - Providers implement one trait (`info`, `models`, `check`, `generate`). The harness handles keys, concurrency (one job at a time on local GPUs), cancellation, downloads and progress events.
 - Text is rasterised by the UI with the same canvas code for preview and export, so what you see is what renders.
 
+## Install
+
+Grab the build for your system from the [latest release](https://github.com/ludovic111/kimchi/releases/latest):
+`.dmg` for macOS (Apple Silicon or Intel), `.exe`/`.msi` for Windows, `.AppImage`/`.deb`/`.rpm` for Linux.
+ffmpeg is bundled. kimchi checks for updates on launch and installs them in one click (updates are signed).
+
+The macOS build isn't notarized yet: the first time, right-click the app → Open.
+
 ## Development
 
-Requirements: Rust (stable), Node 22+, and ffmpeg on your `PATH` (`brew install ffmpeg`).
+Requirements: Rust (stable) and Node 22+. `npm run dev` downloads a static ffmpeg for your platform the first time
+(`scripts/fetch-ffmpeg.mjs`); on Linux you also need the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
 npm install
@@ -110,6 +123,12 @@ npm run bindings     # regenerate TypeScript types after changing Rust types
 npm run build        # release bundle
 ```
 
+Releases: bump the version in `Cargo.toml`, tag `vX.Y.Z` and push. The release workflow builds every platform,
+signs the update and drafts the GitHub release; publishing the draft rolls the update out.
+
 ## License
 
-[MIT](LICENSE). Originally forked from OpenCut.
+[MIT](LICENSE). Originally forked from OpenCut. The bundled ffmpeg is distributed under its own licence (GPL),
+included in the app as `FFMPEG-LICENSE.txt`.
+
+If kimchi is useful to you, [sponsoring](https://github.com/sponsors/ludovic111) keeps it going.

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import { keys } from "$lib/util/platform";
 
   let {
     title,
@@ -20,7 +21,7 @@
   } = $props();
 </script>
 
-<button class="ib {tone}" class:active {disabled} aria-label={title} data-tip={title} style="--s:{size}px" {onclick}>
+<button class="ib {tone}" class:active {disabled} aria-label={keys(title)} data-tip={keys(title)} style="--s:{size}px" {onclick}>
   {@render children()}
 </button>
 

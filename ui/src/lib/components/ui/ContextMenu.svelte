@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ui, type MenuItem } from "$lib/state/ui.svelte";
+  import { keys } from "$lib/util/platform";
 
   let el = $state<HTMLDivElement>();
   let pos = $state({ x: 0, y: 0 });
@@ -35,7 +36,7 @@
         <button role="menuitem" class:danger={item.danger} class:gen={item.gen} disabled={item.disabled} onclick={() => run(item)}>
           <span class="icon">{#if item.icon}<item.icon size={14} strokeWidth={2} />{/if}</span>
           <span class="label">{item.label}</span>
-          {#if item.shortcut}<kbd>{item.shortcut}</kbd>{/if}
+          {#if item.shortcut}<kbd>{keys(item.shortcut)}</kbd>{/if}
         </button>
       {/if}
     {/each}

@@ -10,6 +10,7 @@
   import { ui } from "$lib/state/ui.svelte";
   import { ago, short } from "$lib/util/time";
   import Mark from "../ui/Mark.svelte";
+  import SponsorButton from "../ui/SponsorButton.svelte";
 
   const formats = [
     { id: "16:9", label: "Landscape", w: 1920, h: 1080 },
@@ -103,6 +104,8 @@
       <Mark size={22} />
       <span>kimchi</span>
     </div>
+    <div class="right">
+    <SponsorButton />
     <button class="keys" onclick={() => ui.openSettings()}>
       <KeyRound size={14} />
       {#if gen.connected.length}
@@ -111,6 +114,7 @@
         Connect a model provider
       {/if}
     </button>
+    </div>
   </header>
 
   <main>
@@ -217,7 +221,15 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 18px 0 92px;
+    padding: 0 18px;
+  }
+  :global(html[data-platform="mac"]) header {
+    padding-left: 92px;
+  }
+  .right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   .brand {
     display: flex;

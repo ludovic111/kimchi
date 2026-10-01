@@ -27,6 +27,7 @@
   import { gen } from "$lib/state/gen.svelte";
   import { bytes, short, timecode } from "$lib/util/time";
   import { FONTS } from "$lib/util/text";
+  import { keys } from "$lib/util/platform";
   import Button from "../ui/Button.svelte";
   import Scrub from "../ui/Scrub.svelte";
   import Segmented from "../ui/Segmented.svelte";
@@ -313,13 +314,13 @@
       <section class="keys">
         <span class="eyebrow">Shortcuts</span>
         <div class="kv">
-          <span>Play / pause</span><kbd>Space</kbd>
-          <span>Split</span><kbd>S</kbd>
-          <span>Ripple delete</span><kbd>⇧⌫</kbd>
-          <span>Generate</span><kbd>⌘G</kbd>
-          <span>Command palette</span><kbd>⌘K</kbd>
-          <span>Snapping</span><kbd>N</kbd>
-          <span>Marker</span><kbd>M</kbd>
+          <span>Play / pause</span><kbd>{keys("Space")}</kbd>
+          <span>Split</span><kbd>{keys("S")}</kbd>
+          <span>Ripple delete</span><kbd>{keys("⇧⌫")}</kbd>
+          <span>Generate</span><kbd>{keys("⌘G")}</kbd>
+          <span>Command palette</span><kbd>{keys("⌘K")}</kbd>
+          <span>Snapping</span><kbd>{keys("N")}</kbd>
+          <span>Marker</span><kbd>{keys("M")}</kbd>
         </div>
       </section>
     </div>

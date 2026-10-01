@@ -13,6 +13,7 @@
   import ModelPicker from "./ModelPicker.svelte";
   import ParamField from "./ParamField.svelte";
   import RecentGenerations from "./RecentGenerations.svelte";
+  import { keys } from "$lib/util/platform";
 
   const COMMON_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"];
   const d = $derived(gen.draft);
@@ -138,7 +139,7 @@
 
     <div class="bottom">
       <ModelPicker />
-      <button class="go" disabled={!canSubmit} onclick={() => gen.submit()} data-tip="Generate (⌘↵)" aria-label="Generate">
+      <button class="go" disabled={!canSubmit} onclick={() => gen.submit()} data-tip={keys("Generate (⌘↵)")} aria-label="Generate">
         <ArrowUp size={17} strokeWidth={2.4} />
       </button>
     </div>

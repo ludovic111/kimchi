@@ -50,16 +50,19 @@ fn find_tool(name: &str, env: &str) -> Option<PathBuf> {
     let exe = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     let mut candidates: Vec<PathBuf> = std::env::var_os(env).map(PathBuf::from).into_iter().collect();
     if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
-        candidates.push(dir.join(&exe));
-        // Tauri sidecars keep their target-triple suffix in dev builds (`ffmpeg-aarch64-apple-darwin`).
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            let mut sidecars: Vec<PathBuf> = entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&format!("{name}-"))))
-                .collect();
-            sidecars.sort();
-            candidates.extend(sidecars);
+        // The app bundles its own copy as `kimchi-ffmpeg` so Linux packages don't clash with a
+        // system ffmpeg; Tauri keeps a target-triple suffix in dev builds (`kimchi-ffmpeg-aarch64-apple-darwin`).
+        for prefix in [format!("kimchi-{name}"), name.to_string()] {
+            candidates.push(dir.join(format!("{prefix}{}", std::env::consts::EXE_SUFFIX)));
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                let mut sidecars: Vec<PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&format!("{prefix}-"))))
+                    .collect();
+                sidecars.sort();
+                candidates.extend(sidecars);
+            }
         }
     }
     if let Some(path) = std::env::var_os("PATH") {
@@ -70,8 +73,13 @@ fn find_tool(name: &str, env: &str) -> Option<PathBuf> {
 }
 
 fn runs(path: &Path) -> bool {
-    std::process::Command::new(path)
-        .arg("-version")
+    let mut cmd = std::process::Command::new(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flash on Windows
+    }
+    cmd.arg("-version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

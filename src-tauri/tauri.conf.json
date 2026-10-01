@@ -21,7 +21,10 @@
         "center": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 18, "y": 22 },
+        "trafficLightPosition": {
+          "x": 18,
+          "y": 22
+        },
         "backgroundColor": "#0e0d0c",
         "dragDropEnabled": true
       }
@@ -30,7 +33,12 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": { "allow": ["**"], "requireLiteralLeadingDot": false }
+        "scope": {
+          "allow": [
+            "**"
+          ],
+          "requireLiteralLeadingDot": false
+        }
       }
     }
   },
@@ -47,6 +55,46 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true,
+    "externalBin": [
+      "binaries/kimchi-ffmpeg",
+      "binaries/kimchi-ffprobe"
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "11.0"
+    },
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      },
+      "deb": {
+        "depends": [
+          "gstreamer1.0-plugins-good",
+          "gstreamer1.0-plugins-bad",
+          "gstreamer1.0-libav"
+        ]
+      }
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    },
+    "resources": {
+      "binaries/FFMPEG-LICENSE.txt": "FFMPEG-LICENSE.txt"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRDMDcxNTc4RjA1N0Q5QTcKUldTbjJWZndlQlVIVEZyRWNtU2tqeWxCaFNvTGQxbU1qczFIMGY5cUYzVVdBWkxOL0FvalJocEkK",
+      "endpoints": [
+        "https://github.com/ludovic111/kimchi/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

@@ -8,6 +8,7 @@
   import IconButton from "../ui/IconButton.svelte";
   import Mark from "../ui/Mark.svelte";
   import JobsPopover from "../gen/JobsPopover.svelte";
+  import SponsorButton from "../ui/SponsorButton.svelte";
 
   let renaming = $state(false);
   let name = $state("");
@@ -76,6 +77,7 @@
     </div>
     <IconButton title="Command palette (⌘K)" onclick={() => (ui.paletteOpen = true)}><Command size={15} /></IconButton>
     <IconButton title="Models & keys" onclick={() => ui.openSettings()}><KeyRound size={15} /></IconButton>
+    <SponsorButton label={false} />
     <Button variant="primary" size="sm" onclick={() => (ui.exportOpen = true)}><Share size={13} /> Export</Button>
   </div>
 </header>
@@ -85,9 +87,13 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 12px 0 84px;
+    padding: 0 12px 0 12px;
     border-bottom: 1px solid var(--line);
     background: var(--surface);
+  }
+  /* Room for the macOS traffic lights. */
+  :global(html[data-platform="mac"]) .bar {
+    padding-left: 84px;
   }
   .left,
   .right {

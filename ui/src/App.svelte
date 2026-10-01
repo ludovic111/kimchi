@@ -9,10 +9,13 @@
   import Toasts from "$lib/components/ui/Toasts.svelte";
   import ContextMenu from "$lib/components/ui/ContextMenu.svelte";
   import SettingsDialog from "$lib/components/dialogs/SettingsDialog.svelte";
+  import UpdateBanner from "$lib/components/ui/UpdateBanner.svelte";
+  import { update } from "$lib/state/update.svelte";
 
   let booted = $state(false);
 
   onMount(() => {
+    update.start();
     const offs = [
       events.projectChanged((v) => {
         if (editor.project?.id === v.project.id) editor.set(v);
@@ -45,3 +48,4 @@
 <SettingsDialog />
 <ContextMenu />
 <Toasts />
+<UpdateBanner />

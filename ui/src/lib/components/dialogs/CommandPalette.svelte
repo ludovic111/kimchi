@@ -21,6 +21,10 @@
   import { gen } from "$lib/state/gen.svelte";
   import { ui } from "$lib/state/ui.svelte";
   import { addText, importDialog } from "../editor/actions";
+  import { keys, SPONSOR_URL } from "$lib/util/platform";
+  import { update } from "$lib/state/update.svelte";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { Heart, RefreshCw } from "@lucide/svelte";
 
   interface Cmd {
     label: string;
@@ -48,6 +52,8 @@
     { label: "Add audio track", icon: AudioLines, run: () => editor.edit({ op: "add_track", kind: "audio", index: null }) },
     { label: "Export…", hint: "⌘E", icon: Share, run: () => (ui.exportOpen = true) },
     { label: "Models & keys", icon: KeyRound, run: () => ui.openSettings() },
+    { label: "Check for updates", icon: RefreshCw, run: () => update.check(true) },
+    { label: "Sponsor kimchi on GitHub", icon: Heart, run: () => openUrl(SPONSOR_URL) },
     {
       label: "Back to projects",
       icon: ArrowLeft,
@@ -125,7 +131,7 @@
           <button class="cmd" class:on={i === index} class:gen={c.gen} onpointerenter={() => (index = i)} onclick={() => run(c)}>
             <c.icon size={15} />
             <span>{c.label}</span>
-            {#if c.hint}<kbd>{c.hint}</kbd>{/if}
+            {#if c.hint}<kbd>{keys(c.hint)}</kbd>{/if}
           </button>
         {/each}
       </div>
