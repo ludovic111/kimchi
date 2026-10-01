@@ -8,3 +8,6 @@ docs/
 
 # moon runtime cache
 .moon/cache/
+src-tauri/gen/
+*.tmp
+.DS_Store

@@ -1,0 +1,20 @@
+[package]
+name = "kimchi-media"
+description = "ffmpeg-backed probing, previews and export for kimchi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kimchi-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
