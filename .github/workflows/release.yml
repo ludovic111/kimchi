@@ -53,27 +53,19 @@ jobs:
 
       # Developer ID signing and notarization on macOS, with the same secrets as ryolune
       # (APPLE_CERTIFICATE_P12_BASE64, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
-      # APPLE_API_KEY_P8_BASE64, APPLE_API_KEY_ID, APPLE_API_ISSUER). Without them the build stays
+      # APPLE_API_KEY_P8_BASE64, APPLE_API_KEY_ID, APPLE_API_ISSUER). The certificate goes into a
+      # keychain of our own (Tauri's import needs a password); without the secrets the build stays
       # ad-hoc signed, as before.
       - name: Apple signing and notarization (macOS)
         if: runner.os == 'macOS' && env.HAS_APPLE_SIGNING == 'true'
         env:
-          P12: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
-          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          P8: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
-          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: |
-          echo "$P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
-          {
-            echo "APPLE_CERTIFICATE=$P12"
-            echo "APPLE_CERTIFICATE_PASSWORD=$P12_PASSWORD"
-            echo "APPLE_SIGNING_IDENTITY=$IDENTITY"
-            echo "APPLE_API_KEY=$KEY_ID"
-            echo "APPLE_API_ISSUER=$ISSUER"
-            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/notary.p8"
-          } >> "$GITHUB_ENV"
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash scripts/prepare-apple-signing.sh
 
       - uses: tauri-apps/tauri-action@v1
         env:
@@ -92,3 +84,9 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
+
+      - name: Remove signing keychain
+        if: always() && runner.os == 'macOS'
+        run: |
+          if [ -f "$RUNNER_TEMP/signing.keychain-db" ]; then security delete-keychain "$RUNNER_TEMP/signing.keychain-db"; fi
+          rm -f "$RUNNER_TEMP/notary.p8"
