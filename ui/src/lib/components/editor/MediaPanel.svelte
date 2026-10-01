@@ -42,7 +42,7 @@
       window.removeEventListener("pointerup", up);
       if (!started) return;
       const t = drag.target;
-      if (t) editor.insertAsset(a.id, t.trackId, t.time);
+      if (t) editor.insertAsset(a.id, t.trackId || null, t.time);
       else if (drag.overComposer && a.kind !== "audio") useAsRef(a);
       drag.end();
     };

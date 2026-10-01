@@ -75,6 +75,26 @@ class EditorState {
     }
   }
 
+  #inflight = false;
+  #queued: { edit: Edit; key: string } | null = null;
+
+  /** For continuous controls (scrubbing, sliders): sends at most one edit at a
+   * time, always the latest, all folded into one undo step by `key`. */
+  live(edit: Edit, key: string) {
+    this.#queued = { edit, key };
+    if (this.#inflight) return;
+    const pump = async () => {
+      const next = this.#queued;
+      if (!next) return;
+      this.#queued = null;
+      this.#inflight = true;
+      await this.edit(next.edit, next.key);
+      this.#inflight = false;
+      void pump();
+    };
+    void pump();
+  }
+
   async undo() {
     if (!this.view?.can_undo) return;
     this.set(await api.undo());
