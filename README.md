@@ -2,6 +2,7 @@
   <img src="brand/icon.png" width="112" alt="kimchi" />
 </p>
 <p align="center">
+  <a href="https://lsuite.xyz/kimchi">Website</a> ·
   <a href="https://github.com/ludovic111/kimchi/releases/latest">Download</a> ·
   <a href="https://github.com/sponsors/ludovic111">Sponsor</a>
 </p>
@@ -9,7 +10,8 @@
 <h1 align="center">kimchi</h1>
 
 <p align="center"><strong>An open-source video editor where generative models are part of the cut.</strong><br/>
-Rust core · Tauri UI · bring your own keys, or run everything locally.</p>
+Rust core · Tauri UI · bring your own keys, or run everything locally.<br/>
+Part of <a href="https://lsuite.xyz">lsuite</a>, the free, open-source creative suite your AI can drive.</p>
 
 ---
 
