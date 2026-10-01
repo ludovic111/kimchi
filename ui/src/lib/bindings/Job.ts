@@ -7,7 +7,7 @@ import type { SavedOutput } from "./SavedOutput";
 /**
  * A job as the UI sees it. Every change is broadcast as a full snapshot.
  */
-export type Job = { id: string, provider: string, model: string, model_name: string, request: GenRequest, status: JobStatus, progress: Progress, created_at: string, finished_at: string | null, elapsed_ms: bigint, outputs: Array<SavedOutput>, error: string | null, seed: bigint | null, cost_usd: number | null, 
+export type Job = { id: string, provider: string, model: string, model_name: string, request: GenRequest, status: JobStatus, progress: Progress, created_at: string, finished_at: string | null, elapsed_ms: number, outputs: Array<SavedOutput>, error: string | null, seed: number | null, cost_usd: number | null, 
 /**
  * Free-form tag the editor uses to remember what to do with the result
  * (e.g. which placeholder clip to replace).

@@ -3,7 +3,7 @@
 /**
  * Everything needed to understand (and redo) how an asset was generated.
  */
-export type Generation = { job_id: string, provider: string, model: string, model_name: string, task: string, prompt: string, negative_prompt: string | null, seed: bigint | null, 
+export type Generation = { job_id: string, provider: string, model: string, model_name: string, task: string, prompt: string, negative_prompt: string | null, seed: number | null, 
 /**
  * The full request parameters, so a generation can be re-run or varied.
  */
@@ -11,4 +11,4 @@ params: Record<string, unknown>,
 /**
  * Assets that were fed into the model (reference images, start/end frames).
  */
-inputs: Array<string>, elapsed_ms: bigint, cost_usd: number | null, };
+inputs: Array<string>, elapsed_ms: number, cost_usd: number | null, };

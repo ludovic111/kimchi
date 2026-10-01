@@ -71,6 +71,7 @@ pub enum Edit {
     RenameProject { name: String },
     SetSettings { settings: ProjectSettings },
 
+    /// Adds media to the library. Not recorded in history: undo never un-imports.
     AddAsset { asset: Asset },
     /// Replaces an asset's metadata (thumbnails, proxies…). Not recorded in history.
     UpdateAsset { asset: Asset },
@@ -111,7 +112,7 @@ impl Edit {
     /// expressing a user decision. They apply to every snapshot in the undo
     /// history so undo never brings back stale state.
     pub fn is_background(&self) -> bool {
-        matches!(self, Edit::UpdateAsset { .. } | Edit::ResolvePending { .. } | Edit::DropPending { .. })
+        matches!(self, Edit::AddAsset { .. } | Edit::UpdateAsset { .. } | Edit::ResolvePending { .. } | Edit::DropPending { .. })
     }
 }
 

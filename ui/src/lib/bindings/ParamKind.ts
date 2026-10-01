@@ -4,4 +4,4 @@ import type { SelectOption } from "./SelectOption";
 /**
  * Type of a model-specific knob.
  */
-export type ParamKind = { "type": "int", min: bigint, max: bigint, step: bigint, } | { "type": "float", min: number, max: number, step: number, } | { "type": "bool" } | { "type": "select", options: Array<SelectOption>, } | { "type": "text", multiline: boolean, };
+export type ParamKind = { "type": "int", min: number, max: number, step: number, } | { "type": "float", min: number, max: number, step: number, } | { "type": "bool" } | { "type": "select", options: Array<SelectOption>, } | { "type": "text", multiline: boolean, };

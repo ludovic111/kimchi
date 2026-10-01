@@ -17,7 +17,7 @@ width: number | null, height: number | null,
 /**
  * Seconds (video).
  */
-duration: number | null, resolution: string | null, seed: bigint | null, 
+duration: number | null, resolution: string | null, seed: number | null, 
 /**
  * Number of outputs wanted.
  */

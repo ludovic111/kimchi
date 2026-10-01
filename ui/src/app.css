@@ -1,0 +1,245 @@
+/* kimchi design tokens.
+ * Warm charcoal surfaces, cream type, one chili accent, and a generative
+ * gradient reserved for anything AI-made. */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0e0d0c;
+  --bg-sunken: #0a0908;
+  --surface: #141312;
+  --surface-2: #1a1817;
+  --surface-3: #22201e;
+  --surface-4: #2b2826;
+  --hover: rgba(255, 240, 225, 0.05);
+  --press: rgba(255, 240, 225, 0.08);
+
+  --line: rgba(255, 238, 220, 0.065);
+  --line-2: rgba(255, 238, 220, 0.1);
+  --line-3: rgba(255, 238, 220, 0.16);
+
+  --text: #f4eee7;
+  --text-2: #b3aaa1;
+  --text-3: #7a726b;
+  --text-4: #57514c;
+
+  --accent: #ff5a36;
+  --accent-hi: #ff7a52;
+  --accent-ink: #1a0905;
+  --accent-soft: rgba(255, 90, 54, 0.14);
+  --accent-line: rgba(255, 90, 54, 0.45);
+
+  --green: #a6cf5e;
+  --green-soft: rgba(166, 207, 94, 0.14);
+  --amber: #f0b44c;
+  --red: #ff4d5e;
+  --blue: #7aa7ff;
+
+  /* Anything generated wears this. */
+  --gen: linear-gradient(115deg, #ff5a36 0%, #ff8a3d 35%, #f0b44c 65%, #a6cf5e 100%);
+  --gen-soft: linear-gradient(115deg, rgba(255, 90, 54, 0.18), rgba(240, 180, 76, 0.12), rgba(166, 207, 94, 0.14));
+
+  /* Timeline clip colours */
+  --clip-video: #2c3540;
+  --clip-video-line: #4a5a6c;
+  --clip-image: #2a3a37;
+  --clip-image-line: #4b6a63;
+  --clip-text: #3d3322;
+  --clip-text-line: #8a6c35;
+  --clip-audio: #25331f;
+  --clip-audio-line: #5d7f3c;
+  --clip-solid: #33282f;
+  --clip-solid-line: #6b5262;
+
+  --font-ui: "Instrument Sans Variable", "Instrument Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: "Instrument Serif", ui-serif, Georgia, serif;
+  --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --r-xs: 5px;
+  --r-sm: 7px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+
+  --shadow-pop: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 12px 32px -8px rgba(0, 0, 0, 0.6), 0 0 0 1px var(--line-2);
+  --shadow-lift: 0 18px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px var(--line-2);
+
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+
+  --topbar-h: 52px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.4;
+  letter-spacing: 0.002em;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "cv11";
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+input,
+textarea,
+[contenteditable] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: default;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: rgba(255, 90, 54, 0.35);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 240, 225, 0.09);
+  border-radius: 10px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 240, 225, 0.16);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.drag {
+  -webkit-app-region: drag;
+}
+
+.eyebrow {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.gen-text {
+  background: var(--gen);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Lightweight tooltips: <button data-tip="Split">. */
+[data-tip] {
+  position: relative;
+}
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 6px);
+  transform: translate(-50%, -2px);
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #2f2c29;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--line-2);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 50;
+  transition: opacity 0.12s, transform 0.12s var(--ease);
+}
+[data-tip]:hover::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  transition-delay: 0.45s;
+}
+[data-tip-pos="top"]::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+[data-tip-pos="right"]::after {
+  top: 50%;
+  left: calc(100% + 8px);
+  transform: translate(-2px, -50%);
+}
+[data-tip-pos="right"]:hover::after {
+  transform: translate(0, -50%);
+}
