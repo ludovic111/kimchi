@@ -135,3 +135,14 @@ fn library_round_trip() {
     assert_eq!(lib.load(p.id).unwrap(), p);
     assert_eq!(lib.list().len(), 1);
 }
+
+#[test]
+fn titles_land_on_top_footage_at_the_bottom() {
+    let (mut p, a) = setup();
+    p.apply(&Edit::AddTrack { kind: TrackKind::Video, index: Some(0) }).unwrap();
+    let footage = insert(&mut p, &a, 0.0);
+    let title = p.apply(&Edit::AddClip { track_id: None, clip: Clip::new("T", 0.0, 2.0, ClipContent::Text { style: TextStyle::default() }) }).unwrap().created_clips[0];
+    let (ft, _) = p.locate_clip(footage).unwrap();
+    let (tt, _) = p.locate_clip(title).unwrap();
+    assert!(tt < ft, "title track {tt} should be above footage track {ft}");
+}

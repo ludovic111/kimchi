@@ -304,8 +304,11 @@ impl Project {
             }
         }
         let free = |t: &Track| !t.locked && t.kind == kind && t.clips.iter().all(|c| c.end() <= clip.start + 1e-9 || c.start >= clip.end() - 1e-9);
-        // Prefer the lowest video track (closest to the base layer) / highest audio track.
+        // Footage goes on the lowest free video track (closest to the base layer);
+        // titles go on the highest so nothing above can cover them.
+        let overlay = matches!(clip.content, ClipContent::Text { .. });
         let found = match kind {
+            TrackKind::Video if overlay => self.tracks.iter().position(free),
             TrackKind::Video => self.tracks.iter().rposition(free),
             TrackKind::Audio => self.tracks.iter().position(free),
         };
