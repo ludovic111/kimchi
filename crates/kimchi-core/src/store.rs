@@ -87,7 +87,7 @@ impl Library {
                 Some(summarize(&p))
             })
             .collect();
-        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        out.sort_by_key(|p| std::cmp::Reverse(p.updated_at));
         out
     }
 }

@@ -153,6 +153,7 @@ pub struct Waveform {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
+#[allow(clippy::large_enum_variant)] // Imported is the common case; boxing would only add noise.
 pub enum AssetOrigin {
     Imported,
     Generated(Generation),
