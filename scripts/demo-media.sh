@@ -5,8 +5,8 @@ cd "$(dirname "$0")/../ui/demo"
 ff() { ffmpeg -v error -y "$@"; }
 
 ff -f lavfi -i "gradients=s=960x540:c0=0x1a0f2e:c1=0xff5a36:c2=0xf0b44c:x0=0:y0=0:x1=960:y1=540:speed=0.02:n=3,format=yuv420p" -t 6 -r 30 -c:v libx264 -crf 30 -movflags +faststart dusk.mp4
-ff -f lavfi -i "mandelbrot=s=960x540:maxiter=180:rate=30,hue=h=20:s=1.4" -t 6 -c:v libx264 -crf 32 -pix_fmt yuv420p -movflags +faststart fractal.mp4
-ff -f lavfi -i "cellauto=s=960x540:rule=110:rate=30,negate,colorchannelmixer=rr=0.9:gg=0.5:bb=0.35" -t 6 -c:v libx264 -crf 32 -pix_fmt yuv420p -movflags +faststart cells.mp4
+ff -f lavfi -i "mandelbrot=s=960x540:maxiter=220:rate=30:start_scale=1.2:end_scale=0.4,format=yuv444p,pseudocolor=p=inferno" -t 6 -c:v libx264 -crf 32 -pix_fmt yuv420p -movflags +faststart fractal.mp4
+ff -f lavfi -i "gradients=s=960x540:c0=0x0b1f24:c1=0x2a6f8f:c2=0xa6cf5e:c3=0xffe3cc:n=4:speed=0.03:seed=3,format=yuv420p" -t 6 -r 30 -c:v libx264 -crf 32 -pix_fmt yuv420p -movflags +faststart cells.mp4
 ff -f lavfi -i "gradients=s=1280x720:c0=0x0e2a1a:c1=0xa6cf5e:c2=0x2a6f8f:speed=0.01:n=3" -frames:v 1 meadow.jpg
 ff -f lavfi -i "gradients=s=1280x720:c0=0x2b0b10:c1=0xff7a52:c2=0xffe3cc:speed=0.01:n=3:seed=7" -frames:v 1 ember.jpg
 for v in dusk fractal cells; do

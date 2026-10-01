@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, events, message } from "$lib/ipc";
+  import { api, events, isTauri, message } from "$lib/ipc";
   import { editor } from "$lib/state/editor.svelte";
   import { gen } from "$lib/state/gen.svelte";
   import { ui } from "$lib/state/ui.svelte";
@@ -24,6 +24,7 @@
       try {
         await gen.load();
         editor.set(await api.currentProject());
+        if (!isTauri) await (await import("$lib/mock")).applyDemoParams();
       } catch (e) {
         ui.error(message(e));
       }

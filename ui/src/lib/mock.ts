@@ -277,3 +277,14 @@ export async function mockInvoke(cmd: string, args: any): Promise<any> {
       return null;
   }
 }
+
+/** Demo-only URL params for composing screenshots: `?editor&t=8&sel=c2&tab=generate&mode=video&prompt=…`. */
+export async function applyDemoParams() {
+  const q = new URLSearchParams(location.search);
+  const [{ editor }, { gen }, { ui }] = await Promise.all([import("./state/editor.svelte"), import("./state/gen.svelte"), import("./state/ui.svelte")]);
+  if (q.has("t")) editor.seek(Number(q.get("t")));
+  if (q.has("sel")) editor.selection = q.get("sel")!.split(",");
+  if (q.get("mode") === "video" || q.get("mode") === "image") gen.setMode(q.get("mode") as "video" | "image");
+  if (q.has("prompt")) gen.draft.prompt = q.get("prompt")!;
+  if (q.has("tab")) ui.leftTab = q.get("tab") as typeof ui.leftTab;
+}
