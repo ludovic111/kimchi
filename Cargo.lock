@@ -2297,7 +2297,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2326,7 +2326,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "kimchi-core",
  "kimchi-gen",
@@ -2338,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "serde",
@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-gen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2376,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-media"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "kimchi-core",
