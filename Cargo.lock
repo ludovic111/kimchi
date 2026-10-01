@@ -727,6 +727,7 @@ dependencies = [
 name = "kimchi-media"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "kimchi-core",
  "serde",
  "serde_json",
