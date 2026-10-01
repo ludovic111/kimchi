@@ -31,7 +31,7 @@ pub async fn send(cx: &Ctx, req: reqwest::RequestBuilder) -> GenResult<reqwest::
         return Err(GenError::Moderated(error_message(&body)));
     }
     if code == 401 || code == 403 {
-        return Err(GenError::Unauthorized { provider: cx.provider.clone(), status: code });
+        return Err(GenError::Unauthorized { provider: cx.provider.clone(), status: code, message: error_message(&body) });
     }
     Err(GenError::Http { provider: cx.provider.clone(), status: code, message: error_message(&body) })
 }

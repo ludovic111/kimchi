@@ -242,7 +242,7 @@ async fn send(cx: &Ctx, req: reqwest::RequestBuilder) -> GenResult<String> {
         return Err(GenError::Moderated(stability_message(&text)));
     }
     if status == 401 || status == 403 {
-        return Err(GenError::Unauthorized { provider: cx.provider.clone(), status });
+        return Err(GenError::Unauthorized { provider: cx.provider.clone(), status, message: stability_message(&text) });
     }
     Err(GenError::Http { provider: cx.provider.clone(), status, message: stability_message(&text) })
 }

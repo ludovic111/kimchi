@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { ArrowUp, Copy, Film, Image as ImageIcon, KeyRound, Plus, Sparkles, Trash2 } from "@lucide/svelte";
+  import { ask } from "@tauri-apps/plugin-dialog";
   import { api, fileUrl, message } from "$lib/ipc";
   import type { AppInfo } from "$lib/bindings/AppInfo";
   import type { ProjectSummary } from "$lib/bindings/ProjectSummary";
@@ -86,7 +87,8 @@
         icon: Trash2,
         danger: true,
         action: async () => {
-          if (!confirm(`Delete “${p.name}”? Generated media inside it is deleted too.`)) return;
+          const ok = await ask(`Delete “${p.name}”? Media generated inside it is deleted too.`, { title: "Delete project", kind: "warning", okLabel: "Delete" });
+          if (!ok) return;
           await api.deleteProject(p.id);
           projects = projects.filter((x) => x.id !== p.id);
         },

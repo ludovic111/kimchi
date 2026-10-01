@@ -8,6 +8,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-toggle-maximize",
     "dialog:default",
+    "dialog:allow-ask",
     "opener:default",
     "opener:allow-reveal-item-in-dir",
     "opener:allow-open-url"

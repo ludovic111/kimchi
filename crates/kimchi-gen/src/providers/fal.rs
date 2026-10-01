@@ -780,7 +780,7 @@ async fn fal_json<T: serde::de::DeserializeOwned>(cx: &Ctx, req: reqwest::Reques
         return serde_json::from_str(&text).map_err(|e| util::decode_err(cx, format!("{e}: {}", util::truncate(&text, 300))));
     }
     if status == 401 || status == 403 {
-        return Err(GenError::Unauthorized { provider: cx.provider.clone(), status });
+        return Err(GenError::Unauthorized { provider: cx.provider.clone(), status, message: util::error_message(&text) });
     }
     let message = util::error_message(&text);
     let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);

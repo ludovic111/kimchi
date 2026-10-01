@@ -77,6 +77,17 @@
     }
   }
 
+  // Hints like "sk-or-v1-…" double as the expected prefix of a key.
+  const prefix = $derived(selected?.info.key_hint?.endsWith("…") ? selected.info.key_hint.slice(0, -1) : null);
+  const keyWarning = $derived.by(() => {
+    const k = keyDraft.trim();
+    if (!k) return null;
+    if (/^(https?:\/\/|www\.)/i.test(k)) return "That's a link, not a key. Open “Get a key”, create one, and paste the key itself.";
+    if (/\s/.test(k)) return "Keys don't contain spaces — check what was copied.";
+    if (prefix && !k.startsWith(prefix)) return `${selected?.info.name} keys usually start with “${prefix}”.`;
+    return null;
+  });
+
   const status = (p: ProviderStatus) =>
     !p.settings.enabled ? "off" : gen.connected.some((c) => c.info.id === p.info.id) ? "ready" : p.info.needs_key ? "nokey" : "offline";
 </script>
@@ -139,6 +150,7 @@
               <input type="password" autocomplete="off" spellcheck="false" placeholder={p.key_preview ? "Replace key" : (p.info.key_hint ?? "Paste your key")} bind:value={keyDraft} onkeydown={(e) => e.stopPropagation()} />
               <Button type="submit" variant="primary" disabled={!keyDraft.trim()}>Save</Button>
             </form>
+            {#if keyWarning}<small class="warn">{keyWarning}</small>{/if}
             {#if p.info.key_env.length}<small>Or set <code>{p.info.key_env[0]}</code> in your environment.</small>{/if}
           </div>
         {/if}
@@ -340,6 +352,9 @@
   small {
     color: var(--text-3);
     font-size: 11.5px;
+  }
+  small.warn {
+    color: var(--amber);
   }
   code {
     font-family: var(--font-mono);

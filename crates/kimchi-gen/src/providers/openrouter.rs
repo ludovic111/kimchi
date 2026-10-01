@@ -225,7 +225,7 @@ async fn call(cx: &Ctx, req: reqwest::RequestBuilder) -> GenResult<Value> {
                 format!("{message} ({})", reasons.join(", "))
             }))
         }
-        401 | 403 => Err(GenError::Unauthorized { provider: cx.provider.clone(), status }),
+        401 | 403 => Err(GenError::Unauthorized { provider: cx.provider.clone(), status, message }),
         _ => Err(GenError::Http { provider: cx.provider.clone(), status, message }),
     }
 }

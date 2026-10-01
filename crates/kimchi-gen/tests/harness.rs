@@ -104,3 +104,12 @@ async fn statuses_reflect_settings() {
     h.set_settings("fake", ProviderSettings { enabled: false, ..Default::default() });
     assert!(!h.statuses()[0].ready);
 }
+
+#[test]
+fn obviously_wrong_keys_are_refused() {
+    let h = harness(Duration::ZERO);
+    let e = h.set_key("fake", Some("https://openrouter.ai/settings/keys")).unwrap_err();
+    assert!(e.to_string().contains("link"), "{e}");
+    assert!(h.set_key("fake", Some("sk-or v1")).is_err());
+    assert!(h.set_key("fake", Some("  sk-or-v1-abc  ")).is_ok(), "surrounding spaces are trimmed");
+}

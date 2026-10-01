@@ -13,8 +13,8 @@ use crate::types::*;
 pub enum GenError {
     #[error("No API key set for {0}. Add one in Settings → Models.")]
     MissingKey(String),
-    #[error("{provider} rejected the API key ({status}).")]
-    Unauthorized { provider: String, status: u16 },
+    #[error("{provider} rejected the API key ({status}): {message}")]
+    Unauthorized { provider: String, status: u16, message: String },
     #[error("{provider} returned {status}: {message}")]
     Http { provider: String, status: u16, message: String },
     #[error("Couldn't reach {provider}: {message}")]

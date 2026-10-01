@@ -209,8 +209,12 @@ impl Harness {
     }
 
     pub fn set_key(&self, provider: &str, key: Option<&str>) -> GenResult<()> {
-        self.provider(provider)?;
-        let r = match key.map(str::trim).filter(|k| !k.is_empty()) {
+        let info = self.provider(provider)?.info();
+        let key = key.map(str::trim).filter(|k| !k.is_empty());
+        if let Some(k) = key {
+            validate_key(&info, k)?;
+        }
+        let r = match key {
             Some(k) => self.secrets.set(provider, k),
             None => self.secrets.delete(provider),
         };
@@ -219,7 +223,8 @@ impl Harness {
     }
 
     fn resolve_key(&self, info: &ProviderInfo) -> (Option<String>, KeySource) {
-        if let Some(k) = self.secrets.get(&info.id).filter(|k| !k.is_empty()) {
+        // A stored value that can't be a key (e.g. a pasted link) counts as no key.
+        if let Some(k) = self.secrets.get(&info.id).filter(|k| !k.is_empty() && validate_key(info, k).is_ok()) {
             return (Some(k), KeySource::Keychain);
         }
         for var in &info.key_env {
@@ -437,6 +442,20 @@ impl Harness {
         });
         Ok(job)
     }
+}
+
+/// Catches values that can't be an API key (a pasted link, a sentence), so a
+/// mistake shows up when saving instead of as a confusing auth error later.
+pub fn validate_key(info: &ProviderInfo, key: &str) -> GenResult<()> {
+    let lower = key.to_ascii_lowercase();
+    let hint = info.key_url.as_deref().map(|u| format!(" Create one at {u}.")).unwrap_or_default();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("www.") {
+        return Err(GenError::Provider(format!("That's a link, not an API key.{hint}")));
+    }
+    if key.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(GenError::Provider(format!("API keys don't contain spaces or line breaks — check what was pasted.{hint}")));
+    }
+    Ok(())
 }
 
 /// Reads input images from disk and normalises their MIME types.
