@@ -26,7 +26,8 @@ compatible with the others. ryolune (`../ryolune`) is the reference: read its `C
       (providers: Claude Code, Codex, API keys, local), one card per command, changes with revert,
       permissions enforced for agent and MCP alike.
 - [ ] **Auto-update**: the Tauri updater is there; make "check for updates" a command, add
-      `KIMCHI_NO_UPDATE=1` and a setting, and **notarize the macOS build**.
+      `KIMCHI_NO_UPDATE=1` and a setting. (macOS builds are signed and notarized since 0.1.1:
+      `scripts/prepare-apple-signing.sh`, secrets set with `../lsuite/scripts/set-apple-secrets.sh`.)
 - [ ] **Discovery and hand-offs**: write `~/.lsuite/apps/kimchi.json` (format in STANDARD.md, or
       as ryolune defines it), accept audio from ryolune onto an audio track, and send a cut's
       audio/length/markers to ryolune to score.
