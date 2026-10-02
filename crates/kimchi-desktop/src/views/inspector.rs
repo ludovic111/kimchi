@@ -117,7 +117,7 @@ impl Inspector {
 
         let name = cx.new(|cx| TextInput::new(cx).placeholder("Clip name"));
         subs.push(cx.subscribe(&name, |this: &mut Self, input, e: &InputEvent, cx| match e {
-            InputEvent::Submit(_) | InputEvent::Blur => {
+            InputEvent::Submit | InputEvent::Blur => {
                 let text = input.read(cx).text().trim().to_string();
                 let Some(id) = this.shown else { return };
                 let current = this.store.read(cx).clip(id).map(|c| c.name.clone());
@@ -289,13 +289,10 @@ impl Inspector {
             && let AssetOrigin::Generated(g) = &a.origin
         {
             let (c1, c2) = (clip.clone(), clip.clone());
-            let buttons = div()
-                .flex()
-                .gap(px(6.))
-                .child(
-                    Button::new("regen", "Regenerate").small().with_icon("refresh-cw").full_width().on_click(move |_, _, cx| ai::regenerate_clip(&c1, false, cx)),
-                )
-                .child(Button::new("variation", "Variation").small().with_icon("shuffle").full_width().on_click(move |_, _, cx| ai::regenerate_clip(&c2, true, cx)));
+            let buttons = pair(
+                Button::new("regen", "Regenerate").small().with_icon("refresh-cw").on_click(move |_, _, cx| ai::regenerate_clip(&c1, false, cx)),
+                Button::new("variation", "Variation").small().with_icon("shuffle").on_click(move |_, _, cx| ai::regenerate_clip(&c2, true, cx)),
+            );
             body.push(self.provenance(g, a, Some(buttons.into_any_element()), cx));
         }
 
@@ -490,23 +487,20 @@ impl Inspector {
         body.push(
             section(cx)
                 .child(kv(vec![("Clips".into(), n.to_string()), ("Total length".into(), short(total)), ("Span".into(), short((end - start).max(0.0)))], cx))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(6.))
-                        .child(Button::new("dup", "Duplicate").small().with_icon("copy").full_width().on_click(move |_, _, cx| {
-                            let ids = dup.clone();
-                            cx.store().update(cx, |s, cx| s.run_then("clip.duplicate", json!({ "clipIds": ids }), cx, |s, v, cx| s.set_selection(crate::app::created(&v), cx)));
-                        }))
-                        .child(Button::new("del", "Delete").small().danger().with_icon("trash").full_width().on_click(move |_, _, cx| {
-                            let ids = ids.clone();
-                            cx.store().update(cx, |s, cx| {
-                                let ripple = s.ripple;
-                                s.run("clip.delete", json!({ "clipIds": ids, "ripple": ripple }), cx);
-                                s.clear_selection(cx);
-                            });
-                        })),
-                )
+                .child(pair(
+                    Button::new("dup", "Duplicate").small().with_icon("copy").on_click(move |_, _, cx| {
+                        let ids = dup.clone();
+                        cx.store().update(cx, |s, cx| s.run_then("clip.duplicate", json!({ "clipIds": ids }), cx, |s, v, cx| s.set_selection(crate::app::created(&v), cx)));
+                    }),
+                    Button::new("del", "Delete").small().danger().with_icon("trash").on_click(move |_, _, cx| {
+                        let ids = ids.clone();
+                        cx.store().update(cx, |s, cx| {
+                            let ripple = s.ripple;
+                            s.run("clip.delete", json!({ "clipIds": ids, "ripple": ripple }), cx);
+                            s.clear_selection(cx);
+                        });
+                    }),
+                ))
                 .into_any_element(),
         );
         vec![header(format!("{n} clips"), None, cx).into_any_element(), scroll("inspector-multi", body).into_any_element()]
@@ -535,11 +529,10 @@ impl Inspector {
         let mut body = vec![poster.into_any_element()];
         if let AssetOrigin::Generated(g) = &a.origin {
             let (a1, a2) = (a.clone(), a.clone());
-            let buttons = div()
-                .flex()
-                .gap(px(6.))
-                .child(Button::new("regen-asset", "Regenerate").small().with_icon("refresh-cw").full_width().on_click(move |_, _, cx| ai::regenerate_asset(&a1, false, cx)))
-                .child(Button::new("variation-asset", "Variation").small().with_icon("shuffle").full_width().on_click(move |_, _, cx| ai::regenerate_asset(&a2, true, cx)));
+            let buttons = pair(
+                Button::new("regen-asset", "Regenerate").small().with_icon("refresh-cw").on_click(move |_, _, cx| ai::regenerate_asset(&a1, false, cx)),
+                Button::new("variation-asset", "Variation").small().with_icon("shuffle").on_click(move |_, _, cx| ai::regenerate_asset(&a2, true, cx)),
+            );
             body.push(self.provenance(g, a, Some(buttons.into_any_element()), cx));
         }
         if a.kind == MediaKind::Image {
@@ -556,13 +549,10 @@ impl Inspector {
         body.push(section(cx).child(facts(a, cx)).into_any_element());
         body.push(
             section(cx)
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(6.))
-                        .child(Button::new("insert", "Insert").small().primary().with_icon("plus").full_width().on_click(move |_, _, cx| insert_at_playhead(id, cx)))
-                        .child(Button::new("reveal", "Reveal").small().with_icon("folder-search").full_width().on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&path)))),
-                )
+                .child(pair(
+                    Button::new("insert", "Insert").small().primary().with_icon("plus").on_click(move |_, _, cx| insert_at_playhead(id, cx)),
+                    Button::new("reveal", "Reveal").small().with_icon("folder-search").on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&path))),
+                ))
                 .child(div().text_size(px(sz::SM)).text_color(t.text_3).child("Double-click in the media panel, or drag onto the timeline, to place it."))
                 .into_any_element(),
         );
@@ -739,6 +729,11 @@ pub fn insert_at_playhead(asset: Id, cx: &mut App) {
 
 fn section(cx: &App) -> Div {
     div().flex().flex_col().gap(px(9.)).px(px(14.)).py(px(14.)).border_b_1().border_color(cx.theme().line)
+}
+
+/// Two buttons sharing a row equally.
+fn pair(a: Button, b: Button) -> Div {
+    div().flex().gap(px(6.)).child(div().flex_1().min_w_0().child(a.full_width())).child(div().flex_1().min_w_0().child(b.full_width()))
 }
 
 fn grid2() -> Div {

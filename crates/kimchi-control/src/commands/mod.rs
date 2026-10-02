@@ -54,7 +54,7 @@ pub static SPECS: &[Spec] = &[
     edit("project.close", "Close the open project and go back to the home screen.", &[]).perm(Perm::Projects),
     edit("project.delete", "Delete a library project and its generated media and caches. Cannot be undone.", &[PROJECT_ID]).perm(Perm::Projects),
     edit("project.duplicate", "Copy a library project (the open one by default) as \"<name> copy\".", &[opt("projectId", String, "Project id or unique name; defaults to the open project.")]).perm(Perm::Projects),
-    edit("project.rename", "Rename the open project. One undo step.", &[req("name", String, "New name."), crate::registry::COALESCE]),
+    edit("project.rename", "Rename the open project (one undo step), or another library project.", &[req("name", String, "New name."), opt("projectId", String, "A library project (id or unique name); defaults to the open one."), crate::registry::COALESCE]),
     edit("project.setSettings", "Change the canvas: size, frame rate, background colour, sample rate. One undo step.", &[
         opt("width", Integer, "Width in pixels (16 or more)."),
         opt("height", Integer, "Height in pixels (16 or more)."),
@@ -272,6 +272,7 @@ pub static SPECS: &[Spec] = &[
     // ---- app --------------------------------------------------------------
     query("app.info", "Version, ffmpeg, library and data folders, whether the window and the bridge are running.", &[]),
     query("app.commands", "Describe every command with its parameters, or one command.", &[opt("command", String, "One command name.")]),
+    query("app.fonts", "Font families text clips can use: the bundled ones (Manrope, IBM Plex Mono, Instrument Sans, Instrument Serif) first, then this computer's.", &[]),
     query("app.settings", "Every setting with its value (agent permissions, updates, appearance, default models).", &[]),
     edit("app.setSetting", "Change one setting by dotted key, e.g. updates.checkOnStart or appearance.mode. Agent permissions stay with the person.", &[
         req("key", String, "Dotted key from app.settings."),
@@ -288,7 +289,10 @@ pub static SPECS: &[Spec] = &[
     // ---- ui ---------------------------------------------------------------
     query("ui.state", "What the window shows: home or editor, playhead, playing, selection, zoom, open panel and dialogs, theme.", &[]),
     edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears."), opt("assetId", String, "A media item to select instead.")]).window(),
-    edit("ui.showPanel", "Open a panel or dialog: media, generate, text (left panel), agent, jobs, settings, export, palette; or home.", &[req("panel", String, "Panel name.")]).window(),
+    edit("ui.showPanel", "Open a panel or dialog: media, generate, text (left panel), agent, jobs, settings, export, palette; or home.", &[
+        req("panel", String, "Panel name."),
+        opt("section", String, "For settings: models, agent, appearance, updates or about."),
+    ]).window(),
     edit("ui.closeDialogs", "Close open dialogs and popovers.", &[]).window(),
     edit("ui.zoom", "Zoom the timeline.", &[opt("pixelsPerSecond", Number, "4-600."), opt("fit", Boolean, "Fit the whole project in view.")]).window(),
     edit("ui.screenshot", "Save a PNG of the window and return its path.", &[opt("path", String, "Destination .png (default: a temporary file).")]).window(),

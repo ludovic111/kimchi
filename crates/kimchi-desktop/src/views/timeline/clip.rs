@@ -100,6 +100,8 @@ impl ClipView<'_> {
 
         let mut el = div()
             .id(ElementId::Uuid(id))
+            .role(gpui::Role::Button)
+            .aria_label(format!("{} clip, {:.1} s", c.name, c.duration))
             .group(group.clone())
             .absolute()
             .left(px((x0 - self.scroll_x) as f32))
@@ -256,6 +258,8 @@ impl ClipView<'_> {
                 _ => None,
             };
             let fg = gpui::white();
+            // The pill is dark in both themes: the bright kimchi tone reads on it.
+            let hot = crate::theme::kimchi("300");
             let seen = ((self.scroll_x - x).max(0.) as f32).min(wf);
             el = el.child(
                 div()
@@ -275,15 +279,15 @@ impl ClipView<'_> {
                     .text_color(fg)
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .when(self.agent, |d| d.child(icon("bot").size(px(11.)).text_color(t.accent)))
-                    .when(generated || k == Kind::Pending, |d| d.child(icon("sparkles").size(px(11.)).text_color(t.accent)))
+                    .when(self.agent, |d| d.child(icon("bot").size(px(11.)).text_color(hot)))
+                    .when(generated || k == Kind::Pending, |d| d.child(icon("sparkles").size(px(11.)).text_color(hot)))
                     .when_some(kind_icon, |d, i| d.child(icon(i).size(px(11.)).text_color(fg.opacity(0.8))))
                     .child(div().min_w_0().truncate().child(label))
                     .when_some(status, |d, s| d.child(div().flex_none().font_weight(gpui::FontWeight::MEDIUM).text_color(fg.opacity(0.7)).child(s)))
                     .when((c.speed - 1.).abs() > 1e-6, |d| {
                         let s = format!("{:.2}", c.speed);
                         let s = s.trim_end_matches('0').trim_end_matches('.');
-                        d.child(div().flex_none().font_family(MONO).text_size(px(10.)).text_color(t.accent).child(format!("{s}×")))
+                        d.child(div().flex_none().font_family(MONO).text_size(px(10.)).text_color(hot).child(format!("{s}×")))
                     }),
             );
         }

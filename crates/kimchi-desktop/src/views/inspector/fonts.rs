@@ -55,6 +55,7 @@ pub fn font_row(id: impl Into<gpui::ElementId>, family: SharedString, selected: 
     let t = cx.theme();
     div()
         .id(id)
+        .w_full()
         .h(px(30.))
         .px(px(8.))
         .flex()
@@ -94,7 +95,7 @@ impl FontPicker {
         let sub = cx.subscribe(&search, |this: &mut Self, _, e: &InputEvent, cx| match e {
             InputEvent::Changed(_) => cx.notify(),
             InputEvent::Cancel => this.close(cx),
-            InputEvent::Submit(_) => {
+            InputEvent::Submit => {
                 // Enter picks the first match.
                 let q = this.search.read(cx).text().to_string();
                 if let Some(first) = families(cx).and_then(|l| filter(&l, &q).into_iter().next()) {
@@ -201,15 +202,23 @@ impl gpui::Render for FontPicker {
                         .occlude()
                         .mt(px(4.))
                         .w(px(260.))
-                        .p(px(6.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.))
                         .rounded(px(sz::R_MD))
-                        .glass(t.glass2)
+                        // Without a backdrop blur, the tier alone would let the inspector show
+                        // through the list: lay it over the raised surface.
+                        .bg(t.bg_raised)
                         .shadow(t.glass_shadow())
-                        .child(self.search.clone())
-                        .child(body),
+                        .child(
+                            div()
+                                .size_full()
+                                .p(px(6.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .rounded(px(sz::R_MD))
+                                .glass(t.glass2)
+                                .child(self.search.clone())
+                                .child(body),
+                        ),
                 ),
             )
             .with_priority(3);

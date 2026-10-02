@@ -53,9 +53,6 @@ fn color(path: &str) -> Hsla {
     parse_color(tok(path))
 }
 
-fn px_token(path: &str) -> f32 {
-    tok(path).trim_end_matches("px").trim_end_matches("ms").parse().unwrap_or(0.0)
-}
 
 /// The kimchi scale (`--ls-kimchi-50 … -950`).
 pub fn kimchi(step: &str) -> Hsla {
@@ -131,7 +128,6 @@ pub mod size {
     pub const LG: f32 = 17.0;
     pub const XL: f32 = 22.0;
     pub const XXL: f32 = 28.0;
-    pub const XXXL: f32 = 40.0;
 
     pub const R_XS: f32 = 4.0;
     pub const R_SM: f32 = 6.0;
@@ -198,9 +194,17 @@ impl Theme {
             clip_text: parse_color(if mode == Mode::Dark { "#3a3045" } else { "#e2d8ee" }),
             clip_generated: kimchi(if mode == Mode::Dark { "800" } else { "200" }),
         };
-        if !transparent {
+        if transparent {
+            // GPUI can't blur what is behind an element, so floating tiers (menus, popovers,
+            // dialogs) would let busy content show through. Their tint is laid over the raised
+            // surface instead: the same colour, readable over anything. The chrome (tier 1) sits
+            // on the window's own backdrop and stays translucent.
+            for tier in [&mut t.glass2, &mut t.glass3] {
+                tier.bg = over(tier.bg, t.bg_raised);
+            }
+        } else {
             for tier in [&mut t.glass1, &mut t.glass2, &mut t.glass3] {
-                tier.bg = opaque;
+                tier.bg = t.opaque;
             }
         }
         t
@@ -217,9 +221,15 @@ impl Theme {
             Mode::Light => (parse_color("rgba(20,30,50,0.14)"), parse_color("rgba(20,30,50,0.10)")),
         };
         vec![
+            self.glass_highlight(),
             BoxShadow { color: a, offset: point(px(0.), px(12.)), blur_radius: px(40.), spread_radius: px(0.), inset: false },
             BoxShadow { color: b, offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false },
         ]
+    }
+
+    /// `--ls-glass-highlight`: the 1 px light along a glass surface's top edge.
+    pub fn glass_highlight(&self) -> BoxShadow {
+        BoxShadow { color: self.glass1.highlight, offset: point(px(0.), px(1.)), blur_radius: px(0.), spread_radius: px(0.), inset: true }
     }
 
     /// Mode from the setting (`system`, `dark`, `light`) and the OS appearance.
@@ -233,14 +243,13 @@ impl Theme {
             },
         }
     }
+}
 
-    pub fn motion_fast() -> std::time::Duration {
-        std::time::Duration::from_millis(px_token("motion.fast") as u64)
-    }
-
-    pub fn motion_base() -> std::time::Duration {
-        std::time::Duration::from_millis(px_token("motion.base") as u64)
-    }
+/// `top` composited over an opaque `bottom`.
+pub fn over(top: Hsla, bottom: Hsla) -> Hsla {
+    let (t, b): (Rgba, Rgba) = (top.into(), bottom.into());
+    let a = t.a;
+    Rgba { r: t.r * a + b.r * (1.0 - a), g: t.g * a + b.g * (1.0 - a), b: t.b * a + b.b * (1.0 - a), a: 1.0 }.into()
 }
 
 /// The theme in use (`cx.theme()`).
@@ -280,11 +289,6 @@ mod tests {
         0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
     }
 
-    fn over(top: Hsla, bottom: Hsla) -> Hsla {
-        let (t, b): (Rgba, Rgba) = (top.into(), bottom.into());
-        let a = t.a;
-        Rgba { r: t.r * a + b.r * (1.0 - a), g: t.g * a + b.g * (1.0 - a), b: t.b * a + b.b * (1.0 - a), a: 1.0 }.into()
-    }
 
     fn contrast(a: Hsla, b: Hsla) -> f32 {
         let (x, y) = (luminance(a), luminance(b));

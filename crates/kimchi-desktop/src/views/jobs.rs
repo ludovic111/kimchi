@@ -206,7 +206,7 @@ impl Render for JobsPopover {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let mut jobs = self.store.read(cx).jobs.clone();
-        jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        jobs.sort_by_key(|j| std::cmp::Reverse(j.created_at));
         let any_done = jobs.iter().any(|j| j.status.is_done());
         let max_h = (f32::from(window.viewport_size().height) * 0.7).max(200.);
         let anchor = self.anchor.clone();
@@ -221,6 +221,7 @@ impl Render for JobsPopover {
             .flex_col()
             .rounded(px(sz::R_LG))
             .glass(t.glass2)
+            .bg(crate::views::generate::popover_fill(cx))
             .shadow(t.glass_shadow())
             .overflow_hidden()
             .text_size(px(sz::BASE))

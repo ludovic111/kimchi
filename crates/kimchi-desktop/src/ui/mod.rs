@@ -52,8 +52,10 @@ impl RenderOnce for Icon {
 
 /// One of the three glass tiers: fill, 1 px edge, top highlight; tier 2 and 3 float with a shadow.
 pub trait GlassExt: Styled + Sized {
+    /// Floating tiers add `Theme::glass_shadow()` (which keeps the highlight) after this.
     fn glass(self, g: Glass) -> Self {
-        self.bg(g.bg).border_1().border_color(g.edge)
+        let highlight = gpui::BoxShadow { color: g.highlight, offset: gpui::point(px(0.), px(1.)), blur_radius: px(0.), spread_radius: px(0.), inset: true };
+        self.bg(g.bg).border_1().border_color(g.edge).shadow(vec![highlight])
     }
 }
 impl<T: Styled> GlassExt for T {}
@@ -61,10 +63,6 @@ impl<T: Styled> GlassExt for T {}
 /// Section heading in caps (IBM Plex Mono, as the design system asks for labels in caps).
 pub fn caps(text: impl Into<SharedString>, cx: &App) -> Div {
     div().font_family(MONO).text_size(px(10.5)).text_color(cx.theme().text_2).child(text.into().to_uppercase())
-}
-
-pub fn label(text: impl Into<SharedString>, cx: &App) -> Div {
-    div().text_size(px(sz::SM)).text_color(cx.theme().text_2).child(text.into())
 }
 
 /// A keyboard shortcut chip.
@@ -80,11 +78,6 @@ pub fn kbd(text: impl Into<SharedString>, cx: &App) -> Div {
         .border_color(t.line_strong)
         .text_color(t.text_2)
         .child(text.into())
-}
-
-/// Hairline separator.
-pub fn hairline(cx: &App) -> Div {
-    div().h(px(1.)).w_full().bg(cx.theme().line)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -333,11 +326,6 @@ pub fn switch(id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool
                 .child(div().size(px(14.)).rounded_full().bg(gpui::white()).when(on, |d| d.ml(px(12.)))),
         )
         .on_click(move |_, w, cx| on_toggle(!on, w, cx))
-}
-
-/// A labelled row: label on the left, control on the right.
-pub fn field_row(label_text: impl Into<SharedString>, control: impl IntoElement, cx: &App) -> Div {
-    div().flex().items_center().justify_between().gap(px(12.)).min_h(px(28.)).child(label(label_text, cx)).child(control)
 }
 
 /// Wraps a child so clicks inside don't reach what is behind it.

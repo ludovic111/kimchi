@@ -239,6 +239,7 @@ impl GeneratePanel {
             .flex_col()
             .rounded(px(sz::R_LG))
             .glass(t.glass2)
+            .bg(crate::views::generate::popover_fill(cx))
             .shadow(t.glass_shadow())
             .overflow_hidden()
             .text_size(px(sz::BASE))

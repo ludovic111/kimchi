@@ -62,6 +62,11 @@ pub struct Palette {
 }
 
 impl Palette {
+    #[cfg(test)]
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
         let input = cx.new(|cx| TextInput::new(cx).placeholder("Type a command — or describe something to generate"));
@@ -71,7 +76,6 @@ impl Palette {
                 this.query.clear();
                 this.index = 0;
                 this.input.update(cx, |i, cx| i.set_text("", cx));
-                if let Some(q) = std::env::var("KIMCHI_TEMP_QUERY").ok().and_then(|f| std::fs::read_to_string(f).ok()).map(|q| q.trim().to_string()).filter(|q| !q.is_empty()) { this.query = q.clone(); this.input.update(cx, |i, cx| i.set_text(q, cx)); } // TEMP-TEST
                 input::focus(&this.input, window, cx);
             }
             this.open = open;
@@ -83,7 +87,7 @@ impl Palette {
                 this.scroll.scroll_to_item(0);
                 cx.notify();
             }
-            InputEvent::Submit(_) => this.run_selected(window, cx),
+            InputEvent::Submit => this.run_selected(window, cx),
             InputEvent::Cancel => this.store.update(cx, |s, cx| s.close_dialog(cx)),
             InputEvent::Blur => {}
         }));

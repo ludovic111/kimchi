@@ -3321,7 +3321,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kimchi"
-version = "0.1.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3354,7 +3354,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-agent"
-version = "0.1.1"
+version = "0.4.0"
 dependencies = [
  "futures",
  "kimchi-control",
@@ -3371,7 +3371,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-cli"
-version = "0.1.1"
+version = "0.4.0"
 dependencies = [
  "kimchi-control",
  "kimchi-core",
@@ -3384,7 +3384,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-control"
-version = "0.1.1"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3412,7 +3412,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-core"
-version = "0.1.1"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3424,7 +3424,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-gen"
-version = "0.1.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3448,7 +3448,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-mcp"
-version = "0.1.1"
+version = "0.4.0"
 dependencies = [
  "kimchi-cli",
  "kimchi-control",
@@ -3459,7 +3459,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-media"
-version = "0.1.1"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "cosmic-text",
@@ -3476,7 +3476,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-release"
-version = "0.1.1"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "minisign",

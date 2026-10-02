@@ -1,52 +1,83 @@
 # kimchi
 
-Desktop video editor with generation in the cut. Rust workspace (`crates/kimchi-core` project
-model and edits, `kimchi-media` ffmpeg, `kimchi-gen` providers, `kimchi-cli`), Tauri shell in
-`src-tauri/`, Svelte 5 UI in `ui/` (thin: every edit is applied in Rust). See README.md.
+Desktop video editor with generation in the cut. A native Rust app: the window is **GPUI** (direct
+upstream, pinned to Zed commit `7733b99…`, `runtime_shaders` on macOS so no Metal toolchain is needed),
+and every action goes through one command registry. See README.md.
 
-## lsuite: bring kimchi up to the suite standard (next session; notes updated 2026-10-01)
+```
+crates/kimchi-core      project model, edits, undo history (labels, sources, batches, checkpoints)
+crates/kimchi-media     ffmpeg: probe, previews, export graph, preview frames/stream, text rendering
+crates/kimchi-gen       generation providers and job queue
+crates/kimchi-control   registry (commands/mod.rs lists every spec), session, permissions, bridge,
+                        lsuite discovery, hand-offs with ryolune, updater
+crates/kimchi-agent     the built-in agent (Claude Code, Codex, Anthropic, OpenAI, Ollama)
+crates/kimchi-desktop   the window (package/binary `kimchi`): store.rs, app.rs, views/, ui/, theme.rs
+crates/kimchi-cli       `kimchi-cli`;  crates/kimchi-mcp: `kimchi-mcp`;  crates/kimchi-release: signing
+```
 
-kimchi is part of **lsuite** (lowercase), the free open-source creative suite with ryolune
-(music) and zenith (hub); its page is lsuite.xyz/kimchi (`../lsuite/kimchi/index.html`). Two
-documents in ludovic111/lsuite (locally `../lsuite/`) are the contract: `STANDARD.md` and
-`design/DESIGN.md` (shared design system, live at lsuite.xyz/design). The owner wants every lsuite
-app **100 % drivable by MCP, CLI and its built-in agent**, with automatic updates, compatible with
-the others, and with one common look. ryolune (`../ryolune`) is the reference: read its
-`CLAUDE.md`, `engine/src/control.rs` and `docs/AI_CONTROL.md` before designing.
+Rules that keep it working:
 
-Done: 0.1.1 (2026-10-01) is the first release signed with the Developer ID and notarized on macOS
-(`scripts/prepare-apple-signing.sh` in the release workflow; secrets set with
-`../lsuite/scripts/set-apple-secrets.sh`, API key "kimchi notarization"). Updates are signed
-(Tauri updater, `latest.json`).
+- **A feature is a command first.** Add the spec in `kimchi-control/src/commands/mod.rs`, the handler
+  in its family file, then call it from the window with `Store::run`. Never change the project from
+  the window directly. Regenerate `docs/COMMANDS.md` with `cargo run -p kimchi-cli -- docs` (a test
+  fails otherwise). Commands only the window can do (`ui.*`, playback) are handled in
+  `Workspace::ui_command` (app.rs).
+- GPUI API: grep the pinned source in `~/.cargo/git/checkouts/zed-*/7733b99/crates/gpui`; the
+  `build-gpui-apps` skill (installed in `.claude/skills/`) covers this revision. Views keep retained
+  state (text fields, scrubs, subscriptions) in their entity; drags use `ui::drag::track`; icons
+  are `ui::icon` (inherits the text colour); panels in the editor are cached views.
+- Design system: `crates/kimchi-desktop/assets/tokens.json` is a copy of `../lsuite/design/tokens.json`
+  (re-copy when it changes). GPUI has no backdrop blur: tier 1 is translucent over the window's own
+  backdrop (native blur behind on macOS), tiers 2–3 are their tint over the raised surface.
+  `theme.rs` has the contrast test.
+- Testing the app: `source` an env that sets `KIMCHI_DATA_DIR`, `KIMCHI_CONFIG_DIR`, `LSUITE_HOME`,
+  `KIMCHI_NO_UPDATE=1` to scratch folders, run `target/debug/kimchi`, drive it with
+  `target/debug/kimchi-cli …`, look with `kimchi-cli ui.screenshot path=…`. Debug builds don't read
+  the keychain (`KIMCHI_KEYCHAIN=1` forces it; an unsigned build makes macOS ask for the login
+  password). UI tests run the real views headless (`crates/kimchi-desktop/src/tests.rs`,
+  `views/timeline/tests.rs`).
 
-Still to do:
+## lsuite (notes updated 2026-10-02)
 
-- [ ] **Command registry**: one named, validated registry (`project.*`, `clip.*`, `track.*`,
-      `timeline.*`, `generate.*`, `export.*`, `history.*`, `app.*`, `ui.*`) over the existing
-      `Edit` data in kimchi-core, with one undo history shared by every client. The UI calls it;
-      no Tauri command that a script could want stays private.
-- [ ] **CLI**: grow `kimchi-cli` from `generate`/`render` to every command, on a file
-      (`--file project.json`) or on the running app.
-- [ ] **MCP**: a `kimchi-mcp` binary generated from the registry, `--live` through a local
-      token-protected bridge to the running app, one-line install for Claude Code / Codex.
-      Ship `docs/AI_CONTROL.md` and a generated `docs/COMMANDS.md`.
-- [ ] **Built-in agent**: today only generation; add an agent panel that runs registry commands
-      (providers: Claude Code, Codex, API keys, local), one card per command, changes with revert,
-      permissions enforced for agent and MCP alike.
-- [ ] **Auto-update**: make "check for updates" a command, add `KIMCHI_NO_UPDATE=1` and a setting.
-- [ ] **Design system** (`../lsuite/design/`): kimchi's signature color is **chili coral, hue 32**
-      (`--ls-kimchi-*`, accent `#f7806a` dark / `#c3513d` light), matching its icon. Replace the
-      Svelte UI's own colors with `tokens.css` (`data-app="kimchi"`), move to Manrope + IBM Plex Mono
-      (from Instrument Sans/Serif and Geist Mono), put the chrome (top bar, generate panel,
-      inspector, timeline toolbar, menus, ⌘K palette, dialogs) on the glass tiers over
-      `.ls-backdrop`, keep the preview canvas and the timeline solid, use macOS window vibrancy
-      (Tauri `window-vibrancy`), ship dark **and light**, add a contrast test, and redraw the icon
-      from the lsuite template.
-- [ ] **Discovery and hand-offs**: write `~/.lsuite/apps/kimchi.json` (format in STANDARD.md, or
-      as ryolune defines it), accept audio from ryolune onto an audio track, and send a cut's
-      audio/length/markers to ryolune to score.
-- [ ] Support links to `https://lsuite.xyz/kimchi/support`; keep the lsuite page up to date with
-      every release (screenshots in `../lsuite/assets/img/kimchi/`; the version shown comes from
-      the latest GitHub release).
+kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is lsuite.xyz/kimchi
+(`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
 
-When done, tick these, and update the status table at the end of `../lsuite/STANDARD.md`.
+- [x] **Command registry**: 84 `family.verb` commands (project, media, track, clip, timeline,
+      history, generate, export, handoff, app, ui), one undo history for every client, batches as one
+      step, `project.overview`, names or ids everywhere.
+- [x] **CLI**: `kimchi-cli <command>` on the running app or `--file project.json`; `batch`, `doctor`,
+      `mcp-config`, `docs`.
+- [x] **MCP**: `kimchi-mcp --live | --file | --headless`, tools generated from the registry; docs in
+      `docs/AI_CONTROL.md` and generated `docs/COMMANDS.md`.
+- [x] **Built-in agent**: Agent panel (⌘J), Claude Code / Codex / Anthropic / OpenAI / Ollama, one card
+      per command, changes with "Revert this run", permissions (`settings.agent.permissions`) checked in
+      `registry::call` for agent and MCP alike. Codex untested (not installed on the dev Mac).
+- [x] **Auto-update**: `app.checkUpdates` / `app.installUpdate`, `KIMCHI_NO_UPDATE=1`, setting
+      `updates.checkOnStart`; signed with the Tauri-era minisign key, `latest.json` in the Tauri
+      format so 0.1.x installs update to this app.
+- [x] **Design system**: tokens, chili coral, Manrope + IBM Plex Mono (bundled), glass tiers over the
+      backdrop, solid work surfaces, macOS window blur, dark and light, contrast test, icon redrawn
+      from the template.
+- [x] **Discovery and hand-offs**: `~/.lsuite/apps/kimchi.json` (format 1, defined here, see
+      `kimchi-control/src/discovery.rs`), `handoff.toRyolune` / `handoff.fromRyolune` through
+      ryolune's bridge.
+- [x] Support links go to `https://lsuite.xyz/kimchi/support`.
+
+## Next session
+
+- [ ] **First release of the GPUI app**: the remote already has tags `v0.2.0` and `v0.3.0`, so the
+      workspace version is 0.4.0. Tag `v0.4.0` and check the release run: the Linux AppImage/.deb and
+      the Windows NSIS installer have never been built (their scripts only run on those systems), the
+      Intel macOS build hasn't been tried locally.
+- [ ] Take new screenshots for `../lsuite/assets/img/kimchi/` from the GPUI app (the page text is
+      updated; `editor.webp` still shows the Svelte UI). `kimchi-cli ui.screenshot` needs the screen
+      awake and Screen Recording allowed for the app.
+- [ ] Commit the lsuite edits (kimchi page and kimchi's column in `STANDARD.md`'s status table): they
+      were left uncommitted on 2026-10-02 because a zenith session had uncommitted work in the same
+      files.
+- [ ] A pass with real mouse input in the running app: clicks, drags and typing are covered by GPUI
+      UI tests, but nobody has used the window by hand yet.
+- [ ] Codex as an agent provider: run one real turn once Codex is installed.
+- [ ] Runs from Claude Code/Codex in a terminal (not the panel) have no checkpoint, so only
+      step-by-step undo; and `CommandRecord` has no result, so the timeline guesses which clips an
+      agent made.

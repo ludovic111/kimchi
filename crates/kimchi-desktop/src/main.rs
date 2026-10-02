@@ -17,6 +17,9 @@ mod theme;
 mod ui;
 mod views;
 
+#[cfg(test)]
+mod tests;
+
 use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, point, px, size};
 use kimchi_control::{Session, SessionOptions};
 

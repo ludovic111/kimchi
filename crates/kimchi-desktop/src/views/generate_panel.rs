@@ -79,13 +79,13 @@ impl GeneratePanel {
             }),
             cx.subscribe_in(&store, window, |this, _, e: &StoreEvent, window, cx| match e {
                 StoreEvent::Compose(req) => {
-                    this.apply_compose(req.clone(), cx);
+                    this.apply_compose((**req).clone(), cx);
                     crate::ui::input::focus(&this.prompt, window, cx);
                 }
                 StoreEvent::FocusPrompt => crate::ui::input::focus(&this.prompt, window, cx),
             }),
             cx.subscribe(&prompt, |this, _, e: &InputEvent, cx| match e {
-                InputEvent::Submit(_) => this.submit(cx),
+                InputEvent::Submit => this.submit(cx),
                 InputEvent::Changed(_) => cx.notify(),
                 _ => {}
             }),
@@ -94,7 +94,7 @@ impl GeneratePanel {
                     this.picker_open = false;
                     cx.notify();
                 }
-                InputEvent::Submit(_) => {
+                InputEvent::Submit => {
                     // Enter picks the first match.
                     if let Some(m) = this.picker_groups(cx).into_iter().next().and_then(|(_, list)| list.into_iter().next()) {
                         this.pick_model(&m, cx);
@@ -403,10 +403,10 @@ impl GeneratePanel {
         if let Some(r) = d.resolution.clone().or_else(|| m.resolutions.first().cloned()) {
             o.insert("resolution".into(), json!(r));
         }
-        if m.seed {
-            if let Ok(seed) = self.seed.read(cx).text().trim().parse::<i64>() {
-                o.insert("seed".into(), json!(seed));
-            }
+        if m.seed
+            && let Ok(seed) = self.seed.read(cx).text().trim().parse::<i64>()
+        {
+            o.insert("seed".into(), json!(seed));
         }
         if m.max_outputs > 1 {
             o.insert("count".into(), json!(d.count.clamp(1, m.max_outputs)));
@@ -492,7 +492,7 @@ impl GeneratePanel {
                         .on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: Some(id.to_string()) }, cx)))
                 })),
             )
-            .child(div().mt(px(8.)).child(Button::new("connect-open", "Open Models & keys").small().primary().with_icon("key-round").on_click(|_, _, cx| Self::open_models_settings(cx))))
+            .child(div().mt(px(8.)).flex().child(Button::new("connect-open", "Open Models & keys").small().primary().with_icon("key-round").on_click(|_, _, cx| Self::open_models_settings(cx))))
     }
 
     fn refs_row(&self, model: Option<&ModelInfo>, cx: &mut Context<Self>) -> impl IntoElement {

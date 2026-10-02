@@ -19,6 +19,11 @@ pub struct Dialogs {
 }
 
 impl Dialogs {
+    #[cfg(test)]
+    pub fn palette(&self) -> Entity<palette::Palette> {
+        self.palette.clone()
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
         let sub = cx.observe(&store, |_, _, cx| cx.notify());
@@ -68,7 +73,8 @@ pub fn modal(width: f32, content: impl IntoElement, top: bool, cx: &App) -> AnyE
 impl Render for Dialogs {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dialog = self.store.read(cx).dialog.clone();
-        div().children(match dialog {
+        // Over the whole window (the scrim and the centring are relative to this).
+        div().when(dialog.is_some(), |d| d.absolute().inset_0()).children(match dialog {
             Some(Dialog::Settings { .. }) => Some(modal(760., self.settings.clone(), false, cx)),
             Some(Dialog::Export) => Some(modal(520., self.export.clone(), false, cx)),
             Some(Dialog::Palette) => Some(modal(620., self.palette.clone(), true, cx)),

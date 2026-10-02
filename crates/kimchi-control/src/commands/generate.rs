@@ -247,6 +247,10 @@ async fn request_from(s: &Arc<Session>, a: &Args) -> CmdResult<Submit> {
             other => return Err(format!("images[{i}].role is reference, start_frame or end_frame, not \"{other}\"")),
         };
         let path = if let Some(path) = v.get("path").and_then(Value::as_str) {
+            // A frame grabbed from a clip still records where it came from.
+            if let Some(key) = v.get("assetId").and_then(Value::as_str) {
+                inputs.push(resolve::asset(&p, key)?);
+            }
             path.to_string()
         } else if let Some(key) = v.get("assetId").and_then(Value::as_str) {
             let id = resolve::asset(&p, key)?;
@@ -352,10 +356,12 @@ pub async fn pick_model(s: &Arc<Session>, provider: Option<&str>, model: Option<
             let list: Vec<&str> = candidates.iter().filter(fits).take(8).map(|m| m.id.as_str()).collect();
             format!("Unknown model `{id}`. Models for {}: {}.", task.as_str(), if list.is_empty() { "none".into() } else { list.join(", ") })
         })?,
+        // The first featured model (lists come featured-first), else the first that fits.
         None => candidates
             .iter()
             .filter(fits)
-            .max_by_key(|m| m.featured)
+            .find(|m| m.featured)
+            .or_else(|| candidates.iter().find(fits))
             .cloned()
             .ok_or_else(|| format!("No ready provider has a model for {}. Add a key in Settings › Models & keys (or generate.setKey).", task.as_str()))?,
     };

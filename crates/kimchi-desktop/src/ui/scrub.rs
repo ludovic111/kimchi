@@ -108,7 +108,7 @@ impl Scrub {
         });
         crate::ui::input::focus(&input, window, cx);
         let sub = cx.subscribe(&input, |this, input, e: &InputEvent, cx| match e {
-            InputEvent::Submit(_) | InputEvent::Blur => {
+            InputEvent::Submit | InputEvent::Blur => {
                 let text = input.read(cx).text().to_string();
                 if let Ok(v) = text.trim().trim_end_matches(this.unit.as_ref()).trim().parse::<f64>() {
                     this.value = this.clamp(v);

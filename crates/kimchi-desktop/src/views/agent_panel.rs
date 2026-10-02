@@ -14,7 +14,6 @@ use futures::StreamExt;
 use gpui::{AnyElement, ClipboardItem, Context, Entity, FontWeight, Render, ScrollHandle, Subscription, Task, Window, div, prelude::*, px};
 use kimchi_agent::{Agent, AgentConfig, AgentEvent, Conversation, ProviderKind, ProviderStatus};
 use kimchi_control::CommandRecord;
-use kimchi_core::Project;
 use serde_json::{Value, json};
 
 use crate::store::{Dialog, MenuItem, Store, StoreExt};
@@ -69,7 +68,7 @@ impl AgentPanel {
         let subs = vec![
             cx.observe(&store, |this, _, cx| this.on_store_changed(cx)),
             cx.subscribe(&composer, |this, _, e: &InputEvent, cx| match e {
-                InputEvent::Submit(_) => this.send(cx),
+                InputEvent::Submit => this.send(cx),
                 InputEvent::Changed(_) => cx.notify(),
                 _ => {}
             }),
@@ -118,7 +117,7 @@ impl AgentPanel {
         let open = s.agent_open;
         let fresh: Vec<CommandRecord> = s.commands.iter().filter(|r| r.seq > self.last_seq).cloned().collect();
         let provider = s.settings.agent.provider.clone();
-        let project = s.project.as_ref().map(|p| Arc::as_ptr(p) as *const Project as usize);
+        let project = s.project.as_ref().map(|p| Arc::as_ptr(p) as usize);
         for r in fresh {
             self.last_seq = self.last_seq.max(r.seq);
             self.add_command(r, None);
@@ -437,10 +436,8 @@ impl AgentPanel {
         let kind = self.provider(cx);
         let (text, action): (String, Option<&'static str>) = if !s.settings.agent.permissions.enabled {
             ("Agents are turned off: the agent, MCP clients and `kimchi-cli --agent` are refused.".into(), Some("Turn on in Settings › Agent"))
-        } else if let Some(st) = self.status_of(kind).filter(|st| !st.ready) {
-            (st.message.clone(), None)
         } else {
-            return None;
+            (self.status_of(kind).filter(|st| !st.ready)?.message.clone(), None)
         };
         Some(
             div()
@@ -455,7 +452,7 @@ impl AgentPanel {
                 .border_1()
                 .border_color(t.warning.opacity(0.4))
                 .text_size(px(sz::SM))
-                .child(div().flex().gap(px(8.)).child(icon("circle-alert").mt(px(2.)).text_color(t.warning)).child(div().flex_1().line_height(px(18.)).child(text)))
+                .child(div().flex().gap(px(8.)).child(icon("circle-alert").mt(px(2.)).text_color(t.warning)).child(div().flex_1().min_w_0().line_height(px(18.)).child(text)))
                 .child(
                     div()
                         .flex()
@@ -501,7 +498,8 @@ impl AgentPanel {
     fn empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let kind = self.provider(cx);
-        let status = self.status_of(kind).map(|s| s.message.clone());
+        // When it isn't ready, the notice above says why.
+        let status = self.status_of(kind).filter(|s| s.ready).map(|s| s.message.clone());
         div()
             .flex()
             .flex_col()
@@ -521,7 +519,7 @@ impl AgentPanel {
                         "Every command shows up here as a card, every change lands in the one undo history, and a whole run can be reverted.",
                     ))
                     .when_some(status, |d, m| {
-                        d.child(div().flex().gap(px(6.)).text_size(px(sz::XS)).text_color(t.text_2).child(icon("info").size(px(12.)).mt(px(1.))).child(div().flex_1().child(m)))
+                        d.child(div().flex().gap(px(6.)).text_size(px(sz::XS)).text_color(t.text_2).child(icon("info").size(px(12.)).mt(px(1.))).child(div().flex_1().min_w_0().child(m)))
                     }),
             )
             .child(
@@ -555,7 +553,7 @@ impl AgentPanel {
                     .child(div().text_size(px(sz::SM)).line_height(px(18.)).text_color(t.text_2).child(
                         "Editing is always allowed and always undoable. Files, projects, generation (which spends credits), settings and quitting are each a switch, the same for this agent and MCP clients.",
                     ))
-                    .child(div().child(Button::new("perm-open", "Settings › Agent").small().with_icon("shield-check").on_click(|_, _, cx| Self::open_agent_settings(cx)))),
+                    .child(div().flex().child(Button::new("perm-open", "Settings › Agent").small().with_icon("shield-check").on_click(|_, _, cx| Self::open_agent_settings(cx)))),
             )
             .child(
                 div()

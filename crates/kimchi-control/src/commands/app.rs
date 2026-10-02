@@ -12,6 +12,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             Some(name) => registry::spec(name).map(registry::describe).ok_or_else(|| format!("Unknown command `{name}`.")),
             None => Ok(json!(registry::commands().iter().map(registry::describe).collect::<Vec<_>>())),
         },
+        "app.fonts" => Ok(json!(tokio::task::spawn_blocking(kimchi_media::text::font_families).await.map_err(crate::session::err)?)),
         "app.settings" => Ok(json!(s.settings())),
         "app.setSetting" => {
             let key = a.str("key")?.to_string();

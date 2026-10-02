@@ -34,7 +34,7 @@ impl PeaksCache {
 /// Reads a peaks file (blocking: call it on a background thread).
 pub fn read(path: &str) -> Option<Peaks> {
     let bytes = std::fs::read(path).ok()?;
-    Some(Arc::new(bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()))
+    Some(Arc::new(bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()))
 }
 
 /// Bars for the part of a clip between `vis.0` and `vis.1` (clip-local pixels; the clip is `full_w`

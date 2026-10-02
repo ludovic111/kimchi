@@ -61,11 +61,12 @@ Copy a library project (the open one by default) as "<name> copy". _(changes thi
 
 ### `project.rename`
 
-Rename the open project. One undo step. _(changes things)_
+Rename the open project (one undo step), or another library project. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `name` | string | required | New name. |
+| `projectId` | string |  | A library project (id or unique name); defaults to the open one. |
 | `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
 
 ### `project.setSettings`
@@ -632,6 +633,10 @@ Describe every command with its parameters, or one command. _(read only)_
 | --- | --- | --- | --- |
 | `command` | string |  | One command name. |
 
+### `app.fonts`
+
+Font families text clips can use: the bundled ones (Manrope, IBM Plex Mono, Instrument Sans, Instrument Serif) first, then this computer's. _(read only)_
+
 ### `app.settings`
 
 Every setting with its value (agent permissions, updates, appearance, default models). _(read only)_
@@ -697,6 +702,7 @@ Open a panel or dialog: media, generate, text (left panel), agent, jobs, setting
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `panel` | string | required | Panel name. |
+| `section` | string |  | For settings: models, agent, appearance, updates or about. |
 
 ### `ui.closeDialogs`
 

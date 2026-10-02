@@ -92,7 +92,6 @@ impl SettingsDialog {
                     Some(Dialog::Settings { section }) => Section::parse(section.as_deref()),
                     _ => None,
                 };
-                let section = section.or_else(|| Section::parse(std::env::var("KIMCHI_TEMP_SECTION").ok().and_then(|f| std::fs::read_to_string(f).ok()).as_deref().map(str::trim))); // TEMP-TEST
                 this.show(section.unwrap_or_else(|| this.section.clone()), cx);
             }
             this.open = open;
@@ -103,8 +102,8 @@ impl SettingsDialog {
         for (input, which) in [(&key, 0u8), (&base, 1), (&option, 2)] {
             subs.push(cx.subscribe_in(input, window, move |this, _, e: &InputEvent, window, cx| match (e, which) {
                 (InputEvent::Changed(_), _) => cx.notify(),
-                (InputEvent::Submit(_), 0) => this.save_key(cx),
-                (InputEvent::Submit(_), _) | (InputEvent::Blur, 1 | 2) => this.save_field(which, window, cx),
+                (InputEvent::Submit, 0) => this.save_key(cx),
+                (InputEvent::Submit, _) | (InputEvent::Blur, 1 | 2) => this.save_field(which, window, cx),
                 (InputEvent::Blur, _) => cx.notify(),
                 (InputEvent::Cancel, _) => this.store.update(cx, |s, cx| s.close_dialog(cx)),
             }));
@@ -513,7 +512,7 @@ impl SettingsDialog {
             .child(div().h(px(1.)).bg(t.line))
             .child(group(
                 "Connect Claude Code",
-                Some("Every command in kimchi is a tool for Claude Code, Codex or any MCP client. --live drives this window; your permissions in Settings › Agent apply."),
+                Some("Every command in kimchi is a tool for Claude Code, Codex or any MCP client. Live, it drives this window, and your permissions in Settings › Agent apply."),
                 self.code_line("copy-claude", claude, cx),
                 cx,
             ))

@@ -82,7 +82,7 @@ impl Home {
             cx.notify();
         })];
         subs.push(cx.subscribe_in(&prompt, window, |this, _, e: &InputEvent, _, cx| match e {
-            InputEvent::Submit(_) => this.create(true, cx),
+            InputEvent::Submit => this.create(true, cx),
             InputEvent::Changed(_) => cx.notify(),
             _ => {}
         }));

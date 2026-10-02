@@ -41,7 +41,7 @@ impl ColorField {
             i
         });
         let sub = cx.subscribe(&input, |this: &mut Self, input, e: &InputEvent, cx| match e {
-            InputEvent::Submit(_) | InputEvent::Blur => {
+            InputEvent::Submit | InputEvent::Blur => {
                 let text = input.read(cx).text().to_string();
                 match normalize(&text) {
                     Some(c) => this.commit(c, cx),

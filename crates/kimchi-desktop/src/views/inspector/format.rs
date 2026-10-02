@@ -1,4 +1,4 @@
-//! Number formats the inspector and the media panel share (`ui/src/lib/util/time.ts`).
+//! Number formats the inspector and the media panel share (as the Svelte UI of kimchi 0.1 wrote them).
 
 use chrono::{DateTime, Utc};
 

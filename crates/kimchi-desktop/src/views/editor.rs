@@ -131,7 +131,7 @@ impl Editor {
         });
         crate::ui::input::focus(&input, window, cx);
         let sub = cx.subscribe(&input, |this, input, e: &InputEvent, cx| match e {
-            InputEvent::Submit(_) | InputEvent::Blur => {
+            InputEvent::Submit | InputEvent::Blur => {
                 let name = input.read(cx).text().trim().to_string();
                 let current = this.store.read(cx).project.as_ref().map(|p| p.name.clone()).unwrap_or_default();
                 if !name.is_empty() && name != current {
@@ -324,20 +324,25 @@ impl Render for Editor {
                                     .flex_1()
                                     .min_h_0()
                                     .flex()
-                                    .child(div().w(px(self.left_w)).flex_none().h_full().child(self.left.clone()))
+                                    .child(div().w(px(self.left_w)).flex_none().h_full().child(self.left.clone().cached(full())))
                                     .child(self.splitter(Splitter::Left, cx))
                                     // The work: solid, never glass.
                                     .child(div().flex_1().min_w_0().h_full().bg(t.bg_sunken).child(self.preview.clone()))
                                     .child(self.splitter(Splitter::Right, cx))
-                                    .child(div().w(px(self.right_w)).flex_none().h_full().child(self.inspector.clone())),
+                                    .child(div().w(px(self.right_w)).flex_none().h_full().child(self.inspector.clone().cached(full()))),
                             )
                             .child(self.splitter(Splitter::Timeline, cx))
                             .child(div().h(px(self.timeline_h)).flex_none().w_full().bg(t.bg_raised).child(self.timeline.clone())),
                     )
                     .when(agent_open, |d| {
-                        d.child(self.splitter(Splitter::Agent, cx)).child(div().w(px(self.agent_w)).flex_none().h_full().child(self.agent.clone()))
+                        d.child(self.splitter(Splitter::Agent, cx)).child(div().w(px(self.agent_w)).flex_none().h_full().child(self.agent.clone().cached(full())))
                     }),
             )
             .when(resizing, |d| d.child(drag::track(cx.entity(), Self::resize_move, Self::resize_end)))
     }
+}
+
+/// Panels are cached views: playback redraws the preview and the playhead, not every panel.
+fn full() -> gpui::StyleRefinement {
+    gpui::StyleRefinement::default().size_full()
 }

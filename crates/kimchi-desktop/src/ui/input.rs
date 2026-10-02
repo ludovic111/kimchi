@@ -64,7 +64,7 @@ pub fn bindings() -> Vec<KeyBinding> {
 pub enum InputEvent {
     Changed(String),
     /// Enter (single line), or cmd-Enter / Enter (multi-line, see `submit_on_enter`).
-    Submit(String),
+    Submit,
     Cancel,
     Blur,
 }
@@ -284,7 +284,7 @@ impl TextInput {
             self.replace_text_in_range(None, "\n", window, cx);
             return;
         }
-        cx.emit(InputEvent::Submit(self.content.clone()));
+        cx.emit(InputEvent::Submit);
     }
 
     fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
@@ -292,6 +292,7 @@ impl TextInput {
     }
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         if self.disabled {
             return;
         }

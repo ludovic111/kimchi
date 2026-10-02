@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global, Pixels, Point, SharedString, Task, Window};
 use kimchi_control::{CmdResult, CommandRecord, Event, ExportStatus, Session, Settings, Source, ToastKind, UiState};
@@ -69,6 +69,9 @@ pub enum MenuEntry {
     Separator,
 }
 
+/// What a menu item does when chosen.
+pub type MenuAction = Rc<dyn Fn(&mut Window, &mut App)>;
+
 #[derive(Clone)]
 pub struct MenuItem {
     pub label: SharedString,
@@ -78,7 +81,7 @@ pub struct MenuItem {
     /// Uses the accent: an AI action.
     pub ai: bool,
     pub disabled: bool,
-    pub action: Rc<dyn Fn(&mut Window, &mut App)>,
+    pub action: MenuAction,
 }
 
 impl MenuItem {
@@ -153,7 +156,7 @@ pub struct ComposeTarget {
 #[derive(Clone, Debug)]
 pub enum StoreEvent {
     /// The composer should take this request (and the generate tab is shown).
-    Compose(ComposeRequest),
+    Compose(Box<ComposeRequest>),
     /// Focus the prompt field.
     FocusPrompt,
 }
@@ -350,7 +353,8 @@ impl Store {
             Event::SettingsChanged => {
                 self.settings = self.session.settings();
                 self.refresh_providers(cx);
-                crate::app::apply_theme_setting(cx);
+                // After this update: it reads the store.
+                cx.defer(crate::app::apply_theme_setting);
             }
             Event::Update { status } => self.update = status,
         }
@@ -579,7 +583,7 @@ impl Store {
 
     pub fn compose(&mut self, req: ComposeRequest, cx: &mut Context<Self>) {
         self.left_tab = LeftTab::Generate;
-        cx.emit(StoreEvent::Compose(req));
+        cx.emit(StoreEvent::Compose(Box::new(req)));
         self.sync_ui(cx);
         cx.notify();
     }
@@ -589,9 +593,4 @@ impl Store {
         self.sync_ui(cx);
         cx.notify();
     }
-}
-
-/// Time since `t`, for spinners.
-pub fn since(t: Instant) -> f32 {
-    t.elapsed().as_secs_f32()
 }

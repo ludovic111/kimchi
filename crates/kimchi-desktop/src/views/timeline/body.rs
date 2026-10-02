@@ -104,6 +104,9 @@ pub struct TimelineBody {
     /// A clip, handle or marker took this mouse down; the lane / ruler under it ignores it.
     /// (Propagation isn't stopped, so the workspace still closes menus and takes focus.)
     consumed: bool,
+    /// Taken on any click in the tracks (GPUI focuses a tracked element on mouse down), so the
+    /// timeline's shortcuts (Delete, S, Space…) apply to what was clicked.
+    focus: gpui::FocusHandle,
     _subs: Vec<Subscription>,
 }
 
@@ -152,6 +155,7 @@ impl TimelineBody {
             agent: AgentMarks::default(),
             drags: 0,
             consumed: false,
+            focus: cx.focus_handle(),
             _subs: subs,
         }
     }
@@ -328,6 +332,8 @@ impl TimelineBody {
 
     fn header_down(&mut self, id: Id, index: usize, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if e.click_count == 2 {
+            // The rename field keeps the focus (the tracks would take it on this mouse down).
+            window.prevent_default();
             self.start_rename(id, window, cx);
             return;
         }
@@ -510,7 +516,7 @@ impl TimelineBody {
         });
         crate::ui::input::focus(&input, window, cx);
         let sub = cx.subscribe(&input, move |this, input, e: &InputEvent, cx| match e {
-            InputEvent::Submit(_) | InputEvent::Blur => {
+            InputEvent::Submit | InputEvent::Blur => {
                 let text = input.read(cx).text().trim().to_string();
                 if !text.is_empty() && text != name {
                     this.store.update(cx, |s, cx| s.run("track.update", json!({ "trackId": track, "name": text }), cx));
@@ -632,6 +638,8 @@ impl TimelineBody {
             .child(
                 div()
                     .id("ruler")
+                    .role(gpui::Role::Slider)
+                    .aria_label("Playhead position")
                     .flex_1()
                     .h_full()
                     .relative()
@@ -981,9 +989,12 @@ impl Render for TimelineBody {
         let t = cx.theme().clone();
         let s = self.store.read(cx);
         let project = s.project.clone();
-        // Zoom changed elsewhere (keys, toolbar, ui.zoom): keep the time at the left edge.
+        // Zoom changed elsewhere (keys, menus, ui.zoom): keep the playhead where it is if it is in
+        // view, else the time at the left edge.
         if (s.pps - self.last_pps).abs() > 1e-9 {
-            self.scroll_x *= s.pps / self.last_pps;
+            let at = self.playback.read(cx).playhead * self.last_pps - self.scroll_x;
+            let anchor = if (0. ..=self.view_w()).contains(&at) { at } else { 0. };
+            self.scroll_x = (anchor + self.scroll_x) / self.last_pps * s.pps - anchor;
             self.last_pps = s.pps;
         }
         self.clamp_scroll(cx);
@@ -1008,6 +1019,9 @@ impl Render for TimelineBody {
         };
         div()
             .id("timeline-body")
+            .track_focus(&self.focus)
+            .role(gpui::Role::Group)
+            .aria_label("Timeline")
             .size_full()
             .flex()
             .flex_col()

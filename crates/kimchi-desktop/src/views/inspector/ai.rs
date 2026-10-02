@@ -1,4 +1,4 @@
-//! The AI actions that tie generation into the cut (`ui/src/lib/components/editor/actions.ts`):
+//! The AI actions that tie generation into the cut (as in kimchi 0.1's editor):
 //! each one grabs the frames it needs with `media.frame` and prefills the composer
 //! (`Store::compose`); the person still writes the prompt and presses Generate.
 

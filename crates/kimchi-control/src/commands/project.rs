@@ -80,8 +80,18 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             Ok(json!(kimchi_core::store::summarize(&p)))
         }
         "project.rename" => {
-            s.apply(cx.label(), cx.source, &Edit::RenameProject { name: a.str("name")?.to_string() }, a.coalesce())?;
-            Ok(json!({ "name": s.read(|ed| ed.project().name.clone())? }))
+            let edit = Edit::RenameProject { name: a.str("name")?.to_string() };
+            let id = match a.opt_str("projectId") {
+                Some(k) => resolve::project(&s.library.list(), k)?,
+                None => s.current_id().ok_or(crate::session::NO_PROJECT)?,
+            };
+            if s.current_id() == Some(id) {
+                s.apply(cx.label(), cx.source, &edit, a.coalesce())?;
+            } else {
+                s.with_project(id, |ed| ed.apply(&edit, None))?.map_err(err)?;
+            }
+            let name = s.library.load(id).map(|p| p.name).map_err(err)?;
+            Ok(json!({ "projectId": id, "name": name }))
         }
         "project.setSettings" => {
             let mut settings = s.read(|ed| ed.project().settings.clone())?;

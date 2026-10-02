@@ -62,6 +62,11 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    #[cfg(test)]
+    pub fn dialogs(&self) -> Entity<views::dialogs::Dialogs> {
+        self.dialogs.clone()
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
         let focus = cx.focus_handle();
@@ -141,7 +146,7 @@ impl Workspace {
                         s.jobs_open = true;
                         cx.notify();
                     }
-                    "settings" => s.open_dialog(Dialog::Settings { section: None }, cx),
+                    "settings" => s.open_dialog(Dialog::Settings { section: params["section"].as_str().map(str::to_string) }, cx),
                     "export" => s.open_dialog(Dialog::Export, cx),
                     "palette" => s.open_dialog(Dialog::Palette, cx),
                     _ => {}
@@ -589,10 +594,9 @@ impl Render for Workspace {
             .drag_over::<ExternalPaths>(|s, _, _, _| s)
             .on_mouse_down(MouseButton::Left, cx.listener(|ws, _, window, cx| {
                 ws.store.update(cx, |s, cx| s.close_menu(cx));
-                // Clicking empty space takes focus back from text fields.
-                if !window.focused(cx).is_some_and(|f| f != ws.focus) {
-                    window.focus(&ws.focus, cx);
-                }
+                // Clicking anywhere but a text field (which stops the event) takes focus back,
+                // so single-key shortcuts work again.
+                window.focus(&ws.focus, cx);
             }))
             .relative()
             .size_full()

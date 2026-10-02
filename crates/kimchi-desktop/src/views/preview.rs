@@ -211,17 +211,15 @@ impl PreviewView {
                 match result {
                     Ok(Ok(frame)) => {
                         this.set_image(frame);
-                        this.shown = Some(key);
                         this.error = None;
                     }
                     Ok(Err(e)) => this.error = Some(e),
                     Err(e) => this.error = Some(e.to_string()),
                 }
-                // Something changed while rendering: catch up with the latest.
-                this.shown = this.shown.filter(|_| !this.stale).or(this.shown);
-                if this.stale {
-                    this.shown = None;
-                }
+                // Done with this key, even on failure: a failed frame is retried only when
+                // something changes, never in a loop. Something changed while rendering:
+                // forget the key so `refresh` catches up with the latest.
+                this.shown = if this.stale { None } else { Some(key) };
                 this.refresh(cx);
                 cx.notify();
             })
@@ -259,15 +257,23 @@ impl PreviewView {
     /// While playing: advance the clock and show the latest frame that is due.
     fn pump(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(play) = self.playing.as_mut() else { return };
-        while let Ok(Some(f)) = play.frames.try_next() {
-            play.queue.push_back(f);
-        }
+        let ended = loop {
+            match play.frames.try_recv() {
+                Ok(f) => play.queue.push_back(f),
+                Err(e) => break e.is_closed(),
+            }
+        };
         // Start the clock when the first frame is there, so picture and sound begin together.
+        // A stream that ends (or fails) before any frame just lets the clock run.
         if !play.synced {
             if let Some((pts, _)) = play.queue.front() {
                 let pts = *pts;
                 play.synced = true;
                 self.playback.update(cx, |p, _| p.resync(pts));
+            } else if ended {
+                play.synced = true;
+                let now = self.playback.read(cx).playhead;
+                self.playback.update(cx, |p, _| p.resync(now));
             } else {
                 window.request_animation_frame();
                 return;

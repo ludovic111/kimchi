@@ -208,3 +208,13 @@ pub fn spinner_icon(name: &'static str, spinning: bool, id: &'static str, size: 
         i.into_any_element()
     }
 }
+
+/// A popover's fill: tier-2 glass composited over the page colour. GPUI has no
+/// backdrop blur, so a translucent popover would show the controls under it
+/// sharply; this keeps the tint of the glass and the legibility of the blur.
+pub fn popover_fill(cx: &App) -> gpui::Hsla {
+    let t = cx.theme();
+    let (top, bottom): (gpui::Rgba, gpui::Rgba) = (t.glass2.bg.into(), t.bg.into());
+    let a = top.a;
+    gpui::Rgba { r: top.r * a + bottom.r * (1.0 - a), g: top.g * a + bottom.g * (1.0 - a), b: top.b * a + bottom.b * (1.0 - a), a: 1.0 }.into()
+}

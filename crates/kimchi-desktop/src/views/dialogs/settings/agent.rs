@@ -54,9 +54,9 @@ impl AgentState {
         for (input, which) in [(&this.key, 0u8), (&this.model, 1), (&this.base, 2)] {
             subs.push(cx.subscribe_in(input, window, move |dialog, _, e: &InputEvent, _, cx| match (e, which) {
                 (InputEvent::Changed(_), _) => cx.notify(),
-                (InputEvent::Submit(_), 0) => dialog.save_agent_key(cx),
-                (InputEvent::Submit(_) | InputEvent::Blur, 1) => dialog.save_agent_field("agent.model", cx),
-                (InputEvent::Submit(_) | InputEvent::Blur, 2) => dialog.save_agent_field("agent.baseUrl", cx),
+                (InputEvent::Submit, 0) => dialog.save_agent_key(cx),
+                (InputEvent::Submit | InputEvent::Blur, 1) => dialog.save_agent_field("agent.model", cx),
+                (InputEvent::Submit | InputEvent::Blur, 2) => dialog.save_agent_field("agent.baseUrl", cx),
                 (InputEvent::Blur, _) => cx.notify(),
                 (InputEvent::Cancel, _) => dialog.store.update(cx, |s, cx| s.close_dialog(cx)),
                 _ => {}

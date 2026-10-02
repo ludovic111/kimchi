@@ -24,6 +24,8 @@ mod clip;
 pub mod dnd;
 mod geom;
 mod menus;
+#[cfg(test)]
+mod tests;
 mod waveform;
 
 use body::{TimelineBody, pentagon};
@@ -96,6 +98,9 @@ impl Timeline {
         let (fps, duration, pps) = (s.fps(), s.duration(), s.pps);
         let (has_sel, snapping, ripple) = (!s.selection.is_empty(), s.snapping, s.ripple);
         let sep = || div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.line_strong);
+        // Narrow timelines (agent panel open, small window) drop the least needed parts first.
+        let width = f32::from(self.lanes.get().size.width) + HEADER_W;
+        let (compact, narrow, tiny) = (width < 1000., width < 860., width < 760.);
         let pb = self.playback.clone();
         let transport = {
             let (p1, p2, p3, p4, p5, p6) = (pb.clone(), pb.clone(), pb.clone(), pb.clone(), pb.clone(), pb.clone());
@@ -132,7 +137,7 @@ impl Timeline {
                         .gap(px(6.))
                         .font_family(MONO)
                         .child(div().text_size(px(sz::BASE)).text_color(t.text).child(smpte(playhead, fps)))
-                        .child(div().text_size(px(sz::XS)).text_color(t.text_3).child(format!("/ {}", smpte(duration, fps)))),
+                        .when(!narrow, |d| d.child(div().text_size(px(sz::XS)).text_color(t.text_3).child(format!("/ {}", smpte(duration, fps))))),
                 )
         };
         let tools = div()
@@ -158,12 +163,15 @@ impl Timeline {
             .child(sep())
             .child(Button::icon("marker", "map-pin", "Add marker (M)").small().on_click(|_, w, cx| w.dispatch_action(Box::new(AddMarker), cx)))
             .child(Button::icon("text", "type", "Add text (T)").small().on_click(|_, w, cx| w.dispatch_action(Box::new(AddText), cx)))
-            .child(Button::icon("video-track", "film", "Add video track").small().on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("track.add", json!({ "kind": "video" }), cx))))
-            .child(
-                Button::icon("audio-track", "audio-lines", "Add audio track")
-                    .small()
-                    .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("track.add", json!({ "kind": "audio" }), cx))),
-            );
+            // Also in the "+" menu above the track headers.
+            .when(!tiny, |d| {
+                d.child(Button::icon("video-track", "film", "Add video track").small().on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("track.add", json!({ "kind": "video" }), cx))))
+                    .child(
+                        Button::icon("audio-track", "audio-lines", "Add audio track")
+                            .small()
+                            .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("track.add", json!({ "kind": "audio" }), cx))),
+                    )
+            });
 
         let frac = ((pps.ln() - MIN_PPS.ln()) / (MAX_PPS.ln() - MIN_PPS.ln())).clamp(0., 1.) as f32;
         let slider = {
@@ -190,9 +198,8 @@ impl Timeline {
             .items_center()
             .gap(px(2.))
             .child(
-                Button::new("gen-here", "Generate at playhead")
+                if compact { Button::icon("gen-here", "sparkles", "Generate at playhead") } else { Button::new("gen-here", "Generate at playhead").with_icon("sparkles") }
                     .small()
-                    .with_icon("sparkles")
                     .color(t.accent_text)
                     .tooltip("Make a shot that lands at the playhead")
                     .on_click(|_, _, cx| {
@@ -203,7 +210,7 @@ impl Timeline {
             )
             .child(sep())
             .child(Button::icon("zoom-out", "zoom-out", "Zoom out (−)").small().on_click(move |_, _, cx| z1.update(cx, |this, cx| this.zoom_by(1. / 1.3, cx))))
-            .child(slider)
+            .when(!narrow, |d| d.child(slider))
             .child(Button::icon("zoom-in", "zoom-in", "Zoom in (+)").small().on_click(move |_, _, cx| z2.update(cx, |this, cx| this.zoom_by(1.3, cx))))
             .child(
                 Button::new("fit", "Fit")

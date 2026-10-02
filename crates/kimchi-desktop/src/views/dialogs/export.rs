@@ -57,6 +57,7 @@ pub struct ExportDialog {
     preparing: bool,
     focus: FocusHandle,
     open: bool,
+    opened_at: chrono::DateTime<chrono::Utc>,
     _subs: Vec<Subscription>,
 }
 
@@ -69,6 +70,10 @@ impl ExportDialog {
             let open = matches!(store.read(cx).dialog, Some(Dialog::Export));
             if open && !this.open {
                 this.on_open(window, cx);
+            } else if open && this.job.is_none() && !this.preparing {
+                // An export another client started while the dialog is up.
+                let since = this.opened_at;
+                this.job = store.read(cx).exports.iter().filter(|e| !e.done && e.started_at >= since).max_by_key(|e| e.started_at).map(|e| e.id.clone());
             }
             this.open = open;
             cx.notify();
@@ -89,11 +94,13 @@ impl ExportDialog {
             preparing: false,
             focus: cx.focus_handle(),
             open: false,
+            opened_at: chrono::Utc::now(),
             _subs: subs,
         }
     }
 
     fn on_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.opened_at = chrono::Utc::now();
         let s = self.store.read(cx);
         // Follow an export that is still running (started here earlier, or by another client).
         self.job = s.exports.iter().filter(|e| !e.done).max_by_key(|e| e.started_at).map(|e| e.id.clone());
