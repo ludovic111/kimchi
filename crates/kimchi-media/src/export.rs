@@ -15,13 +15,11 @@ use kimchi_core::{Clip, ClipContent, Fit, Id, MediaKind, Project, ProjectSetting
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
-use ts_rs::TS;
 
 use crate::{Caps, MediaError, MediaResult, Tools, process};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum ExportFormat {
     /// H.264 + AAC in MP4. Plays everywhere.
     Mp4,
@@ -37,17 +35,15 @@ pub enum ExportFormat {
     Audio,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum Quality {
     Draft,
     Standard,
     High,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExportSettings {
     pub path: String,
     pub format: ExportFormat,

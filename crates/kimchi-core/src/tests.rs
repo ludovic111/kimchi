@@ -146,3 +146,40 @@ fn titles_land_on_top_footage_at_the_bottom() {
     let (tt, _) = p.locate_clip(title).unwrap();
     assert!(tt < ft, "title track {tt} should be above footage track {ft}");
 }
+
+#[test]
+fn batches_are_one_step_and_roll_back() {
+    let (mut p, a) = setup();
+    let id = insert(&mut p, &a, 0.0);
+    let mut ed = Editor::new(p);
+    ed.begin_batch("project.batch", "agent");
+    ed.apply(&Edit::UpdateClip { clip_id: id, patch: ClipPatch { volume: Some(0.5), ..Default::default() } }, None).unwrap();
+    ed.apply(&Edit::AddMarker { time: 1.0, label: "a".into() }, None).unwrap();
+    ed.end_batch();
+    assert_eq!(ed.undo_steps().len(), 1);
+    assert_eq!(ed.undo_steps()[0].source, "agent");
+    assert!(ed.undo());
+    assert_eq!(ed.project().clip(id).unwrap().volume, 1.0);
+    assert!(ed.project().markers.is_empty());
+
+    ed.begin_batch("project.batch", "agent");
+    ed.apply(&Edit::AddMarker { time: 1.0, label: "b".into() }, None).unwrap();
+    ed.rollback_batch();
+    assert!(ed.project().markers.is_empty());
+    assert!(!ed.can_undo());
+    assert!(ed.can_redo());
+}
+
+#[test]
+fn checkpoints_revert_as_one_undoable_step() {
+    let (mut p, a) = setup();
+    let id = insert(&mut p, &a, 0.0);
+    let mut ed = Editor::new(p);
+    let cp = ed.checkpoint();
+    ed.apply(&Edit::DeleteClips { clip_ids: vec![id], ripple: false }, None).unwrap();
+    assert!(ed.project().clip(id).is_none());
+    assert!(ed.revert_to(cp));
+    assert!(ed.project().clip(id).is_some());
+    assert!(ed.undo());
+    assert!(ed.project().clip(id).is_none());
+}

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "src-tauri"]
+members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.1"
@@ -30,7 +30,6 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "process", "io-util"] }
 tokio-util = "0.7"
 tracing = "0.1"
-ts-rs = { version = "12", features = ["serde-json-impl", "uuid-impl", "chrono-impl", "no-serde-warnings"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 url = "2"
 wiremock = "0.6"

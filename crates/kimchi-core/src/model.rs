@@ -5,7 +5,6 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 use uuid::Uuid;
 
 pub type Id = Uuid;
@@ -19,8 +18,7 @@ pub const MIN_CLIP: f64 = 1.0 / 60.0;
 /// Default length of an image, text or solid clip.
 pub const DEFAULT_STILL_DURATION: f64 = 5.0;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Project {
     pub id: Id,
     pub name: String,
@@ -34,8 +32,7 @@ pub struct Project {
     pub markers: Vec<Marker>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectSettings {
     pub width: u32,
     pub height: u32,
@@ -69,17 +66,15 @@ impl ProjectSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum MediaKind {
     Video,
     Image,
     Audio,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Asset {
     pub id: Id,
     pub name: String,
@@ -117,8 +112,7 @@ impl Asset {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct MediaMeta {
     pub duration: Option<f64>,
     pub width: Option<u32>,
@@ -131,8 +125,7 @@ pub struct MediaMeta {
     pub size_bytes: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Filmstrip {
     pub path: String,
     /// Number of frames laid out left to right in the strip.
@@ -143,16 +136,14 @@ pub struct Filmstrip {
     pub interval: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Waveform {
     pub path: String,
     pub peaks_per_second: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[ts(export)]
 #[allow(clippy::large_enum_variant)] // Imported is the common case; boxing would only add noise.
 pub enum AssetOrigin {
     Imported,
@@ -160,8 +151,7 @@ pub enum AssetOrigin {
 }
 
 /// Everything needed to understand (and redo) how an asset was generated.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Generation {
     pub job_id: String,
     pub provider: String,
@@ -174,7 +164,6 @@ pub struct Generation {
     #[serde(default)]
     pub seed: Option<i64>,
     /// The full request parameters, so a generation can be re-run or varied.
-    #[ts(type = "Record<string, unknown>")]
     pub params: serde_json::Value,
     /// Assets that were fed into the model (reference images, start/end frames).
     #[serde(default)]
@@ -184,17 +173,15 @@ pub struct Generation {
     pub cost_usd: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum TrackKind {
     /// Pictures: video, images, text, solids.
     Video,
     Audio,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Track {
     pub id: Id,
     pub kind: TrackKind,
@@ -224,8 +211,7 @@ impl Track {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Clip {
     pub id: Id,
     pub name: String,
@@ -291,9 +277,8 @@ impl Clip {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[ts(export)]
 pub enum ClipContent {
     Media { asset_id: Id },
     Text { style: TextStyle },
@@ -316,8 +301,7 @@ impl ClipContent {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Transform {
     /// Offset of the clip centre from the canvas centre, in project pixels.
     pub x: f64,
@@ -337,9 +321,8 @@ impl Default for Transform {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum Fit {
     #[default]
     Contain,
@@ -347,8 +330,7 @@ pub enum Fit {
     Stretch,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextStyle {
     pub content: String,
     pub font_family: String,
@@ -392,9 +374,8 @@ impl Default for TextStyle {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum TextAlign {
     Left,
     #[default]
@@ -402,8 +383,7 @@ pub enum TextAlign {
     Right,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Marker {
     pub id: Id,
     pub time: f64,

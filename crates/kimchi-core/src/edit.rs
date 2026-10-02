@@ -5,7 +5,6 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use ts_rs::TS;
 
 use crate::model::*;
 
@@ -25,16 +24,14 @@ pub enum EditError {
 
 pub type EditResult<T = ()> = Result<T, EditError>;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum Edge {
     Start,
     End,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClipMove {
     pub clip_id: Id,
     pub track_id: Id,
@@ -42,8 +39,7 @@ pub struct ClipMove {
 }
 
 /// Partial update for a clip. `None` fields are left untouched.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export, optional_fields)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ClipPatch {
     pub name: Option<String>,
     pub transform: Option<Transform>,
@@ -55,8 +51,7 @@ pub struct ClipPatch {
     pub color: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export, optional_fields)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TrackPatch {
     pub name: Option<String>,
     pub muted: Option<bool>,
@@ -64,9 +59,8 @@ pub struct TrackPatch {
     pub locked: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
-#[ts(export)]
 pub enum Edit {
     RenameProject { name: String },
     SetSettings { settings: ProjectSettings },
@@ -117,8 +111,7 @@ impl Edit {
 }
 
 /// What an edit produced, useful for the UI to select new things.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct EditOutcome {
     pub created_clips: Vec<Id>,
     pub created_tracks: Vec<Id>,

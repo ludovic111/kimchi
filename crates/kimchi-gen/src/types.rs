@@ -6,12 +6,10 @@ use base64::Engine;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use ts_rs::TS;
 
 /// What a model is asked to do.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum Task {
     TextToImage,
     /// Edit or restyle one or more reference images.
@@ -43,18 +41,16 @@ impl Task {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum OutputKind {
     Image,
     Video,
     Audio,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum ProviderKind {
     /// Runs on someone else's GPUs; needs an API key.
     Cloud,
@@ -63,8 +59,7 @@ pub enum ProviderKind {
 }
 
 /// Static description of a provider, shown in settings.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderInfo {
     /// Stable id, e.g. `"openrouter"`.
     pub id: String,
@@ -89,9 +84,8 @@ pub struct ProviderInfo {
 }
 
 /// Type of a model-specific knob.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[ts(export)]
 pub enum ParamKind {
     Int { min: i64, max: i64, step: i64 },
     Float { min: f64, max: f64, step: f64 },
@@ -100,8 +94,7 @@ pub enum ParamKind {
     Text { multiline: bool },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SelectOption {
     pub value: String,
     pub label: String,
@@ -115,20 +108,17 @@ impl SelectOption {
 
 /// A model-specific knob rendered in the "Advanced" section of the generate panel.
 /// Values are passed to the provider in [`GenRequest::params`] under `key`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ParamSpec {
     pub key: String,
     pub label: String,
     pub kind: ParamKind,
-    #[ts(type = "unknown")]
     pub default: Value,
     pub help: Option<String>,
 }
 
 /// One model a provider can run.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelInfo {
     /// Provider-specific id sent back in [`GenRequest::model`].
     pub id: String,
@@ -188,9 +178,8 @@ impl ModelInfo {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum ImageRole {
     /// Image to edit / style or subject reference.
     Reference,
@@ -201,15 +190,13 @@ pub enum ImageRole {
 }
 
 /// An image handed to a model. The editor fills `path`; the harness loads `data`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InputImage {
     pub role: ImageRole,
     pub path: String,
     #[serde(default)]
     pub mime: String,
     #[serde(skip)]
-    #[ts(skip)]
     pub data: Bytes,
 }
 
@@ -233,8 +220,7 @@ impl InputImage {
 }
 
 /// A generation request, independent of any provider.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GenRequest {
     pub model: String,
     pub task: Task,
@@ -266,7 +252,6 @@ pub struct GenRequest {
     pub audio: Option<bool>,
     /// Model-specific values keyed by [`ParamSpec::key`].
     #[serde(default)]
-    #[ts(type = "Record<string, unknown>")]
     pub params: Map<String, Value>,
 }
 
@@ -356,8 +341,7 @@ pub struct GenOutput {
 }
 
 /// Progress reported while a job runs.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Progress {
     /// 0.0–1.0 when known.
     pub fraction: Option<f64>,
@@ -376,8 +360,7 @@ impl Progress {
 }
 
 /// A saved output on disk.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SavedOutput {
     pub path: String,
     pub kind: OutputKind,

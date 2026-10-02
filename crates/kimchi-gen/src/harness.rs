@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::sync::{Semaphore, broadcast};
 use tokio_util::sync::CancellationToken;
-use ts_rs::TS;
 
 use crate::provider::{Ctx, GenError, GenResult, Provider};
 use crate::types::*;
@@ -45,8 +44,7 @@ impl SecretStore for MemorySecrets {
 }
 
 /// User settings for one provider (persisted by the app; keys are not in here).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProviderSettings {
     /// Hidden from model pickers when false.
     #[serde(default = "yes")]
@@ -55,7 +53,6 @@ pub struct ProviderSettings {
     #[serde(default)]
     pub base_url: Option<String>,
     #[serde(default)]
-    #[ts(type = "Record<string, unknown>")]
     pub options: Map<String, Value>,
 }
 
@@ -63,17 +60,15 @@ fn yes() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum KeySource {
     None,
     Keychain,
     Env,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderStatus {
     pub info: ProviderInfo,
     pub settings: ProviderSettings,
@@ -84,9 +79,8 @@ pub struct ProviderStatus {
     pub ready: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[ts(export)]
 pub enum JobStatus {
     Queued,
     Running,
@@ -102,8 +96,7 @@ impl JobStatus {
 }
 
 /// A job as the UI sees it. Every change is broadcast as a full snapshot.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Job {
     pub id: String,
     pub provider: String,
@@ -121,7 +114,6 @@ pub struct Job {
     pub cost_usd: Option<f64>,
     /// Free-form tag the editor uses to remember what to do with the result
     /// (e.g. which placeholder clip to replace).
-    #[ts(type = "unknown")]
     pub tag: Value,
 }
 

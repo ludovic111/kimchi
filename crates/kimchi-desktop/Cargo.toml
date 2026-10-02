@@ -1,0 +1,25 @@
+[package]
+name = "kimchi"
+description = "kimchi — a video editor where generative models are part of the cut"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kimchi"
+path = "src/main.rs"
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "7733b9922665f103abda7c6a3fde6b9dfdc8eba9", default-features = false }
+
+[dev-dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "7733b9922665f103abda7c6a3fde6b9dfdc8eba9", default-features = false, features = ["test-support"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "7733b9922665f103abda7c6a3fde6b9dfdc8eba9", features = ["font-kit", "runtime_shaders"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "7733b9922665f103abda7c6a3fde6b9dfdc8eba9", features = ["wayland", "x11"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "7733b9922665f103abda7c6a3fde6b9dfdc8eba9" }
