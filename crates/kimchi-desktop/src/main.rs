@@ -92,7 +92,12 @@ fn main() {
 }
 
 pub fn open_main_window(cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(1480.), px(920.)), cx);
+    // `KIMCHI_WINDOW_SIZE=2000x1250` opens the window at that size (screenshots, tests).
+    let (w, h) = std::env::var("KIMCHI_WINDOW_SIZE")
+        .ok()
+        .and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.trim().parse::<f32>().ok()?, h.trim().parse::<f32>().ok()?))))
+        .unwrap_or((1480., 920.));
+    let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
     let transparent = cx.global::<theme::Theme>().transparent;
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),

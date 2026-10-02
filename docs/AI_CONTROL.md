@@ -293,6 +293,7 @@ an agent), and the choice of which model runs the built-in agent. Agents never s
 | `KIMCHI_CONFIG_DIR` | the settings folder (`settings.json`, `providers.json`) |
 | `KIMCHI_FFMPEG`, `KIMCHI_FFPROBE` | ffmpeg and ffprobe to use instead of the bundled or installed ones |
 | `KIMCHI_NO_UPDATE=1` | never check for updates |
+| `KIMCHI_WINDOW_SIZE` | the window's size when it opens, e.g. `2000x1250` (screenshots) |
 | `KIMCHI_KEYCHAIN` | `1` reads API keys from the OS keychain, `0` only from environment variables (default: on in release builds, off in debug builds) |
 | `RYOLUNE_CONTROL` | ryolune's control file, for the hand-offs (default `~/.ryolune/control.json`) |
 | `LSUITE_HOME` | where lsuite apps register (default `~/.lsuite`) |
