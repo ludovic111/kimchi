@@ -48,6 +48,16 @@ const M: &str = "cmd";
 #[cfg(not(target_os = "macos"))]
 const M: &str = "ctrl";
 
+/// Lets the window catch up until its store satisfies `done` (or 3 s pass): the store hears
+/// about changes through the session's events, a moment after the session has them.
+fn store_settles(cx: &mut VisualTestContext, done: impl Fn(&crate::store::Store) -> bool) {
+    let start = Instant::now();
+    while !cx.update(|_, cx| done(cx.store().read(cx))) && start.elapsed() < Duration::from_secs(3) {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn texts(p: &Project) -> usize {
     p.clips().filter(|(_, c)| matches!(c.content, ClipContent::Text { .. })).count()
 }
@@ -80,10 +90,12 @@ fn shortcuts_edit_through_the_registry_and_undo(cx: &mut TestAppContext) {
     let p = f.settle(cx, |p| texts(p) == 1);
     assert_eq!(texts(&p), 1, "t adds a title");
     // The window's edits are undo steps like any other client's.
+    store_settles(cx, |s| s.can_undo);
     cx.simulate_keystrokes(&format!("{M}-z"));
     let p = f.settle(cx, |p| texts(p) == 0);
     assert_eq!(texts(&p), 0, "undo undoes it");
     // Redo: shift-cmd-z on macOS, ctrl-y elsewhere (both are bound).
+    store_settles(cx, |s| s.can_redo);
     cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-shift-z" } else { "ctrl-y" });
     let p = f.settle(cx, |p| texts(p) == 1);
     assert_eq!(texts(&p), 1, "redo redoes it");
