@@ -6,6 +6,9 @@
 //! `transform.rotation` degrees and scaled by `transform.scale`; an optional rounded box behind the
 //! block; lines `line_height · font_size` apart on a "middle" baseline, aligned left/center/right
 //! within the block; letter spacing in pixels after every character; and a soft drop shadow.
+//! The "middle" baseline follows WebKit (the macOS webview): `(ascent − descent) / 2` of the
+//! primary font. Chromium centres the em box instead, which puts text a few pixels higher.
+//! `tests.rs` checks block widths and ink bounds against numbers from WKWebView (within 2 px).
 //!
 //! Shaping, font matching and fallback come from cosmic-text (system fonts through fontdb, plus
 //! the families bundled here); glyph outlines are filled with tiny-skia, so rotated and scaled
@@ -68,8 +71,9 @@ const RENDER_VERSION: u32 = 1;
 /// and returns them keyed by clip id, ready for [`crate::export::build`].
 ///
 /// Files are named after a hash of what they show (style, transform, canvas size), so a layer
-/// that didn't change is not redrawn. Blocking (fonts load on first use, ~0.3 s for the system
-/// fonts): call it from `spawn_blocking` when latency matters.
+/// that didn't change is not redrawn (stale files are left for the caller's cache cleanup).
+/// Blocking, ~10–60 ms per new 1080p layer plus loading the fonts on first use: call it from
+/// `spawn_blocking` when latency matters.
 pub fn rasterize_overlays(project: &Project, dir: &Path) -> MediaResult<Overlays> {
     let (w, h) = (project.settings.width.max(1), project.settings.height.max(1));
     let mut overlays = Overlays::new();
@@ -81,7 +85,7 @@ pub fn rasterize_overlays(project: &Project, dir: &Path) -> MediaResult<Overlays
             if !std::fs::metadata(&out).is_ok_and(|m| m.len() > 0) {
                 let png = rasterize_text(style, &clip.transform, w, h).encode_png().map_err(std::io::Error::other)?;
                 // Write then rename: the preview and an export may draw the same layer at once.
-                let part = out.with_extension(format!("{}.part", std::process::id()));
+                let part = out.with_extension(format!("{}.part", kimchi_core::new_id()));
                 std::fs::write(&part, png)?;
                 std::fs::rename(&part, &out)?;
             }

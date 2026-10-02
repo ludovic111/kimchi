@@ -17,8 +17,6 @@ mod theme;
 mod ui;
 mod views;
 
-use std::sync::Arc;
-
 use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, point, px, size};
 use kimchi_control::{Session, SessionOptions};
 
@@ -57,7 +55,6 @@ fn main() {
     if let Err(e) = kimchi_control::discovery::write(&kimchi_control::discovery::entry(&session.data_dir, running)) {
         tracing::warn!("couldn't write ~/.lsuite/apps/kimchi.json: {e}");
     }
-    kimchi_control::update::finish_pending();
 
     let handle = runtime.handle().clone();
     // GPUI's run loop doesn't return on macOS: cleanup happens when the app quits.
@@ -68,6 +65,8 @@ fn main() {
         app::init(session.clone(), cx);
         open_main_window(cx);
         cx.activate(true);
+        // This copy started: an update's previous copy can go.
+        kimchi_control::update::finish_pending();
 
         // Check for updates a few seconds after start (unless turned off).
         let s = session.clone();
@@ -100,7 +99,8 @@ pub fn open_main_window(cx: &mut App) {
         window_min_size: Some(size(px(1100.), px(680.))),
         // The window material on macOS; the CSS-like tiers sit on top of it.
         window_background: if transparent { WindowBackgroundAppearance::Blurred } else { WindowBackgroundAppearance::Opaque },
-        app_id: Some("app.kimchi.editor".into()),
+        app_id: Some("kimchi".into()),
+        icon: image::load_from_memory(include_bytes!("../resources/kimchi.png")).ok().map(|i| std::sync::Arc::new(i.to_rgba8())),
         ..Default::default()
     };
     cx.open_window(options, |window, cx| cx.new(|cx| app::Workspace::new(window, cx))).expect("couldn't open the kimchi window");

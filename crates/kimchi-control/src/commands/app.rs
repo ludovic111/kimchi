@@ -22,6 +22,15 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             let settings = s.update_settings_checked(|st| st.set(&key, value))?;
             Ok(json!({ "key": key, "value": settings.get(&key) }))
         }
+        "app.setAgentKey" => {
+            let provider = a.str("provider")?;
+            if !matches!(provider, "anthropic" | "openai") {
+                return Err(format!("The agent keeps keys for \"anthropic\" and \"openai\", not \"{provider}\"."));
+            }
+            s.set_secret(provider, a.opt_str("key"))?;
+            s.emit(crate::session::Event::SettingsChanged);
+            Ok(json!({ "provider": provider, "saved": s.secret(provider).is_some() }))
+        }
         "app.checkUpdates" => Ok(json!(crate::update::check(s, true).await?)),
         "app.installUpdate" => Ok(json!(crate::update::install(s).await?)),
         "app.quit" | "app.notify" => s.ui_call(cx.spec.name, Value::Object(a.0)).await,

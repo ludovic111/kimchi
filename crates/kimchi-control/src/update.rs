@@ -22,7 +22,8 @@
 //!
 //! `KIMCHI_NO_UPDATE=1` or `settings.updates.checkOnStart = false` turn off the check at start
 //! ([`check_on_start`]); `app.checkUpdates` and `app.installUpdate` always work. `KIMCHI_UPDATE_URL`
-//! points the check at another `latest.json` (signatures are still checked against [`PUBLIC_KEY`]).
+//! points the check at another `latest.json` (signatures are still checked against [`PUBLIC_KEY`];
+//! debug builds accept `KIMCHI_UPDATE_PUBKEY` instead, for testing with a throwaway key).
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -194,6 +195,16 @@ pub fn status(s: &Session) -> UpdateStatus {
 
 fn manifest_url() -> String {
     std::env::var("KIMCHI_UPDATE_URL").ok().filter(|u| !u.trim().is_empty()).unwrap_or_else(|| MANIFEST_URL.into())
+}
+
+/// The update key. Debug builds take `KIMCHI_UPDATE_PUBKEY` (base64) to test a release signed with
+/// a throwaway key; release builds always use [`PUBLIC_KEY`].
+fn public_key() -> String {
+    #[cfg(debug_assertions)]
+    if let Some(k) = std::env::var("KIMCHI_UPDATE_PUBKEY").ok().filter(|k| !k.trim().is_empty()) {
+        return k;
+    }
+    PUBLIC_KEY.to_string()
 }
 
 fn client(timeout: Option<Duration>) -> Result<reqwest::Client, String> {
@@ -393,7 +404,7 @@ async fn download_and_install(s: &Arc<Session>, found: &Found, install: &Install
 
 /// Streams the archive to `file`, hashing it as it arrives, and checks the signature.
 async fn download_verified(s: &Arc<Session>, found: &Found, file: &Path) -> Result<(), String> {
-    let pk = decode_key(PUBLIC_KEY)?;
+    let pk = decode_key(&public_key())?;
     let sig = decode_signature(&found.signature)?;
     // Check the signature's version before spending the bandwidth.
     check_signed_version(&sig, &found.version)?;

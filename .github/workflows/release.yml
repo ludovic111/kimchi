@@ -1,8 +1,13 @@
 name: Release
 
-# Builds kimchi for macOS (Apple Silicon + Intel), Windows and Linux, signs the
-# updater artifacts and attaches everything (plus latest.json for the in-app
-# updater) to a draft GitHub release. Publish the draft to ship the update.
+# Builds kimchi for macOS (Apple Silicon + Intel), Windows and Linux with the scripts in scripts/
+# (no Node, no Tauri), signs the updater files with the update key, and attaches everything plus
+# latest.json (read by the in-app updaters, including kimchi 0.1.x's Tauri updater) to a draft
+# GitHub release. Publish the draft to ship the update.
+#
+# Asset names are stable (no version) so lsuite.xyz/kimchi/download/<platform> and the updaters
+# always find them: kimchi_aarch64.dmg, kimchi_x64.dmg, kimchi_{aarch64,x64}.app.tar.gz,
+# kimchi_x64-setup.exe, kimchi_x64-portable.zip, kimchi_amd64.AppImage, kimchi_amd64.deb.
 on:
   push:
     tags: ["v*"]
@@ -11,29 +16,56 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     env:
       HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 != '' && secrets.APPLE_API_KEY_P8_BASE64 != '' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: macOS (Apple Silicon), os: macos-latest, target: aarch64-apple-darwin }
-          - { name: macOS (Intel), os: macos-latest, target: x86_64-apple-darwin }
-          - { name: Windows, os: windows-latest, target: x86_64-pc-windows-msvc }
-          - { name: Linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { name: macOS (Apple Silicon), os: macos-latest, target: aarch64-apple-darwin, script: bundle-macos.sh }
+          - { name: macOS (Intel), os: macos-latest, target: x86_64-apple-darwin, script: bundle-macos.sh }
+          - { name: Windows, os: windows-latest, target: x86_64-pc-windows-msvc, script: bundle-windows.sh }
+          - { name: Linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, script: bundle-linux.sh }
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match the workspace version $version in Cargo.toml." >&2
+            exit 1
+          fi
+
+      # GPUI's Linux backends (X11 + Wayland, Vulkan, fontconfig) and the keychain (D-Bus);
+      # see script/linux in the zed repository.
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            libdbus-1-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+          sudo apt-get install -y pkg-config clang libasound2-dev libdbus-1-dev libfontconfig-dev libfreetype-dev \
+            libssl-dev libvulkan-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libzstd-dev libglib2.0-dev desktop-file-utils
+
+      - name: NSIS (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          if ! command -v makensis > /dev/null && [ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            choco install nsis -y --no-progress
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -42,20 +74,19 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-
-      - name: Bundle ffmpeg
-        run: node scripts/fetch-ffmpeg.mjs ${{ matrix.target }}
+      - name: Update key present
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "The TAURI_SIGNING_PRIVATE_KEY secret is not set: installed apps would refuse this release's updates." >&2
+            exit 1
+          fi
 
       # Developer ID signing and notarization on macOS, with the same secrets as ryolune
       # (APPLE_CERTIFICATE_P12_BASE64, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
-      # APPLE_API_KEY_P8_BASE64, APPLE_API_KEY_ID, APPLE_API_ISSUER). The certificate goes into a
-      # keychain of our own (Tauri's import needs a password); without the secrets the build stays
-      # ad-hoc signed, as before.
+      # APPLE_API_KEY_P8_BASE64, APPLE_API_KEY_ID, APPLE_API_ISSUER). Without them the build is
+      # ad-hoc signed.
       - name: Apple signing and notarization (macOS)
         if: runner.os == 'macOS' && env.HAS_APPLE_SIGNING == 'true'
         env:
@@ -67,26 +98,80 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: bash scripts/prepare-apple-signing.sh
 
-      - uses: tauri-apps/tauri-action@v1
+      - name: Build and package
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: v__VERSION__
-          releaseName: kimchi v__VERSION__
-          releaseBody: |
-            Download the build for your system below. kimchi updates itself from here on.
-
-            - **macOS**: `.dmg` (Apple Silicon: `aarch64`, Intel: `x64`).
-            - **Windows**: `.exe` (installer) or `.msi`.
-            - **Linux**: `.AppImage`, `.deb` or `.rpm`.
-          releaseDraft: true
-          prerelease: false
-          args: --target ${{ matrix.target }}
+        run: bash scripts/${{ matrix.script }} ${{ runner.os == 'macOS' && matrix.target || '' }}
 
       - name: Remove signing keychain
         if: always() && runner.os == 'macOS'
         run: |
           if [ -f "$RUNNER_TEMP/signing.keychain-db" ]; then security delete-keychain "$RUNNER_TEMP/signing.keychain-db"; fi
           rm -f "$RUNNER_TEMP/notary.p8"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kimchi-${{ matrix.target }}
+          path: |
+            target/dist/kimchi_*.dmg
+            target/dist/kimchi_*.app.tar.gz
+            target/dist/kimchi_*.app.tar.gz.sig
+            target/dist/kimchi_*-setup.exe
+            target/dist/kimchi_*-setup.exe.sig
+            target/dist/kimchi_*-portable.zip
+            target/dist/kimchi_*.AppImage
+            target/dist/kimchi_*.AppImage.sig
+            target/dist/kimchi_*.deb
+            target/dist/kimchi_*.deb.sig
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-tool
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: latest.json and checksums
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/notes.md" <<'EOF'
+          Download the build for your system below. kimchi updates itself from here on.
+
+          - **macOS**: `kimchi_aarch64.dmg` (Apple Silicon) or `kimchi_x64.dmg` (Intel).
+          - **Windows**: `kimchi_x64-setup.exe` (installer) or `kimchi_x64-portable.zip`.
+          - **Linux**: `kimchi_amd64.AppImage` or `kimchi_amd64.deb`.
+          EOF
+          # Checks every signature against kimchi's update key before writing the manifest.
+          cargo run --quiet --release --locked -p kimchi-release -- manifest dist --version "$version" \
+            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/v$version" \
+            --notes-file "$RUNNER_TEMP/notes.md" --out dist/latest.json
+          cat dist/latest.json
+          (cd dist && sha256sum kimchi_* latest.json > SHA256SUMS)
+          ls -l dist
+
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            if [ "$(gh release view "$tag" --json isDraft -q .isDraft)" != true ]; then
+              echo "Release $tag is already published; not replacing its files." >&2
+              exit 1
+            fi
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --draft --target "$GITHUB_SHA" --title "kimchi $tag" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi

@@ -8,7 +8,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub agent: AgentSettings,
@@ -17,11 +17,6 @@ pub struct Settings {
     pub generate: GenerateDefaults,
 }
 
-impl Default for Settings {
-    fn default() -> Self {
-        Self { agent: AgentSettings::default(), updates: UpdateSettings::default(), appearance: Appearance::default(), generate: GenerateDefaults::default() }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]

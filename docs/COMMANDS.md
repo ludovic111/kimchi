@@ -567,7 +567,7 @@ Render the open project to a file through one ffmpeg graph (text is drawn the sa
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `path` | string | required | Destination file. The extension should match the format. |
-| `format` | string |  | mp4 (default), hevc, prores, webm, gif or audio. |
+| `format` | string |  | mp4 (default), hevc, prores, webm, gif, audio (AAC) or wav. |
 | `quality` | string |  | draft, standard (default) or high. |
 | `width` | integer |  | Output width (default: the project's). |
 | `height` | integer |  | Output height (default: the project's). |
@@ -644,6 +644,15 @@ Change one setting by dotted key, e.g. updates.checkOnStart or appearance.mode. 
 | --- | --- | --- | --- |
 | `key` | string | required | Dotted key from app.settings. |
 | `value` | any | required | New value, of the same type. |
+
+### `app.setAgentKey`
+
+Save (or with no key, remove) the API key the built-in agent uses, in the OS keychain. _(changes things · person only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `provider` | string | required | "anthropic" or "openai". |
+| `key` | string |  | The key; omit to remove it. |
 
 ### `app.checkUpdates`
 

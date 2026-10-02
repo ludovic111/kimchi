@@ -18,6 +18,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 { "id": "webm", "label": "WebM (VP9 + Opus)", "extension": "webm", "note": "For the web." },
                 { "id": "gif", "label": "Animated GIF", "extension": "gif", "note": "No sound." },
                 { "id": "audio", "label": "Audio only (AAC)", "extension": "m4a", "note": "The mix." },
+                { "id": "wav", "label": "Audio only (WAV)", "extension": "wav", "note": "Uncompressed 24-bit mix." },
             ],
             "qualities": ["draft", "standard", "high"],
         })),
@@ -64,7 +65,8 @@ pub fn format(f: &str) -> CmdResult<ExportFormat> {
         "webm" => ExportFormat::Webm,
         "gif" => ExportFormat::Gif,
         "audio" => ExportFormat::Audio,
-        other => return Err(format!("format is mp4, hevc, prores, webm, gif or audio, not \"{other}\"")),
+        "wav" => ExportFormat::Wav,
+        other => return Err(format!("format is mp4, hevc, prores, webm, gif, audio or wav, not \"{other}\"")),
     })
 }
 

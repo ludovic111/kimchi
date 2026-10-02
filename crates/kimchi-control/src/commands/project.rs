@@ -216,7 +216,7 @@ fn overview(s: &Arc<Session>) -> CmdResult {
             })
         })
         .collect();
-    let assets: Vec<Value> = p.assets.iter().map(|a| asset_summary(a)).collect();
+    let assets: Vec<Value> = p.assets.iter().map(asset_summary).collect();
     let jobs: Vec<Value> = s
         .harness
         .jobs()

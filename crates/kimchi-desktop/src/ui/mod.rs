@@ -17,9 +17,37 @@ use crate::theme::{ActiveTheme, Glass, MONO, size as sz};
 
 pub type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
-/// A lucide icon, 14 px, coloured by the text colour.
-pub fn icon(name: &str) -> Svg {
-    svg().path(icon_path(name)).size(px(14.)).flex_none()
+/// A lucide icon, 14 px, in the surrounding text colour unless given its own.
+pub fn icon(name: &str) -> Icon {
+    Icon(svg().path(icon_path(name)).size(px(14.)).flex_none())
+}
+
+/// An icon that takes the inherited text colour (GPUI's `svg` only paints with
+/// a colour set on itself).
+#[derive(IntoElement)]
+pub struct Icon(Svg);
+
+impl Icon {
+    /// Rotates or scales the drawing (spinners).
+    pub fn with_transformation(self, t: gpui::Transformation) -> Self {
+        Self(self.0.with_transformation(t))
+    }
+}
+
+impl Styled for Icon {
+    fn style(&mut self) -> &mut gpui::StyleRefinement {
+        self.0.style()
+    }
+}
+
+impl RenderOnce for Icon {
+    fn render(mut self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        if self.0.style().text.color.is_none() {
+            let color = window.text_style().color;
+            self.0 = self.0.text_color(color);
+        }
+        self.0
+    }
 }
 
 /// One of the three glass tiers: fill, 1 px edge, top highlight; tier 2 and 3 float with a shadow.

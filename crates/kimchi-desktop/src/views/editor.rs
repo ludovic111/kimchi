@@ -158,7 +158,7 @@ impl Editor {
         let active = s.jobs.iter().filter(|j| !j.status.is_done()).count();
         let jobs_open = s.jobs_open;
         let agent_open = s.agent_open;
-        let update = s.update.available.clone();
+        let update = s.update.clone();
         let name = p.as_ref().map(|p| p.name.clone()).unwrap_or_default();
         let spec = p.as_ref().map(|p| format!("{}×{} · {}fps", p.settings.width, p.settings.height, p.settings.fps)).unwrap_or_default();
         let fullscreen = window.is_fullscreen();
@@ -230,13 +230,26 @@ impl Editor {
                     .items_center()
                     .gap(px(4.))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .when_some(update, |d, v| {
-                        d.child(
+                    .when_some(update.available.clone(), |d, v| {
+                        let button = if update.ready {
+                            Button::new("update", "Restart to update").small().primary().with_icon("refresh-cw").on_click(|_, _, cx| {
+                                match kimchi_control::update::restart() {
+                                    Ok(()) => cx.quit(),
+                                    Err(e) => cx.store().update(cx, |s, cx| s.error(format!("Couldn't restart: {e}"), cx)),
+                                }
+                            })
+                        } else if let Some(p) = update.progress {
+                            Button::new("update", format!("Updating… {:.0}%", p * 100.0)).small().disabled(true)
+                        } else if update.can_install {
                             Button::new("update", format!("Update to {v}"))
                                 .small()
                                 .with_icon("download")
-                                .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("app.installUpdate", json!({}), cx))),
-                        )
+                                .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("app.installUpdate", json!({}), cx)))
+                        } else {
+                            let url = update.download_url.clone().unwrap_or_else(|| kimchi_control::update::RELEASES_URL.into());
+                            Button::new("update", format!("kimchi {v} is out")).small().with_icon("external-link").on_click(move |_, _, cx| cx.open_url(&url))
+                        };
+                        d.child(button)
                     })
                     .child(Button::icon("undo", "undo-2", "Undo (⌘Z)").disabled(!can_undo).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("history.undo", json!({}), cx))))
                     .child(Button::icon("redo", "redo-2", "Redo (⇧⌘Z)").disabled(!can_redo).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("history.redo", json!({}), cx))))

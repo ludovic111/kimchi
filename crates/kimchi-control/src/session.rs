@@ -136,7 +136,7 @@ pub enum Event {
     ProjectChanged { project_id: Id },
     /// Another project was opened, or the project was closed (`None`).
     ProjectSwitched { project_id: Option<Id> },
-    Job { job: Job },
+    Job { job: Box<Job> },
     Export { export: ExportStatus },
     Toast { kind: ToastKind, text: String },
     Command { record: CommandRecord },

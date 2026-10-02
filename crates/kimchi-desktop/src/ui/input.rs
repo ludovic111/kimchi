@@ -88,6 +88,8 @@ pub struct TextInput {
     pub disabled: bool,
     /// Lines a multi-line field shows at least (it grows with its content).
     pub min_lines: usize,
+    /// No fill or border of its own (it sits inside a composer that draws them).
+    pub bare: bool,
     _blur: Option<gpui::Subscription>,
 }
 
@@ -118,6 +120,7 @@ impl TextInput {
             mono: false,
             disabled: false,
             min_lines: 1,
+            bare: false,
             _blur: None,
         }
     }
@@ -757,12 +760,14 @@ impl Render for TextInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
-            .px(px(10.))
+            .px(px(if self.bare { 12. } else { 10. }))
             .py(px(if self.multiline { 8. } else { 6. }))
-            .rounded(px(sz::R_SM))
-            .bg(theme.bg_sunken.opacity(if theme.is_dark() { 0.7 } else { 0.9 }))
-            .border_1()
-            .border_color(if focused { theme.accent_ring } else { theme.line_strong })
+            .when(!self.bare, |d| {
+                d.rounded(px(sz::R_SM))
+                    .bg(theme.bg_sunken.opacity(if theme.is_dark() { 0.7 } else { 0.9 }))
+                    .border_1()
+                    .border_color(if focused { theme.accent_ring } else { theme.line_strong })
+            })
             .text_size(px(sz::BASE))
             .line_height(px(sz::BASE * 1.45))
             .text_color(theme.text)

@@ -21,7 +21,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             let label = a.opt_str("label").unwrap_or("").to_string();
             s.apply(cx.label(), cx.source, &Edit::AddMarker { time, label: label.clone() }, None)?;
             let marker = s.read(|ed| {
-                ed.project().markers.iter().filter(|m| m.label == label && (m.time - time.max(0.0)).abs() < 1e-9).last().cloned()
+                ed.project().markers.iter().rfind(|m| m.label == label && (m.time - time.max(0.0)).abs() < 1e-9).cloned()
             })?;
             Ok(json!(marker))
         }

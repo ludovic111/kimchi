@@ -246,7 +246,7 @@ pub static SPECS: &[Spec] = &[
     query("export.formats", "Export formats and qualities.", &[]),
     edit("export.start", "Render the open project to a file through one ffmpeg graph (text is drawn the same as in the preview). Returns an export id; follow it with export.status, or pass wait.", &[
         req("path", String, "Destination file. The extension should match the format."),
-        opt("format", String, "mp4 (default), hevc, prores, webm, gif or audio."),
+        opt("format", String, "mp4 (default), hevc, prores, webm, gif, audio (AAC) or wav."),
         opt("quality", String, "draft, standard (default) or high."),
         opt("width", Integer, "Output width (default: the project's)."),
         opt("height", Integer, "Output height (default: the project's)."),
@@ -277,6 +277,10 @@ pub static SPECS: &[Spec] = &[
         req("key", String, "Dotted key from app.settings."),
         req("value", Any, "New value, of the same type."),
     ]).perm(Perm::Settings),
+    edit("app.setAgentKey", "Save (or with no key, remove) the API key the built-in agent uses, in the OS keychain.", &[
+        req("provider", String, "\"anthropic\" or \"openai\"."),
+        opt("key", String, "The key; omit to remove it."),
+    ]).perm(Perm::PersonOnly),
     query("app.checkUpdates", "Check GitHub Releases for a newer kimchi and report it.", &[]),
     edit("app.installUpdate", "Download, verify (signature) and install the update found by app.checkUpdates; kimchi restarts into it.", &[]).perm(Perm::AppControl),
     edit("app.quit", "Quit kimchi.", &[]).perm(Perm::AppControl).window(),

@@ -188,23 +188,60 @@ fn samples() {
     }
 }
 
+
+/// The webview editor drew text with WebKit's Canvas 2D (macOS). Reference numbers from the old
+/// `drawText` run in a WKWebView with the bundled fonts on a 1920×1080 canvas: block width and the
+/// bounding boxes of pixels with alpha ≥ 128 and ≥ 1 (shadow included).
 #[test]
-#[ignore]
-fn chrome_compare() {
-    let s = |content: &str, family: &str, size: f64, weight: u16, italic: bool, color: &str, bg: Option<&str>, align, lh: f64, ls: f64, shadow: bool| TextStyle {
-        content: content.into(), font_family: family.into(), font_size: size, font_weight: weight, italic, color: color.into(),
-        background: bg.map(Into::into), align, line_height: lh, letter_spacing: ls, shadow,
+fn matches_the_webkit_canvas() {
+    let s = |content: &str, family: &str, size, weight, color: &str, bg: Option<&str>, align, line_height, letter_spacing, shadow| TextStyle {
+        content: content.into(),
+        font_family: family.into(),
+        font_size: size,
+        font_weight: weight,
+        italic: false,
+        color: color.into(),
+        background: bg.map(Into::into),
+        align,
+        line_height,
+        letter_spacing,
+        shadow,
     };
-    let t = |x: f64, y: f64, scale: f64, rotation: f64| Transform { x, y, scale, rotation, ..Transform::default() };
+    let t = |x, y, scale, rotation| Transform { x, y, scale, rotation, ..Transform::default() };
     let cases = [
-        ("georgia", s("Georgia Title", "Georgia", 96.0, 400, false, "#ffffff", None, TextAlign::Center, 1.15, 0.0, true), t(0.0, 0.0, 1.0, 0.0)),
-        ("helv-box", s("Helvetica Neue\nsecond line", "Helvetica Neue", 96.0, 700, false, "#1b1b1b", Some("#f7806a"), TextAlign::Center, 1.15, 0.0, false), t(0.0, -120.0, 1.0, 0.0)),
-        ("menlo-left", s("Left aligned\nthree\nlines here", "Menlo", 72.0, 400, false, "#ffffff", None, TextAlign::Left, 1.3, 6.0, false), t(100.0, 50.0, 0.7, 0.0)),
-        ("georgia-right-rot", s("Georgia\nright aligned", "Georgia", 80.0, 400, true, "#ffffff", Some("#000000"), TextAlign::Right, 1.15, 0.0, false), t(-200.0, 100.0, 1.2, 30.0)),
+        ("default", TextStyle::default(), t(0.0, 0.0, 1.0, 0.0), 205.86, (859, 503, 1060, 574), (841, 488, 1079, 597)),
+        (
+            "boxed",
+            s("Manrope 800\nsecond line", "Manrope", 96.0, 800, "#1b1b1b", Some("#f7806a"), TextAlign::Center, 1.15, 0.0, true),
+            t(0.0, -120.0, 1.0, -8.0),
+            625.06,
+            (602, 248, 1317, 591),
+            (601, 247, 1318, 592),
+        ),
+        (
+            "left",
+            s("Left aligned\nthree\nlines here", "Manrope", 72.0, 400, "#ffffff", None, TextAlign::Left, 1.3, 6.0, false),
+            t(100.0, 50.0, 0.7, 0.0),
+            463.10,
+            (897, 506, 1214, 675),
+            (897, 506, 1214, 675),
+        ),
+        (
+            "mono-right",
+            s("IBM Plex\nMono right", "IBM Plex Mono", 80.0, 400, "#ffffff", Some("#000000"), TextAlign::Right, 1.15, 0.0, false),
+            t(-200.0, 100.0, 1.2, 30.0),
+            480.0,
+            (424, 375, 1095, 904),
+            (424, 374, 1095, 905),
+        ),
     ];
-    for (name, s, t) in cases {
-        let m = measure(&s);
-        let p = rasterize_text(&s, &t, 1920, 1080);
-        eprintln!("{name}: w {:.2} widths {:?} ink128 {:?} ink1 {:?}", m.width, m.line_widths.iter().map(|w| (w * 100.0).round() / 100.0).collect::<Vec<_>>(), ink(&p, 128), ink(&p, 1));
+    let near = |a: (u32, u32, u32, u32), b: (u32, u32, u32, u32)| {
+        [(a.0, b.0), (a.1, b.1), (a.2, b.2), (a.3, b.3)].iter().all(|(x, y)| x.abs_diff(*y) <= 2)
+    };
+    for (name, style, transform, width, solid, any) in cases {
+        assert!((measure(&style).width - width).abs() < 0.1, "{name}: {} vs {width}", measure(&style).width);
+        let p = rasterize_text(&style, &transform, 1920, 1080);
+        let (a, b) = (ink(&p, 128).unwrap(), ink(&p, 1).unwrap());
+        assert!(near(a, solid) && near(b, any), "{name}: {a:?} {b:?} vs {solid:?} {any:?}");
     }
 }

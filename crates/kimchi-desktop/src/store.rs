@@ -330,12 +330,10 @@ impl Store {
                 self.library = self.session.library.list();
                 self.playback.update(cx, |p, cx| p.reset(cx));
             }
-            Event::Job { job } => {
-                match self.jobs.iter_mut().find(|j| j.id == job.id) {
-                    Some(j) => *j = job,
-                    None => self.jobs.push(job),
-                }
-            }
+            Event::Job { job } => match self.jobs.iter_mut().find(|j| j.id == job.id) {
+                Some(j) => *j = *job,
+                None => self.jobs.push(*job),
+            },
             Event::Export { export } => match self.exports.iter_mut().find(|e| e.id == export.id) {
                 Some(e) => *e = export,
                 None => self.exports.push(export),

@@ -181,3 +181,81 @@ fn markdown_lists_every_command() {
         assert!(md.contains(&format!("### `{}`", s.name)));
     }
 }
+
+/// kimchi → ryolune → kimchi through a fake ryolune bridge that records what it is asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn hands_the_cut_to_ryolune_and_takes_audio_back() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    if kimchi_media::Tools::locate().is_err() {
+        eprintln!("ffmpeg not found; skipping");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    // A fake ryolune: answers every call and remembers it.
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let control = dir.path().join("ryolune-control.json");
+    std::fs::write(&control, serde_json::to_vec(&json!({ "version": 1, "port": port, "token": "t", "pid": 1 })).unwrap()).unwrap();
+    // SAFETY: only this test reads these variables.
+    unsafe {
+        std::env::set_var("RYOLUNE_CONTROL", &control);
+        std::env::set_var("LSUITE_HOME", dir.path().join("lsuite"));
+    }
+    let calls = Arc::new(parking_lot::Mutex::new(Vec::<Value>::new()));
+    let seen = calls.clone();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let seen = seen.clone();
+            tokio::spawn(async move {
+                let (r, mut w) = stream.into_split();
+                let mut lines = BufReader::new(r).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let method = req["method"].as_str().unwrap().to_string();
+                    let result = match method.as_str() {
+                        "session.info" => json!({ "transport": { "tempo": 120.0, "timeSignature": { "numerator": 4, "denominator": 4 } } }),
+                        "session.bounce" => {
+                            let out = req["params"]["path"].as_str().unwrap().to_string();
+                            let tools = kimchi_media::Tools::locate().unwrap();
+                            std::process::Command::new(&tools.ffmpeg).args(["-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=330:duration=2", &out]).status().unwrap();
+                            json!({ "path": out })
+                        }
+                        _ => json!({ "ok": true }),
+                    };
+                    let answer = json!({ "jsonrpc": "2.0", "id": req["id"], "result": result });
+                    seen.lock().push(req);
+                    w.write_all(format!("{answer}\n").as_bytes()).await.unwrap();
+                }
+            });
+        }
+    });
+
+    ok(&s, Source::Cli, "project.create", json!({ "name": "Score me" })).await;
+    let wav = dir.path().join("tone.wav");
+    let tools = kimchi_media::Tools::locate().unwrap();
+    std::process::Command::new(&tools.ffmpeg).args(["-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=4"]).arg(&wav).status().unwrap();
+    ok(&s, Source::Cli, "media.import", json!({ "paths": [wav], "place": true, "start": 0 })).await;
+    ok(&s, Source::Cli, "timeline.addMarker", json!({ "time": 2, "label": "Drop" })).await;
+
+    let r = ok(&s, Source::Cli, "handoff.toRyolune", json!({})).await;
+    assert_eq!(r["sentToRyolune"], true, "{r}");
+    assert!(std::path::Path::new(r["audio"].as_str().unwrap()).is_file());
+    let cut: Value = serde_json::from_slice(&std::fs::read(r["cut"].as_str().unwrap()).unwrap()).unwrap();
+    assert_eq!(cut["markers"][0]["label"], "Drop");
+    {
+        let calls = calls.lock();
+        let methods: Vec<&str> = calls.iter().map(|c| c["method"].as_str().unwrap()).collect();
+        assert_eq!(methods, ["auth", "session.info", "session.importAudio", "marker.add"]);
+        // 2 s at 120 bpm in 4/4 is bar 1 (zero-based).
+        assert!((calls[3]["params"]["bar"].as_f64().unwrap() - 1.0).abs() < 1e-6);
+        assert_eq!(calls[3]["params"]["name"], "Drop");
+    }
+
+    let back = ok(&s, Source::Cli, "handoff.fromRyolune", json!({ "start": 1 })).await;
+    let clip = back["clips"][0].as_str().unwrap().parse().unwrap();
+    let p = s.project().unwrap();
+    assert_eq!(p.clip(clip).unwrap().start, 1.0);
+    assert_eq!(p.tracks[p.locate_clip(clip).unwrap().0].kind, kimchi_core::TrackKind::Audio);
+}

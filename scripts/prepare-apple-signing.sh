@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Release workflow, macOS runners: import the Developer ID certificate into a throwaway keychain,
 # check that it holds the signing identity, and write the App Store Connect API key, then hand
-# Tauri the identity and the notarization key through $GITHUB_ENV. Same secrets as ryolune
+# scripts/bundle-macos.sh the identity and the notarization key through $GITHUB_ENV. Same secrets as ryolune
 # (see ../lsuite/STANDARD.md). The certificate password may be empty (a .p12 exported without one).
 set -euo pipefail
 for name in APPLE_CERTIFICATE_P12_BASE64 APPLE_SIGNING_IDENTITY APPLE_API_KEY_P8_BASE64 APPLE_API_KEY_ID APPLE_API_ISSUER; do

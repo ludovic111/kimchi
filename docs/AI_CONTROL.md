@@ -240,7 +240,7 @@ need no key; `generate.setProvider` points them at another address.
 ## Export
 
 `export.start` renders the open project through one ffmpeg graph; text is drawn exactly as in the
-preview. Formats are `mp4` (default), `hevc`, `prores`, `webm`, `gif` and `audio`; qualities
+preview. Formats are `mp4` (default), `hevc`, `prores`, `webm`, `gif`, `audio` (AAC) and `wav`; qualities
 `draft`, `standard` (default) and `high` (`export.formats` lists them with their extensions).
 `width`, `height` and `fps` override the project's; `from` and `to` export a range.
 
@@ -257,9 +257,10 @@ kimchi and [ryolune](https://lsuite.xyz/ryolune) (music) are both lsuite apps. E
 each other and agents find both.
 
 - `handoff.apps` lists the lsuite apps installed on this computer and whether they are running.
-- `handoff.toRyolune` sends the cut to ryolune to score it: it renders the audio (WAV) and writes
-  the length and markers beside it; when ryolune is running, it imports the audio there and adds
-  the markers. `from`, `to` and `name` narrow it.
+- `handoff.toRyolune` sends the cut to ryolune to score it: it renders the audio (24-bit WAV) into
+  `~/.lsuite/handoff/ryolune/` with `<name>.kimchi-cut.json` beside it (length, range, fps, markers);
+  when ryolune is running, it imports the audio at bar 0 through ryolune's own bridge and adds the
+  markers, placed at the song's starting tempo. `from`, `to` and `name` narrow it.
 - `handoff.fromRyolune` puts ryolune's music on an audio track: a file ryolune exported (`path`),
   or, when ryolune is running, a fresh bounce of its open song.
 
@@ -270,8 +271,8 @@ kimchi-cli handoff.fromRyolune --start 0
 
 ## What only a person does
 
-A few things deliberately stay with the person: API keys (`generate.setKey` is refused for
-agents), the agent's own settings and permissions (`app.setSetting` refuses `agent.*` keys from
+A few things deliberately stay with the person: API keys (`generate.setKey` and
+`app.setAgentKey` are refused for agents), the agent's own settings and permissions (`app.setSetting` refuses `agent.*` keys from
 an agent), and the choice of which model runs the built-in agent. Agents never see keys:
 `generate.providers` reports only where a key comes from and its last four characters.
 
@@ -284,6 +285,8 @@ an agent), and the choice of which model runs the built-in agent. Agents never s
 | `KIMCHI_CONFIG_DIR` | the settings folder (`settings.json`, `providers.json`) |
 | `KIMCHI_FFMPEG`, `KIMCHI_FFPROBE` | ffmpeg and ffprobe to use instead of the bundled or installed ones |
 | `KIMCHI_NO_UPDATE=1` | never check for updates |
+| `KIMCHI_KEYCHAIN` | `1` reads API keys from the OS keychain, `0` only from environment variables (default: on in release builds, off in debug builds) |
+| `RYOLUNE_CONTROL` | ryolune's control file, for the hand-offs (default `~/.ryolune/control.json`) |
 | `LSUITE_HOME` | where lsuite apps register (default `~/.lsuite`) |
 
 ## Limits

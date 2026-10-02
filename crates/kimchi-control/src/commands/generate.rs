@@ -170,7 +170,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         }
         "generate.jobs" => {
             let mut jobs = s.harness.jobs();
-            jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            jobs.sort_by_key(|j| std::cmp::Reverse(j.created_at));
             Ok(json!(jobs))
         }
         "generate.wait" => Ok(json!(wait(s, a.str("jobId")?, a.opt_f64("timeout").unwrap_or(600.0)).await?)),
@@ -406,7 +406,7 @@ pub fn spawn_job_listener(s: &Arc<Session>) {
                 Err(_) => break,
             };
             let Some(s) = weak.upgrade() else { break };
-            s.emit(Event::Job { job: job.clone() });
+            s.emit(Event::Job { job: Box::new(job.clone()) });
             if job.status.is_done() {
                 let s2 = s.clone();
                 s.runtime().spawn(async move {
@@ -415,7 +415,7 @@ pub fn spawn_job_listener(s: &Arc<Session>) {
                         s2.toast(ToastKind::Error, format!("Generation finished but couldn't be added: {e}"));
                     }
                     // Wake anyone in `wait` now that the placeholder is gone.
-                    s2.emit(Event::Job { job });
+                    s2.emit(Event::Job { job: Box::new(job) });
                 });
             }
         }

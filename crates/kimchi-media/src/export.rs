@@ -33,6 +33,15 @@ pub enum ExportFormat {
     Gif,
     /// Audio only (AAC in M4A).
     Audio,
+    /// Audio only, uncompressed (24-bit PCM WAV), e.g. to score the cut in ryolune.
+    Wav,
+}
+
+impl ExportFormat {
+    /// Formats with no picture.
+    pub fn is_audio_only(self) -> bool {
+        matches!(self, ExportFormat::Audio | ExportFormat::Wav)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -261,7 +270,7 @@ pub(crate) fn compile(
 
     let mut output = vec![];
     let mut audible = 0;
-    if format != ExportFormat::Audio && sink != Sink::Samples {
+    if !format.is_audio_only() && sink != Sink::Samples {
         let base_fmt = if format == ExportFormat::Prores { "yuv444p" } else { "yuv420p" };
         g.chains.push(format!(
             "color=c={}:s={width}x{height}:r={}:d={},format={base_fmt}[b0]",
@@ -731,6 +740,10 @@ impl Codecs {
             ExportFormat::Audio => {
                 c.audio = aac();
                 c.muxer = vec![s("-movflags"), s("+faststart"), s("-f"), s("ipod")];
+            }
+            ExportFormat::Wav => {
+                c.audio = vec![s("-c:a"), s("pcm_s24le")];
+                c.muxer = vec![s("-f"), s("wav")];
             }
         }
         Ok(c)
