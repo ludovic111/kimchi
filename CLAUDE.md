@@ -65,16 +65,14 @@ kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is
 
 ## Next session
 
-- [ ] **First release of the GPUI app**: the remote already has tags `v0.2.0` and `v0.3.0`, so the
-      workspace version is 0.4.0. Tag `v0.4.0` and check the release run: the Linux AppImage/.deb and
-      the Windows NSIS installer have never been built (their scripts only run on those systems), the
-      Intel macOS build hasn't been tried locally.
-- [ ] Take new screenshots for `../lsuite/assets/img/kimchi/` from the GPUI app (the page text is
-      updated; `editor.webp` still shows the Svelte UI). `kimchi-cli ui.screenshot` needs the screen
-      awake and Screen Recording allowed for the app.
-- [ ] Commit the lsuite edits (kimchi page and kimchi's column in `STANDARD.md`'s status table): they
-      were left uncommitted on 2026-10-02 because a zenith session had uncommitted work in the same
-      files.
+kimchi 0.4.0 (the GPUI app) is released (2026-10-02): notarized macOS for Apple Silicon and Intel,
+Windows and Linux; 0.1.x installs update to it. The lsuite page and STANDARD.md's kimchi column are
+up to date.
+
 - [ ] A pass with real mouse input in the running app: clicks, drags and typing are covered by GPUI
-      UI tests, but nobody has used the window by hand yet.
+      UI tests and the app was driven through `kimchi-cli`, but nobody has used the window by hand yet.
+- [ ] Linux and Windows builds were produced by CI but never launched on those systems.
 - [ ] Codex as an agent provider: run one real turn once Codex is installed.
+- [ ] Each release: update `../lsuite/kimchi/index.html` (what changed, screenshots with
+      `KIMCHI_WINDOW_SIZE=2000x1250` and `kimchi-cli ui.screenshot`, saved as WebP in
+      `../lsuite/assets/img/kimchi/`, dark and `-light`).
