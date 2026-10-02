@@ -1,5 +1,0 @@
-[env]
-# ts-rs writes the TypeScript mirror of every Rust type here (`cargo test export_bindings`).
-TS_RS_EXPORT_DIR = { value = "ui/src/lib/bindings", relative = true }
-# JSON numbers, not bigint: our 64-bit values (seeds, byte sizes, ms) fit in a double.
-TS_RS_LARGE_INT = "number"
