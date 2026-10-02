@@ -3,7 +3,7 @@
 
 use gpui::Window;
 use kimchi_control::CmdResult;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 pub fn capture(path: Option<&str>, window: &mut Window) -> CmdResult<Value> {
     let path = path.map(std::path::PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join(format!("kimchi-{}.png", chrono::Utc::now().format("%Y%m%d-%H%M%S"))));
@@ -19,7 +19,7 @@ pub fn capture(path: Option<&str>, window: &mut Window) -> CmdResult<Value> {
             ));
         }
         let b = window.bounds();
-        Ok(json!({ "path": path, "width": f32::from(b.size.width), "height": f32::from(b.size.height) }))
+        Ok(serde_json::json!({ "path": path, "width": f32::from(b.size.width), "height": f32::from(b.size.height) }))
     }
     #[cfg(not(target_os = "macos"))]
     {
