@@ -83,7 +83,8 @@ fn shortcuts_edit_through_the_registry_and_undo(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(&format!("{M}-z"));
     let p = f.settle(cx, |p| texts(p) == 0);
     assert_eq!(texts(&p), 0, "undo undoes it");
-    cx.simulate_keystrokes(&format!("{M}-shift-z"));
+    // Redo: shift-cmd-z on macOS, ctrl-y elsewhere (both are bound).
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-shift-z" } else { "ctrl-y" });
     let p = f.settle(cx, |p| texts(p) == 1);
     assert_eq!(texts(&p), 1, "redo redoes it");
     let steps = f.call("history.list", json!({}));
