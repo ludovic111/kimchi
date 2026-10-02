@@ -42,3 +42,17 @@ impl SecretStore for KeychainSecrets {
         Ok(())
     }
 }
+
+/// The store kimchi's programs use: the OS keychain, except in debug builds
+/// (`cargo run`), where an unsigned binary would make macOS ask for the login
+/// password every time it reads the signed app's keys. `KIMCHI_KEYCHAIN=1`
+/// forces the keychain, `KIMCHI_KEYCHAIN=0` turns it off; without it, keys
+/// still come from the usual environment variables.
+pub fn default_store() -> std::sync::Arc<dyn SecretStore> {
+    let on = match std::env::var("KIMCHI_KEYCHAIN").ok().as_deref() {
+        Some("1" | "on" | "true" | "yes") => true,
+        Some(_) => false,
+        None => !cfg!(debug_assertions),
+    };
+    if on { std::sync::Arc::new(KeychainSecrets::default()) } else { std::sync::Arc::new(kimchi_gen::MemorySecrets::default()) }
+}

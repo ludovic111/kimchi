@@ -1,6 +1,7 @@
 //! kimchi-media: everything that touches media files, via ffmpeg/ffprobe.
 
 pub mod export;
+pub mod preview;
 pub mod text;
 mod probe;
 mod process;
@@ -13,6 +14,7 @@ use tokio::io::AsyncReadExt;
 
 pub use probe::{Probe, probe};
 pub use process::Caps;
+pub use tiny_skia;
 
 #[derive(Debug, Error)]
 pub enum MediaError {

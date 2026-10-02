@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template for kimchi.app/Contents/Info.plist (scripts/bundle-macos.sh fills in @VERSION@).
+     The identifier is the one the Tauri builds used, so keychain items, permissions and the
+     Dock position carry over. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleDisplayName</key><string>kimchi</string>
+  <key>CFBundleExecutable</key><string>kimchi</string>
+  <key>CFBundleIconFile</key><string>kimchi</string>
+  <key>CFBundleIdentifier</key><string>app.kimchi.editor</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>kimchi</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>@VERSION@</string>
+  <key>CFBundleVersion</key><string>@VERSION@</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
+  <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
+  <!-- GPUI needs 10.15.7; 11 is what kimchi has always required. -->
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>NSRequiresAquaSystemAppearance</key><false/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSHumanReadableCopyright</key><string>MIT licence. Part of lsuite.</string>
+  <key>NSDesktopFolderUsageDescription</key><string>kimchi opens and saves media and projects you choose on your Desktop.</string>
+  <key>NSDocumentsFolderUsageDescription</key><string>kimchi opens and saves media and projects you choose in Documents.</string>
+  <key>NSDownloadsFolderUsageDescription</key><string>kimchi opens media you choose in Downloads.</string>
+  <key>NSRemovableVolumesUsageDescription</key><string>kimchi opens media you choose on external drives and cards.</string>
+  <key>NSNetworkVolumesUsageDescription</key><string>kimchi opens media you choose on network drives.</string>
+</dict>
+</plist>

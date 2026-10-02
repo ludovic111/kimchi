@@ -179,6 +179,7 @@ pub struct Session {
     pub config_dir: PathBuf,
     pub harness: Arc<Harness>,
     pub headless: bool,
+    secrets: Arc<dyn SecretStore>,
     doc: Mutex<Option<OpenDoc>>,
     tools: RwLock<Option<Tools>>,
     exports: Mutex<Vec<ExportEntry>>,
@@ -202,7 +203,7 @@ impl Session {
         std::fs::create_dir_all(&config_dir)?;
 
         let secrets = opts.secrets.unwrap_or_else(|| Arc::new(MemorySecrets::default()));
-        let harness = Arc::new(Harness::new(secrets));
+        let harness = Arc::new(Harness::new(secrets.clone()));
         if let Ok(bytes) = std::fs::read(config_dir.join("providers.json"))
             && let Ok(s) = serde_json::from_slice::<HashMap<String, ProviderSettings>>(&bytes)
         {
@@ -217,6 +218,7 @@ impl Session {
             config_dir,
             harness,
             headless: opts.headless,
+            secrets,
             doc: Mutex::new(None),
             tools: RwLock::new(Tools::locate().ok()),
             exports: Mutex::new(vec![]),
@@ -272,6 +274,19 @@ impl Session {
         Ok(s)
     }
 
+    /// A stored API key (keychain in the app, memory in tests) by id: `fal`, `anthropic`, `openai`…
+    pub fn secret(&self, id: &str) -> Option<String> {
+        self.secrets.get(id).filter(|k| !k.trim().is_empty())
+    }
+
+    /// Stores (`Some`) or removes (`None`) an API key. The person's own action, never an agent's.
+    pub fn set_secret(&self, id: &str, key: Option<&str>) -> CmdResult<()> {
+        match key.map(str::trim).filter(|k| !k.is_empty()) {
+            Some(k) => self.secrets.set(id, k),
+            None => self.secrets.delete(id),
+        }
+    }
+
     pub fn save_provider_settings(&self) -> CmdResult<()> {
         let json = serde_json::to_vec_pretty(&self.harness.settings()).map_err(err)?;
         std::fs::write(self.config_dir.join("providers.json"), json).map_err(err)
@@ -317,6 +332,11 @@ impl Session {
 
     pub fn set_ui_state(&self, state: UiState) {
         *self.ui_state.write() = state;
+    }
+
+    /// Changes part of what the window shows (the playhead while playing, for example).
+    pub fn update_ui_state(&self, f: impl FnOnce(&mut UiState)) {
+        f(&mut self.ui_state.write());
     }
 
     pub fn ui_state(&self) -> UiState {

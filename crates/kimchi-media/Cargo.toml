@@ -1,15 +1,17 @@
 [package]
 name = "kimchi-media"
-description = "ffmpeg-backed probing, previews and export for kimchi"
+description = "ffmpeg-backed probing, previews and export for kimchi, and the text rasteriser"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+cosmic-text.workspace = true
 kimchi-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tiny-skia.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=kimchi
+GenericName=Video Editor
+Comment=Video editor with generation in the cut
+Exec=kimchi %F
+Icon=kimchi
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+Keywords=video;editor;timeline;generate;
+StartupWMClass=kimchi

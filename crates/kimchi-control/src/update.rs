@@ -1,14 +1,55 @@
 //! Automatic updates from this repository's GitHub Releases.
 //!
-//! `latest.json` describes the newest release per platform; each archive is
-//! signed with the project's Ed25519 (minisign) update key and verified before
-//! anything is replaced. The previous copy is kept until the new one starts.
+//! Every release carries a `latest.json` in the Tauri updater format (kimchi 0.1.x was a Tauri
+//! app, and those installs still update through it):
+//!
+//! ```json
+//! { "version": "0.2.0", "notes": "…", "pub_date": "…",
+//!   "platforms": { "darwin-aarch64-app": { "signature": "<base64 minisign signature>", "url": "…/kimchi_aarch64.app.tar.gz" }, … } }
+//! ```
+//!
+//! Each archive is signed with the project's minisign (Ed25519) update key, the same key the Tauri
+//! builds trust ([`PUBLIC_KEY`]), and verified while it downloads, before anything is replaced. The
+//! signature's trusted comment carries the version it was made for, which must match the
+//! announced one, so an old signed archive can't be passed off as a new release.
+//!
+//! What gets replaced, and how:
+//! * **macOS**: the running `kimchi.app` is moved aside to `.kimchi.app.previous` next to it and the
+//!   new bundle moved in. [`finish_pending`] removes the previous copy once the new one has started.
+//! * **Linux AppImage** (`$APPIMAGE`): the same, with `.<name>.previous`.
+//! * **Windows, Linux packages, development builds**: the update is announced with
+//!   `can_install: false` and the file to download by hand (`download_url`).
+//!
+//! `KIMCHI_NO_UPDATE=1` or `settings.updates.checkOnStart = false` turn off the check at start
+//! ([`check_on_start`]); `app.checkUpdates` and `app.installUpdate` always work. `KIMCHI_UPDATE_URL`
+//! points the check at another `latest.json` (signatures are still checked against [`PUBLIC_KEY`]).
 
+use std::collections::BTreeMap;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
+use base64::Engine;
+use futures::StreamExt;
+use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 
-use crate::session::{CmdResult, Session};
+use crate::session::{CmdResult, Event, Session, ToastKind};
+
+/// The release manifest of the latest published release.
+pub const MANIFEST_URL: &str = "https://github.com/ludovic111/kimchi/releases/latest/download/latest.json";
+/// Where people download kimchi by hand.
+pub const RELEASES_URL: &str = "https://github.com/ludovic111/kimchi/releases/latest";
+/// The update key (base64 of a minisign public key file), the same as `plugins.updater.pubkey` in
+/// the Tauri builds. Its secret half is the `TAURI_SIGNING_PRIVATE_KEY` release secret.
+pub const PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRDMDcxNTc4RjA1N0Q5QTcKUldTbjJWZndlQlVIVEZyRWNtU2tqeWxCaFNvTGQxbU1qczFIMGY5cUYzVVdBWkxOL0FvalJocEkK";
+/// This build's version.
+pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
+
+/// Refuse downloads larger than this (a release archive is ~100 MB).
+const MAX_DOWNLOAD: u64 = 2 << 30;
 
 /// What the app knows about updates, shown in the window and returned by
 /// `app.checkUpdates`.
@@ -27,27 +68,749 @@ pub struct UpdateStatus {
     /// Whether this build can install updates itself (otherwise it links to the download page).
     pub can_install: bool,
     pub checked_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Where to get the update by hand: this platform's file, else the release page.
+    #[serde(default)]
+    pub download_url: Option<String>,
+    /// Why this copy can't replace itself, when it can't (Windows, a Linux package, a build run
+    /// from the source tree, an app still in Downloads…).
+    #[serde(default)]
+    pub install_blocked: Option<String>,
 }
 
 #[derive(Debug, Default)]
 pub struct UpdateState {
     pub status: UpdateStatus,
+    /// This platform's archive in the newer release found by the last check.
+    found: Option<Found>,
+    /// A download or install is running.
+    busy: bool,
 }
+
+#[derive(Debug, Clone)]
+struct Found {
+    version: String,
+    url: String,
+    signature: String,
+}
+
+/// `latest.json`, in the Tauri updater's format.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Manifest {
+    pub version: String,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub pub_date: Option<String>,
+    pub platforms: BTreeMap<String, PlatformAsset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PlatformAsset {
+    /// Base64 of the minisign signature file.
+    pub signature: String,
+    pub url: String,
+}
+
+/// How this copy of kimchi is installed, which decides what an update replaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Install {
+    /// A macOS app bundle, replaced in place.
+    MacBundle(PathBuf),
+    /// A Linux AppImage (`$APPIMAGE`), replaced in place.
+    AppImage(PathBuf),
+    /// Windows, a Linux package, a portable folder or `cargo run`: updated by hand.
+    Other,
+}
+
+// ---- checking -----------------------------------------------------------
 
 /// Checks for a newer release. `manual` reports errors instead of staying quiet.
 pub async fn check(s: &Arc<Session>, manual: bool) -> CmdResult<UpdateStatus> {
-    let _ = manual;
-    let status = UpdateStatus { current: env!("CARGO_PKG_VERSION").into(), checked_at: Some(chrono::Utc::now()), ..Default::default() };
-    s.update.lock().status = status.clone();
-    Ok(status)
+    {
+        let u = s.update.lock();
+        if u.busy || u.status.ready {
+            return Ok(u.status.clone());
+        }
+    }
+    let fetched = fetch_manifest(&manifest_url()).await;
+    let install = current_install();
+    let status = {
+        let mut u = s.update.lock();
+        if u.busy || u.status.ready {
+            return Ok(u.status.clone());
+        }
+        let now = Some(chrono::Utc::now());
+        match &fetched {
+            Ok(m) => {
+                let newer = is_newer(&m.version, CURRENT);
+                let asset = select(m, &platform_keys_for(&install)).filter(|_| newer);
+                let blocked = install_support(&install).err();
+                u.found = asset.map(|a| Found { version: m.version.clone(), url: a.url.clone(), signature: a.signature.clone() });
+                u.status = UpdateStatus {
+                    current: CURRENT.into(),
+                    available: newer.then(|| m.version.clone()),
+                    notes: if newer { m.notes.clone() } else { None },
+                    progress: None,
+                    ready: false,
+                    error: None,
+                    can_install: asset.is_some() && blocked.is_none(),
+                    checked_at: now,
+                    download_url: newer.then(|| asset.map_or(RELEASES_URL.to_string(), |a| a.url.clone())),
+                    install_blocked: if newer { blocked } else { None },
+                };
+            }
+            Err(e) => {
+                tracing::debug!("update check failed: {e}");
+                u.status.current = CURRENT.into();
+                u.status.checked_at = now;
+                u.status.error = manual.then(|| e.clone());
+            }
+        }
+        u.status.clone()
+    };
+    s.emit(Event::Update { status: status.clone() });
+    match fetched {
+        Err(e) if manual => Err(e),
+        _ => Ok(status),
+    }
 }
 
-/// Downloads, verifies and installs the update found by [`check`].
-pub async fn install(s: &Arc<Session>) -> CmdResult<UpdateStatus> {
-    let _ = s;
-    Err("Updates can't be installed from this build yet.".into())
+/// The check the app runs when it starts; does nothing when `KIMCHI_NO_UPDATE` is set or
+/// `updates.checkOnStart` is off. Never fails: a failed check stays quiet.
+pub async fn check_on_start(s: &Arc<Session>) {
+    if !s.settings().update_check_enabled() {
+        return;
+    }
+    let _ = check(s, false).await;
 }
 
 pub fn status(s: &Session) -> UpdateStatus {
-    s.update.lock().status.clone()
+    let mut st = s.update.lock().status.clone();
+    if st.current.is_empty() {
+        st.current = CURRENT.into();
+    }
+    st
+}
+
+fn manifest_url() -> String {
+    std::env::var("KIMCHI_UPDATE_URL").ok().filter(|u| !u.trim().is_empty()).unwrap_or_else(|| MANIFEST_URL.into())
+}
+
+fn client(timeout: Option<Duration>) -> Result<reqwest::Client, String> {
+    let mut b = reqwest::Client::builder().user_agent(format!("kimchi/{CURRENT}")).connect_timeout(Duration::from_secs(15));
+    if let Some(t) = timeout {
+        b = b.timeout(t);
+    }
+    b.build().map_err(|e| e.to_string())
+}
+
+async fn fetch_manifest(url: &str) -> Result<Manifest, String> {
+    let offline = |e: reqwest::Error| format!("Couldn't reach GitHub to check for updates ({e}).");
+    let res = client(Some(Duration::from_secs(30)))?.get(url).send().await.map_err(offline)?;
+    if res.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err("No kimchi release with an update manifest has been published yet.".into());
+    }
+    if !res.status().is_success() {
+        return Err(format!("GitHub answered {} to the update check.", res.status()));
+    }
+    let bytes = res.bytes().await.map_err(offline)?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("The update manifest isn't valid: {e}"))
+}
+
+/// Whether `candidate` is a newer version than `current` (semver; a leading `v` is allowed).
+pub fn is_newer(candidate: &str, current: &str) -> bool {
+    let parse = |v: &str| semver::Version::parse(v.trim().trim_start_matches('v')).ok();
+    matches!((parse(candidate), parse(current)), (Some(a), Some(b)) if a > b)
+}
+
+/// The `latest.json` keys to look for, most specific first: `{os}-{arch}-{installer}` then
+/// `{os}-{arch}` (the Tauri updater's rule). `os` is `darwin`, `linux` or `windows`.
+pub fn platform_keys(os: &str, arch: &str, installer: Option<&str>) -> Vec<String> {
+    let mut keys = Vec::with_capacity(2);
+    if let Some(i) = installer {
+        keys.push(format!("{os}-{arch}-{i}"));
+    }
+    keys.push(format!("{os}-{arch}"));
+    keys
+}
+
+fn platform_keys_for(install: &Install) -> Vec<String> {
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        os => os,
+    };
+    let installer = match install {
+        Install::MacBundle(_) => Some("app"),
+        Install::AppImage(_) => Some("appimage"),
+        Install::Other if cfg!(windows) => Some("nsis"),
+        Install::Other => None,
+    };
+    platform_keys(os, std::env::consts::ARCH, installer)
+}
+
+/// The first of `keys` the manifest has an archive for.
+pub fn select<'a>(m: &'a Manifest, keys: &[String]) -> Option<&'a PlatformAsset> {
+    keys.iter().find_map(|k| m.platforms.get(k))
+}
+
+// ---- signatures ---------------------------------------------------------
+
+fn b64_text(what: &str, b64: &str) -> Result<String, String> {
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|_| format!("The {what} isn't valid base64."))?;
+    String::from_utf8(bytes).map_err(|_| format!("The {what} isn't valid text."))
+}
+
+fn decode_key(public_key_b64: &str) -> Result<PublicKey, String> {
+    PublicKey::decode(&b64_text("update key", public_key_b64)?).map_err(|e| format!("The update key is invalid: {e}"))
+}
+
+fn decode_signature(signature_b64: &str) -> Result<Signature, String> {
+    Signature::decode(&b64_text("update signature", signature_b64)?).map_err(|e| format!("The update signature is invalid: {e}"))
+}
+
+fn signature_error(e: minisign_verify::Error) -> String {
+    match e {
+        minisign_verify::Error::UnexpectedKeyId => "The update was signed with a different key than kimchi's; it was not installed.".into(),
+        minisign_verify::Error::UnsupportedLegacyMode | minisign_verify::Error::UnexpectedAlgorithm => {
+            "The update signature uses an unsupported (legacy) algorithm; it was not installed.".into()
+        }
+        _ => "The update's signature doesn't match the download; it was not installed.".into(),
+    }
+}
+
+/// The trusted comment (covered by the signature) must name the announced version.
+fn check_signed_version(sig: &Signature, version: &str) -> Result<(), String> {
+    let signed = sig.trusted_comment().split('\t').find_map(|f| f.strip_prefix("version:")).map(str::trim);
+    let Some(signed) = signed else {
+        return Err("The update signature doesn't say which version it was made for; it was not installed.".into());
+    };
+    let same = match (semver::Version::parse(signed.trim_start_matches('v')), semver::Version::parse(version.trim_start_matches('v'))) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => signed == version,
+    };
+    if same { Ok(()) } else { Err(format!("The update was signed for version {signed}, not {version}; it was not installed.")) }
+}
+
+/// Verifies `data` against a Tauri-style signature (base64 of a minisign signature file) and
+/// public key (base64 of a minisign public key file), and that it was signed for `version`.
+pub fn verify(mut data: impl Read, signature_b64: &str, public_key_b64: &str, version: &str) -> Result<(), String> {
+    let pk = decode_key(public_key_b64)?;
+    let sig = decode_signature(signature_b64)?;
+    let mut v = pk.verify_stream(&sig).map_err(signature_error)?;
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = data.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        v.update(&buf[..n]);
+    }
+    v.finalize().map_err(signature_error)?;
+    check_signed_version(&sig, version)
+}
+
+// ---- installing ---------------------------------------------------------
+
+/// Downloads, verifies and installs the update found by [`check`].
+pub async fn install(s: &Arc<Session>) -> CmdResult<UpdateStatus> {
+    if s.update.lock().status.ready {
+        return Ok(status(s));
+    }
+    if s.update.lock().found.is_none() {
+        check(s, true).await?;
+    }
+    let install = current_install();
+    let found = {
+        let mut u = s.update.lock();
+        if u.status.ready {
+            return Ok(u.status.clone());
+        }
+        if u.busy {
+            return Err("An update is already being installed.".into());
+        }
+        let Some(found) = u.found.clone() else {
+            return Err(match &u.status.available {
+                Some(v) => format!("kimchi {v} has no download for this platform yet. See {RELEASES_URL}"),
+                None => format!("kimchi {CURRENT} is up to date."),
+            });
+        };
+        if let Err(why) = install_support(&install) {
+            return Err(format!("{why} Download kimchi {} from {}", found.version, u.status.download_url.as_deref().unwrap_or(RELEASES_URL)));
+        }
+        u.busy = true;
+        u.status.progress = Some(0.0);
+        u.status.error = None;
+        found
+    };
+    s.emit(Event::Update { status: status(s) });
+
+    let result = download_and_install(s, &found, &install).await;
+
+    let st = {
+        let mut u = s.update.lock();
+        u.busy = false;
+        u.status.progress = None;
+        match &result {
+            Ok(()) => {
+                u.status.ready = true;
+                u.status.can_install = false;
+            }
+            Err(e) => u.status.error = Some(e.clone()),
+        }
+        u.status.clone()
+    };
+    s.emit(Event::Update { status: st.clone() });
+    match result {
+        Ok(()) => {
+            s.toast(ToastKind::Success, format!("kimchi {} is installed. Restart kimchi to use it.", found.version));
+            Ok(st)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn download_and_install(s: &Arc<Session>, found: &Found, install: &Install) -> Result<(), String> {
+    let dir = std::env::temp_dir().join(format!("kimchi-update-{}-{}", found.version, std::process::id()));
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    tokio::fs::create_dir_all(&dir).await.map_err(|e| format!("Couldn't prepare the download: {e}"))?;
+    let name = found.url.rsplit('/').next().filter(|n| !n.is_empty() && !n.contains(['?', '#'])).unwrap_or("kimchi-update");
+    let file = dir.join(name);
+    let result = async {
+        download_verified(s, found, &file).await?;
+        let (file, install) = (file.clone(), install.clone());
+        tokio::task::spawn_blocking(move || match install {
+            Install::MacBundle(bundle) => install_bundle(&file, &bundle),
+            Install::AppImage(path) => install_appimage(&file, &path),
+            Install::Other => Err("This copy of kimchi can't replace itself.".into()),
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    .await;
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    result
+}
+
+/// Streams the archive to `file`, hashing it as it arrives, and checks the signature.
+async fn download_verified(s: &Arc<Session>, found: &Found, file: &Path) -> Result<(), String> {
+    let pk = decode_key(PUBLIC_KEY)?;
+    let sig = decode_signature(&found.signature)?;
+    // Check the signature's version before spending the bandwidth.
+    check_signed_version(&sig, &found.version)?;
+    let mut verifier = pk.verify_stream(&sig).map_err(signature_error)?;
+
+    let failed = |e: reqwest::Error| format!("The download failed ({e}).");
+    let res = client(None)?.get(&found.url).header(reqwest::header::ACCEPT, "application/octet-stream").send().await.map_err(failed)?;
+    if !res.status().is_success() {
+        return Err(format!("The download failed: GitHub answered {}.", res.status()));
+    }
+    let total = res.content_length().filter(|&n| n > 0);
+    if total.is_some_and(|n| n > MAX_DOWNLOAD) {
+        return Err("The update is unexpectedly large; it was not downloaded.".into());
+    }
+    let mut out = tokio::fs::File::create(file).await.map_err(|e| format!("Couldn't save the download: {e}"))?;
+    let mut stream = res.bytes_stream();
+    let (mut got, mut shown) = (0u64, 0.0f64);
+    loop {
+        let next = tokio::time::timeout(Duration::from_secs(60), stream.next()).await.map_err(|_| "The download stalled; try again.".to_string())?;
+        let Some(chunk) = next else { break };
+        let chunk = chunk.map_err(failed)?;
+        got += chunk.len() as u64;
+        if got > MAX_DOWNLOAD {
+            return Err("The update is unexpectedly large; the download was stopped.".into());
+        }
+        verifier.update(&chunk);
+        out.write_all(&chunk).await.map_err(|e| format!("Couldn't save the download: {e}"))?;
+        if let Some(total) = total {
+            let p = (got as f64 / total as f64).min(1.0);
+            if p - shown >= 0.01 {
+                shown = p;
+                let st = {
+                    let mut u = s.update.lock();
+                    u.status.progress = Some(p);
+                    u.status.clone()
+                };
+                s.emit(Event::Update { status: st });
+            }
+        }
+    }
+    out.flush().await.map_err(|e| e.to_string())?;
+    out.sync_all().await.map_err(|e| e.to_string())?;
+    drop(out);
+    verifier.finalize().map_err(signature_error)
+}
+
+/// How the running copy is installed.
+pub fn current_install() -> Install {
+    let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) else {
+        return Install::Other;
+    };
+    if cfg!(target_os = "macos")
+        && let Some(bundle) = bundle_of(&exe)
+    {
+        return Install::MacBundle(bundle);
+    }
+    if cfg!(target_os = "linux")
+        && let Some(path) = std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|p| p.is_file())
+    {
+        return Install::AppImage(path);
+    }
+    Install::Other
+}
+
+/// `…/kimchi.app` for an executable at `…/kimchi.app/Contents/MacOS/<exe>`.
+pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents" && app.extension()? == "app").then(|| app.to_path_buf())
+}
+
+/// Ok when this copy can replace itself, else why not.
+fn install_support(install: &Install) -> Result<(), String> {
+    let target = match install {
+        Install::MacBundle(b) => {
+            if b.to_string_lossy().contains("/AppTranslocation/") {
+                return Err("kimchi is running from a temporary location (macOS App Translocation). Move kimchi.app to Applications and open it from there to update in one click.".into());
+            }
+            b
+        }
+        Install::AppImage(p) => p,
+        Install::Other if cfg!(windows) => return Err("On Windows, updates are installed with the installer.".into()),
+        Install::Other => return Err("This copy of kimchi (a package or a build from source) is updated by hand.".into()),
+    };
+    let dir = target.parent().ok_or("kimchi's folder can't be found.")?;
+    let probe = dir.join(format!(".kimchi-write-test-{}", uuid::Uuid::new_v4()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(_) => Err(format!("kimchi can't write to {}, so it can't replace itself.", dir.display())),
+    }
+}
+
+/// Where the replaced copy waits until the new one has started: `.<name>.previous` beside it.
+pub fn previous_path(target: &Path) -> Option<PathBuf> {
+    let name = target.file_name()?.to_string_lossy();
+    Some(target.with_file_name(format!(".{name}.previous")))
+}
+
+/// Swaps `new` in for `target`, keeping `target` as [`previous_path`]; puts it back on failure.
+fn swap_in(new: &Path, target: &Path) -> Result<(), String> {
+    let previous = previous_path(target).ok_or("kimchi's location can't be found.")?;
+    if previous.exists() {
+        remove_any(&previous).map_err(|e| format!("Couldn't remove the copy left by the last update ({}): {e}", previous.display()))?;
+    }
+    std::fs::rename(target, &previous).map_err(|e| format!("Couldn't move {} aside ({e}).", target.display()))?;
+    if let Err(e) = std::fs::rename(new, target) {
+        let _ = std::fs::rename(&previous, target);
+        return Err(format!("Couldn't move the new version into place ({e}); kimchi is unchanged."));
+    }
+    Ok(())
+}
+
+fn remove_any(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() && !path.is_symlink() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }
+}
+
+/// Unpacks a verified `.app.tar.gz` (one `*.app` folder at its root) beside `bundle` and swaps it in.
+pub fn install_bundle(archive: &Path, bundle: &Path) -> Result<(), String> {
+    let parent = bundle.parent().ok_or("kimchi's folder can't be found.")?;
+    let staging = parent.join(format!(".kimchi-update-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&staging).map_err(|e| format!("Couldn't unpack the update in {} ({e}).", parent.display()))?;
+    let result = (|| {
+        let file = std::fs::File::open(archive).map_err(|e| e.to_string())?;
+        let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
+        tar.set_preserve_permissions(true);
+        tar.set_overwrite(false);
+        tar.unpack(&staging).map_err(|e| format!("The update archive couldn't be unpacked ({e})."))?;
+        let apps: Vec<PathBuf> = std::fs::read_dir(&staging)
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir() && p.extension().is_some_and(|x| x == "app"))
+            .collect();
+        let [app] = apps.as_slice() else {
+            return Err("The update archive doesn't hold one app bundle.".to_string());
+        };
+        if !app.join("Contents/Info.plist").is_file() || !app.join("Contents/MacOS/kimchi").is_file() {
+            return Err("The update archive doesn't hold a complete kimchi.app.".to_string());
+        }
+        swap_in(app, bundle)
+    })();
+    let _ = std::fs::remove_dir_all(&staging);
+    result?;
+    // Let Launch Services see the new bundle (Info.plist, icon) on next launch.
+    let _ = std::process::Command::new("touch").arg(bundle).status();
+    Ok(())
+}
+
+/// Copies a verified AppImage beside `appimage` and swaps it in.
+pub fn install_appimage(new: &Path, appimage: &Path) -> Result<(), String> {
+    let parent = appimage.parent().ok_or("kimchi's folder can't be found.")?;
+    let staged = parent.join(format!(".kimchi-update-{}.AppImage", uuid::Uuid::new_v4()));
+    let result = (|| {
+        std::fs::copy(new, &staged).map_err(|e| format!("Couldn't write the update to {} ({e}).", parent.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+        }
+        swap_in(&staged, appimage)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result
+}
+
+/// Removes what the last update left beside the running copy: the previous version (this one has
+/// started, so it is no longer needed) and unfinished unpacking. Call once at startup, after the
+/// window is up. Returns what was removed.
+pub fn finish_pending() -> Vec<PathBuf> {
+    match current_install() {
+        Install::MacBundle(target) | Install::AppImage(target) => cleanup_beside(&target),
+        Install::Other => vec![],
+    }
+}
+
+fn cleanup_beside(target: &Path) -> Vec<PathBuf> {
+    let mut removed = vec![];
+    let mut leftovers: Vec<PathBuf> = previous_path(target).into_iter().filter(|p| p.exists()).collect();
+    if let Some(dir) = target.parent()
+        && let Ok(entries) = std::fs::read_dir(dir)
+    {
+        leftovers.extend(entries.flatten().map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".kimchi-update-"))));
+    }
+    for p in leftovers {
+        match remove_any(&p) {
+            Ok(()) => removed.push(p),
+            Err(e) => tracing::warn!("couldn't remove {}: {e}", p.display()),
+        }
+    }
+    removed
+}
+
+/// Starts the installed copy once this process has exited. Call it, then quit the app.
+pub fn restart() -> std::io::Result<()> {
+    let install = current_install();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Wait for this process to exit so the new one doesn't race it for the bridge port.
+        let (target, launch) = match &install {
+            Install::MacBundle(b) => (b.clone(), r#"exec /usr/bin/open -n "$0""#),
+            Install::AppImage(p) => (p.clone(), r#"exec "$0""#),
+            Install::Other => (std::env::current_exe()?, r#"exec "$0""#),
+        };
+        let script = format!(r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; {launch}"#);
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .arg(&target)
+            .arg(std::process::id().to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()
+            .map(|_| ())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = install;
+        std::process::Command::new(std::env::current_exe()?).spawn().map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn versions_compare_as_semver() {
+        assert!(is_newer("0.2.0", "0.1.1"));
+        assert!(is_newer("v0.1.10", "0.1.9"));
+        assert!(is_newer("1.0.0", "1.0.0-beta.2"));
+        assert!(!is_newer("0.1.1", "0.1.1"));
+        assert!(!is_newer("0.1.0", "0.1.1"));
+        assert!(!is_newer("0.2.0-rc.1", "0.2.0"));
+        assert!(!is_newer("latest", "0.1.1"));
+        assert!(!is_newer("0.2.0", "dev"));
+    }
+
+    fn manifest() -> Manifest {
+        let asset = |name: &str| PlatformAsset { signature: format!("sig-{name}"), url: format!("https://example.com/{name}") };
+        Manifest {
+            version: "0.2.0".into(),
+            notes: Some("notes".into()),
+            pub_date: None,
+            platforms: BTreeMap::from([
+                ("darwin-aarch64-app".into(), asset("kimchi_aarch64.app.tar.gz")),
+                ("darwin-aarch64".into(), asset("kimchi_aarch64.app.tar.gz")),
+                ("darwin-x86_64".into(), asset("kimchi_x64.app.tar.gz")),
+                ("linux-x86_64".into(), asset("kimchi_amd64.AppImage")),
+                ("linux-x86_64-deb".into(), asset("kimchi_amd64.deb")),
+                ("windows-x86_64-nsis".into(), asset("kimchi_x64-setup.exe")),
+            ]),
+        }
+    }
+
+    #[test]
+    fn platform_keys_go_from_specific_to_generic() {
+        assert_eq!(platform_keys("darwin", "aarch64", Some("app")), ["darwin-aarch64-app", "darwin-aarch64"]);
+        assert_eq!(platform_keys("linux", "x86_64", None), ["linux-x86_64"]);
+        let m = manifest();
+        let url = |keys: Vec<String>| select(&m, &keys).map(|a| a.url.rsplit('/').next().unwrap().to_string());
+        assert_eq!(url(platform_keys("darwin", "aarch64", Some("app"))).as_deref(), Some("kimchi_aarch64.app.tar.gz"));
+        // Falls back to `{os}-{arch}` when the installer has no entry of its own.
+        assert_eq!(url(platform_keys("darwin", "x86_64", Some("app"))).as_deref(), Some("kimchi_x64.app.tar.gz"));
+        assert_eq!(url(platform_keys("linux", "x86_64", Some("appimage"))).as_deref(), Some("kimchi_amd64.AppImage"));
+        assert_eq!(url(platform_keys("linux", "x86_64", Some("deb"))).as_deref(), Some("kimchi_amd64.deb"));
+        assert_eq!(url(platform_keys("windows", "x86_64", Some("nsis"))).as_deref(), Some("kimchi_x64-setup.exe"));
+        assert_eq!(url(platform_keys("linux", "aarch64", None)), None);
+    }
+
+    #[test]
+    fn reads_the_tauri_manifest_format() {
+        let json = r#"{"version":"0.1.1","notes":"n","pub_date":"2026-10-01T20:57:38.022Z","platforms":{"darwin-aarch64":{"signature":"c2ln","url":"https://api.github.com/repos/ludovic111/kimchi/releases/assets/604122959"}}}"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.version, "0.1.1");
+        assert_eq!(m.platforms["darwin-aarch64"].signature, "c2ln");
+    }
+
+    #[test]
+    fn finds_the_app_bundle() {
+        assert_eq!(bundle_of(Path::new("/Applications/kimchi.app/Contents/MacOS/kimchi")), Some(PathBuf::from("/Applications/kimchi.app")));
+        assert_eq!(bundle_of(Path::new("/Applications/kimchi.app/Contents/MacOS/kimchi-cli")), Some(PathBuf::from("/Applications/kimchi.app")));
+        assert_eq!(bundle_of(Path::new("/repo/target/release/kimchi")), None);
+        assert_eq!(previous_path(Path::new("/Applications/kimchi.app")), Some(PathBuf::from("/Applications/.kimchi.app.previous")));
+    }
+
+    struct Keys {
+        sk: minisign::SecretKey,
+        pk_b64: String,
+    }
+
+    fn keys() -> Keys {
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let pk_b64 = base64::engine::general_purpose::STANDARD.encode(kp.pk.to_box().unwrap().to_string());
+        Keys { sk: kp.sk, pk_b64 }
+    }
+
+    /// Signs like `kimchi-release sign` and the Tauri CLI: base64 of the signature file.
+    fn sign(k: &Keys, data: &[u8], trusted: &str) -> String {
+        let sig = minisign::sign(None, &k.sk, data, Some(trusted), Some("signature from tauri secret key")).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(sig.to_string())
+    }
+
+    #[test]
+    fn accepts_a_good_signature() {
+        let k = keys();
+        let data = b"the new kimchi".repeat(10_000);
+        let sig = sign(&k, &data, "timestamp:1790886104\tfile:kimchi_aarch64.app.tar.gz\tversion:0.2.0");
+        verify(&data[..], &sig, &k.pk_b64, "0.2.0").unwrap();
+        verify(&data[..], &sig, &k.pk_b64, "v0.2.0").unwrap();
+    }
+
+    #[test]
+    fn refuses_bad_signatures() {
+        let k = keys();
+        let data = b"the new kimchi".to_vec();
+        let sig = sign(&k, &data, "timestamp:1\tfile:x\tversion:0.2.0");
+        // Tampered data.
+        let err = verify(&b"the new kimchi!"[..], &sig, &k.pk_b64, "0.2.0").unwrap_err();
+        assert!(err.contains("doesn't match"), "{err}");
+        // Signed by someone else.
+        let err = verify(&data[..], &sig, &keys().pk_b64, "0.2.0").unwrap_err();
+        assert!(err.contains("different key"), "{err}");
+        // A real archive replayed as another version.
+        let err = verify(&data[..], &sig, &k.pk_b64, "0.3.0").unwrap_err();
+        assert!(err.contains("signed for version 0.2.0"), "{err}");
+        // No version in the trusted comment.
+        let unversioned = sign(&k, &data, "timestamp:1\tfile:x");
+        assert!(verify(&data[..], &unversioned, &k.pk_b64, "0.2.0").is_err());
+        // Garbage.
+        assert!(verify(&data[..], "not base64!", &k.pk_b64, "0.2.0").is_err());
+    }
+
+    /// kimchi 0.1.1's Windows installer signature, from its `latest.json`: it must be checked against
+    /// the key built in here (wrong data, so the signature fails, but not the key id).
+    #[test]
+    fn the_built_in_key_is_the_release_key() {
+        const SIG_0_1_1: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTbjJWZndlQlVIVEJlaTd5UjZvWHM3Q0d4cFZvdTlnSTF0cVlNSHFhQU03NnV5TEZLOWNDejROd3lCaUlrVS84eHJkYTY2YlM4TmxIR0V1akZZSXJkRmxEZFRoV2VuY0E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwODg2MTA0CWZpbGU6a2ltY2hpXzAuMS4xX3g2NF9lbi1VUy5tc2kJdmVyc2lvbjowLjEuMQo4b0xmTDE2TXA5Y3VqUnZBWDJvd1Q4bVRkbG1GQmpGNGE5cGxKWng4MnpwR0p5UUdjcVFpOHZZMWVPTHVKbUs1TzdTa2RLRDNhZnM2RENKZkYzdkJBUT09Cg==";
+        let err = verify(&b"not the msi"[..], SIG_0_1_1, PUBLIC_KEY, "0.1.1").unwrap_err();
+        assert!(err.contains("doesn't match"), "{err}");
+    }
+
+    fn tar_gz(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut b = tar::Builder::new(flate2::write::GzEncoder::new(vec![], flate2::Compression::fast()));
+        for (path, data) in entries {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(data.len() as u64);
+            h.set_mode(0o755);
+            h.set_cksum();
+            b.append_data(&mut h, path, *data).unwrap();
+        }
+        b.into_inner().unwrap().finish().unwrap()
+    }
+
+    fn write(path: &Path, data: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::File::create(path).unwrap().write_all(data).unwrap();
+    }
+
+    #[test]
+    fn replaces_the_bundle_and_keeps_the_previous_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("kimchi.app");
+        write(&bundle.join("Contents/MacOS/kimchi"), b"old");
+        write(&bundle.join("Contents/Info.plist"), b"old plist");
+        let archive = dir.path().join("kimchi_aarch64.app.tar.gz");
+        std::fs::write(&archive, tar_gz(&[("kimchi.app/Contents/Info.plist", b"new plist"), ("kimchi.app/Contents/MacOS/kimchi", b"new")])).unwrap();
+
+        install_bundle(&archive, &bundle).unwrap();
+        assert_eq!(std::fs::read(bundle.join("Contents/MacOS/kimchi")).unwrap(), b"new");
+        let previous = dir.path().join(".kimchi.app.previous");
+        assert_eq!(std::fs::read(previous.join("Contents/MacOS/kimchi")).unwrap(), b"old");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(bundle.join("Contents/MacOS/kimchi")).unwrap().permissions().mode() & 0o111, 0o111);
+        }
+
+        // The new version started: the previous copy goes.
+        assert_eq!(cleanup_beside(&bundle), vec![previous.clone()]);
+        assert!(!previous.exists() && bundle.exists());
+    }
+
+    #[test]
+    fn a_broken_archive_leaves_the_bundle_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("kimchi.app");
+        write(&bundle.join("Contents/MacOS/kimchi"), b"old");
+        let archive = dir.path().join("update.tar.gz");
+        std::fs::write(&archive, tar_gz(&[("README.txt", b"no app here")])).unwrap();
+        assert!(install_bundle(&archive, &bundle).is_err());
+        std::fs::write(&archive, b"not a tarball").unwrap();
+        assert!(install_bundle(&archive, &bundle).is_err());
+        assert_eq!(std::fs::read(bundle.join("Contents/MacOS/kimchi")).unwrap(), b"old");
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(!names.iter().any(|n| n.starts_with('.')), "{names:?}");
+    }
+
+    #[test]
+    fn replaces_an_appimage() {
+        let dir = tempfile::tempdir().unwrap();
+        let appimage = dir.path().join("kimchi.AppImage");
+        std::fs::write(&appimage, b"old").unwrap();
+        let new = dir.path().join("download");
+        std::fs::write(&new, b"new").unwrap();
+        install_appimage(&new, &appimage).unwrap();
+        assert_eq!(std::fs::read(&appimage).unwrap(), b"new");
+        assert_eq!(std::fs::read(dir.path().join(".kimchi.AppImage.previous")).unwrap(), b"old");
+        assert_eq!(cleanup_beside(&appimage).len(), 1);
+    }
 }

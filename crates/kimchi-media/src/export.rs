@@ -56,12 +56,26 @@ pub struct ExportSettings {
     pub range: Option<(f64, f64)>,
 }
 
-/// Pre-rendered transparent PNGs, one per text clip, the size of the canvas.
-/// The UI rasterises text so exports match the preview exactly.
+/// Pre-rendered transparent PNGs, one per text clip, the size of the canvas
+/// ([`crate::text::rasterize_overlays`]), so exports match the preview exactly.
 pub type Overlays = HashMap<Id, PathBuf>;
 
 /// Graphs longer than this go through a script file instead of argv.
-const INLINE_GRAPH_MAX: usize = 4_000;
+pub(crate) const INLINE_GRAPH_MAX: usize = 4_000;
+
+/// Sample rate of the preview's PCM ([`Sink::Samples`]).
+pub(crate) const PREVIEW_SAMPLE_RATE: u32 = 48_000;
+
+/// What a compiled graph feeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sink {
+    /// The encoders and muxer of `settings.format`: an export.
+    Encode,
+    /// Raw RGBA frames on stdout, picture only (the preview).
+    Frames,
+    /// Raw interleaved f32le stereo PCM at [`PREVIEW_SAMPLE_RATE`] on stdout, sound only (the preview).
+    Samples,
+}
 
 /// Renders `project`. `progress` receives 0.0–1.0.
 pub async fn export(
@@ -161,7 +175,14 @@ impl Plan {
     pub fn args(&self, out: &Path, script: Option<&Path>, caps: &Caps) -> Vec<String> {
         let mut args: Vec<String> =
             ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-progress", "pipe:1", "-nostats"].map(s).to_vec();
-        args.extend(self.inputs.iter().cloned());
+        args.extend(self.body(script, caps));
+        args.push(path(out));
+        args
+    }
+
+    /// Inputs, graph and output options, without the global options and the output path.
+    pub(crate) fn body(&self, script: Option<&Path>, caps: &Caps) -> Vec<String> {
+        let mut args = self.inputs.clone();
         match script {
             // ffmpeg 7 replaced -filter_complex_script with the generic `-/option file` syntax.
             Some(file) if caps.version == 0 || caps.version >= 7 => args.extend([s("-/filter_complex"), path(file)]),
@@ -169,13 +190,26 @@ impl Plan {
             None => args.extend([s("-filter_complex"), self.graph.clone()]),
         }
         args.extend(self.output.iter().cloned());
-        args.push(path(out));
         args
     }
 }
 
 /// Compiles `project` into a [`Plan`]. Pure: doesn't touch the file system.
+///
+/// Only clips that intersect the rendered range get an input and a chain, so rendering a short
+/// range (the preview's frames) stays cheap however long the timeline is.
 pub fn build(project: &Project, overlays: &Overlays, settings: &ExportSettings, caps: &Caps) -> MediaResult<Plan> {
+    compile(project, overlays, settings, caps, Sink::Encode).map(|(plan, _)| plan)
+}
+
+/// [`build`] for any [`Sink`]; also returns how many sound chains were mixed (0 = silence).
+pub(crate) fn compile(
+    project: &Project,
+    overlays: &Overlays,
+    settings: &ExportSettings,
+    caps: &Caps,
+    sink: Sink,
+) -> MediaResult<(Plan, usize)> {
     let ps = &project.settings;
     let end = project.duration();
     if end <= 1e-6 {
@@ -188,13 +222,31 @@ pub fn build(project: &Project, overlays: &Overlays, settings: &ExportSettings, 
     let format = settings.format;
     let (width, height) = output_size(ps, settings);
     let fps = output_fps(ps, settings);
-    let codecs = Codecs::pick(format, settings.quality, caps, width, height, fps)?;
+    let codecs = match sink {
+        Sink::Encode => Codecs::pick(format, settings.quality, caps, width, height, fps)?,
+        Sink::Frames => Codecs {
+            video: ["-f", "rawvideo", "-pix_fmt", "rgba"].map(s).to_vec(),
+            audio: vec![],
+            muxer: vec![],
+            pix_fmt: "rgba",
+        },
+        Sink::Samples => Codecs {
+            video: vec![],
+            audio: ["-c:a", "pcm_f32le", "-f", "f32le", "-ac", "2"].map(s).to_vec(),
+            muxer: vec![],
+            pix_fmt: "rgba",
+        },
+    };
     let mut g = Graph {
         project,
         from,
         to,
         fps,
-        sample_rate: if format == ExportFormat::Webm { 48_000 } else { ps.sample_rate.max(8_000) },
+        sample_rate: if format == ExportFormat::Webm || sink == Sink::Samples {
+            PREVIEW_SAMPLE_RATE
+        } else {
+            ps.sample_rate.max(8_000)
+        },
         sx: width as f64 / ps.width.max(1) as f64,
         sy: height as f64 / ps.height.max(1) as f64,
         width,
@@ -208,7 +260,8 @@ pub fn build(project: &Project, overlays: &Overlays, settings: &ExportSettings, 
     let total = to - from;
 
     let mut output = vec![];
-    if format != ExportFormat::Audio {
+    let mut audible = 0;
+    if format != ExportFormat::Audio && sink != Sink::Samples {
         let base_fmt = if format == ExportFormat::Prores { "yuv444p" } else { "yuv420p" };
         g.chains.push(format!(
             "color=c={}:s={width}x{height}:r={}:d={},format={base_fmt}[b0]",
@@ -250,7 +303,7 @@ pub fn build(project: &Project, overlays: &Overlays, settings: &ExportSettings, 
         output.extend([s("-map"), s("[vout]")]);
         output.extend(codecs.video);
     }
-    if format != ExportFormat::Gif {
+    if format != ExportFormat::Gif && sink != Sink::Frames {
         let mut mixed = vec![];
         for track in project.tracks.iter().filter(|t| !t.muted) {
             for clip in sorted(&track.clips) {
@@ -258,6 +311,7 @@ pub fn build(project: &Project, overlays: &Overlays, settings: &ExportSettings, 
             }
         }
         let sr = g.sample_rate;
+        audible = mixed.len();
         g.chains.push(if mixed.is_empty() {
             // Silence rather than no track: players and muxers cope better.
             format!("anullsrc=r={sr}:cl=stereo,atrim=end={}[aout]", num(total))
@@ -278,7 +332,7 @@ pub fn build(project: &Project, overlays: &Overlays, settings: &ExportSettings, 
     }
     output.extend(codecs.muxer);
     output.extend([s("-t"), num(total)]);
-    Ok(Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources })
+    Ok((Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources }, audible))
 }
 
 fn sorted(clips: &[Clip]) -> Vec<&Clip> {
@@ -287,7 +341,7 @@ fn sorted(clips: &[Clip]) -> Vec<&Clip> {
     clips
 }
 
-fn output_size(ps: &ProjectSettings, st: &ExportSettings) -> (u32, u32) {
+pub(crate) fn output_size(ps: &ProjectSettings, st: &ExportSettings) -> (u32, u32) {
     let aspect = ps.width.max(1) as f64 / ps.height.max(1) as f64;
     let (w, h) = match (st.width, st.height) {
         (Some(w), Some(h)) => (w, h),
@@ -707,7 +761,7 @@ pub(crate) fn h264_args(caps: &Caps, preset: &str, crf: u32, bitrate: u64) -> Me
 }
 
 /// `#rrggbb`/`#rgb`/`#rrggbbaa` → ffmpeg colour syntax.
-fn color(c: &str) -> String {
+pub(crate) fn color(c: &str) -> String {
     let hex = c.trim().trim_start_matches('#');
     let hex = match hex.len() {
         3 => hex.chars().flat_map(|ch| [ch, ch]).collect(),

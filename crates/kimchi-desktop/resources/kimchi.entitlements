@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hardened runtime entitlements for kimchi.app (scripts/bundle-macos.sh). kimchi is not
+     sandboxed, so file and network access need nothing here. GPUI compiles its Metal shaders at
+     run time (runtime_shaders), which goes through the system's Metal compiler service and needs
+     no JIT or unsigned-memory exception; ffmpeg runs as a separate signed executable. Keep this
+     empty unless a feature needs an exception (microphone recording would add
+     com.apple.security.device.audio-input). -->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

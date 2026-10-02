@@ -13,20 +13,30 @@ rust-version = "1.90"
 kimchi-core = { path = "crates/kimchi-core" }
 kimchi-media = { path = "crates/kimchi-media" }
 kimchi-gen = { path = "crates/kimchi-gen" }
+kimchi-control = { path = "crates/kimchi-control" }
+kimchi-agent = { path = "crates/kimchi-agent" }
+kimchi-cli = { path = "crates/kimchi-cli" }
 
 anyhow = "1"
 async-trait = "0.1"
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
+cosmic-text = "0.19"
 dirs = "6"
+flate2 = "1"
 futures = "0.3"
+minisign = "0.10"
+minisign-verify = "0.2"
 parking_lot = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "rustls-tls", "gzip"] }
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tar = "0.4"
 tempfile = "3"
 thiserror = "2"
+tiny-skia = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "process", "io-util"] }
 tokio-util = "0.7"
 tracing = "0.1"
