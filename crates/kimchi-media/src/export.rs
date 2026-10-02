@@ -1,19 +1,19 @@
-//! Renders a project to a file by compiling the timeline into one ffmpeg filter graph.
+//! Renders a project to a file: the pictures come from the compositor ([`crate::render`]) as raw
+//! frames on ffmpeg's standard input, the sound from an ffmpeg graph over the media files.
 //!
-//! [`build`] is pure: it turns a project into a [`Plan`] (inputs, graph, output
-//! options). [`export`] runs that plan, reports progress and handles cancellation.
+//! [`build`] is pure: it turns a project into a [`Plan`] (inputs, graph, output options).
+//! [`export`] runs that plan, feeding it frames, reports progress and handles cancellation.
 //!
-//! Graph shape: a `color` base the size of the output, then every visible clip
-//! overlaid bottom-up (last track first, `tracks[0]` last), each one shifted to
-//! its timeline position with `setpts`. Audible clips are tempo-adjusted,
-//! faded, delayed to their start and mixed with `amix`.
+//! Graph shape: input 0 is the rendered picture (`[0:v]`), converted to the encoder's format
+//! with BT.709 colours. Audible clips are tempo-adjusted, faded (and their volume keyframes
+//! applied), delayed to their start and mixed with `amix`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use kimchi_core::{Clip, ClipContent, Fit, Id, MediaKind, Project, ProjectSettings, TrackKind};
+use kimchi_core::{Clip, ClipContent, Id, MediaKind, Project, ProjectSettings};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use crate::{Caps, MediaError, MediaResult, Tools, process};
@@ -65,10 +65,6 @@ pub struct ExportSettings {
     pub range: Option<(f64, f64)>,
 }
 
-/// Pre-rendered transparent PNGs, one per text clip, the size of the canvas
-/// ([`crate::text::rasterize_overlays`]), so exports match the preview exactly.
-pub type Overlays = HashMap<Id, PathBuf>;
-
 /// Graphs longer than this go through a script file instead of argv.
 pub(crate) const INLINE_GRAPH_MAX: usize = 4_000;
 
@@ -80,8 +76,6 @@ pub(crate) const PREVIEW_SAMPLE_RATE: u32 = 48_000;
 pub(crate) enum Sink {
     /// The encoders and muxer of `settings.format`: an export.
     Encode,
-    /// Raw RGBA frames on stdout, picture only (the preview).
-    Frames,
     /// Raw interleaved f32le stereo PCM at [`PREVIEW_SAMPLE_RATE`] on stdout, sound only (the preview).
     Samples,
 }
@@ -90,13 +84,12 @@ pub(crate) enum Sink {
 pub async fn export(
     tools: &Tools,
     project: &Project,
-    overlays: &Overlays,
     settings: &ExportSettings,
     progress: impl Fn(f64) + Send + Sync,
     cancel: CancellationToken,
 ) -> MediaResult<()> {
     let caps = Caps::detect(tools).await?;
-    let plan = build(project, overlays, settings, &caps)?;
+    let plan = build(project, settings, &caps)?;
     if let Some(missing) = plan.sources.iter().find(|p| !p.exists()) {
         return Err(MediaError::Unsupported(format!("missing media file {}", missing.display())));
     }
@@ -114,7 +107,7 @@ pub async fn export(
         tokio::fs::write(script, &plan.graph).await?;
     }
     progress(0.0);
-    let result = run(tools, &plan.args(&part, script.as_deref(), &caps), plan.duration, &progress, &cancel).await;
+    let result = run(tools, project, &plan, &plan.args(&part, script.as_deref(), &caps), &progress, &cancel).await;
     if let Some(script) = &script {
         let _ = tokio::fs::remove_file(script).await;
     }
@@ -133,14 +126,17 @@ pub async fn export(
 
 async fn run(
     tools: &Tools,
+    project: &Project,
+    plan: &Plan,
     args: &[String],
-    duration: f64,
     progress: &(impl Fn(f64) + Sync),
     cancel: &CancellationToken,
 ) -> MediaResult<()> {
-    let mut child = process::spawn(&tools.ffmpeg, args, true)?;
+    let mut child = process::spawn_with_stdin(&tools.ffmpeg, args, true, plan.video.is_some())?;
     let stderr = process::collect_stderr(&mut child);
     let mut lines = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
+    let stdin = child.stdin.take();
+    let duration = plan.duration;
     // `-progress pipe:1` prints key=value blocks; out_time_us is how far the muxer got.
     let watch = async {
         while let Ok(Some(line)) = lines.next_line().await {
@@ -149,10 +145,49 @@ async fn run(
             }
         }
     };
+    // The picture: frames from the compositor, written to ffmpeg's stdin.
+    let feed = async {
+        let (Some(video), Some(mut stdin)) = (plan.video, stdin) else { return Ok(()) };
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<MediaResult<Vec<u8>>>(3);
+        let (tools, project) = (tools.clone(), project.clone());
+        let render = tokio::task::spawn_blocking(move || {
+            let mut r = crate::render::Renderer::new(&tools, &project, video.width, video.height, video.fps);
+            for n in 0..video.frames {
+                let t = video.from + n as f64 / video.fps;
+                let frame = r.frame(t).map(crate::render::to_rgba);
+                if tx.blocking_send(frame).is_err() {
+                    return; // cancelled or ffmpeg gone
+                }
+            }
+        });
+        let mut result = Ok(());
+        while let Some(frame) = rx.recv().await {
+            match frame {
+                Ok(bytes) => {
+                    if stdin.write_all(&bytes).await.is_err() {
+                        break; // ffmpeg stopped reading: its exit status says why
+                    }
+                }
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
+        }
+        // Close both ends so the renderer (blocked on a full channel) and ffmpeg finish.
+        drop(rx);
+        drop(stdin);
+        let _ = render.await;
+        result
+    };
     let status = tokio::select! {
         biased;
         _ = cancel.cancelled() => None,
-        status = async { watch.await; child.wait().await } => Some(status?),
+        r = async {
+            let (_, fed) = tokio::join!(watch, feed);
+            fed?;
+            Ok::<_, MediaError>(child.wait().await?)
+        } => Some(r?),
     };
     let Some(status) = status else {
         let _ = child.kill().await;
@@ -164,10 +199,22 @@ async fn run(
     Ok(())
 }
 
+/// The rendered picture fed to ffmpeg.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VideoFeed {
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    /// Timeline time of the first frame.
+    pub from: f64,
+    pub frames: u64,
+}
+
 /// A compiled export: everything ffmpeg needs except the output path.
 #[derive(Debug, Clone)]
 pub struct Plan {
-    /// Input options: `[-ss …] [-t …] [-loop 1 …] -i path` per input, in input-index order.
+    /// Input options: the picture pipe first (when there is a picture), then
+    /// `[-ss …] [-t …] -i path` per media input, in input-index order.
     pub inputs: Vec<String>,
     /// The `-filter_complex` graph; produces `[vout]` and/or `[aout]`.
     pub graph: String,
@@ -177,13 +224,18 @@ pub struct Plan {
     pub duration: f64,
     /// Every file the inputs read.
     pub sources: Vec<PathBuf>,
+    /// The frames to render and pipe in, for formats with a picture.
+    pub video: Option<VideoFeed>,
 }
 
 impl Plan {
     /// Full ffmpeg argv. With `script`, the graph is read from that file (already written).
     pub fn args(&self, out: &Path, script: Option<&Path>, caps: &Caps) -> Vec<String> {
         let mut args: Vec<String> =
-            ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-progress", "pipe:1", "-nostats"].map(s).to_vec();
+            ["-hide_banner", "-y", "-loglevel", "error", "-progress", "pipe:1", "-nostats"].map(s).to_vec();
+        if self.video.is_none() {
+            args.insert(1, s("-nostdin"));
+        }
         args.extend(self.body(script, caps));
         args.push(path(out));
         args
@@ -206,19 +258,13 @@ impl Plan {
 /// Compiles `project` into a [`Plan`]. Pure: doesn't touch the file system.
 ///
 /// Only clips that intersect the rendered range get an input and a chain, so rendering a short
-/// range (the preview's frames) stays cheap however long the timeline is.
-pub fn build(project: &Project, overlays: &Overlays, settings: &ExportSettings, caps: &Caps) -> MediaResult<Plan> {
-    compile(project, overlays, settings, caps, Sink::Encode).map(|(plan, _)| plan)
+/// range stays cheap however long the timeline is.
+pub fn build(project: &Project, settings: &ExportSettings, caps: &Caps) -> MediaResult<Plan> {
+    compile(project, settings, caps, Sink::Encode).map(|(plan, _)| plan)
 }
 
 /// [`build`] for any [`Sink`]; also returns how many sound chains were mixed (0 = silence).
-pub(crate) fn compile(
-    project: &Project,
-    overlays: &Overlays,
-    settings: &ExportSettings,
-    caps: &Caps,
-    sink: Sink,
-) -> MediaResult<(Plan, usize)> {
+pub(crate) fn compile(project: &Project, settings: &ExportSettings, caps: &Caps, sink: Sink) -> MediaResult<(Plan, usize)> {
     let ps = &project.settings;
     let end = project.duration();
     if end <= 1e-6 {
@@ -233,12 +279,6 @@ pub(crate) fn compile(
     let fps = output_fps(ps, settings);
     let codecs = match sink {
         Sink::Encode => Codecs::pick(format, settings.quality, caps, width, height, fps)?,
-        Sink::Frames => Codecs {
-            video: ["-f", "rawvideo", "-pix_fmt", "rgba"].map(s).to_vec(),
-            audio: vec![],
-            muxer: vec![],
-            pix_fmt: "rgba",
-        },
         Sink::Samples => Codecs {
             video: vec![],
             audio: ["-c:a", "pcm_f32le", "-f", "f32le", "-ac", "2"].map(s).to_vec(),
@@ -246,73 +286,43 @@ pub(crate) fn compile(
             pix_fmt: "rgba",
         },
     };
+    let total = to - from;
+    let picture = !format.is_audio_only() && sink == Sink::Encode;
     let mut g = Graph {
         project,
         from,
         to,
-        fps,
         sample_rate: if format == ExportFormat::Webm || sink == Sink::Samples {
             PREVIEW_SAMPLE_RATE
         } else {
             ps.sample_rate.max(8_000)
         },
-        sx: width as f64 / ps.width.max(1) as f64,
-        sy: height as f64 / ps.height.max(1) as f64,
-        width,
-        height,
-        overlay_format: if format == ExportFormat::Prores { "yuv444" } else { "yuv420" },
         inputs: vec![],
+        count: 0,
         sources: vec![],
         input_of: HashMap::new(),
         chains: vec![],
     };
-    let total = to - from;
 
     let mut output = vec![];
-    let mut audible = 0;
-    if !format.is_audio_only() && sink != Sink::Samples {
-        let base_fmt = if format == ExportFormat::Prores { "yuv444p" } else { "yuv420p" };
-        g.chains.push(format!(
-            "color=c={}:s={width}x{height}:r={}:d={},format={base_fmt}[b0]",
-            color(&ps.background),
-            num(fps),
-            num(total)
-        ));
-        let mut layers = 0;
-        for track in project.tracks.iter().rev().filter(|t| t.kind == TrackKind::Video && !t.hidden) {
-            for clip in sorted(&track.clips) {
-                if let Some(label) = g.visual(overlays, clip) {
-                    let (start, end) = (clip.start.max(from) - from, clip.end().min(to) - from);
-                    let (x, y) = if matches!(clip.content, ClipContent::Text { .. }) {
-                        (s("0"), s("0"))
-                    } else {
-                        (
-                            format!("(main_w-overlay_w)/2{}", signed(clip.transform.x * g.sx)),
-                            format!("(main_h-overlay_h)/2{}", signed(clip.transform.y * g.sy)),
-                        )
-                    };
-                    // Half a frame of slack so the frame at exactly `start` shows and the one at `end` doesn't.
-                    let half = 0.5 / fps;
-                    g.chains.push(format!(
-                        "[b{layers}][{label}]overlay=x={x}:y={y}:format={}:eof_action=pass:enable='between(t,{},{})'[b{}]",
-                        g.overlay_format,
-                        num(start - half),
-                        num(end - half),
-                        layers + 1
-                    ));
-                    layers += 1;
-                }
-            }
-        }
-        let tail = match format {
-            ExportFormat::Gif => "split[g0][g1];[g0]palettegen[pal];[g1][pal]paletteuse".into(),
-            _ => format!("format={}", codecs.pix_fmt),
-        };
-        g.chains.push(format!("[b{layers}]{tail}[vout]"));
+    let mut video = None;
+    if picture {
+        let frames = ((total * fps) - 1e-6).ceil().max(1.0) as u64;
+        video = Some(VideoFeed { width, height, fps, from, frames });
+        g.inputs.extend(["-f", "rawvideo", "-pix_fmt", "rgba", "-s"].map(s));
+        g.inputs.extend([format!("{width}x{height}"), s("-r"), num(fps), s("-i"), s("pipe:0")]);
+        g.count = 1;
+        g.chains.push(match format {
+            ExportFormat::Gif => s("[0:v]split[g0][g1];[g0]palettegen[pal];[g1][pal]paletteuse[vout]"),
+            _ => format!("[0:v]scale=out_color_matrix=bt709:out_range=tv,format={}[vout]", codecs.pix_fmt),
+        });
         output.extend([s("-map"), s("[vout]")]);
         output.extend(codecs.video);
+        if format != ExportFormat::Gif {
+            output.extend(["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"].map(s));
+        }
     }
-    if format != ExportFormat::Gif && sink != Sink::Frames {
+    if format != ExportFormat::Gif {
         let mut mixed = vec![];
         for track in project.tracks.iter().filter(|t| !t.muted) {
             for clip in sorted(&track.clips) {
@@ -320,7 +330,7 @@ pub(crate) fn compile(
             }
         }
         let sr = g.sample_rate;
-        audible = mixed.len();
+        let audible = mixed.len();
         g.chains.push(if mixed.is_empty() {
             // Silence rather than no track: players and muxers cope better.
             format!("anullsrc=r={sr}:cl=stereo,atrim=end={}[aout]", num(total))
@@ -338,10 +348,13 @@ pub(crate) fn compile(
         output.extend([s("-map"), s("[aout]")]);
         output.extend(codecs.audio);
         output.extend([s("-ar"), sr.to_string()]);
+        output.extend(codecs.muxer);
+        output.extend([s("-t"), num(total)]);
+        return Ok((Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources, video }, audible));
     }
     output.extend(codecs.muxer);
     output.extend([s("-t"), num(total)]);
-    Ok((Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources }, audible))
+    Ok((Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources, video }, 0))
 }
 
 fn sorted(clips: &[Clip]) -> Vec<&Clip> {
@@ -418,34 +431,18 @@ impl Window {
     fn decoded(&self) -> f64 {
         self.trim + self.len
     }
-
-    fn alpha_fades(&self) -> Vec<String> {
-        let mut f = vec![];
-        if let Some((st, d)) = self.fade_in {
-            f.push(format!("fade=t=in:st={}:d={}:alpha=1", num(st), num(d)));
-        }
-        if let Some((st, d)) = self.fade_out {
-            f.push(format!("fade=t=out:st={}:d={}:alpha=1", num(st), num(d)));
-        }
-        f
-    }
 }
 
 struct Graph<'a> {
     project: &'a Project,
     from: f64,
     to: f64,
-    fps: f64,
     sample_rate: u32,
-    /// Project pixels → output pixels.
-    sx: f64,
-    sy: f64,
-    width: u32,
-    height: u32,
-    overlay_format: &'static str,
     inputs: Vec<String>,
+    /// Inputs so far (the picture pipe counts).
+    count: usize,
     sources: Vec<PathBuf>,
-    /// Clip → input index, so a video's picture and sound share one decoder.
+    /// Clip → input index.
     input_of: HashMap<Id, usize>,
     chains: Vec<String>,
 }
@@ -455,7 +452,8 @@ impl Graph<'_> {
         self.inputs.extend(opts);
         self.inputs.extend([s("-i"), s(file)]);
         self.sources.push(PathBuf::from(file));
-        self.sources.len() - 1
+        self.count += 1;
+        self.count - 1
     }
 
     /// Seeked and trimmed input for a clip's media.
@@ -472,89 +470,6 @@ impl Graph<'_> {
         let i = self.input(opts, file);
         self.input_of.insert(clip.id, i);
         i
-    }
-
-    fn still_input(&mut self, file: &str, w: &Window) -> usize {
-        let opts = vec![s("-loop"), s("1"), s("-framerate"), num(self.fps), s("-t"), num(w.decoded())];
-        self.input(opts, file)
-    }
-
-    /// Adds the picture chain for `clip` and returns its label, if it shows anything.
-    fn visual(&mut self, overlays: &Overlays, clip: &Clip) -> Option<String> {
-        let t = &clip.transform;
-        if t.opacity <= 0.0 || t.scale <= 0.0 {
-            return None;
-        }
-        let w = Window::of(clip, self.from, self.to)?;
-        let speed = clip.speed.max(1e-3);
-        let (bw, bh) = (
-            self.project.settings.width as f64 * t.scale * self.sx,
-            self.project.settings.height as f64 * t.scale * self.sy,
-        );
-        let mut f: Vec<String> = vec![];
-        let mut alpha = t.opacity < 1.0 || !w.alpha_fades().is_empty();
-        let mut rotate = t.rotation.rem_euclid(360.0).abs() > 1e-3;
-        let head = match &clip.content {
-            ClipContent::Pending { .. } => return None,
-            ClipContent::Solid { color: c } => {
-                alpha |= c.trim_start_matches('#').len() == 8;
-                format!("color=c={}:s={}x{}:r={}:d={},", color(c), even(bw), even(bh), num(self.fps), num(w.decoded()))
-            }
-            ClipContent::Text { .. } => {
-                let Some(png) = overlays.get(&clip.id) else {
-                    tracing::warn!(clip = %clip.id, "no rendered overlay for text clip; skipping");
-                    return None;
-                };
-                let i = self.still_input(&png.to_string_lossy(), &w);
-                // Already positioned and rotated by the UI.
-                rotate = false;
-                if (self.sx - 1.0).abs() > 1e-9 || (self.sy - 1.0).abs() > 1e-9 {
-                    f.push(format!("scale={}:{}", self.width, self.height));
-                }
-                format!("[{i}:v:0]")
-            }
-            ClipContent::Media { asset_id } => {
-                let asset = self.project.asset(*asset_id)?;
-                let i = match asset.kind {
-                    MediaKind::Image => self.still_input(&asset.path, &w),
-                    MediaKind::Video if asset.meta.has_video => {
-                        let i = self.media_input(clip, &asset.path, &w);
-                        f.push(if (speed - 1.0).abs() > 1e-9 {
-                            format!("setpts=(PTS-STARTPTS)/{}", num(speed))
-                        } else {
-                            s("setpts=PTS-STARTPTS")
-                        });
-                        // Drop surplus frames early so scaling/rotating only sees what will be shown.
-                        if asset.meta.fps.is_none_or(|src| src * speed > self.fps * 1.01) {
-                            f.push(format!("fps={}", num(self.fps)));
-                        }
-                        i
-                    }
-                    _ => return None,
-                };
-                f.push(scale(t.fit, bw, bh));
-                f.push(s("setsar=1"));
-                format!("[{i}:v:0]")
-            }
-        };
-        if alpha || rotate {
-            f.push(s("format=rgba"));
-        }
-        if rotate {
-            let a = num(t.rotation.to_radians());
-            f.push(format!("rotate=a={a}:ow=rotw({a}):oh=roth({a}):c=none"));
-        }
-        if t.opacity < 1.0 {
-            f.push(format!("colorchannelmixer=aa={}", num(t.opacity)));
-        }
-        f.extend(w.alpha_fades());
-        if w.trim > 1e-6 {
-            f.push(format!("trim=start={}", num(w.trim)));
-        }
-        f.push(format!("setpts=PTS-STARTPTS+{}/TB", num(w.start)));
-        let label = format!("v{}", self.chains.len());
-        self.chains.push(format!("{head}{}[{label}]", f.join(",")));
-        Some(label)
     }
 
     /// Adds the sound chain for `clip` and returns its label, if it makes any sound.
@@ -578,7 +493,9 @@ impl Graph<'_> {
         f.extend(atempo(clip.speed).into_iter().map(|t| format!("atempo={}", num(t))));
         // Timestamps from the sample count: robust after atempo and with odd source timestamps.
         f.push(format!("asetpts=N/{sr}/TB"));
-        if (clip.volume - 1.0).abs() > 1e-9 {
+        if clip.keyframes.contains_key("volume") {
+            f.push(format!("volume=eval=frame:volume='{}'", volume_curve(clip, w.decode_from)));
+        } else if (clip.volume - 1.0).abs() > 1e-9 {
             f.push(format!("volume={}", num(clip.volume)));
         }
         if let Some((st, d)) = w.fade_in {
@@ -602,20 +519,23 @@ impl Graph<'_> {
     }
 }
 
-/// Scales into a `bw`×`bh` box per `fit`, honouring the source's display aspect ratio, even dimensions.
-fn scale(fit: Fit, bw: f64, bh: f64) -> String {
-    let (bw, bh) = (num(bw.max(2.0)), num(bh.max(2.0)));
-    let wide = format!("gt(dar,{bw}/{bh})");
-    let ev = |e: String| format!("'max(2,2*trunc(({e})/2))'");
-    match fit {
-        Fit::Stretch => format!("scale={}:{}", ev(bw.clone()), ev(bh)),
-        Fit::Contain => {
-            format!("scale=w={}:h={}", ev(format!("if({wide},{bw},{bh}*dar)")), ev(format!("if({wide},{bw}/dar,{bh})")))
-        }
-        Fit::Cover => {
-            format!("scale=w={}:h={}", ev(format!("if({wide},{bh}*dar,{bw})")), ev(format!("if({wide},{bh},{bw}/dar)")))
-        }
+/// A clip's volume keyframes as an ffmpeg expression of `t` (seconds from `decode_from` into the
+/// clip): straight segments every 50 ms or so, nested `if`s.
+fn volume_curve(clip: &Clip, decode_from: f64) -> String {
+    let (a, b) = (decode_from, clip.duration);
+    let n = (((b - a) / 0.05).ceil() as usize).clamp(1, 400);
+    let pts: Vec<(f64, f64)> = (0..=n).map(|i| {
+        let local = a + (b - a) * i as f64 / n as f64;
+        (local - a, clip.volume_at(clip.start + local))
+    }).collect();
+    // Build from the last segment outwards: if(lt(t,t1), seg0, if(lt(t,t2), seg1, …)).
+    let mut expr = num(pts.last().map_or(1.0, |p| p.1));
+    for w in pts.windows(2).rev() {
+        let ((t0, v0), (t1, v1)) = (w[0], w[1]);
+        let k = if t1 - t0 > 1e-9 { (v1 - v0) / (t1 - t0) } else { 0.0 };
+        expr = format!("if(lt(t,{}),{}+({})*(t-{}),{expr})", num(t1), num(v0), num(k), num(t0));
     }
+    expr
 }
 
 /// `atempo` only takes 0.5–2.0 per stage, so bigger changes are chained.
@@ -794,11 +714,6 @@ fn num(x: f64) -> String {
     let t = format!("{x:.6}");
     let t = t.trim_end_matches('0');
     if t.ends_with('.') { format!("{t}0") } else { t.to_string() }
-}
-
-fn signed(x: f64) -> String {
-    let n = num(x);
-    if n.starts_with('-') { n } else { format!("+{n}") }
 }
 
 fn by<T>(q: Quality, draft: T, standard: T, high: T) -> T {

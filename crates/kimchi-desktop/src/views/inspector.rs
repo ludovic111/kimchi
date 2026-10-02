@@ -1,7 +1,8 @@
 //! The inspector (right column, glass tier 1): what is selected, and every way to change it.
 //!
-//! - one clip: name, generation provenance, the AI actions, text style or solid colour,
-//!   transform, timing, sound and the source media;
+//! - one clip: name, generation provenance, the AI actions, text style or solid colour, a
+//!   motion clip's template values and scene, transform, animation (keyframes at the playhead,
+//!   easings, presets), timing, sound and the source media;
 //! - several clips: duplicate, delete, and "bridge" for two;
 //! - a media item picked in the media panel: poster, provenance, file facts, insert / reveal;
 //! - nothing: the project's canvas, frame rate and background, and the main shortcuts.
@@ -10,9 +11,11 @@
 //! sliders send a `coalesce` key while they move so a drag is one undo step.
 
 pub mod ai;
+pub mod animation;
 pub mod color;
 pub mod fonts;
 pub mod format;
+pub mod scene_editor;
 pub mod slider;
 
 use std::path::PathBuf;
@@ -64,6 +67,11 @@ pub struct Inspector {
     line: Entity<Scrub>,
     width: Entity<Scrub>,
     height: Entity<Scrub>,
+    /// Fields of the template clip shown (built for each template clip).
+    template: animation::TemplateFields,
+    /// The layer, object or light picked in a motion clip's scene, and its fields.
+    scene_item: Option<(Id, String)>,
+    item_fields: scene_editor::ItemFields,
     _subs: Vec<Subscription>,
 }
 
@@ -74,6 +82,14 @@ impl Inspector {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
         let mut subs = vec![cx.observe(&store, |_, _, cx| cx.notify())];
+        // Animated values follow the playhead.
+        let playback = store.read(cx).playback.clone();
+        subs.push(cx.observe(&playback, |this: &mut Self, _, cx| {
+            let animated = this.single(cx).and_then(|id| this.store.read(cx).clip(id).map(Clip::is_animated)).unwrap_or(false);
+            if animated {
+                cx.notify();
+            }
+        }));
 
         // A scrub that updates the selected clip.
         let mut clip_scrub = |cx: &mut Context<Self>, s: Scrub, key: &'static str, to: ToParams| {
@@ -180,6 +196,9 @@ impl Inspector {
             line,
             width,
             height,
+            template: Default::default(),
+            scene_item: None,
+            item_fields: Default::default(),
             _subs: subs,
         }
     }
@@ -195,6 +214,10 @@ impl Inspector {
     /// `clip.update` on the selected clip; while a control moves (`final_` false) the edits
     /// share a coalesce key, so the whole gesture is one undo step.
     fn update_clip(&mut self, mut params: Value, key: &str, final_: bool, cx: &mut Context<Self>) {
+        // An animated property gets a keyframe at the playhead instead.
+        if self.keyframe_instead(&params, key, final_, cx) {
+            return;
+        }
         let Some(id) = self.single(cx) else { return };
         params["clipId"] = json!(id);
         if !final_ {
@@ -215,11 +238,14 @@ impl Inspector {
             let n = clip.name.clone();
             self.name.update(cx, |i, cx| i.set_text(n, cx));
         }
-        let tf = &clip.transform;
+        // What the clip shows at the playhead (keyframes applied).
+        let playhead = self.store.read(cx).playback.read(cx).playhead.clamp(clip.start, clip.end());
+        let tf = &clip.placement_at(playhead);
+        let base_scale = kimchi_core::anim::number_at(&clip.keyframes, "scale", playhead - clip.start).unwrap_or(clip.transform.scale);
         let set = |e: &Entity<Scrub>, v: f64, cx: &mut Context<Self>| e.update(cx, |s, _| s.set_value(v));
         set(&self.x, tf.x, cx);
         set(&self.y, tf.y, cx);
-        set(&self.scale, tf.scale * 100.0, cx);
+        set(&self.scale, base_scale * 100.0, cx);
         set(&self.rotation, tf.rotation, cx);
         set(&self.speed, clip.speed, cx);
         let d = clip.duration;
@@ -232,9 +258,11 @@ impl Inspector {
             s.set_value(clip.fade_out)
         });
         self.opacity.update(cx, |s, _| s.set_value(tf.opacity));
-        self.volume.update(cx, |s, _| s.set_value(clip.volume));
-        match &clip.content {
-            ClipContent::Text { style } => {
+        let volume = clip.volume_at(playhead);
+        self.volume.update(cx, |s, _| s.set_value(volume));
+        let shown_style = clip.text_at(playhead);
+        match (&clip.content, shown_style.as_ref()) {
+            (ClipContent::Text { .. }, Some(style)) => {
                 if changed || !self.content.read(cx).is_focused(window) {
                     let c = style.content.clone();
                     self.content.update(cx, |i, cx| i.set_text(c, cx));
@@ -249,7 +277,7 @@ impl Inspector {
                     self.text_box.update(cx, |f, cx| f.set_value(bg, window, cx));
                 }
             }
-            ClipContent::Solid { color } => self.solid.update(cx, |f, cx| f.set_value(color, window, cx)),
+            (ClipContent::Solid { color }, _) => self.solid.update(cx, |f, cx| f.set_value(color, window, cx)),
             _ => {}
         }
     }
@@ -263,11 +291,18 @@ impl Inspector {
         let asset = store.asset_of(clip).cloned();
         let track_kind = store.track_of(clip.id).map(|t| t.kind);
         let fps = project.settings.fps;
-        let kind = asset.as_ref().map(|a| kind_name(a.kind)).unwrap_or(match clip.content {
+        let kind = asset.as_ref().map(|a| kind_name(a.kind)).unwrap_or(match &clip.content {
             ClipContent::Text { .. } => "text",
             ClipContent::Solid { .. } => "solid",
             ClipContent::Pending { .. } => "generating",
             ClipContent::Media { .. } => "media",
+            ClipContent::Motion { scene, .. } => {
+                if scene.is_3d() {
+                    "3D"
+                } else {
+                    "motion"
+                }
+            }
         });
         let has_picture = matches!(clip.content, ClipContent::Media { .. }) && asset.as_ref().is_some_and(|a| a.kind != MediaKind::Audio);
         let has_sound = asset.as_ref().is_some_and(|a| a.kind == MediaKind::Audio || (a.kind == MediaKind::Video && a.meta.has_audio));
@@ -367,6 +402,17 @@ impl Inspector {
                     .into_any_element(),
             ),
             ClipContent::Media { .. } => {}
+            ClipContent::Motion { template, .. } => {
+                if template.is_some() {
+                    body.push(self.motion_section(clip, window, cx));
+                } else {
+                    self.clear_template();
+                }
+                body.push(self.scene_section(clip, window, cx));
+            }
+        }
+        if !matches!(clip.content, ClipContent::Motion { .. }) {
+            self.clear_template();
         }
 
         if !matches!(clip.content, ClipContent::Pending { .. }) && track_kind == Some(TrackKind::Video) {
@@ -410,6 +456,10 @@ impl Inspector {
                     })
                     .into_any_element(),
             );
+        }
+
+        if !matches!(clip.content, ClipContent::Pending { .. }) && track_kind == Some(TrackKind::Video) {
+            body.push(self.animation_section(clip, fps, cx));
         }
 
         let speedable = matches!(clip.content, ClipContent::Media { .. }) && asset.as_ref().is_some_and(|a| a.kind != MediaKind::Image);

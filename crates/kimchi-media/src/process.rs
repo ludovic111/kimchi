@@ -13,9 +13,14 @@ use tokio::task::JoinHandle;
 use crate::{MediaError, MediaResult, Tools};
 
 pub(crate) fn spawn(program: &Path, args: &[impl AsRef<OsStr>], stdout: bool) -> MediaResult<Child> {
+    spawn_with_stdin(program, args, stdout, false)
+}
+
+/// [`spawn`], with a pipe to write to its standard input when `stdin` is true.
+pub(crate) fn spawn_with_stdin(program: &Path, args: &[impl AsRef<OsStr>], stdout: bool, stdin: bool) -> MediaResult<Child> {
     let mut cmd = Command::new(program);
     cmd.args(args)
-        .stdin(Stdio::null())
+        .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
         .stdout(if stdout { Stdio::piped() } else { Stdio::null() })
         .stderr(Stdio::piped())
         .kill_on_drop(true);

@@ -1,17 +1,18 @@
-//! The left column: media, generate and text, as tabs on glass tier 1.
+//! The left column: media, generate, text and motion, as tabs on glass tier 1.
 
 use gpui::{Context, Entity, Render, Subscription, Window, div, prelude::*, px};
 
 use crate::store::{LeftTab, Store, StoreExt};
 use crate::theme::{ActiveTheme, size as sz};
 use crate::ui::{GlassExt, icon};
-use crate::views::{generate_panel::GeneratePanel, media_panel::MediaPanel, text_panel::TextPanel};
+use crate::views::{generate_panel::GeneratePanel, media_panel::MediaPanel, motion_panel::MotionPanel, text_panel::TextPanel};
 
 pub struct LeftPanel {
     store: Entity<Store>,
     pub media: Entity<MediaPanel>,
     pub generate: Entity<GeneratePanel>,
     pub text: Entity<TextPanel>,
+    pub motion: Entity<MotionPanel>,
     _sub: Subscription,
 }
 
@@ -23,6 +24,7 @@ impl LeftPanel {
             media: cx.new(|cx| MediaPanel::new(window, cx)),
             generate: cx.new(|cx| GeneratePanel::new(window, cx)),
             text: cx.new(|cx| TextPanel::new(window, cx)),
+            motion: cx.new(|cx| MotionPanel::new(window, cx)),
             store,
             _sub: sub,
         }
@@ -73,12 +75,14 @@ impl Render for LeftPanel {
                     .border_color(t.line)
                     .child(tab_button("tab-media", "Media", "film", LeftTab::Media, None))
                     .child(tab_button("tab-generate", "Generate", "sparkles", LeftTab::Generate, Some(active_jobs)))
-                    .child(tab_button("tab-text", "Text", "type", LeftTab::Text, None)),
+                    .child(tab_button("tab-text", "Text", "type", LeftTab::Text, None))
+                    .child(tab_button("tab-motion", "Motion", "shapes", LeftTab::Motion, None)),
             )
             .child(div().flex_1().min_h_0().child(match tab {
                 LeftTab::Media => self.media.clone().into_any_element(),
                 LeftTab::Generate => self.generate.clone().into_any_element(),
                 LeftTab::Text => self.text.clone().into_any_element(),
+                LeftTab::Motion => self.motion.clone().into_any_element(),
             }))
     }
 }

@@ -134,8 +134,145 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             s.apply(cx.label(), cx.source, &Edit::UpdateClip { clip_id: id, patch }, a.coalesce())?;
             one(s, id)
         }
+        "clip.setKeyframes" => {
+            let p = s.project()?;
+            let id = resolve::clip(&p, a.str("clipId")?)?;
+            let clip = p.clip(id).ok_or("clip not found")?;
+            let property = a.str("property")?;
+            let keys = crate::commands::motion::keyframes(&a)?;
+            for k in &keys {
+                kimchi_core::check_clip_key(&clip.content, property, &k.value)?;
+            }
+            let mut all = clip.keyframes.clone();
+            if keys.is_empty() {
+                all.remove(property);
+            } else {
+                all.insert(property.to_string(), keys);
+            }
+            keyframes_patch(s, cx, &a, id, all)
+        }
+        "clip.addKeyframe" => {
+            let p = s.project()?;
+            let id = resolve::clip(&p, a.str("clipId")?)?;
+            let clip = p.clip(id).ok_or("clip not found")?;
+            let property = a.str("property")?;
+            let time = a.opt_f64("time").unwrap_or_else(|| s.ui_state().playhead);
+            let value = match a.get("value") {
+                Some(v) => serde_json::from_value::<kimchi_core::KeyValue>(v.clone()).map_err(|_| format!("value {v} should be a number, [x, y] or a colour"))?,
+                None => crate::commands::motion::current_value(clip, property, time)?,
+            };
+            kimchi_core::check_clip_key(&clip.content, property, &value)?;
+            let easing = a.opt_str("easing").map(kimchi_core::Easing::parse).transpose()?.unwrap_or_default();
+            let mut all = clip.keyframes.clone();
+            kimchi_core::anim::set_key(&mut all, property, kimchi_core::Keyframe { time: time - clip.start, value, easing });
+            keyframes_patch(s, cx, &a, id, all)
+        }
+        "clip.removeKeyframe" => {
+            let p = s.project()?;
+            let id = resolve::clip(&p, a.str("clipId")?)?;
+            let clip = p.clip(id).ok_or("clip not found")?;
+            let property = a.str("property")?;
+            if !clip.keyframes.contains_key(property) {
+                return Err(format!("\"{}\" has no keyframes on `{property}`. Animated: {}.", clip.name, clip.keyframes.keys().cloned().collect::<Vec<_>>().join(", ")));
+            }
+            let mut all = clip.keyframes.clone();
+            match a.opt_f64("time") {
+                Some(t) => {
+                    if !kimchi_core::anim::remove_key(&mut all, property, t - clip.start) {
+                        return Err(format!("No `{property}` keyframe at {t} s on \"{}\".", clip.name));
+                    }
+                }
+                None => {
+                    // Keep the property where it was at the playhead rather than snapping back.
+                    let now = s.ui_state().playhead.clamp(clip.start, clip.end());
+                    let held = crate::commands::motion::current_value(clip, property, now)?;
+                    all.remove(property);
+                    return keyframes_and_value(s, cx, &a, id, clip, all, property, held);
+                }
+            }
+            keyframes_patch(s, cx, &a, id, all)
+        }
+        "clip.animate" => {
+            let p = s.project()?;
+            let ids = resolve::clips(&p, &a.strings("clipIds"))?;
+            let preset = a.str("preset")?;
+            let canvas = (p.settings.width as f64, p.settings.height as f64);
+            let mut edits = vec![];
+            for id in &ids {
+                let clip = p.clip(*id).ok_or("clip not found")?;
+                let keys = kimchi_core::presets::apply(preset, clip, canvas, a.opt_f64("length"))?;
+                edits.push(Edit::UpdateClip { clip_id: *id, patch: ClipPatch { keyframes: Some(keys), ..Default::default() } });
+            }
+            // One undo step for every clip.
+            s.edit(cx.label(), cx.source, |ed| {
+                ed.begin_batch(cx.label(), cx.source.as_str());
+                for e in &edits {
+                    if let Err(e) = ed.apply(e, None) {
+                        ed.rollback_batch();
+                        return Err(crate::session::err(e));
+                    }
+                }
+                ed.end_batch();
+                Ok(())
+            })?;
+            created(s, &ids)
+        }
         _ => Err(crate::commands::unhandled(cx)),
     }
+}
+
+/// Replaces a clip's keyframes and answers with the clip and its animation.
+fn keyframes_patch(s: &Arc<Session>, cx: &Ctx, a: &Args, id: Id, keys: kimchi_core::Keyframes) -> CmdResult {
+    let patch = ClipPatch { keyframes: Some(keys), ..Default::default() };
+    s.apply(cx.label(), cx.source, &Edit::UpdateClip { clip_id: id, patch }, a.coalesce())?;
+    animated(s, id)
+}
+
+/// Like [`keyframes_patch`], also setting the property's still value (when its animation goes).
+#[allow(clippy::too_many_arguments)]
+fn keyframes_and_value(s: &Arc<Session>, cx: &Ctx, a: &Args, id: Id, clip: &Clip, keys: kimchi_core::Keyframes, property: &str, value: kimchi_core::KeyValue) -> CmdResult {
+    let mut patch = ClipPatch { keyframes: Some(keys), ..Default::default() };
+    let n = value.as_f64();
+    let mut t = clip.transform.clone();
+    match (property, n) {
+        ("x", Some(v)) => t.x = v,
+        ("y", Some(v)) => t.y = v,
+        ("scale", Some(v)) => t.scale = v,
+        ("rotation", Some(v)) => t.rotation = v,
+        ("opacity", Some(v)) => t.opacity = v,
+        ("volume", Some(v)) => patch.volume = Some(v),
+        ("position", _) => {
+            if let Some(p) = value.as_vec(2) {
+                (t.x, t.y) = (p[0], p[1]);
+            }
+        }
+        _ => {}
+    }
+    if t != clip.transform {
+        patch.transform = Some(t);
+    }
+    if let (ClipContent::Text { style }, true) = (&clip.content, ["fontSize", "letterSpacing", "color"].contains(&property)) {
+        let mut style = style.clone();
+        match (property, &value) {
+            ("fontSize", kimchi_core::KeyValue::Number(v)) => style.font_size = *v,
+            ("letterSpacing", kimchi_core::KeyValue::Number(v)) => style.letter_spacing = *v,
+            ("color", kimchi_core::KeyValue::Text(c)) => style.color = c.clone(),
+            _ => {}
+        }
+        patch.text = Some(style);
+    }
+    s.apply(cx.label(), cx.source, &Edit::UpdateClip { clip_id: id, patch }, a.coalesce())?;
+    animated(s, id)
+}
+
+fn animated(s: &Session, id: Id) -> CmdResult {
+    s.read(|ed| {
+        let p = ed.project();
+        let Some(c) = p.clip(id) else { return Value::Null };
+        let mut v = clip_summary(p, c);
+        v["keyframes"] = crate::commands::motion::keys_json(&c.keyframes);
+        v
+    })
 }
 
 fn opt_track(p: &Project, a: &Args) -> CmdResult<Option<Id>> {

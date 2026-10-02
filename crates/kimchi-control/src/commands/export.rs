@@ -89,15 +89,12 @@ pub fn start(s: &Arc<Session>, project: Project, settings: ExportSettings) -> Cm
     s.set_export(status.clone());
     let s2 = s.clone();
     s.runtime().spawn(async move {
-        let overlays_dir = s2.cache_dir(project.id).join("text");
         let result = async {
-            let overlays = kimchi_media::text::rasterize_overlays(&project, &overlays_dir).map_err(err)?;
             let progress_session = s2.clone();
             let base = status.clone();
             kimchi_media::export::export(
                 &tools,
                 &project,
-                &overlays,
                 &settings,
                 move |p| progress_session.set_export(ExportStatus { progress: p, ..base.clone() }),
                 cancel,

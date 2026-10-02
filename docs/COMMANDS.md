@@ -18,6 +18,16 @@ The whole open project in one bounded answer: settings, every track with its cli
 
 The complete open project as JSON (the project file format). _(read only)_
 
+### `project.renderFrame`
+
+Render what the timeline shows at a time (or a labelled contact sheet of several times) to a PNG and return its path, to look at a result: animations, motion graphics, 3D, the whole cut. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `time` | number |  | Timeline seconds (default: the playhead). |
+| `times` | array |  | Several times in seconds: one image with a frame per time, labelled (up to 16). |
+| `width` | integer |  | Width of each frame in pixels (default 960, or 480 in a sheet). |
+
 ### `project.create`
 
 Create a project in the library and open it, replacing the open one. _(changes things · permission: projects)_
@@ -317,6 +327,190 @@ Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, spe
 | `color` | string |  | Solid clips: colour #rrggbb. |
 | `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
 
+### `clip.setKeyframes`
+
+Animate one property of a clip: replace its keyframes (times in seconds from the clip's start). Properties: x, y, position ([x, y]), scale, scaleX, scaleY, rotation, opacity, blur (pixels), volume; text clips also fontSize, color, letterSpacing. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `property` | string | required | The property to animate. |
+| `keyframes` | array | required | [{"time": 0, "value": 0}, {"time": 0.6, "value": 1, "easing": "easeOut"}] or [[0, 0], [0.6, 1, "easeOut"]]. A keyframe's easing shapes the move into it: linear (default), hold, ease, easeIn, easeOut, easeInOut, ease<In\|Out\|InOut><Sine\|Quad\|Cubic\|Quart\|Quint\|Expo\|Circ\|Back\|Elastic\|Bounce>, cubicBezier(x1,y1,x2,y2), spring(bounce 0-1). Empty removes the animation. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `clip.addKeyframe`
+
+Set one keyframe of a clip property at a timeline time, replacing one already there (what the window's keyframe buttons do). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `property` | string | required | x, y, scale, scaleX, scaleY, rotation, opacity, blur, volume, fontSize, color or letterSpacing. |
+| `time` | number |  | Timeline seconds (default: the playhead). |
+| `value` | any |  | The value (default: what the property is at that time). |
+| `easing` | string |  | How the value arrives here from the previous keyframe (default linear). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `clip.removeKeyframe`
+
+Remove a clip's keyframe at a timeline time, or every keyframe of a property (it then keeps its value at that time, or its own). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `property` | string | required | The animated property. |
+| `time` | number |  | Timeline seconds; omit to remove the property's whole animation. |
+
+### `clip.animate`
+
+Give clips a ready-made animation written as ordinary keyframes: entrances (fadeIn, riseIn, slideInLeft, popIn, zoomIn, spinIn, dropIn, blurIn…), exits (fadeOut, slideOutRight, popOut…) or over the whole clip (kenBurns, panLeft, pulse, float, wiggle, shake, spin). motion.presets lists them all. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array | required | Clips to animate (ids or names). |
+| `preset` | string | required | Preset name. |
+| `length` | number |  | Seconds the move takes (default 0.6; one cycle for repeating ones). |
+
+## motion
+
+### `motion.guide`
+
+How to make motion graphics and 3D with kimchi: the scene formats (2D layers, 3D objects, camera, lights), every property, keyframes and easings, text reveals, masks, effects, templates and presets, with examples. Read it before writing a scene. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `topic` | string |  | 2d, 3d, keyframes, templates or all (default). |
+
+### `motion.templates`
+
+Motion templates (lower third, title card, kinetic type, counter, bar chart, logo reveal, callout, quote, subscribe, aurora, wipe, 3D title, 3D logo spin, turntable, floating shapes) with the values each takes. _(read only)_
+
+### `motion.presets`
+
+The ready-made clip animations clip.animate applies. _(read only)_
+
+### `motion.add`
+
+Add a motion clip: 2D motion graphics (layers of shapes, paths, text, images) or a 3D scene (camera, lights, objects, extruded text, glTF models), drawn by kimchi in the preview and the export, every property animatable. Look at the result with project.renderFrame. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `scene` | object | required | The scene, as described by motion.guide. |
+| `start` | number |  | Timeline position in seconds. Defaults to the playhead. |
+| `duration` | number |  | Seconds on the timeline (default: the last keyframe + 1 s, at least 3). |
+| `trackId` | string |  | Track id or name. Defaults to the first free compatible track (a new one if none is free). |
+| `name` | string |  | Clip name (default: from the scene). |
+
+### `motion.addTemplate`
+
+Add a motion clip made from a template with your values (see motion.templates). The clip remembers them: motion.setTemplate changes them later. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `template` | string | required | Template id, e.g. lowerThird. |
+| `values` | object |  | Template values to change, e.g. {"title": "Grace Hopper"}. |
+| `start` | number |  | Timeline position in seconds. Defaults to the playhead. |
+| `duration` | number |  | Seconds (default: the template's). |
+| `trackId` | string |  | Track id or name. Defaults to the first free compatible track (a new one if none is free). |
+
+### `motion.get`
+
+A motion clip's scene as JSON, or one layer, object or light of it. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string |  | A layer, object or light id, or "camera". |
+
+### `motion.update`
+
+Replace a motion clip's whole scene. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `scene` | object | required | The new scene. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.setLayer`
+
+Add a layer (2D) or an object or light (3D) to a motion clip, or replace the one with the same id. New 2D layers go on top. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `layer` | object | required | The layer, object or light (with its id). |
+| `parent` | string |  | Put it inside this group (2D) or object (3D). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.removeLayer`
+
+Remove a layer, object or light from a motion clip. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | Its id. |
+
+### `motion.setKeyframes`
+
+Animate one property of a layer, object, light or the camera inside a motion clip: replace its keyframes (times in scene seconds). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A layer, object or light id, "camera", or "scene" (background, ambient). |
+| `property` | string | required | The property, e.g. x, opacity, trimEnd, reveal, rotation.y, position, fov. |
+| `keyframes` | array | required | [{"time": 0, "value": 0}, {"time": 0.6, "value": 1, "easing": "easeOut"}] or [[0, 0], [0.6, 1, "easeOut"]]. A keyframe's easing shapes the move into it: linear (default), hold, ease, easeIn, easeOut, easeInOut, ease<In\|Out\|InOut><Sine\|Quad\|Cubic\|Quart\|Quint\|Expo\|Circ\|Back\|Elastic\|Bounce>, cubicBezier(x1,y1,x2,y2), spring(bounce 0-1). Empty removes the animation. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.updateLayer`
+
+Change some properties of one layer, object, light, the camera or the scene ("scene": background, ambient) of a motion clip. A property that is animated gets a keyframe at that time instead; others change for the whole clip. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A layer, object or light id, "camera" or "scene". |
+| `props` | object | required | Properties and values, e.g. {"x": 120, "fill": "#ff5a36", "text": "Hi"} (any field of motion.guide; nested ones like stroke or material merge). |
+| `time` | number |  | Timeline seconds, for animated properties (default: the playhead). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.addKeyframe`
+
+Set one keyframe of a layer, object, light or camera property at a timeline time (replacing one already there). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A layer, object or light id, "camera" or "scene". |
+| `property` | string | required | The property, e.g. x, opacity, rotation.y, fov. |
+| `time` | number |  | Timeline seconds (default: the playhead). |
+| `value` | any |  | The value (default: what the property is at that time). |
+| `easing` | string |  | How the value arrives here from the previous keyframe (default linear). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.removeKeyframe`
+
+Remove a keyframe of a layer, object, light or camera property at a timeline time, or its whole animation (it then keeps its value at the playhead). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A layer, object or light id, "camera" or "scene". |
+| `property` | string | required | The animated property. |
+| `time` | number |  | Timeline seconds; omit to remove the property's whole animation. |
+
+### `motion.setTemplate`
+
+Re-make a template clip with new values (the others keep theirs). Edits made to its scene by hand are replaced. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `values` | object | required | Values to change. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
 ## timeline
 
 ### `timeline.seek`
@@ -563,7 +757,7 @@ Export formats and qualities. _(read only)_
 
 ### `export.start`
 
-Render the open project to a file through one ffmpeg graph (text is drawn the same as in the preview). Returns an export id; follow it with export.status, or pass wait. _(changes things · permission: files)_
+Render the open project to a file: every frame drawn as in the preview (titles, animation, motion graphics, 3D), encoded with the mixed sound. Returns an export id; follow it with export.status, or pass wait. _(changes things · permission: files)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -697,7 +891,7 @@ Select clips (or one media item) in the window. _(changes things · needs the wi
 
 ### `ui.showPanel`
 
-Open a panel or dialog: media, generate, text (left panel), agent, jobs, settings, export, palette; or home. _(changes things · needs the window)_
+Open a panel or dialog: media, generate, text, motion (left panel), agent, jobs, settings, export, palette; or home. _(changes things · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |

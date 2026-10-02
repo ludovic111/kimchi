@@ -131,7 +131,7 @@ pub struct UiState {
     pub selected_asset: Option<Id>,
     /// Timeline zoom in pixels per second.
     pub zoom: f64,
-    /// `media`, `generate` or `text`.
+    /// `media`, `generate`, `text` or `motion`.
     pub left_tab: String,
     /// Open side panels (`agent`, `jobs`…) and dialogs (`settings`, `export`, `palette`).
     pub open: Vec<String>,

@@ -150,3 +150,39 @@ fn window_commands_from_other_clients_reach_the_window(cx: &mut TestAppContext) 
     let state = f.call("ui.state", json!({}));
     assert!(state["open"].as_array().unwrap().iter().any(|o| o == "settings"), "{state}");
 }
+
+/// A person makes a motion clip from the Motion panel and edits its words in the inspector.
+#[gpui::test]
+fn people_edit_motion_scenes_in_the_inspector(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    let motion = |p: &Project| p.clips().find(|(_, c)| matches!(c.content, ClipContent::Motion { .. })).map(|(_, c)| c.clone());
+    // "New 2D scene" in the Motion panel: a clip at the playhead, selected.
+    cx.update(|_, cx| crate::views::motion_panel::new_scene(false, cx));
+    let p = f.settle(cx, |p| motion(p).is_some());
+    let clip = motion(&p).expect("a motion clip");
+    store_settles(cx, |s| s.selection == vec![clip.id]);
+    // Pick its text layer, then type in the words field.
+    let inspector = cx.update(|_, cx| view.read(cx).editor().read(cx).inspector.clone());
+    cx.update(|_, cx| inspector.update(cx, |i, cx| i.pick(clip.id, "text1", cx)));
+    let start = Instant::now();
+    let field = loop {
+        cx.run_until_parked();
+        if let Some(f) = cx.update(|_, cx| inspector.read(cx).words_field()) {
+            break f;
+        }
+        assert!(start.elapsed() < Duration::from_secs(3), "the words field shows");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    cx.update(|_, cx| field.update(cx, |_, cx| cx.emit(crate::ui::input::InputEvent::Changed("Bonjour".into()))));
+    let words = |p: &Project| match motion(p).map(|c| c.content) {
+        Some(ClipContent::Motion { scene: kimchi_core::Scene::Flat(s), .. }) => match &s.layers[0].kind {
+            kimchi_core::motion::LayerKind::Text(t) => t.text.clone(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
+    let p = f.settle(cx, |p| words(p) == "Bonjour");
+    assert_eq!(words(&p), "Bonjour");
+    let steps = f.call("history.list", json!({}));
+    assert_eq!((steps["undo"][0]["label"].as_str(), steps["undo"][0]["source"].as_str()), (Some("motion.updateLayer"), Some("window")), "{steps}");
+}

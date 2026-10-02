@@ -1,7 +1,8 @@
-//! The preview: the composited frame at the playhead (rendered by the export
-//! graph, so it matches the render), playback with sound, pending generations
+//! The preview: the composited frame at the playhead (rendered by the export's
+//! compositor, so it matches the render), playback with sound, pending generations
 //! drawn over the frame, and on-canvas handles to move and scale the selected
-//! clip. The canvas is work, so it stays solid (never glass).
+//! clip (an animated clip gets a keyframe at the playhead). The canvas is work, so
+//! it stays solid (never glass).
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -14,7 +15,7 @@ use gpui::{
 };
 use kimchi_core::{Clip, ClipContent, Fit, Id, Project, TrackKind, Transform};
 use kimchi_media::preview::Frame;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::playback::Playback;
 use crate::preview::{AudioBuffer, AudioOut};
@@ -76,7 +77,8 @@ fn box_of(p: &Project, clip: &Clip, t: &Transform) -> LayerBox {
             LayerBox { cx: w / 2.0 + t.x, cy: h / 2.0 + t.y, w: (m.width + pad * 2.0) * t.scale, h: (m.height + pad) * t.scale, rotation: t.rotation }
         }
         ClipContent::Pending { .. } => LayerBox { cx: w / 2.0, cy: h / 2.0, w, h, rotation: 0.0 },
-        ClipContent::Solid { .. } => fit_box(t, w, h, w, h),
+        // A motion scene is drawn on the whole canvas, then placed like a full-frame picture.
+        ClipContent::Solid { .. } | ClipContent::Motion { .. } => fit_box(t, w, h, w, h),
     }
 }
 
@@ -303,9 +305,10 @@ impl PreviewView {
         let mut out = vec![];
         for track in p.tracks.iter().rev().filter(|tr| tr.kind == TrackKind::Video && !tr.hidden) {
             for c in track.clips.iter().filter(|c| t >= c.start && t < c.end()) {
+                // Where the clip is at the playhead (keyframes applied).
                 let tf = match &self.live {
                     Some((id, tf)) if *id == c.id => tf.clone(),
-                    _ => c.transform.clone(),
+                    _ => c.placement_at(t).transform(),
                 };
                 out.push((c.clone(), track.locked, box_of(p, c, &tf)));
             }
@@ -334,17 +337,19 @@ impl PreviewView {
             }
         });
         if !locked {
-            self.begin_drag(clip, DragMode::Move, e.position, b, &p);
+            self.begin_drag(clip, DragMode::Move, e.position, b, &p, t);
         }
         cx.notify();
     }
 
-    fn begin_drag(&mut self, clip: Clip, mode: DragMode, at: Point<Pixels>, b: LayerBox, p: &Project) {
+    fn begin_drag(&mut self, clip: Clip, mode: DragMode, at: Point<Pixels>, b: LayerBox, p: &Project, playhead: f64) {
         let (stage, scale) = self.stage(p);
         let center = point(stage.origin.x + px(b.cx as f32 * scale), stage.origin.y + px(b.cy as f32 * scale));
         let d0 = ((at - center).magnitude() as f32).max(1.0);
-        self.drag = Some(CanvasDrag { clip: clip.id, mode, start: at, t0: clip.transform.clone(), center, d0 });
-        self.live = Some((clip.id, clip.transform));
+        // Start from where the clip is now, keyframes included.
+        let t0 = clip.placement_at(playhead).transform();
+        self.drag = Some(CanvasDrag { clip: clip.id, mode, start: at, t0: t0.clone(), center, d0 });
+        self.live = Some((clip.id, t0));
     }
 
     fn drag_move(&mut self, e: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -380,9 +385,42 @@ impl PreviewView {
         if let Some((id, t)) = self.live.clone()
             && (t.x != d.t0.x || t.y != d.t0.y || t.scale != d.t0.scale)
         {
-            let params = json!({ "clipId": id, "x": t.x, "y": t.y, "scale": t.scale });
-            self.store.update(cx, |s, cx| {
-                s.run_then("clip.update", params, cx, |_, _, _| {});
+            // An animated property gets a keyframe at the playhead; a still one changes.
+            let animated = self.store.read(cx).clip(id).map(|c| c.keyframes.clone()).unwrap_or_default();
+            let playhead = self.playback.read(cx).playhead;
+            let key = |name: &str, value: Value| json!({ "command": "clip.addKeyframe", "params": { "clipId": id, "property": name, "time": playhead, "value": value } });
+            let mut commands = vec![];
+            let mut still = serde_json::Map::new();
+            if t.x != d.t0.x || t.y != d.t0.y {
+                if animated.contains_key("position") {
+                    commands.push(key("position", json!([t.x, t.y])));
+                } else {
+                    for (name, v) in [("x", t.x), ("y", t.y)] {
+                        if animated.contains_key(name) {
+                            commands.push(key(name, json!(v)));
+                        } else {
+                            still.insert(name.into(), json!(v));
+                        }
+                    }
+                }
+            }
+            if t.scale != d.t0.scale {
+                if animated.contains_key("scale") {
+                    commands.push(key("scale", json!(t.scale)));
+                } else {
+                    still.insert("scale".into(), json!(t.scale));
+                }
+            }
+            if !still.is_empty() {
+                still.insert("clipId".into(), json!(id));
+                commands.push(json!({ "command": "clip.update", "params": Value::Object(still) }));
+            }
+            self.store.update(cx, |s, cx| match commands.len() {
+                1 => {
+                    let c = commands.remove(0);
+                    s.run_then(c["command"].as_str().unwrap_or("clip.update"), c["params"].clone(), cx, |_, _, _| {});
+                }
+                _ => s.run_then("project.batch", json!({ "commands": commands, "label": "Move clip" }), cx, |_, _, _| {}),
             });
             // Keep the live transform until the project reflects it (avoids a jump back).
             self.live = Some((id, t));
@@ -564,7 +602,8 @@ impl Render for PreviewView {
                             .cursor(if (hx + hy) as i32 % 2 == 0 { gpui::CursorStyle::ResizeUpLeftDownRight } else { gpui::CursorStyle::ResizeUpRightDownLeft })
                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
                                 cx.stop_propagation();
-                                this.begin_drag(clip.clone(), DragMode::Scale, e.position, lb, &p);
+                                let playhead = this.playback.read(cx).playhead;
+                                this.begin_drag(clip.clone(), DragMode::Scale, e.position, lb, &p, playhead);
                                 cx.notify();
                             })),
                     );

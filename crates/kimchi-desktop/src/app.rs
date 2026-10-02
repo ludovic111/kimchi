@@ -67,6 +67,11 @@ impl Workspace {
         self.dialogs.clone()
     }
 
+    #[cfg(test)]
+    pub fn editor(&self) -> Entity<views::editor::Editor> {
+        self.editor.clone()
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
         let focus = cx.focus_handle();
@@ -138,6 +143,7 @@ impl Workspace {
                     "media" => s.set_left_tab(LeftTab::Media, cx),
                     "generate" => s.set_left_tab(LeftTab::Generate, cx),
                     "text" => s.set_left_tab(LeftTab::Text, cx),
+                    "motion" => s.set_left_tab(LeftTab::Motion, cx),
                     "agent" => {
                         s.agent_open = true;
                         cx.notify();

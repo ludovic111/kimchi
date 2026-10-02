@@ -115,6 +115,8 @@ pub struct Theme {
     pub clip_audio: Hsla,
     pub clip_text: Hsla,
     pub clip_generated: Hsla,
+    /// Motion graphics and 3D clips.
+    pub clip_motion: Hsla,
 }
 
 impl Global for Theme {}
@@ -193,6 +195,7 @@ impl Theme {
             clip_audio: parse_color(if mode == Mode::Dark { "#23362f" } else { "#cfe6dc" }),
             clip_text: parse_color(if mode == Mode::Dark { "#3a3045" } else { "#e2d8ee" }),
             clip_generated: kimchi(if mode == Mode::Dark { "800" } else { "200" }),
+            clip_motion: parse_color(if mode == Mode::Dark { "#20393d" } else { "#cde5e6" }),
         };
         if transparent {
             // GPUI can't blur what is behind an element, so floating tiers (menus, popovers,

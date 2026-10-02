@@ -15,7 +15,7 @@ pub fn arg<'a>(arguments: &'a Value, key: &str, default: &'a str) -> &'a str {
     arguments.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).unwrap_or(default)
 }
 
-pub const PROMPTS: [Prompt; 4] = [
+pub const PROMPTS: [Prompt; 6] = [
     Prompt {
         name: "rough-cut",
         description: "Assemble media into a first cut: import, order, trim to a target length, add a title card and markers.",
@@ -100,6 +100,54 @@ pub const PROMPTS: [Prompt; 4] = [
                  video track (timeline_closeGap), shots that run long or cut too fast for the material, jarring jumps between generated and filmed shots (generate_bridge can fill \
                  a transition), audio clips that overlap or are too loud (clip_update volume, fadeIn, fadeOut), text that runs off the canvas or overlaps other text, and the \
                  ending. Use clip_get or media_get where you need details, and in live mode ui_screenshot to see the window. {apply}"
+            )
+        },
+    },
+    Prompt {
+        name: "motion-design",
+        description: "Design motion graphics for the cut: animated titles, lower thirds, callouts, data and transitions, drawn by kimchi and fully editable.",
+        arguments: &[
+            ("brief", "What to make, e.g. \"an intro title, a lower third for each speaker, an animated chart of the numbers\"", true),
+            ("style", "Look and feel, e.g. \"bold, minimal, coral and near-black\" (default: the project's style or clean and modern)", false),
+        ],
+        render: |a| {
+            format!(
+                "Motion design brief: {brief}. Style: {style}.\n\
+                 1. Read project_overview (canvas size, length, what is on which track) and motion_guide (formats, properties, easings).\n\
+                 2. Start from motion_templates where one fits (lowerThird, titleCard, kineticType, counter, barChart, logoReveal, callout, quote, subscribe, aurora, wipe, \
+                 title3d, logoSpin3d, turntable, shapes3d) with motion_addTemplate and your values; write your own scene with motion_add when none does. Put motion \
+                 clips on a video track above the pictures they go over (track_add kind=video adds one on top).\n\
+                 3. Animate with intent: entrances easeOut 0.3–0.8 s, exits easeIn, related elements staggered 0.05–0.15 s, nothing moving without a reason. Keep text \
+                 inside the safe area (5 % margins), large enough, and readable over the picture (a plate, shadow or glow).\n\
+                 4. Animate existing clips too where it helps (clip_animate kenBurns on stills, popIn on logos, fades between sections).\n\
+                 5. Check every piece with project_renderFrame times=[…] at its entrance, middle and exit; fix what you see with motion_setLayer / motion_setKeyframes / \
+                 motion_setTemplate. Group related edits in project_batch.\n\
+                 Finish by listing each motion clip with its time, what it shows and how it moves.",
+                brief = arg(a, "brief", "an animated title for the cut"),
+                style = arg(a, "style", "clean and modern, matching the footage"),
+            )
+        },
+    },
+    Prompt {
+        name: "3d-scene",
+        description: "Build a 3D shot (a product turntable, a 3D title, an abstract backdrop) as a motion clip, with camera moves and lighting.",
+        arguments: &[
+            ("idea", "The shot, e.g. \"our logo in brushed metal spinning above a dark floor\"", true),
+            ("seconds", "Length in seconds (default 5)", false),
+        ],
+        render: |a| {
+            format!(
+                "Make this 3D shot, about {seconds} s long: {idea}.\n\
+                 Read motion_guide topic=3d. Start from a 3D template if one is close (title3d, logoSpin3d, turntable with a .glb model, shapes3d) or write the scene \
+                 with motion_add: a camera with a purposeful move (a slow push in, an orbit, a reveal), a key light plus a fill or rim (or the defaults), a floor plane \
+                 to catch the shadow when things sit on something, materials with intent (metallic/roughness, emissive accents), and animation on objects and camera with \
+                 easeInOut curves. Models can be media items or file paths (.glb/.gltf); pictures can texture objects or stand as image cards.\n\
+                 Check it with project_renderFrame times=[0.5, {mid}, {late}]: framing, lighting, nothing clipping the camera or leaving the frame unintentionally. Adjust \
+                 with motion_setLayer (an object or light), motion_setKeyframes (id \"camera\" for the camera) or motion_update. Report what the shot shows and how it moves.",
+                idea = arg(a, "idea", "a 3D title"),
+                seconds = arg(a, "seconds", "5"),
+                mid = arg(a, "seconds", "5").parse::<f64>().map(|s| format!("{}", (s / 2.0 * 10.0).round() / 10.0)).unwrap_or_else(|_| "2.5".into()),
+                late = arg(a, "seconds", "5").parse::<f64>().map(|s| format!("{}", ((s - 0.5) * 10.0).round() / 10.0)).unwrap_or_else(|_| "4.5".into()),
             )
         },
     },

@@ -164,6 +164,24 @@ pub fn path_str(p: &Path) -> String {
 /// its path. Without a time: the playhead when it is inside the clip, else the
 /// clip's first frame.
 pub async fn clip_frame(s: &Arc<Session>, clip_id: Id, time: Option<f64>) -> CmdResult<String> {
+    // Titles, solids and motion clips: what kimchi draws for the clip alone at that time.
+    let drawn = s.read(|ed| {
+        let p = ed.project();
+        let clip = p.clip(clip_id)?;
+        if matches!(clip.content, kimchi_core::ClipContent::Media { .. } | kimchi_core::ClipContent::Pending { .. }) {
+            return None;
+        }
+        let playhead = s.ui_state().playhead;
+        let t = time.unwrap_or(if clip.contains(playhead) { playhead } else { clip.start });
+        let t = t.clamp(clip.start, (clip.end() - p.settings.frame()).max(clip.start));
+        let mut alone = p.clone();
+        alone.tracks = vec![kimchi_core::Track { clips: vec![clip.clone()], ..kimchi_core::Track::new(kimchi_core::TrackKind::Video, "clip") }];
+        Some((alone, t))
+    })?;
+    if let Some((alone, t)) = drawn {
+        let path = crate::commands::motion::render_png(s, &alone, &[t], Some(alone.settings.width)).await?;
+        return Ok(path_str(&path));
+    }
     let (asset, source_time, project_id) = s.read(|ed| {
         let p = ed.project();
         let clip = p.clip(clip_id).ok_or("clip not found")?;

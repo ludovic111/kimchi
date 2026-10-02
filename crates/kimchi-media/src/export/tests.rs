@@ -1,5 +1,5 @@
 use chrono::Utc;
-use kimchi_core::{Asset, AssetOrigin, MediaMeta, ProjectSettings, TextStyle, Track, Transform, new_id};
+use kimchi_core::{Asset, AssetOrigin, Keyframe, MediaMeta, ProjectSettings, TextStyle, Track, TrackKind, new_id};
 
 use super::*;
 
@@ -55,7 +55,7 @@ fn settings(format: ExportFormat) -> ExportSettings {
 }
 
 fn plan(p: &Project, format: ExportFormat) -> Plan {
-    build(p, &Overlays::new(), &settings(format), &caps()).unwrap()
+    build(p, &settings(format), &caps()).unwrap()
 }
 
 fn input_files(plan: &Plan) -> Vec<&str> {
@@ -63,29 +63,26 @@ fn input_files(plan: &Plan) -> Vec<&str> {
 }
 
 #[test]
-fn layers_bottom_track_first_and_offsets_clips() {
-    let (top, bottom) = (asset(MediaKind::Image, "top.png", false), asset(MediaKind::Video, "bottom.mp4", false));
+fn pictures_come_from_the_compositor_through_a_pipe() {
+    let (top, bottom) = (asset(MediaKind::Image, "top.png", false), asset(MediaKind::Video, "bottom.mp4", true));
     let p = project(
         vec![(TrackKind::Video, vec![media(&top, 1.5, 2.0)]), (TrackKind::Video, vec![media(&bottom, 0.0, 4.0)])],
         vec![top, bottom],
     );
     let plan = plan(&p, ExportFormat::Mp4);
-    assert_eq!(input_files(&plan), ["bottom.mp4", "top.png"]);
+    // Input 0 is the rendered picture; media files are only read for their sound.
+    assert_eq!(&plan.inputs[..10], ["-f", "rawvideo", "-pix_fmt", "rgba", "-s", "640x360", "-r", "25.0", "-i", "pipe:0"]);
+    assert_eq!(input_files(&plan), ["pipe:0", "bottom.mp4"]);
+    assert_eq!(plan.video, Some(VideoFeed { width: 640, height: 360, fps: 25.0, from: 0.0, frames: 100 }));
     assert_eq!(plan.duration, 4.0);
     let g = &plan.graph;
-    assert!(g.starts_with("color=c=0x000000:s=640x360:r=25.0:d=4.0,format=yuv420p[b0]"), "{g}");
-    // Bottom clip goes onto the base first, the top one onto the result.
-    let first = g.find("[b0][v1]overlay").expect(g);
-    let second = g.find("[b1][v3]overlay").expect(g);
-    assert!(first < second);
-    assert!(g.contains("[1:v:0]scale=w=") && g.contains("setpts=PTS-STARTPTS+1.5/TB[v3]"), "{g}");
-    assert!(g.contains("enable='between(t,1.48,3.48)'"), "{g}");
-    assert!(g.contains("[b2]format=yuv420p[vout]"));
-    // 30 fps source into 25 fps: surplus frames dropped before scaling.
-    assert!(g.contains("[0:v:0]setpts=PTS-STARTPTS,fps=25.0,scale="), "{g}");
-    // Image input loops for the clip length.
-    assert!(plan.inputs.join(" ").contains("-loop 1 -framerate 25.0 -t 2.0 -i top.png"));
-    assert!(plan.output.join(" ").contains("-c:v libx264"));
+    assert!(g.starts_with("[0:v]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p[vout]"), "{g}");
+    assert!(g.contains("[1:a:0]aformat="), "{g}");
+    let out = plan.output.join(" ");
+    assert!(out.contains("-c:v libx264") && out.contains("-colorspace bt709"), "{out}");
+    // The picture comes on stdin, so ffmpeg must read it.
+    let args = plan.args(Path::new("o.mp4"), None, &caps());
+    assert!(!args.contains(&"-nostdin".to_string()));
 }
 
 #[test]
@@ -100,10 +97,10 @@ fn speed_trims_source_and_chains_atempo() {
     clip.in_point = 1.0;
     let p = project(vec![(TrackKind::Video, vec![clip])], vec![v]);
     let plan = plan(&p, ExportFormat::Mp4);
-    // 1 s on the timeline at 3x = 3 s of source starting at the in point; one input for picture and sound.
-    assert_eq!(plan.inputs, ["-ss", "1.0", "-t", "3.0", "-i", "v.mp4"]);
+    // 1 s on the timeline at 3x = 3 s of source starting at the in point (input 1, after the picture).
+    assert_eq!(&plan.inputs[10..], ["-ss", "1.0", "-t", "3.0", "-i", "v.mp4"]);
     let g = &plan.graph;
-    assert!(g.contains("[0:v:0]setpts=(PTS-STARTPTS)/3.0,"), "{g}");
+    assert!(g.contains("[1:a:0]aformat="), "{g}");
     assert!(g.contains("atempo=2.0,atempo=1.5,asetpts=N/48000/TB"), "{g}");
     assert!(g.contains("adelay=delays=96000S:all=1[a"), "{g}");
     assert!(
@@ -134,36 +131,23 @@ fn skips_hidden_muted_and_pending() {
     p.tracks[0].hidden = true;
     p.tracks[2].muted = true;
     let plan = plan(&p, ExportFormat::Mp4);
-    assert!(plan.inputs.is_empty(), "{:?}", plan.inputs);
-    assert!(!plan.graph.contains("overlay"));
+    assert_eq!(input_files(&plan), ["pipe:0"], "{:?}", plan.inputs);
     assert!(plan.graph.contains("anullsrc=r=48000:cl=stereo,atrim=end=2.0[aout]"));
 }
 
 #[test]
-fn transforms_solids_text_and_fades() {
-    let mut solid = Clip::new("s", 0.0, 2.0, ClipContent::Solid { color: "#f00".into() });
-    solid.transform = Transform { x: 10.0, y: -20.0, scale: 0.5, rotation: 15.0, opacity: 0.5, ..Default::default() };
-    solid.fade_in = 0.5;
-    solid.fade_out = 0.25;
-    let text = Clip::new("t", 1.0, 1.0, ClipContent::Text { style: TextStyle::default() });
-    let overlays = Overlays::from([(text.id, PathBuf::from("text.png"))]);
-    let p = project(vec![(TrackKind::Video, vec![text]), (TrackKind::Video, vec![solid])], vec![]);
-    let plan = build(&p, &overlays, &settings(ExportFormat::Mp4), &caps()).unwrap();
-    let g = &plan.graph;
-    assert!(
-        g.contains(
-            "color=c=0xff0000:s=320x180:r=25.0:d=2.0,format=rgba,rotate=a=0.261799:ow=rotw(0.261799):oh=roth(0.261799):c=none,\
-             colorchannelmixer=aa=0.5,fade=t=in:st=0.0:d=0.5:alpha=1,fade=t=out:st=1.75:d=0.25:alpha=1,setpts=PTS-STARTPTS+0.0/TB"
-        ),
-        "{g}"
-    );
-    assert!(g.contains("overlay=x=(main_w-overlay_w)/2+10.0:y=(main_h-overlay_h)/2-20.0:"), "{g}");
-    // Text: the PNG is already laid out, only timing applies.
-    assert!(g.contains("[0:v:0]setpts=PTS-STARTPTS+1.0/TB[v"), "{g}");
-    assert!(g.contains("overlay=x=0:y=0:"), "{g}");
-    // A text clip without a rendered overlay is skipped rather than failing the export.
-    let plan = build(&p, &Overlays::new(), &settings(ExportFormat::Mp4), &caps()).unwrap();
-    assert!(plan.inputs.is_empty());
+fn volume_keyframes_become_an_expression() {
+    let snd = asset(MediaKind::Audio, "a.wav", true);
+    let mut clip = media(&snd, 0.0, 2.0);
+    clip.keyframes.insert("volume".into(), vec![Keyframe::new(0.0, 0.0, Default::default()), Keyframe::new(1.0, 1.0, Default::default())]);
+    let p = project(vec![(TrackKind::Audio, vec![clip.clone()])], vec![snd]);
+    let g = plan(&p, ExportFormat::Audio).graph;
+    assert!(g.contains("volume=eval=frame:volume='if(lt(t,0.05),0.0+(1.0)*(t-0.0),if("), "{g}");
+    // The curve holds the last value past its last keyframe.
+    assert!(volume_curve(&clip, 0.0).trim_end_matches(')').ends_with(",1.0"), "{g}");
+    let text = Clip::new("t", 0.0, 1.0, ClipContent::Text { style: TextStyle::default() });
+    let p = project(vec![(TrackKind::Video, vec![text])], vec![]);
+    assert_eq!(plan(&p, ExportFormat::Mp4).video.unwrap().frames, 25);
 }
 
 #[test]
@@ -177,15 +161,15 @@ fn range_shifts_and_cuts_clips() {
     let p = project(vec![(TrackKind::Video, vec![a, b, late])], vec![v]);
     let mut st = settings(ExportFormat::Mp4);
     st.range = Some((3.0, 6.0));
-    let plan = build(&p, &Overlays::new(), &st, &caps()).unwrap();
+    let plan = build(&p, &st, &caps()).unwrap();
     assert_eq!(plan.duration, 3.0);
+    assert_eq!(plan.video.unwrap().from, 3.0);
     // `a` is still fading in at 3 s: decode from its start, fade, then drop the first 3 s.
     // `b` starts inside the window; `late` is outside and ignored.
-    assert_eq!(plan.inputs, ["-t", "4.0", "-i", "v.mp4", "-ss", "1.0", "-t", "2.0", "-i", "v.mp4"]);
+    assert_eq!(&plan.inputs[10..], ["-t", "4.0", "-i", "v.mp4", "-ss", "1.0", "-t", "2.0", "-i", "v.mp4"]);
     let g = &plan.graph;
-    assert!(g.contains("fade=t=in:st=0.0:d=3.5:alpha=1,trim=start=3.0,setpts=PTS-STARTPTS+0.0/TB"), "{g}");
+    assert!(g.contains("afade=t=in:st=0.0:d=3.5"), "{g}");
     assert!(g.contains("atrim=start=3.0:end=4.0,asetpts=PTS-STARTPTS"), "{g}");
-    assert!(g.contains("setpts=PTS-STARTPTS+1.0/TB"), "{g}");
     assert!(g.contains("adelay=delays=48000S:all=1"), "{g}");
 
     // Without a fade the input is simply seeked further.
@@ -199,13 +183,14 @@ fn formats_and_fallbacks() {
     let p = project(vec![(TrackKind::Audio, vec![media(&snd, 0.0, 2.0)])], vec![snd]);
 
     let gif = plan(&p, ExportFormat::Gif);
-    assert!(!gif.graph.contains("aout") && gif.inputs.is_empty());
+    assert!(!gif.graph.contains("aout") && input_files(&gif) == ["pipe:0"]);
     assert!(gif.graph.contains("palettegen") && gif.output.join(" ").contains("-c:v gif"));
     // GIF fps is capped.
-    assert!(gif.graph.contains(":r=15.0:"));
+    assert_eq!(gif.video.unwrap().fps, 15.0);
 
     let audio = plan(&p, ExportFormat::Audio);
     assert!(!audio.graph.contains("vout") && audio.output.join(" ").contains("-c:a aac"));
+    assert!(audio.video.is_none() && audio.args(Path::new("o.m4a"), None, &caps()).contains(&"-nostdin".to_string()));
     assert!(audio.output.join(" ").contains("-f ipod"));
 
     let webm = plan(&p, ExportFormat::Webm);
@@ -215,9 +200,9 @@ fn formats_and_fallbacks() {
     assert!(prores.graph.contains("format=yuv422p10le[vout]") && prores.output.join(" ").contains("pcm_s16le"));
 
     let vt = Caps::new(9, ["h264_videotoolbox", "aac"]);
-    let mp4 = build(&p, &Overlays::new(), &settings(ExportFormat::Mp4), &vt).unwrap();
+    let mp4 = build(&p, &settings(ExportFormat::Mp4), &vt).unwrap();
     assert!(mp4.output.join(" ").contains("-c:v h264_videotoolbox -b:v"));
-    assert!(matches!(build(&p, &Overlays::new(), &settings(ExportFormat::Hevc), &vt), Err(MediaError::Unsupported(_))));
+    assert!(matches!(build(&p, &settings(ExportFormat::Hevc), &vt), Err(MediaError::Unsupported(_))));
 
     let hevc = plan(&p, ExportFormat::Hevc);
     assert!(hevc.output.join(" ").contains("-tag:v hvc1"));
@@ -238,15 +223,15 @@ fn output_size_and_empty_projects() {
     let p = project(vec![(TrackKind::Video, vec![clip])], vec![v]);
     let mut st = settings(ExportFormat::Mp4);
     st.width = Some(1281);
-    let plan = build(&p, &Overlays::new(), &st, &caps()).unwrap();
-    // Even dimensions, offsets scaled from project pixels to output pixels.
-    assert!(plan.graph.contains("s=1280x720:"), "{}", plan.graph);
-    assert!(plan.graph.contains("(main_w-overlay_w)/2+200.0"), "{}", plan.graph);
+    let plan = build(&p, &st, &caps()).unwrap();
+    // Even dimensions.
+    assert!(plan.inputs.contains(&"1280x720".to_string()), "{:?}", plan.inputs);
+    assert_eq!((plan.video.unwrap().width, plan.video.unwrap().height), (1280, 720));
 
     let empty = project(vec![(TrackKind::Video, vec![])], vec![]);
-    assert!(matches!(build(&empty, &Overlays::new(), &st, &caps()), Err(MediaError::Unsupported(_))));
+    assert!(matches!(build(&empty, &st, &caps()), Err(MediaError::Unsupported(_))));
     st.range = Some((5.0, 6.0));
-    assert!(matches!(build(&p, &Overlays::new(), &st, &caps()), Err(MediaError::Unsupported(_))));
+    assert!(matches!(build(&p, &st, &caps()), Err(MediaError::Unsupported(_))));
 }
 
 #[test]
@@ -254,7 +239,6 @@ fn numbers_and_colors() {
     assert_eq!(num(2.0), "2.0");
     assert_eq!(num(1.0 / 3.0), "0.333333");
     assert_eq!(num(-0.0000001), "0.0");
-    assert_eq!(signed(-3.5), "-3.5");
     assert_eq!(color("#abc"), "0xaabbcc");
     assert_eq!(color("#11223344"), "0x11223344");
     assert_eq!(color("nope"), "black");

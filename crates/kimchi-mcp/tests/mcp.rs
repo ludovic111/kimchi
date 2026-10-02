@@ -122,7 +122,10 @@ fn speaks_mcp_over_a_project_file() {
 
     let prompts = mcp.request(15, "prompts/list", json!({}))["result"]["prompts"].clone();
     let names: Vec<&str> = prompts.as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["rough-cut", "title-and-captions", "generate-b-roll", "review-the-cut"]);
+    assert_eq!(names, ["rough-cut", "title-and-captions", "generate-b-roll", "review-the-cut", "motion-design", "3d-scene"]);
+    let got = mcp.request(19, "prompts/get", json!({ "name": "3d-scene", "arguments": { "idea": "a chrome teapot", "seconds": "8" } }));
+    let text = got["result"]["messages"][0]["content"]["text"].as_str().unwrap();
+    assert!(text.contains("a chrome teapot") && text.contains("times=[0.5, 4, 7.5]"), "{text}");
     let got = mcp.request(16, "prompts/get", json!({ "name": "generate-b-roll", "arguments": { "subject": "a misty harbour" } }));
     assert!(got["result"]["messages"][0]["content"]["text"].as_str().unwrap().contains("a misty harbour"));
     assert_eq!(mcp.request(17, "prompts/get", json!({ "name": "title-and-captions" }))["error"]["code"], -32602);

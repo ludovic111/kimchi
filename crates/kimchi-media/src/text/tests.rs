@@ -131,21 +131,17 @@ fn shadow_falls_below_and_scaled_render_matches() {
 }
 
 #[test]
-fn colours_and_cache_names() {
+fn colours_and_layout_cache() {
     assert_eq!(try_color("#fff"), Some(Color::WHITE));
     assert_eq!(try_color("#ff000080").map(|c| c.to_color_u8().alpha()), Some(128));
     assert_eq!(try_color("rgba(0, 0, 0, 0.5)").map(|c| c.to_color_u8().alpha()), Some(128));
     assert_eq!(try_color("rgb(10 20 30)").map(|c| c.to_color_u8().green()), Some(20));
     assert_eq!(try_color("nope"), None);
 
+    // Layouts are shaped once and shared.
     let s = style("x");
-    let t = Transform::default();
-    assert_eq!(overlay_name(&s, &t, 10, 10), overlay_name(&s.clone(), &t, 10, 10));
-    assert_ne!(overlay_name(&s, &t, 10, 10), overlay_name(&style("y"), &t, 10, 10));
-    assert_ne!(overlay_name(&s, &t, 10, 10), overlay_name(&s, &Transform { x: 1.0, ..t.clone() }, 10, 10));
-    // Opacity is the export graph's business.
-    assert_eq!(overlay_name(&s, &t, 10, 10), overlay_name(&s, &Transform { opacity: 0.5, ..t.clone() }, 10, 10));
-    assert_eq!(fnv1a(b"kimchi"), fnv1a(b"kimchi"));
+    assert!(Arc::ptr_eq(&layout_cached(&s, 1.0), &layout_cached(&s.clone(), 1.0)));
+    assert!(!Arc::ptr_eq(&layout_cached(&s, 1.0), &layout_cached(&style("y"), 1.0)));
 
     assert_eq!(box_radii(0.2), [0, 0, 0]);
     assert!(box_radii(8.0).iter().all(|r| (6..=8).contains(r)), "{:?}", box_radii(8.0));
@@ -155,7 +151,7 @@ fn colours_and_cache_names() {
 #[ignore = "writes sample PNGs to $KIMCHI_TEXT_SAMPLES for eyeballing"]
 fn samples() {
     let Some(dir) = std::env::var_os("KIMCHI_TEXT_SAMPLES") else { return };
-    let dir = Path::new(&dir);
+    let dir = std::path::Path::new(&dir);
     std::fs::create_dir_all(dir).unwrap();
     let cases = [
         ("default", TextStyle::default(), Transform::default()),

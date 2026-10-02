@@ -12,25 +12,22 @@
 //!
 //! Shaping, font matching and fallback come from cosmic-text (system fonts through fontdb, plus
 //! the families bundled here); glyph outlines are filled with tiny-skia, so rotated and scaled
-//! text stays crisp. The PNG is drawn at full opacity: clip opacity and fades are applied by the
-//! export graph (see [`crate::export::build`]).
+//! text stays crisp. Titles are drawn at full opacity: clip opacity, fades and blur are applied by
+//! the compositor ([`crate::render`]), which also draws motion text layers glyph by glyph (reveals).
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use cosmic_text::{
     Attrs, Buffer, CacheKey, CacheKeyFlags, Command, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent,
     Weight, Wrap, fontdb,
 };
-use kimchi_core::{ClipContent, Project, TextAlign, TextStyle, TrackKind, Transform};
+use kimchi_core::{TextAlign, TextStyle, Transform};
 use tiny_skia::{
     Color, FillRule, IntSize, Paint, PathBuilder, Pixmap, PixmapPaint, PremultipliedColorU8, Rect, Stroke,
     Transform as Affine,
 };
 
-use crate::export::Overlays;
-use crate::MediaResult;
 
 /// The families the editor offers first. Manrope and IBM Plex Mono are the lsuite faces;
 /// Instrument Sans/Serif were the webview editor's defaults, so older projects use them.
@@ -64,49 +61,6 @@ pub fn bundled_fonts() -> Vec<&'static [u8]> {
     BUNDLED_FONTS.to_vec()
 }
 
-/// Bumped whenever the drawing changes, so cached PNGs from an older renderer are redrawn.
-const RENDER_VERSION: u32 = 1;
-
-/// Writes one transparent PNG the size of the canvas per text clip into `dir`
-/// and returns them keyed by clip id, ready for [`crate::export::build`].
-///
-/// Files are named after a hash of what they show (style, transform, canvas size), so a layer
-/// that didn't change is not redrawn (stale files are left for the caller's cache cleanup).
-/// Blocking, ~10–60 ms per new 1080p layer plus loading the fonts on first use: call it from
-/// `spawn_blocking` when latency matters.
-pub fn rasterize_overlays(project: &Project, dir: &Path) -> MediaResult<Overlays> {
-    let (w, h) = (project.settings.width.max(1), project.settings.height.max(1));
-    let mut overlays = Overlays::new();
-    for track in project.tracks.iter().filter(|t| t.kind == TrackKind::Video && !t.hidden) {
-        for clip in &track.clips {
-            let ClipContent::Text { style } = &clip.content else { continue };
-            std::fs::create_dir_all(dir)?;
-            let out = dir.join(overlay_name(style, &clip.transform, w, h));
-            if !std::fs::metadata(&out).is_ok_and(|m| m.len() > 0) {
-                let png = rasterize_text(style, &clip.transform, w, h).encode_png().map_err(std::io::Error::other)?;
-                // Write then rename: the preview and an export may draw the same layer at once.
-                let part = out.with_extension(format!("{}.part", kimchi_core::new_id()));
-                std::fs::write(&part, png)?;
-                std::fs::rename(&part, &out)?;
-            }
-            overlays.insert(clip.id, out);
-        }
-    }
-    Ok(overlays)
-}
-
-/// Cache file name for a layer: a stable hash of everything that changes its pixels.
-fn overlay_name(style: &TextStyle, t: &Transform, w: u32, h: u32) -> String {
-    let style = serde_json::to_string(style).unwrap_or_default();
-    // Opacity and fit don't change the PNG (opacity is applied by the export graph).
-    let key = format!("{RENDER_VERSION}|{w}x{h}|{style}|{}|{}|{}|{}", t.x, t.y, t.scale, t.rotation);
-    format!("text-{:016x}.png", fnv1a(key.as_bytes()))
-}
-
-/// FNV-1a: stable across builds and platforms, unlike `DefaultHasher`.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3))
-}
 
 /// Draws a text layer onto a transparent canvas `width`×`height` (the project size), exactly as
 /// the export does. Pixels are premultiplied RGBA (tiny-skia's layout).
@@ -117,19 +71,26 @@ pub fn rasterize_text(style: &TextStyle, transform: &Transform, width: u32, heig
 /// [`rasterize_text`] drawn at `scale` × the project size (e.g. 1/3 for a 640×360 preview of a
 /// 1080p project), as if the full-size canvas had been scaled: shadow offset and blur scale too.
 pub fn rasterize_text_scaled(style: &TextStyle, transform: &Transform, width: u32, height: u32, scale: f32) -> Pixmap {
+    let t = transform;
+    let pl = kimchi_core::Placement { x: t.x, y: t.y, scale_x: t.scale, scale_y: t.scale, rotation: t.rotation, opacity: 1.0, blur: 0.0, fit: t.fit };
+    rasterize_title(style, &pl, width, height, scale)
+}
+
+/// A title at a placement (keyframes applied, so x and y scale may differ), `scale` × the
+/// project size `width`×`height`. Opacity and blur are left to the compositor.
+pub fn rasterize_title(style: &TextStyle, pl: &kimchi_core::Placement, width: u32, height: u32, scale: f32) -> Pixmap {
     let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
     let (pw, ph) = (((width.max(1) as f32 * scale).round() as u32).max(1), ((height.max(1) as f32 * scale).round() as u32).max(1));
     let mut canvas = Pixmap::new(pw, ph).expect("non-empty canvas");
-    let t = transform;
-    if !(t.scale.is_finite() && t.scale > 0.0) {
+    if !(pl.scale_x.is_finite() && pl.scale_y.is_finite() && pl.scale_x > 0.0 && pl.scale_y > 0.0) {
         return canvas;
     }
     let to_canvas = Affine::from_scale(scale, scale)
-        .pre_translate(width as f32 / 2.0 + t.x as f32, height as f32 / 2.0 + t.y as f32)
-        .pre_rotate(t.rotation as f32)
-        .pre_scale(t.scale as f32, t.scale as f32);
+        .pre_translate(width as f32 / 2.0 + pl.x as f32, height as f32 / 2.0 + pl.y as f32)
+        .pre_rotate(pl.rotation as f32)
+        .pre_scale(pl.scale_x as f32, pl.scale_y as f32);
     let fs = style.font_size.max(0.0) as f32;
-    let layout = layout(style, scale * t.scale as f32);
+    let layout = layout_cached(style, scale * pl.scale_x.max(pl.scale_y) as f32);
 
     if let Some(bg) = style.background.as_deref().filter(|b| !b.trim().is_empty()) {
         let (x, y, w, h, r) = background_box(layout.width, layout.height, style.font_size);
@@ -143,7 +104,7 @@ pub fn rasterize_text_scaled(style: &TextStyle, transform: &Transform, width: u3
     let color = parse_color(&style.color);
     let paint = solid(color);
     for glyph in &layout.glyphs {
-        match glyph {
+        match &glyph.ink {
             Ink::Outline { path, embolden } => {
                 ink.fill_path(path, &paint, FillRule::Winding, to_canvas, None);
                 if *embolden > 0.0 {
@@ -182,8 +143,8 @@ pub struct TextMetrics {
 
 /// Measures `style` the way the renderer lays it out (for selection boxes and hit testing).
 pub fn measure(style: &TextStyle) -> TextMetrics {
-    let l = layout(style, 0.0);
-    TextMetrics { width: l.width, height: l.height, line_height: l.line_height, line_widths: l.line_widths }
+    let l = layout_cached(style, 0.0);
+    TextMetrics { width: l.width, height: l.height, line_height: l.line_height, line_widths: l.line_widths.clone() }
 }
 
 /// Family names for a font picker: the bundled ones first, then the system's, sorted.
@@ -218,15 +179,33 @@ pub fn preload_fonts() {
 
 /// A shaped block, in block-local coordinates: origin at the block centre, y down, project
 /// pixels before `transform.scale`.
-struct Layout {
-    width: f64,
-    height: f64,
-    line_height: f64,
-    line_widths: Vec<f64>,
-    glyphs: Vec<Ink>,
+pub(crate) struct Layout {
+    pub(crate) width: f64,
+    pub(crate) height: f64,
+    pub(crate) line_height: f64,
+    pub(crate) line_widths: Vec<f64>,
+    pub(crate) glyphs: Vec<Glyph>,
+    /// How many letters (not counting spaces), words and lines there are, for reveals.
+    pub(crate) units: Units,
 }
 
-enum Ink {
+/// Counts or indices of a glyph's letter (spaces skipped), word and line.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Units {
+    pub(crate) chars: usize,
+    pub(crate) words: usize,
+    pub(crate) lines: usize,
+}
+
+pub(crate) struct Glyph {
+    pub(crate) ink: Ink,
+    /// Which letter, word and line it belongs to.
+    pub(crate) unit: Units,
+    /// Middle of the glyph's advance box (for per-letter scaling), block-local.
+    pub(crate) center: (f32, f32),
+}
+
+pub(crate) enum Ink {
     /// A glyph outline; `embolden` > 0 strokes it too (synthetic bold).
     Outline { path: tiny_skia::Path, embolden: f32 },
     /// A bitmap glyph (colour emoji) rasterised at `size`× its layout size, top-left at (x, y).
@@ -281,6 +260,29 @@ fn layout(style: &TextStyle, device_scale: f32) -> Layout {
         .cache_key_flags(CacheKeyFlags::DISABLE_HINTING);
     let middle = primary.map_or(fs * 0.35, |id| fonts.middle_offset(id, weight, fs as f32) as f64);
 
+    // Letter, word and line of every byte of every line, for reveals.
+    let mut units = Units::default();
+    let mut unit_of: Vec<Vec<Units>> = vec![];
+    for (li, line) in lines.iter().enumerate() {
+        let mut row = Vec::with_capacity(line.len() + 1);
+        let mut in_word = false;
+        for ch in line.chars() {
+            let space = ch.is_whitespace();
+            if !space && !in_word {
+                units.words += 1;
+            }
+            in_word = !space;
+            let here = Units { chars: units.chars, words: units.words.saturating_sub(1), lines: li };
+            row.extend(std::iter::repeat_n(here, ch.len_utf8()));
+            if !space {
+                units.chars += 1;
+            }
+        }
+        row.push(Units { chars: units.chars, words: units.words.saturating_sub(1), lines: li });
+        unit_of.push(row);
+    }
+    units.lines = lines.len();
+
     // Shape every line first: alignment needs the widest one.
     let mut shaped = vec![];
     for line in &lines {
@@ -304,7 +306,7 @@ fn layout(style: &TextStyle, device_scale: f32) -> Layout {
                 }
                 let x = g.x as f64 + (g.font_size * g.x_offset) as f64 + clusters as f64 * style.letter_spacing;
                 let y = (g.y - g.font_size * g.y_offset) as f64;
-                glyphs.push((x, y, g.clone()));
+                glyphs.push((x, y, g.w as f64, g.clone()));
             }
             let count = clusters + usize::from(last_start.is_some());
             width = width.max(run.line_w as f64 + count as f64 * style.letter_spacing);
@@ -318,16 +320,37 @@ fn layout(style: &TextStyle, device_scale: f32) -> Layout {
     if device_scale > 0.0 {
         for (i, (line_width, glyphs)) in shaped.iter().enumerate() {
             let x0 = line_start(style.align, width, *line_width);
-            let baseline = line_middle(i, height, line_height) + middle;
-            for (x, y, g) in glyphs {
+            let mid = line_middle(i, height, line_height);
+            let baseline = mid + middle;
+            for (x, y, advance, g) in glyphs {
                 let (gx, gy) = ((x0 + x) as f32, (baseline + y) as f32);
                 if let Some(glyph) = fonts.glyph(g, gx, gy, requested, device_scale) {
-                    ink.push(glyph);
+                    let unit = unit_of[i].get(g.start).copied().unwrap_or_default();
+                    ink.push(Glyph { ink: glyph, unit, center: ((x0 + x + advance / 2.0) as f32, mid as f32) });
                 }
             }
         }
     }
-    Layout { width, height, line_height, line_widths: shaped.iter().map(|(w, _)| *w).collect(), glyphs: ink }
+    Layout { width, height, line_height, line_widths: shaped.iter().map(|(w, _)| *w).collect(), glyphs: ink, units }
+}
+
+/// [`layout`], remembered: shaping is the slow part of drawing text, and animated text draws the
+/// same layout every frame.
+pub(crate) fn layout_cached(style: &TextStyle, device_scale: f32) -> Arc<Layout> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<Layout>>>> = OnceLock::new();
+    // Bitmap glyphs depend on the device scale; outlines don't, so round it for the key.
+    let key = format!("{}|{:.2}", serde_json::to_string(style).unwrap_or_default(), device_scale);
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(l) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return l.clone();
+    }
+    let l = Arc::new(layout(style, device_scale));
+    let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() > 512 {
+        map.clear();
+    }
+    map.insert(key, l.clone());
+    l
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -524,21 +547,21 @@ fn outline_path(commands: &[Command], x: f32, y: f32) -> Option<tiny_skia::Path>
 // ---------------------------------------------------------------------------------------------
 // Painting helpers
 
-fn solid(color: Color) -> Paint<'static> {
+pub(crate) fn solid(color: Color) -> Paint<'static> {
     let mut paint = Paint::default();
     paint.set_color(color);
     paint.anti_alias = true;
     paint
 }
 
-fn premultiply(px: &[u8; 4]) -> [u8; 4] {
+pub(crate) fn premultiply(px: &[u8; 4]) -> [u8; 4] {
     let a = px[3] as u16;
     let m = |c: u8| ((c as u16 * a + 127) / 255) as u8;
     [m(px[0]), m(px[1]), m(px[2]), px[3]]
 }
 
 /// The Canvas `roundRect` helper: four `arcTo` corners, radius clamped to fit.
-fn round_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
+pub(crate) fn round_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
     if !(w > 0.0 && h > 0.0) {
         return None;
     }
@@ -565,7 +588,7 @@ fn round_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path>
 
 /// Black shadow of `layer`'s alpha: Gaussian blur of standard deviation `sigma` (Canvas uses
 /// `shadowBlur / 2`), times `opacity`. Only the area around the ink is blurred.
-fn drop_shadow(layer: &Pixmap, sigma: f32, opacity: f32) -> Pixmap {
+pub(crate) fn drop_shadow(layer: &Pixmap, sigma: f32, opacity: f32) -> Pixmap {
     let (w, h) = (layer.width() as usize, layer.height() as usize);
     let mut out = Pixmap::new(layer.width(), layer.height()).expect("non-empty canvas");
     let alpha: Vec<u8> = layer.pixels().iter().map(|p| p.alpha()).collect();
@@ -589,7 +612,7 @@ fn drop_shadow(layer: &Pixmap, sigma: f32, opacity: f32) -> Pixmap {
     out
 }
 
-fn ink_bounds(alpha: &[u8], w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
+pub(crate) fn ink_bounds(alpha: &[u8], w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
     let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
     for y in 0..h {
         let row = &alpha[y * w..(y + 1) * w];
@@ -601,7 +624,7 @@ fn ink_bounds(alpha: &[u8], w: usize, h: usize) -> Option<(usize, usize, usize, 
 }
 
 /// Radii of three box blurs approximating a Gaussian of standard deviation `sigma`.
-fn box_radii(sigma: f32) -> [usize; 3] {
+pub(crate) fn box_radii(sigma: f32) -> [usize; 3] {
     let ideal = (12.0 * sigma * sigma / 3.0 + 1.0).sqrt();
     let mut wl = ideal.floor() as i32;
     if wl % 2 == 0 {
@@ -613,7 +636,7 @@ fn box_radii(sigma: f32) -> [usize; 3] {
 }
 
 /// In-place horizontal then vertical box blur of radius `r` (edges clamp to zero).
-fn box_blur(buf: &mut [f32], w: usize, h: usize, r: usize) {
+pub(crate) fn box_blur(buf: &mut [f32], w: usize, h: usize, r: usize) {
     if r == 0 {
         return;
     }
@@ -642,14 +665,14 @@ fn box_blur(buf: &mut [f32], w: usize, h: usize, r: usize) {
 
 /// CSS colour → tiny-skia colour: `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()`/`rgba()`, a
 /// few names. Anything else is black, like an ignored Canvas `fillStyle`.
-fn parse_color(c: &str) -> Color {
+pub(crate) fn parse_color(c: &str) -> Color {
     try_color(c).unwrap_or_else(|| {
         tracing::warn!(color = c, "unrecognised colour; using black");
         Color::BLACK
     })
 }
 
-fn try_color(c: &str) -> Option<Color> {
+pub(crate) fn try_color(c: &str) -> Option<Color> {
     let c = c.trim().to_ascii_lowercase();
     if let Some(hex) = c.strip_prefix('#') {
         let digits: Vec<u8> = hex.chars().map(|ch| ch.to_digit(16).map(|d| d as u8)).collect::<Option<_>>()?;

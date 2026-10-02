@@ -2,6 +2,7 @@
 
 pub mod export;
 pub mod preview;
+pub mod render;
 pub mod text;
 mod probe;
 mod process;

@@ -1,13 +1,13 @@
-//! Text overlays and the live preview against the real ffmpeg. Skipped when ffmpeg isn't installed.
+//! Titles and the live preview against the real ffmpeg. Skipped when ffmpeg isn't installed.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use chrono::Utc;
 use kimchi_core::{Asset, AssetOrigin, Clip, ClipContent, MediaKind, Project, ProjectSettings, TextStyle, Track, TrackKind};
 use kimchi_media::preview::{CHANNELS, Frame, PreviewStream, SAMPLE_RATE, render_frame};
-use kimchi_media::text::{measure, rasterize_overlays};
+use kimchi_media::text::measure;
 use kimchi_media::tiny_skia::Pixmap;
 use kimchi_media::{Tools, probe};
 
@@ -82,33 +82,18 @@ fn close(a: [u8; 4], b: [u8; 3]) -> bool {
     a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 24)
 }
 
-#[test]
-fn rasterizes_text_overlays_once() {
-    let dir = tempfile::tempdir().unwrap();
+#[tokio::test]
+async fn draws_titles_without_files() {
+    let Some(tools) = tools() else { return };
     let mut p = Project::new("t", ProjectSettings { width: W, height: H, ..Default::default() });
-    let style = TextStyle { content: "Hi".into(), background: Some("#20d040".into()), font_size: 40.0, ..TextStyle::default() };
-    let clip = Clip::new("t", 0.0, 1.0, ClipContent::Text { style: style.clone() });
-    let id = clip.id;
-    p.tracks[0].clips.push(clip);
-    let overlays = rasterize_overlays(&p, dir.path()).unwrap();
-    let png = &overlays[&id];
-    let pixmap = Pixmap::load_png(png).unwrap();
-    assert_eq!((pixmap.width(), pixmap.height()), (W, H));
-    assert_eq!(pixmap.pixel(0, 0).unwrap().alpha(), 0);
+    let style = TextStyle { content: "Hi".into(), background: Some("#20d040".into()), font_size: 40.0, shadow: false, ..TextStyle::default() };
+    p.tracks[0].clips.push(Clip::new("t", 0.0, 1.0, ClipContent::Text { style: style.clone() }));
+    let f = render_frame(&tools, &p, 0.5, W, H).await.unwrap();
+    assert!(close(f.pixel(0, 0), [0, 0, 0]));
     // The box's left end, clear of the glyphs, is the background colour.
     let left = (measure(&style).width / 2.0 + 7.0) as u32;
-    let c = pixmap.pixel(W / 2 - left, H / 2).unwrap().demultiply();
-    let got = [c.red(), c.green(), c.blue(), c.alpha()];
-    assert!(got.iter().zip([0x20, 0xd0, 0x40, 255]).all(|(a, b)| a.abs_diff(b) <= 1), "{got:?}");
-
-    // Unchanged layers aren't redrawn; a change gives a new file.
-    let modified = std::fs::metadata(png).unwrap().modified().unwrap();
-    std::thread::sleep(Duration::from_millis(20));
-    assert_eq!(rasterize_overlays(&p, dir.path()).unwrap()[&id], *png);
-    assert_eq!(std::fs::metadata(png).unwrap().modified().unwrap(), modified);
-    p.tracks[0].clips[0].transform.x = 10.0;
-    assert_ne!(rasterize_overlays(&p, dir.path()).unwrap()[&id], *png);
-    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    assert!(close(f.pixel(W / 2 - left, H / 2), [0x20, 0xd0, 0x40]), "{:?}", f.pixel(W / 2 - left, H / 2));
+    let _ = Pixmap::new(1, 1);
 }
 
 #[tokio::test]
@@ -116,34 +101,33 @@ async fn renders_preview_frames() {
     let Some(tools) = tools() else { return };
     let dir = tempfile::tempdir().unwrap();
     let p = project(&tools, dir.path()).await;
-    let overlays = rasterize_overlays(&p, &dir.path().join("text")).unwrap();
 
     let started = Instant::now();
-    let f = render_frame(&tools, &p, &overlays, 0.5, 160, 90).await.unwrap();
+    let f = render_frame(&tools, &p, 0.5, 160, 90).await.unwrap();
     eprintln!("render_frame 160x90: {:?}", started.elapsed());
     assert_eq!((f.width, f.height, f.rgba.len()), (160, 90, 160 * 90 * 4));
     // The test pattern shows at the corner, the text box in the middle.
     assert!(!close(f.pixel(4, 4), BG) && !close(f.pixel(4, 4), SOLID), "{:?}", f.pixel(4, 4));
     assert!(close(f.pixel(80, 45), BOX), "{:?}", f.pixel(80, 45));
     // From 1 s the solid covers the video; the text stays on top.
-    let f = render_frame(&tools, &p, &overlays, 1.5, 160, 90).await.unwrap();
+    let f = render_frame(&tools, &p, 1.5, 160, 90).await.unwrap();
     assert!(close(f.pixel(4, 4), SOLID) && close(f.pixel(80, 45), BOX), "{:?}", f.pixel(4, 4));
     // The last frame still shows the clips; past the end only the background, without ffmpeg.
-    let f = render_frame(&tools, &p, &overlays, 1.99, 160, 90).await.unwrap();
+    let f = render_frame(&tools, &p, 1.99, 160, 90).await.unwrap();
     assert!(close(f.pixel(4, 4), SOLID));
-    assert_eq!(render_frame(&tools, &p, &overlays, 2.0, 160, 90).await.unwrap(), Frame::solid(160, 90, "#203040"));
+    assert_eq!(render_frame(&tools, &p, 2.0, 160, 90).await.unwrap(), Frame::solid(160, 90, "#203040"));
     let empty = Project::new("e", p.settings.clone());
-    assert!(close(render_frame(&tools, &empty, &overlays, 0.0, 160, 90).await.unwrap().pixel(0, 0), BG));
+    assert!(close(render_frame(&tools, &empty, 0.0, 160, 90).await.unwrap().pixel(0, 0), BG));
 
     // Missing media is left out of the preview instead of failing it; a proxy is preferred.
     let mut gone = p.clone();
     gone.assets[0].path = dir.path().join("gone.mp4").to_string_lossy().into();
-    let f = render_frame(&tools, &gone, &overlays, 0.5, 160, 90).await.unwrap();
+    let f = render_frame(&tools, &gone, 0.5, 160, 90).await.unwrap();
     assert!(close(f.pixel(4, 4), BG) && close(f.pixel(80, 45), BOX));
     let proxy = dir.path().join("proxy.mp4");
     ff(&tools, &["-f", "lavfi", "-i", &format!("color=c=0x2040e0:s={W}x{H}:r={FPS}:d=2"), "-pix_fmt", "yuv420p", proxy.to_str().unwrap()]);
     gone.assets[0].proxy = Some(proxy.to_string_lossy().into());
-    let f = render_frame(&tools, &gone, &overlays, 0.5, 160, 90).await.unwrap();
+    let f = render_frame(&tools, &gone, 0.5, 160, 90).await.unwrap();
     assert!(close(f.pixel(4, 4), [0x20, 0x40, 0xe0]), "{:?}", f.pixel(4, 4));
 }
 
@@ -152,10 +136,9 @@ async fn streams_frames_and_sound() {
     let Some(tools) = tools() else { return };
     let dir = tempfile::tempdir().unwrap();
     let p = project(&tools, dir.path()).await;
-    let overlays = rasterize_overlays(&p, &dir.path().join("text")).unwrap();
 
     let started = Instant::now();
-    let mut stream = PreviewStream::start(&tools, &p, &overlays, 0.0, 160, 90, FPS).await.unwrap();
+    let mut stream = PreviewStream::start(&tools, &p, 0.0, 160, 90, FPS).await.unwrap();
     assert_eq!((stream.from(), stream.size(), stream.duration()), (0.0, (160, 90), 2.0));
     let mut audio = stream.audio().expect("the video has sound");
     assert!(stream.audio().is_none());
@@ -186,7 +169,7 @@ async fn streams_frames_and_sound() {
     // From the middle: frames start there; a silent project has no sound; past the end, nothing.
     let mut silent = p.clone();
     silent.tracks.iter_mut().for_each(|t| t.muted = true);
-    let mut stream = PreviewStream::start(&tools, &silent, &overlays, 1.01, 160, 90, FPS).await.unwrap();
+    let mut stream = PreviewStream::start(&tools, &silent, 1.01, 160, 90, FPS).await.unwrap();
     assert!(stream.audio().is_none());
     let (pts, _) = stream.next_frame().await.unwrap().unwrap();
     assert_eq!(pts, 1.0);
@@ -195,11 +178,11 @@ async fn streams_frames_and_sound() {
         n += 1;
     }
     assert_eq!(n, 25);
-    let mut done = PreviewStream::start(&tools, &p, &overlays, 5.0, 160, 90, FPS).await.unwrap();
+    let mut done = PreviewStream::start(&tools, &p, 5.0, 160, 90, FPS).await.unwrap();
     assert!(done.next_frame().await.unwrap().is_none() && done.audio().is_none());
 
     // Dropping a stream midway stops it.
-    let mut stream = PreviewStream::start(&tools, &p, &overlays, 0.0, 160, 90, FPS).await.unwrap();
+    let mut stream = PreviewStream::start(&tools, &p, 0.0, 160, 90, FPS).await.unwrap();
     stream.next_frame().await.unwrap().unwrap();
     drop(stream);
 }
@@ -231,21 +214,18 @@ async fn preview_speed() {
         Track { clips: vec![Clip::new("a", 0.0, 12.0, ClipContent::Media { asset_id: a.id })], ..Track::new(TrackKind::Video, "A") },
     ];
     p.assets = vec![a, b];
-    let started = Instant::now();
-    let overlays = rasterize_overlays(&p, &path("text")).unwrap();
-    eprintln!("rasterize_overlays (1080p, first call loads fonts): {:?}", started.elapsed());
 
     let mut times = vec![];
     for t in [0.5, 3.3, 6.1, 9.7, 11.2, 4.4, 7.9, 2.0] {
         let started = Instant::now();
-        render_frame(&tools, &p, &overlays, t, 640, 360).await.unwrap();
+        render_frame(&tools, &p, t, 640, 360).await.unwrap();
         times.push(started.elapsed());
     }
     times.sort();
     eprintln!("render_frame 640x360: min {:?} median {:?} max {:?}", times[0], times[times.len() / 2], times[times.len() - 1]);
 
     let started = Instant::now();
-    let mut stream = PreviewStream::start(&tools, &p, &overlays, 0.0, 640, 360, 30.0).await.unwrap();
+    let mut stream = PreviewStream::start(&tools, &p, 0.0, 640, 360, 30.0).await.unwrap();
     let mut audio = stream.audio().unwrap();
     let drain = tokio::spawn(async move { while audio.recv().await.is_some() {} });
     let mut first = None;

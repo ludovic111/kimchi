@@ -12,6 +12,7 @@ pub mod inspector;
 pub mod jobs;
 pub mod left_panel;
 pub mod media_panel;
+pub mod motion_panel;
 pub mod overlays;
 pub mod preview;
 pub mod screenshot;

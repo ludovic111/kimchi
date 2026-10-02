@@ -49,6 +49,14 @@ pub struct ClipPatch {
     pub speed: Option<f64>,
     pub text: Option<TextStyle>,
     pub color: Option<String>,
+    /// Replaces every keyframe of the clip.
+    #[serde(default)]
+    pub keyframes: Option<crate::anim::Keyframes>,
+    /// Motion clips: the new scene (and the template that made it, if any).
+    #[serde(default)]
+    pub scene: Option<crate::motion::Scene>,
+    #[serde(default)]
+    pub template: Option<Option<crate::motion::TemplateRef>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -299,7 +307,7 @@ impl Project {
         let free = |t: &Track| !t.locked && t.kind == kind && t.clips.iter().all(|c| c.end() <= clip.start + 1e-9 || c.start >= clip.end() - 1e-9);
         // Footage goes on the lowest free video track (closest to the base layer);
         // titles go on the highest so nothing above can cover them.
-        let overlay = matches!(clip.content, ClipContent::Text { .. });
+        let overlay = matches!(clip.content, ClipContent::Text { .. } | ClipContent::Motion { .. });
         let found = match kind {
             TrackKind::Video if overlay => self.tracks.iter().position(free),
             TrackKind::Video => self.tracks.iter().rposition(free),
@@ -370,6 +378,8 @@ impl Project {
                 c.in_point = (c.in_point + delta * c.speed).max(0.0);
                 c.start = new_start;
                 c.duration -= delta;
+                // Keyframes stay where they were on the timeline.
+                crate::anim::shift(&mut c.keyframes, -delta);
             }
             Edge::End => {
                 let mut hi = next_start;
@@ -477,6 +487,23 @@ impl Project {
                 _ => return Err(EditError::Invalid("not a solid clip".into())),
             }
         }
+        if let Some(keys) = &p.keyframes {
+            let mut keys = keys.clone();
+            crate::anim::normalize(&mut keys);
+            c.keyframes = keys;
+        }
+        if let Some(new_scene) = &p.scene {
+            match &mut c.content {
+                ClipContent::Motion { scene, .. } => *scene = new_scene.clone(),
+                _ => return Err(EditError::Invalid("not a motion clip".into())),
+            }
+        }
+        if let Some(new_template) = &p.template {
+            match &mut c.content {
+                ClipContent::Motion { template, .. } => *template = new_template.clone(),
+                _ => return Err(EditError::Invalid("not a motion clip".into())),
+            }
+        }
         clamp_fades(c);
         let track = &mut self.tracks[ti];
         resolve_overlaps(track, &self.assets);
@@ -495,6 +522,7 @@ fn split_right(c: &Clip, time: f64) -> Clip {
     right.start = time;
     right.duration = c.end() - time;
     right.in_point = c.source_time(time);
+    crate::anim::shift(&mut right.keyframes, -(time - c.start));
     right.fade_in = 0.0;
     clamp_fades(&mut right);
     right

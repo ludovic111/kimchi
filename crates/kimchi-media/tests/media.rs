@@ -7,7 +7,7 @@ use chrono::Utc;
 use kimchi_core::{
     Asset, AssetOrigin, Clip, ClipContent, MediaKind, Project, ProjectSettings, TextStyle, Track, TrackKind, Transform,
 };
-use kimchi_media::export::{ExportFormat, ExportSettings, Overlays, Quality, export};
+use kimchi_media::export::{ExportFormat, ExportSettings, Quality, export};
 use kimchi_media::{MediaError, Tools, filmstrip, grab_frame, needs_proxy, probe, proxy, thumbnail, waveform};
 use tokio_util::sync::CancellationToken;
 
@@ -22,7 +22,6 @@ struct Fixtures {
     silent: PathBuf,
     webm: PathBuf,
     image: PathBuf,
-    text: PathBuf,
     audio: PathBuf,
     rotated: PathBuf,
 }
@@ -47,12 +46,11 @@ fn fixtures(tools: &Tools) -> Fixtures {
     let root = dir.path().to_path_buf();
     let p = |n: &str| root.join(n);
     let s = |p: &Path| p.to_str().unwrap().to_owned();
-    let (video, silent, webm, image, text, audio, rotated) = (
+    let (video, silent, webm, image, audio, rotated) = (
         p("video.mp4"),
         p("silent.mp4"),
         p("clip.webm"),
         p("image.png"),
-        p("text.png"),
         p("audio.wav"),
         p("rotated.mp4"),
     );
@@ -80,14 +78,9 @@ fn fixtures(tools: &Tools) -> Fixtures {
         &["-f", "lavfi", "-i", "testsrc2=s=160x90:r=10:d=1", "-c:v", "libvpx-vp9", "-deadline", "realtime", &s(&webm)],
     );
     ff(tools, &["-f", "lavfi", "-i", &format!("testsrc2=s={W}x{H}"), "-frames:v", "1", &s(&image)]);
-    // A "rasterised text" overlay: transparent canvas with a white bar near the bottom.
-    let text_src = format!(
-        "color=c=white:s={W}x{H},format=rgba,geq=r=255:g=255:b=255:a='255*between(X,100,219)*between(Y,140,159)'"
-    );
-    ff(tools, &["-f", "lavfi", "-i", &text_src, "-frames:v", "1", &s(&text)]);
     ff(tools, &["-f", "lavfi", "-i", "sine=f=1000:d=2", "-ac", "2", &s(&audio)]);
     ff(tools, &["-display_rotation", "90", "-i", &s(&silent), "-c", "copy", &s(&rotated)]);
-    Fixtures { _dir: dir, root, video, silent, webm, image, text, audio, rotated }
+    Fixtures { _dir: dir, root, video, silent, webm, image, audio, rotated }
 }
 
 /// (duration, width, height, has audio) of the first video/audio streams.
@@ -211,13 +204,16 @@ const SOLID: [u8; 3] = [0xe0, 0x20, 0x20];
 
 /// Two video tracks, a rotated half-transparent image, a solid, a text overlay,
 /// a 2x clip and an audio clip with fades. 2.5 s long.
-async fn sample_project(tools: &Tools, fx: &Fixtures) -> (Project, Overlays) {
+async fn sample_project(tools: &Tools, fx: &Fixtures) -> Project {
     let video = asset(MediaKind::Video, &fx.video, probe(tools, &fx.video).await.unwrap().meta);
     let image = asset(MediaKind::Image, &fx.image, probe(tools, &fx.image).await.unwrap().meta);
     let audio = asset(MediaKind::Audio, &fx.audio, probe(tools, &fx.audio).await.unwrap().meta);
     let media = |a: &Asset, start, duration| Clip::new(&a.name, start, duration, ClipContent::Media { asset_id: a.id });
 
-    let text = Clip { fade_in: 0.5, ..Clip::new("title", 0.0, 2.0, ClipContent::Text { style: TextStyle::default() }) };
+    // A "title" that is only a white box (a space on a background) near the bottom.
+    let bar = TextStyle { content: " ".into(), font_size: 40.0, background: Some("#ffffff".into()), shadow: false, ..TextStyle::default() };
+    let mut text = Clip { fade_in: 0.5, ..Clip::new("title", 0.0, 2.0, ClipContent::Text { style: bar }) };
+    text.transform.y = 60.0;
     let mut overlay = media(&image, 0.5, 1.5);
     overlay.transform = Transform { x: 60.0, y: -30.0, scale: 0.5, rotation: 15.0, opacity: 0.5, ..Default::default() };
     let fast = Clip { speed: 2.0, ..media(&video, 0.0, 1.0) };
@@ -229,7 +225,6 @@ async fn sample_project(tools: &Tools, fx: &Fixtures) -> (Project, Overlays) {
         "it",
         ProjectSettings { width: W, height: H, fps: FPS, background: "#203040".into(), sample_rate: 48_000 },
     );
-    let overlays = Overlays::from([(text.id, fx.text.clone())]);
     project.tracks = vec![
         Track { clips: vec![text], ..Track::new(TrackKind::Video, "Text") },
         Track { clips: vec![overlay], ..Track::new(TrackKind::Video, "Overlay") },
@@ -238,7 +233,7 @@ async fn sample_project(tools: &Tools, fx: &Fixtures) -> (Project, Overlays) {
         Track { clips: vec![music], ..Track::new(TrackKind::Audio, "Music") },
     ];
     project.assets = vec![video, image, audio];
-    (project, overlays)
+    project
 }
 
 fn settings(fx: &Fixtures, name: &str, format: ExportFormat) -> ExportSettings {
@@ -257,7 +252,7 @@ fn settings(fx: &Fixtures, name: &str, format: ExportFormat) -> ExportSettings {
 async fn exports_a_project() {
     let Some(tools) = tools() else { return };
     let fx = fixtures(&tools);
-    let (project, overlays) = sample_project(&tools, &fx).await;
+    let project = sample_project(&tools, &fx).await;
     let frame = 1.0 / FPS;
 
     for (name, format, has_video, has_audio, tolerance) in [
@@ -268,7 +263,7 @@ async fn exports_a_project() {
     ] {
         let st = settings(&fx, name, format);
         let last = std::sync::Mutex::new(0.0f64);
-        export(&tools, &project, &overlays, &st, |p| *last.lock().unwrap() = p, CancellationToken::new())
+        export(&tools, &project, &st, |p| *last.lock().unwrap() = p, CancellationToken::new())
             .await
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(*last.lock().unwrap(), 1.0);
@@ -301,7 +296,7 @@ async fn exports_a_project() {
     let mut st = settings(&fx, "range.mp4", ExportFormat::Mp4);
     st.range = Some((1.25, 2.25));
     st.width = Some(160);
-    export(&tools, &project, &overlays, &st, |_| {}, CancellationToken::new()).await.unwrap();
+    export(&tools, &project, &st, |_| {}, CancellationToken::new()).await.unwrap();
     let (duration, w, h, audio) = shape(&tools, Path::new(&st.path)).await;
     assert!((duration - 1.0).abs() <= frame + 0.03, "{duration}");
     assert_eq!((w, h, audio), (Some(160), Some(90), true));
@@ -313,14 +308,14 @@ async fn exports_a_project() {
 async fn exports_a_sparse_timeline_and_cancels_midway() {
     let Some(tools) = tools() else { return };
     let fx = fixtures(&tools);
-    let (mut project, overlays) = sample_project(&tools, &fx).await;
+    let mut project = sample_project(&tools, &fx).await;
     project.tracks[2].clips[1].start = 21.0; // the solid
     project.tracks[4].clips[0].start = 38.0; // the music, ends at 40 s
     let end = project.duration();
     assert_eq!(end, 40.0);
 
     let st = settings(&fx, "sparse.mp4", ExportFormat::Mp4);
-    export(&tools, &project, &overlays, &st, |_| {}, CancellationToken::new()).await.unwrap();
+    export(&tools, &project, &st, |_| {}, CancellationToken::new()).await.unwrap();
     let out = Path::new(&st.path);
     let (duration, _, _, audio) = shape(&tools, out).await;
     assert!((duration - end).abs() <= 1.0 / FPS + 0.03 && audio, "{duration}");
@@ -336,7 +331,6 @@ async fn exports_a_sparse_timeline_and_cancels_midway() {
     let res = export(
         &tools,
         &project,
-        &overlays,
         &st,
         |p| {
             if p > 0.0 {
@@ -360,12 +354,12 @@ async fn exports_a_sparse_timeline_and_cancels_midway() {
 async fn cancels_and_reports_errors() {
     let Some(tools) = tools() else { return };
     let fx = fixtures(&tools);
-    let (project, overlays) = sample_project(&tools, &fx).await;
+    let project = sample_project(&tools, &fx).await;
 
     let cancel = CancellationToken::new();
     cancel.cancel();
     let st = settings(&fx, "cancelled.mp4", ExportFormat::Mp4);
-    let res = export(&tools, &project, &overlays, &st, |_| {}, cancel).await;
+    let res = export(&tools, &project, &st, |_| {}, cancel).await;
     assert!(matches!(res, Err(MediaError::Cancelled)), "{res:?}");
     assert!(!Path::new(&st.path).exists());
     assert!(!fx.root.join(".cancelled.mp4.part").exists());
@@ -375,7 +369,7 @@ async fn cancels_and_reports_errors() {
     std::fs::write(&fx.silent, b"definitely not a video").unwrap();
     broken.assets[0].path = fx.silent.to_string_lossy().into();
     let st = settings(&fx, "broken.mp4", ExportFormat::Mp4);
-    match export(&tools, &broken, &overlays, &st, |_| {}, CancellationToken::new()).await {
+    match export(&tools, &broken, &st, |_| {}, CancellationToken::new()).await {
         Err(MediaError::Ffmpeg(msg)) => {
             eprintln!("ffmpeg error: {msg}");
             assert!(msg.contains("silent.mp4") && msg.contains("Invalid data"), "{msg}");
