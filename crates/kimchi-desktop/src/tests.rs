@@ -42,6 +42,12 @@ impl Fixture {
     }
 }
 
+/// The platform's command key, as the shortcuts are bound (`actions.rs`).
+#[cfg(target_os = "macos")]
+const M: &str = "cmd";
+#[cfg(not(target_os = "macos"))]
+const M: &str = "ctrl";
+
 fn texts(p: &Project) -> usize {
     p.clips().filter(|(_, c)| matches!(c.content, ClipContent::Text { .. })).count()
 }
@@ -74,12 +80,12 @@ fn shortcuts_edit_through_the_registry_and_undo(cx: &mut TestAppContext) {
     let p = f.settle(cx, |p| texts(p) == 1);
     assert_eq!(texts(&p), 1, "t adds a title");
     // The window's edits are undo steps like any other client's.
-    cx.simulate_keystrokes("cmd-z");
+    cx.simulate_keystrokes(&format!("{M}-z"));
     let p = f.settle(cx, |p| texts(p) == 0);
-    assert_eq!(texts(&p), 0, "cmd-z undoes it");
-    cx.simulate_keystrokes("cmd-shift-z");
+    assert_eq!(texts(&p), 0, "undo undoes it");
+    cx.simulate_keystrokes(&format!("{M}-shift-z"));
     let p = f.settle(cx, |p| texts(p) == 1);
-    assert_eq!(texts(&p), 1, "cmd-shift-z redoes it");
+    assert_eq!(texts(&p), 1, "redo redoes it");
     let steps = f.call("history.list", json!({}));
     assert_eq!(steps["undo"][0]["source"], "window");
 }
@@ -99,7 +105,7 @@ fn space_plays_and_pauses(cx: &mut TestAppContext) {
 #[gpui::test]
 fn typing_in_a_field_never_triggers_shortcuts(cx: &mut TestAppContext) {
     let (f, view, cx) = setup(cx);
-    cx.simulate_keystrokes("cmd-k");
+    cx.simulate_keystrokes(&format!("{M}-k"));
     cx.run_until_parked();
     assert_eq!(cx.update(|_, cx| cx.store().read(cx).dialog.clone()), Some(Dialog::Palette));
     // "t" adds a title and space plays, except while a text field has focus.
