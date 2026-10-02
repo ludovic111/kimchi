@@ -81,6 +81,25 @@ fn moving_onto_a_clip_overwrites_it() {
 }
 
 #[test]
+fn paste_places_new_copies_whole_or_not_at_all() {
+    let (mut p, a) = setup();
+    let track = p.tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap().id;
+    let first = p.apply(&Edit::InsertAsset { asset_id: a.id, track_id: Some(track), start: 0.0 }).unwrap().created_clips[0];
+    let mut copy = p.clip(first).unwrap().clone();
+    copy.start = 30.0;
+    let made = p.apply(&Edit::PasteClips { clips: vec![TrackClip { track_id: track, clip: copy.clone() }] }).unwrap().created_clips;
+    assert_eq!(made.len(), 1);
+    assert_ne!(made[0], first, "a paste gets a new id");
+    assert_eq!(p.clip(made[0]).unwrap().start, 30.0);
+    assert!(p.clip(first).is_some(), "the original stays");
+    // A clip whose media isn't in the project lands nowhere.
+    copy.content = ClipContent::Media { asset_id: new_id() };
+    let before = p.clips().count();
+    assert!(p.apply(&Edit::PasteClips { clips: vec![TrackClip { track_id: track, clip: copy }] }).is_err());
+    assert_eq!(p.clips().count(), before);
+}
+
+#[test]
 fn ripple_delete_closes_the_hole() {
     let (mut p, a) = setup();
     let track = p.tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap().id;

@@ -43,6 +43,7 @@ pub enum Dialog {
     Settings { section: Option<String> },
     Export,
     Palette,
+    Shortcuts,
 }
 
 impl Dialog {
@@ -51,6 +52,7 @@ impl Dialog {
             Dialog::Settings { .. } => "settings",
             Dialog::Export => "export",
             Dialog::Palette => "palette",
+            Dialog::Shortcuts => "shortcuts",
         }
     }
 }
@@ -60,6 +62,15 @@ pub struct Toast {
     pub id: u64,
     pub kind: ToastKind,
     pub text: SharedString,
+    /// A passing status ("Undid split"): the next one replaces it instead of stacking.
+    pub flash: bool,
+}
+
+/// Clips copied or cut in the window, as they were, with the track each was on (a cut
+/// can still be pasted after the clips are gone).
+#[derive(Clone, Debug, Default)]
+pub struct Clipboard {
+    pub clips: Vec<(Id, Clip)>,
 }
 
 /// One entry of a context menu.
@@ -94,6 +105,11 @@ impl MenuItem {
     }
     pub fn shortcut(mut self, s: impl Into<SharedString>) -> Self {
         self.shortcut = Some(s.into());
+        self
+    }
+    /// The action's shortcut, as this platform writes it.
+    pub fn shortcut_of(mut self, action: &dyn gpui::Action) -> Self {
+        self.shortcut = crate::actions::hint(action);
         self
     }
     pub fn danger(mut self) -> Self {
@@ -159,6 +175,8 @@ pub enum StoreEvent {
     Compose(Box<ComposeRequest>),
     /// Focus the prompt field.
     FocusPrompt,
+    /// Put the cursor in the selected title's words (double-click on a title).
+    EditText,
 }
 
 pub struct Store {
@@ -192,6 +210,7 @@ pub struct Store {
     pub menu: Option<ContextMenu>,
     pub toasts: Vec<Toast>,
     pub dropping: bool,
+    pub clipboard: Clipboard,
     next_toast: u64,
     _pump: Task<()>,
 }
@@ -261,6 +280,7 @@ impl Store {
             menu: None,
             toasts: vec![],
             dropping: false,
+            clipboard: Clipboard::default(),
             next_toast: 1,
             _pump: pump,
         };
@@ -421,10 +441,21 @@ impl Store {
     // ---- toasts ----------------------------------------------------------
 
     pub fn toast(&mut self, kind: ToastKind, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.push_toast(kind, text.into(), false, cx);
+    }
+
+    /// A short status that replaces the previous one (undo, redo, copy…).
+    pub fn flash(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.toasts.retain(|t| !t.flash);
+        self.push_toast(ToastKind::Info, text.into(), true, cx);
+    }
+
+    fn push_toast(&mut self, kind: ToastKind, text: SharedString, flash: bool, cx: &mut Context<Self>) {
         let id = self.next_toast;
         self.next_toast += 1;
-        self.toasts.push(Toast { id, kind, text: text.into() });
+        self.toasts.push(Toast { id, kind, text, flash });
         let ms = match kind {
+            _ if flash => 1800,
             ToastKind::Error => 7000,
             _ => 4200,
         };

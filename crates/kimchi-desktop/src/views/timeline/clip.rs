@@ -58,6 +58,8 @@ pub struct ClipView<'a> {
     pub h: f32,
     pub selected: bool,
     pub moving: bool,
+    /// The copy an ⌥-drag would drop (drawn over the original, not interactive).
+    pub ghost: bool,
     /// The track is muted or hidden.
     pub muted: bool,
     pub locked: bool,
@@ -98,8 +100,9 @@ impl ClipView<'_> {
         let id = c.id;
         let group: gpui::SharedString = format!("clip-{id}").into();
 
+        let el_id = if self.ghost { ElementId::NamedChild(std::sync::Arc::new(ElementId::Uuid(id)), "copy".into()) } else { ElementId::Uuid(id) };
         let mut el = div()
-            .id(ElementId::Uuid(id))
+            .id(el_id)
             .role(gpui::Role::Button)
             .aria_label(format!("{} clip, {:.1} s", c.name, c.duration))
             .group(group.clone())
@@ -113,7 +116,7 @@ impl ClipView<'_> {
             .when(!cut_l, |d| d.rounded_l(px(RADIUS)))
             .when(!cut_r, |d| d.rounded_r(px(RADIUS)))
             .when(self.muted, |d| d.opacity(0.45))
-            .when(self.moving, |d| d.opacity(0.85).shadow(t.glass_shadow()))
+            .when(self.moving || self.ghost, |d| d.opacity(0.85).shadow(t.glass_shadow()))
             .cursor(if self.locked { gpui::CursorStyle::Arrow } else { gpui::CursorStyle::PointingHand });
 
         // Pictures.
@@ -293,7 +296,7 @@ impl ClipView<'_> {
         }
 
         // Outline: the accent when selected or moving, a quiet ring otherwise; the agent's work in the accent ring.
-        let (ring, ring_w) = if self.selected || self.moving {
+        let (ring, ring_w) = if self.selected || self.moving || self.ghost {
             (t.accent, 2.)
         } else if self.agent {
             (t.accent_ring, 1.5)
@@ -312,7 +315,7 @@ impl ClipView<'_> {
                 .border_color(ring),
         );
 
-        if !self.locked {
+        if !self.locked && !self.ghost {
             el = self.handles(el, (vis0, vis1, off, wf, h), (cut_l, cut_r), (fade_in_w, fade_out_w), group, &t, cx);
         }
         Some(el)

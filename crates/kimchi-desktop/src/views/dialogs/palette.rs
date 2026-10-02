@@ -22,7 +22,7 @@ struct Cmd {
     label: SharedString,
     /// Extra words that match (not shown).
     keywords: &'static str,
-    hint: Option<&'static str>,
+    hint: Option<SharedString>,
     icon: &'static str,
     /// An AI action: drawn with the accent.
     ai: bool,
@@ -33,10 +33,6 @@ impl Cmd {
     fn new(label: impl Into<SharedString>, icon: &'static str, run: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         Self { label: label.into(), keywords: "", hint: None, icon, ai: false, run: Rc::new(run) }
     }
-    fn hint(mut self, h: &'static str) -> Self {
-        self.hint = Some(h);
-        self
-    }
     fn keywords(mut self, k: &'static str) -> Self {
         self.keywords = k;
         self
@@ -45,9 +41,12 @@ impl Cmd {
         self.ai = true;
         self
     }
-    /// Runs a GPUI action, as its shortcut or menu item would.
+    /// Runs a GPUI action, as its shortcut or menu item would, and shows its shortcut.
     fn action(label: &'static str, icon: &'static str, a: impl Action + Clone) -> Self {
-        Self::new(label, icon, move |window, cx| window.dispatch_action(a.boxed_clone(), cx))
+        let hint = act::hint(&a);
+        let mut c = Self::new(label, icon, move |window, cx| window.dispatch_action(a.boxed_clone(), cx));
+        c.hint = hint;
+        c
     }
 }
 
@@ -111,43 +110,52 @@ impl Palette {
             v.extend([
                 Cmd::new("Generate video…", "film", |_, cx| compose(true, None, cx)).keywords("ai make clip").ai(),
                 Cmd::new("Generate image…", "image", |_, cx| compose(false, None, cx)).keywords("ai make picture still").ai(),
-                Cmd::action("Import media", "import", act::Import).hint("⌘I").keywords("add files video audio"),
-                Cmd::action("Add text", "type", act::AddText).hint("T").keywords("title caption"),
-                Cmd::action("Split at playhead", "scissors", act::Split).hint("S").keywords("cut razor"),
-                Cmd::action("Undo", "undo-2", act::Undo).hint("⌘Z"),
-                Cmd::action("Redo", "redo-2", act::Redo).hint("⇧⌘Z"),
-                Cmd::action("Select all clips", "layers", act::SelectAll).hint("⌘A"),
-                Cmd::action("Play / pause", "play", act::PlayPause).hint("Space"),
-                Cmd::action("Go to start", "skip-back", act::GoToStart).hint("Home"),
-                Cmd::action("Go to end", "skip-forward", act::GoToEnd).hint("End"),
-                Cmd::action("Add marker at playhead", "map-pin", act::AddMarker).hint("M"),
-                Cmd::action("Toggle snapping", "magnet", act::ToggleSnap).hint("N"),
-                Cmd::action("Zoom in", "zoom-in", act::ZoomIn).hint("="),
-                Cmd::action("Zoom out", "zoom-out", act::ZoomOut).hint("-"),
-                Cmd::action("Zoom to fit", "maximize-2", act::ZoomFit).hint("⇧Z"),
+                Cmd::action("Import media", "import", act::Import).keywords("add files video audio"),
+                Cmd::action("Add text", "type", act::AddText).keywords("title caption"),
+                Cmd::action("Split at playhead", "scissors", act::Split).keywords("cut razor"),
+                Cmd::action("Undo", "undo-2", act::Undo),
+                Cmd::action("Redo", "redo-2", act::Redo),
+                Cmd::action("Select all clips", "layers", act::SelectAll),
+                Cmd::action("Play / pause", "play", act::PlayPause),
+                Cmd::action("Go to start", "skip-back", act::GoToStart),
+                Cmd::action("Go to end", "skip-forward", act::GoToEnd),
+                Cmd::action("Next cut", "arrow-right-to-line", act::NextEdit).keywords("edit point jump"),
+                Cmd::action("Previous cut", "chevron-left", act::PrevEdit).keywords("edit point jump back"),
+                Cmd::action("Loop playback", "repeat", act::ToggleLoop).keywords("repeat"),
+                Cmd::action("Paste at the playhead", "clipboard-paste", act::PasteClips).keywords("clipboard"),
+                Cmd::action("Trim start to the playhead", "scissors", act::TrimStart).keywords("cut in point"),
+                Cmd::action("Trim end to the playhead", "scissors", act::TrimEnd).keywords("cut out point"),
+                Cmd::action("Add marker at playhead", "map-pin", act::AddMarker),
+                Cmd::action("Toggle snapping", "magnet", act::ToggleSnap),
+                Cmd::action("Zoom in", "zoom-in", act::ZoomIn),
+                Cmd::action("Zoom out", "zoom-out", act::ZoomOut),
+                Cmd::action("Zoom to fit", "maximize-2", act::ZoomFit),
                 Cmd::new("Add video track", "film", |_, cx| run("track.add", json!({ "kind": "video" }), cx)),
                 Cmd::new("Add audio track", "audio-lines", |_, cx| run("track.add", json!({ "kind": "audio" }), cx)),
-                Cmd::action("Export…", "share", act::Export).hint("⌘E").keywords("render save file"),
+                Cmd::action("Export…", "share", act::Export).keywords("render save file"),
                 Cmd::new("Send the cut to ryolune to score", "music", |_, cx| {
                     cx.store().update(cx, |s, cx| s.run_then("handoff.toRyolune", json!({}), cx, |s, _, cx| s.info("Sent to ryolune.", cx)))
                 })
                 .keywords("music soundtrack lsuite"),
                 Cmd::action("Show generation jobs", "sparkles", act::ToggleJobs),
-                Cmd::action("Focus the prompt", "wand-sparkles", act::FocusGenerate).hint("⌘G").ai(),
-                Cmd::action("Back to projects", "arrow-left", act::CloseProject).hint("⌘W").keywords("home close"),
+                Cmd::action("Focus the prompt", "wand-sparkles", act::FocusGenerate).ai(),
+                Cmd::action("Back to projects", "arrow-left", act::CloseProject).keywords("home close"),
             ]);
             if has_selection {
                 v.extend([
-                    Cmd::action("Duplicate selection", "copy", act::Duplicate).hint("⌘D"),
-                    Cmd::action("Delete selection", "trash", act::Delete).hint("⌫").keywords("remove"),
-                    Cmd::action("Ripple delete selection", "trash", act::RippleDelete).hint("⇧⌫").keywords("remove close gap"),
+                    Cmd::action("Duplicate selection", "copy", act::Duplicate),
+                    Cmd::action("Copy selection", "copy", act::CopyClips).keywords("clipboard"),
+                    Cmd::action("Cut selection", "scissors", act::CutClips).keywords("clipboard"),
+                    Cmd::action("Delete selection", "trash", act::Delete).keywords("remove"),
+                    Cmd::action("Ripple delete selection", "trash", act::RippleDelete).keywords("remove close gap"),
                 ]);
             }
-            v.push(Cmd::action("Agent", "bot", act::ToggleAgent).hint("⌘J").keywords("assistant chat ai").ai());
+            v.push(Cmd::action("Agent", "bot", act::ToggleAgent).keywords("assistant chat ai").ai());
         }
         v.extend([
-            Cmd::action("New project", "file-plus", act::NewProject).hint("⌘N"),
-            Cmd::action("Settings", "settings", act::OpenSettings).hint("⌘,").keywords("preferences"),
+            Cmd::action("New project", "file-plus", act::NewProject),
+            Cmd::action("Settings", "settings", act::OpenSettings).keywords("preferences"),
+            Cmd::action("Keyboard shortcuts", "keyboard", act::ShowShortcuts).keywords("keys help hotkeys"),
             Cmd::new("Models & keys", "key-round", |_, cx| settings("models", cx)).keywords("api key provider"),
             Cmd::new("Agent settings and permissions", "bot", |_, cx| settings("agent", cx)),
             Cmd::new("Appearance", "sun", |_, cx| settings("appearance", cx)).keywords("theme dark light transparency"),
@@ -157,7 +165,7 @@ impl Palette {
             Cmd::action("Driving kimchi from AI and scripts", "info", act::OpenHelp).keywords("help docs cli mcp"),
             Cmd::action("Support kimchi", "heart", act::OpenSupport).keywords("help sponsor donate"),
             Cmd::action("About kimchi", "info", act::About).keywords("version"),
-            Cmd::action("Quit kimchi", "x", act::Quit).hint("⌘Q").keywords("exit"),
+            Cmd::action("Quit kimchi", "x", act::Quit).keywords("exit"),
         ]);
         // Projects, most recent first (the open one is already on screen).
         let open = s.project.as_ref().map(|p| p.id);
@@ -272,7 +280,7 @@ impl Render for Palette {
                     .on_click(cx.listener(move |this, _, window, cx| this.run_cmd(run.clone(), window, cx)))
                     .child(icon(c.icon).size(px(15.)).text_color(color))
                     .child(div().flex_1().min_w_0().truncate().when(c.ai && on, |d| d.font_weight(FontWeight::SEMIBOLD)).child(c.label))
-                    .when_some(c.hint, |d, h| d.child(kbd(keys(h), cx)))
+                    .when_some(c.hint, |d, h| d.child(kbd(h, cx)))
             })
             .collect();
         let empty = rows.is_empty();
@@ -342,14 +350,6 @@ fn fuzzy(q: &str, text: &str) -> Option<i32> {
         }
     }
     (qi == q.len()).then_some(score)
-}
-
-/// Shortcut hints as this platform writes them.
-fn keys(h: &'static str) -> SharedString {
-    if cfg!(target_os = "macos") {
-        return h.into();
-    }
-    h.replace("⇧⌘", "Ctrl+Shift+").replace('⌘', "Ctrl+").replace('⇧', "Shift+").replace('⌫', "Backspace").into()
 }
 
 fn run(name: &'static str, params: serde_json::Value, cx: &mut App) {

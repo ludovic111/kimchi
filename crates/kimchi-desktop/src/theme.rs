@@ -279,6 +279,30 @@ pub fn os_reduces_transparency() -> bool {
     }
 }
 
+/// Whether the person asked the OS for less motion (animations then show their end state).
+pub fn os_reduces_motion() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("defaults")
+            .args(["read", "com.apple.universalaccess", "reduceMotion"])
+            .output()
+            .ok()
+            .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+            .output()
+            .ok()
+            .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "false")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

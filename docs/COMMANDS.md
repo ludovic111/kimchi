@@ -295,6 +295,17 @@ Copy clips to the end of their track. _(changes things)_
 | --- | --- | --- | --- |
 | `clipIds` | array | required | Clips to duplicate (ids or names). |
 
+### `clip.paste`
+
+Paste copies of clips: the earliest copy starts at time and the others keep their spacing and tracks. Whatever they land on is overwritten. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array |  | Clips in the project to copy (ids or names). |
+| `clips` | array |  | Clip objects as returned by clip.get (with trackId), e.g. clips deleted since (a cut). |
+| `time` | number |  | Where the earliest copy starts, in seconds. Defaults to the playhead. |
+| `trackId` | string |  | Put every copy on this track instead of each clip's own. |
+
 ### `clip.update`
 
 Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, speed, text style or solid colour. Only the given fields change. One undo step. _(changes things)_
@@ -373,11 +384,11 @@ The undo and redo steps: which command made each one and who (window, agent, cli
 
 ### `history.undo`
 
-Undo the last step, whoever made it. _(changes things)_
+Undo the last step, whoever made it. Returns the command that made the step. _(changes things)_
 
 ### `history.redo`
 
-Redo the last undone step. _(changes things)_
+Redo the last undone step. Returns the command that made the step. _(changes things)_
 
 ### `history.checkpoint`
 

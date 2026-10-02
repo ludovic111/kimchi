@@ -283,9 +283,9 @@ impl Home {
                                 "Connect a model provider".into()
                             }),
                     )
-                    .child(Button::icon("home-palette", "command", "Command palette (⌘K)").on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Palette, cx))))
+                    .child(Button::icon("home-palette", "command", crate::actions::tip("Command palette", &crate::actions::Palette)).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Palette, cx))))
                     .child(
-                        Button::icon("home-settings", "settings", "Settings (⌘,)")
+                        Button::icon("home-settings", "settings", crate::actions::tip("Settings", &crate::actions::OpenSettings))
                             .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: None }, cx))),
                     ),
             )

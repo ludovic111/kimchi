@@ -27,7 +27,9 @@ rewritten from the ground up in Rust.
 
 **Editing**
 - Multi-track timeline: video, image, text, solid and audio clips
-- Split, trim, ripple delete, duplicate, cross-track moves, snapping, markers
+- Split, trim, ripple delete, duplicate, copy / cut / paste, cross-track moves, snapping, markers
+- Rubber-band selection, ⌥-drag to copy, files dropped straight onto a track
+- The shortcuts editors expect: J / K / L shuttle, ↑ / ↓ to the previous / next cut, Q / W trim to the playhead; press ? for all of them
 - Per-clip transform (position, scale, rotation, opacity, fit), speed, fades, volume
 - Live preview compositor, on-canvas move/scale handles
 - Snapshot undo/redo for every edit, autosave

@@ -5,7 +5,7 @@ pub mod history;
 pub mod model;
 pub mod store;
 
-pub use edit::{ClipMove, ClipPatch, Edge, Edit, EditError, EditOutcome, TrackPatch};
+pub use edit::{ClipMove, ClipPatch, Edge, Edit, EditError, EditOutcome, TrackClip, TrackPatch};
 pub use history::Editor;
 pub use model::*;
 pub use store::{Library, ProjectSummary};

@@ -26,6 +26,7 @@ pub fn init(session: Arc<Session>, cx: &mut App) {
     let settings = session.settings();
     let mode = Theme::mode_for(&settings.appearance.mode, cx.window_appearance());
     cx.set_global(Theme::new(mode, settings.appearance.transparency && !os_reduces_transparency()));
+    cx.set_reduce_motion(crate::theme::os_reduces_motion());
     let playback = cx.new(|_| Playback::new(session.clone()));
     let store = cx.new(|cx| Store::new(session, playback, cx));
     cx.set_global(GlobalStore(store));
@@ -212,14 +213,144 @@ impl Workspace {
 
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
         if self.store.read(cx).can_undo {
-            self.run("history.undo", json!({}), cx);
+            self.store.update(cx, |s, cx| undo_redo(s, true, cx));
         }
     }
 
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
         if self.store.read(cx).can_redo {
-            self.run("history.redo", json!({}), cx);
+            self.store.update(cx, |s, cx| undo_redo(s, false, cx));
         }
+    }
+
+    fn save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
+        if self.has_project(cx) {
+            self.store.update(cx, |s, cx| s.flash("Saved. kimchi saves every change as you make it.", cx));
+        }
+    }
+
+    // ---- clipboard ------------------------------------------------------------
+
+    fn copy(&mut self, _: &CopyClips, _: &mut Window, cx: &mut Context<Self>) {
+        self.copy_selection(cx);
+    }
+
+    /// Keeps the selected clips as they are now; returns how many.
+    fn copy_selection(&mut self, cx: &mut Context<Self>) -> usize {
+        self.store.update(cx, |s, cx| {
+            let Some(p) = s.project.clone() else { return 0 };
+            let clips: Vec<(kimchi_core::Id, kimchi_core::Clip)> =
+                p.tracks.iter().flat_map(|t| t.clips.iter().filter(|c| s.selection.contains(&c.id)).map(|c| (t.id, c.clone()))).collect();
+            let n = clips.len();
+            if n == 0 {
+                return 0;
+            }
+            s.clipboard = crate::store::Clipboard { clips };
+            s.flash(format!("Copied {}", count(n, "clip")), cx);
+            n
+        })
+    }
+
+    fn cut(&mut self, _: &CutClips, _: &mut Window, cx: &mut Context<Self>) {
+        let n = self.copy_selection(cx);
+        if n > 0 {
+            let ids = self.store.read(cx).selection.clone();
+            self.store.update(cx, |s, cx| {
+                s.run("clip.delete", json!({ "clipIds": ids }), cx);
+                s.clear_selection(cx);
+                s.flash(format!("Cut {}", count(n, "clip")), cx);
+            });
+        }
+    }
+
+    /// Pastes at the playhead, then moves the playhead past what landed, so pasting again
+    /// lays the copies end to end.
+    fn paste(&mut self, _: &PasteClips, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_project(cx) {
+            return;
+        }
+        let (clips, t) = {
+            let s = self.store.read(cx);
+            (s.clipboard.clips.clone(), s.playback.read(cx).playhead)
+        };
+        if clips.is_empty() {
+            self.store.update(cx, |s, cx| s.flash(format!("Nothing to paste. Select a clip and copy it ({}) first.", hint(&CopyClips).unwrap_or_default()), cx));
+            return;
+        }
+        let list: Vec<Value> = clips
+            .iter()
+            .map(|(track, c)| {
+                let mut v = json!(c);
+                v["trackId"] = json!(track);
+                v
+            })
+            .collect();
+        let earliest = clips.iter().map(|(_, c)| c.start).fold(f64::INFINITY, f64::min);
+        let span = clips.iter().map(|(_, c)| c.end()).fold(0.0, f64::max) - earliest;
+        self.store.update(cx, |s, cx| {
+            s.run_then("clip.paste", json!({ "clips": list, "time": t }), cx, move |s, v, cx| {
+                s.set_selection(created(&v), cx);
+                s.playback.clone().update(cx, |p, cx| p.seek(t + span, cx));
+            })
+        });
+    }
+
+    // ---- trims and nudges -----------------------------------------------------
+
+    /// Q / W: the selected clips under the playhead (or every clip there on an unlocked
+    /// track) get their start or end moved to it, as one undo step.
+    fn trim_to_playhead(&mut self, start: bool, cx: &mut Context<Self>) {
+        let s = self.store.read(cx);
+        let Some(p) = s.project.clone() else { return };
+        let t = s.playback.read(cx).playhead;
+        let inside = |c: &kimchi_core::Clip| t > c.start + 1e-6 && t < c.end() - 1e-6;
+        let mut ids: Vec<kimchi_core::Id> = s.selected_clips().into_iter().filter(|c| inside(c)).map(|c| c.id).collect();
+        if s.selection.is_empty() {
+            ids = p.tracks.iter().filter(|tr| !tr.locked).flat_map(|tr| tr.clips.iter().filter(|c| inside(c)).map(|c| c.id)).collect();
+        }
+        if ids.is_empty() {
+            self.store.update(cx, |s, cx| s.flash("Put the playhead over a clip to trim it there.", cx));
+            return;
+        }
+        let edge = if start { "start" } else { "end" };
+        let commands: Vec<Value> = ids.iter().map(|id| json!({ "command": "clip.trim", "params": { "clipId": id, "edge": edge, "time": t } })).collect();
+        self.run("project.batch", json!({ "commands": commands, "label": "clip.trim" }), cx);
+    }
+
+    fn trim_start(&mut self, _: &TrimStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.trim_to_playhead(true, cx);
+    }
+
+    fn trim_end(&mut self, _: &TrimEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.trim_to_playhead(false, cx);
+    }
+
+    /// Moves the selection by whole frames (repeated nudges are one undo step).
+    fn nudge(&mut self, frames: f64, cx: &mut Context<Self>) {
+        let s = self.store.read(cx);
+        let Some(p) = s.project.clone() else { return };
+        let dt = frames / s.fps();
+        let moves: Vec<Value> = p
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter().filter(|c| s.selection.contains(&c.id)).map(move |c| json!({ "clipId": c.id, "trackId": t.id, "start": (c.start + dt).max(0.) })))
+            .collect();
+        if !moves.is_empty() {
+            self.run("clip.moveMany", json!({ "moves": moves, "coalesce": "nudge" }), cx);
+        }
+    }
+
+    fn nudge_left(&mut self, _: &NudgeLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.nudge(-1.0, cx);
+    }
+    fn nudge_right(&mut self, _: &NudgeRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.nudge(1.0, cx);
+    }
+    fn nudge_left_more(&mut self, _: &NudgeLeftMore, _: &mut Window, cx: &mut Context<Self>) {
+        self.nudge(-10.0, cx);
+    }
+    fn nudge_right_more(&mut self, _: &NudgeRightMore, _: &mut Window, cx: &mut Context<Self>) {
+        self.nudge(10.0, cx);
     }
 
     fn import(&mut self, _: &Import, _: &mut Window, cx: &mut Context<Self>) {
@@ -287,6 +418,63 @@ impl Workspace {
             let pb = self.store.read(cx).playback.clone();
             pb.update(cx, |p, cx| p.toggle(cx));
         }
+    }
+
+    fn shuttle_back(&mut self, _: &ShuttleBack, _: &mut Window, cx: &mut Context<Self>) {
+        if self.has_project(cx) {
+            let pb = self.store.read(cx).playback.clone();
+            pb.update(cx, |p, cx| p.shuttle_back(cx));
+        }
+    }
+
+    fn shuttle_stop(&mut self, _: &ShuttleStop, _: &mut Window, cx: &mut Context<Self>) {
+        let pb = self.store.read(cx).playback.clone();
+        pb.update(cx, |p, cx| p.pause(cx));
+    }
+
+    fn shuttle_forward(&mut self, _: &ShuttleForward, _: &mut Window, cx: &mut Context<Self>) {
+        if self.has_project(cx) {
+            let pb = self.store.read(cx).playback.clone();
+            pb.update(cx, |p, cx| p.shuttle_forward(cx));
+        }
+    }
+
+    fn toggle_loop(&mut self, _: &ToggleLoop, _: &mut Window, cx: &mut Context<Self>) {
+        let pb = self.store.read(cx).playback.clone();
+        let on = pb.update(cx, |p, cx| {
+            p.looping = !p.looping;
+            cx.notify();
+            p.looping
+        });
+        self.store.update(cx, |s, cx| s.flash(if on { "Loop on" } else { "Loop off" }, cx));
+    }
+
+    /// Up / Down: the previous or next cut (any clip's start or end) or marker.
+    fn jump_edit(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let s = self.store.read(cx);
+        let Some(p) = s.project.clone() else { return };
+        let now = s.playback.read(cx).playhead;
+        let half_frame = 0.5 / s.fps();
+        let mut points: Vec<f64> = vec![0.0, p.duration()];
+        points.extend(p.tracks.iter().flat_map(|t| t.clips.iter().flat_map(|c| [c.start, c.end()])));
+        points.extend(p.markers.iter().map(|m| m.time));
+        let target = if forward {
+            points.into_iter().filter(|x| *x > now + half_frame).fold(f64::INFINITY, f64::min)
+        } else {
+            points.into_iter().filter(|x| *x < now - half_frame).fold(f64::NEG_INFINITY, f64::max)
+        };
+        if target.is_finite() {
+            let pb = s.playback.clone();
+            pb.update(cx, |p, cx| p.seek(target, cx));
+        }
+    }
+
+    fn prev_edit(&mut self, _: &PrevEdit, _: &mut Window, cx: &mut Context<Self>) {
+        self.jump_edit(false, cx);
+    }
+
+    fn next_edit(&mut self, _: &NextEdit, _: &mut Window, cx: &mut Context<Self>) {
+        self.jump_edit(true, cx);
     }
 
     fn step(&mut self, frames: f64, cx: &mut Context<Self>) {
@@ -389,6 +577,28 @@ impl Workspace {
         if self.has_project(cx) {
             add_text(json!({}), cx);
         }
+    }
+
+    fn show_tab(&mut self, tab: LeftTab, cx: &mut Context<Self>) {
+        if self.has_project(cx) {
+            self.store.update(cx, |s, cx| s.set_left_tab(tab, cx));
+        }
+    }
+
+    fn show_media(&mut self, _: &ShowMedia, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_tab(LeftTab::Media, cx);
+    }
+
+    fn show_generate(&mut self, _: &ShowGenerate, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_tab(LeftTab::Generate, cx);
+    }
+
+    fn show_text(&mut self, _: &ShowText, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_tab(LeftTab::Text, cx);
+    }
+
+    fn show_shortcuts(&mut self, _: &ShowShortcuts, _: &mut Window, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| if s.dialog == Some(Dialog::Shortcuts) { s.close_dialog(cx) } else { s.open_dialog(Dialog::Shortcuts, cx) });
     }
 
     fn toggle_agent(&mut self, _: &ToggleAgent, _: &mut Window, cx: &mut Context<Self>) {
@@ -523,6 +733,56 @@ pub fn add_text(style: Value, cx: &mut App) {
     });
 }
 
+/// Undoes or redoes, then says what ("Undid split").
+pub fn undo_redo(s: &mut Store, undo: bool, cx: &mut Context<Store>) {
+    let name = if undo { "history.undo" } else { "history.redo" };
+    s.run_then(name, json!({}), cx, move |s, v, cx| {
+        let what = step_name(v["step"].as_str().unwrap_or(""));
+        let whose = match v["source"].as_str() {
+            Some("agent") => "the agent's ",
+            Some("mcp" | "cli") => "a script's ",
+            _ => "",
+        };
+        s.flash(format!("{} {whose}{what}", if undo { "Undid" } else { "Redid" }), cx);
+    });
+}
+
+/// The command that made an undo step, in words.
+pub fn step_name(command: &str) -> String {
+    let words = match command {
+        "clip.split" => "split",
+        "clip.move" | "clip.moveMany" => "move",
+        "clip.trim" => "trim",
+        "clip.delete" => "delete",
+        "clip.duplicate" => "duplicate",
+        "clip.paste" => "paste",
+        "clip.update" => "clip change",
+        "clip.addText" => "new title",
+        "clip.addSolid" => "new solid",
+        "clip.insertMedia" | "media.import" => "media on the timeline",
+        "media.remove" => "media removal",
+        "track.add" => "new track",
+        "track.remove" => "track deletion",
+        "track.update" => "track change",
+        "track.move" => "track move",
+        "timeline.addMarker" => "new marker",
+        "timeline.removeMarker" => "marker removal",
+        "timeline.closeGap" => "closed gap",
+        "project.rename" => "rename",
+        "project.setSettings" => "canvas change",
+        "project.batch" | "batch" => "batch of edits",
+        c if c.starts_with("generate.") => "generation",
+        "" => "last step",
+        c => return c.rsplit('.').next().unwrap_or(c).to_string(),
+    };
+    words.to_string()
+}
+
+/// "1 clip", "3 clips".
+pub fn count(n: usize, what: &str) -> String {
+    format!("{n} {what}{}", if n == 1 { "" } else { "s" })
+}
+
 /// Clip ids in a `{ "clips": [...] }` result.
 pub fn created(v: &Value) -> Vec<kimchi_core::Id> {
     v["clips"].as_array().into_iter().flatten().filter_map(|c| c["id"].as_str()?.parse().ok()).collect()
@@ -539,7 +799,8 @@ impl Render for Workspace {
         let t = cx.theme().clone();
         let store = self.store.read(cx);
         let has_project = store.project.is_some();
-        let dropping = store.dropping;
+        // Files dragged in from the desktop (the flag outlives a drag that left the window).
+        let dropping = store.dropping && cx.has_active_drag();
         let menu = store.menu.clone();
         let toasts = store.toasts.clone();
         let pb = store.playback.clone();
@@ -557,6 +818,26 @@ impl Render for Workspace {
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
+            .on_action(cx.listener(Self::save))
+            .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::cut))
+            .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::trim_start))
+            .on_action(cx.listener(Self::trim_end))
+            .on_action(cx.listener(Self::nudge_left))
+            .on_action(cx.listener(Self::nudge_right))
+            .on_action(cx.listener(Self::nudge_left_more))
+            .on_action(cx.listener(Self::nudge_right_more))
+            .on_action(cx.listener(Self::shuttle_back))
+            .on_action(cx.listener(Self::shuttle_stop))
+            .on_action(cx.listener(Self::shuttle_forward))
+            .on_action(cx.listener(Self::toggle_loop))
+            .on_action(cx.listener(Self::prev_edit))
+            .on_action(cx.listener(Self::next_edit))
+            .on_action(cx.listener(Self::show_media))
+            .on_action(cx.listener(Self::show_generate))
+            .on_action(cx.listener(Self::show_text))
+            .on_action(cx.listener(Self::show_shortcuts))
             .on_action(cx.listener(Self::import))
             .on_action(cx.listener(Self::export))
             .on_action(cx.listener(Self::palette))
@@ -591,7 +872,14 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::help))
             .on_action(cx.listener(Self::support))
             .on_drop(cx.listener(Self::on_drop_paths))
-            .drag_over::<ExternalPaths>(|s, _, _, _| s)
+            .on_drag_move::<ExternalPaths>(cx.listener(|ws, _, _, cx| {
+                ws.store.update(cx, |s, cx| {
+                    if !s.dropping && s.project.is_some() {
+                        s.dropping = true;
+                        cx.notify();
+                    }
+                })
+            }))
             .on_mouse_down(MouseButton::Left, cx.listener(|ws, _, window, cx| {
                 ws.store.update(cx, |s, cx| s.close_menu(cx));
                 // Clicking anywhere but a text field (which stops the event) takes focus back,
@@ -608,20 +896,33 @@ impl Render for Workspace {
             .child(self.dialogs.clone())
             .when_some(menu, |d, m| d.child(views::overlays::context_menu(m, cx)))
             .child(views::overlays::toasts(toasts, cx))
+            // An outline and a hint; the timeline shows where files dropped on a track will land.
             .when(dropping, |d| {
                 d.child(
                     div()
                         .absolute()
-                        .inset(px(8.))
+                        .inset(px(6.))
                         .rounded(px(sz::R_XL))
                         .border_2()
                         .border_dashed()
                         .border_color(t.accent)
-                        .bg(t.accent_soft)
                         .flex()
-                        .items_center()
                         .justify_center()
-                        .child(div().glass(t.glass2).rounded_full().px(px(16.)).py(px(10.)).flex().gap(px(8.)).child(icon("import")).child("Drop to import")),
+                        .child(
+                            div()
+                                .mt(px(64.))
+                                .h(px(36.))
+                                .glass(t.glass2)
+                                .shadow(t.glass_shadow())
+                                .rounded_full()
+                                .px(px(16.))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(icon("import").text_color(t.accent_text))
+                                .child("Drop to import")
+                                .child(div().text_color(t.text_2).child("· on a track to place it there")),
+                        ),
                 )
             })
     }

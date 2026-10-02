@@ -38,6 +38,13 @@ pub struct ClipMove {
     pub start: f64,
 }
 
+/// A clip and the track it goes on (paste).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TrackClip {
+    pub track_id: Id,
+    pub clip: Clip,
+}
+
 /// Partial update for a clip. `None` fields are left untouched.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ClipPatch {
@@ -88,6 +95,8 @@ pub enum Edit {
     Split { time: f64, clip_ids: Option<Vec<Id>> },
     DeleteClips { clip_ids: Vec<Id>, ripple: bool },
     DuplicateClips { clip_ids: Vec<Id> },
+    /// Places copies of clips (new ids) where given; what they land on is overwritten.
+    PasteClips { clips: Vec<TrackClip> },
     UpdateClip { clip_id: Id, patch: ClipPatch },
     /// Closes the empty space at `time` on a track by pulling later clips left.
     CloseGap { track_id: Id, time: f64 },
@@ -227,6 +236,32 @@ impl Project {
                     copy.start = self.tracks[ti].end();
                     out.created_clips.push(copy.id);
                     place(&mut self.tracks[ti], copy, &self.assets);
+                }
+            }
+            Edit::PasteClips { clips } => {
+                // Check everything first so a paste lands whole or not at all.
+                for c in clips {
+                    let t = self.track(c.track_id).ok_or(EditError::TrackNotFound(c.track_id))?;
+                    if t.locked {
+                        return Err(EditError::Locked);
+                    }
+                    if let Some(a) = c.clip.asset_id()
+                        && self.asset(a).is_none()
+                    {
+                        return Err(EditError::AssetNotFound(a));
+                    }
+                    if !t.accepts(&c.clip.content, &self.assets) {
+                        return Err(EditError::Invalid("that clip can't go on this track".into()));
+                    }
+                }
+                for c in clips {
+                    let mut copy = c.clip.clone();
+                    copy.id = new_id();
+                    copy.start = copy.start.max(0.0);
+                    copy.duration = copy.duration.max(MIN_CLIP);
+                    out.created_clips.push(copy.id);
+                    let i = self.tracks.iter().position(|t| t.id == c.track_id).expect("checked above");
+                    place(&mut self.tracks[i], copy, &self.assets);
                 }
             }
             Edit::UpdateClip { clip_id, patch } => self.update_clip(*clip_id, patch)?,

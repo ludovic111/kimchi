@@ -8,14 +8,48 @@ pub mod scrub;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AnyView, App, ClickEvent, Div, ElementId, FontWeight, Hsla, IntoElement, ParentElement, RenderOnce, SharedString, Stateful, Styled, Svg, Window,
-    div, prelude::*, px, svg,
+    AnimationExt, AnyElement, AnyView, App, ClickEvent, Div, ElementId, FontWeight, Hsla, IntoElement, ParentElement, RenderOnce, SharedString, Stateful, Styled, Svg,
+    Window, div, prelude::*, px, svg,
 };
 
 use crate::assets::icon_path;
 use crate::theme::{ActiveTheme, Glass, MONO, size as sz};
 
 pub type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+/// Motion: short, eased entrances so things that appear are seen arriving
+/// (dialogs, menus, toasts, popovers, tooltips). GPUI skips them when the
+/// person asks the OS to reduce motion.
+pub mod motion {
+    use std::time::Duration;
+
+    use gpui::{Animation, AnimationElement, AnimationExt, ElementId, IntoElement, Styled, ease_out_quint, px};
+
+    /// Tooltips, menus.
+    pub const FAST: Duration = Duration::from_millis(120);
+    /// Dialogs, toasts, panels.
+    pub const BASE: Duration = Duration::from_millis(200);
+
+    pub fn ease(d: Duration) -> Animation {
+        Animation::new(d).with_easing(ease_out_quint())
+    }
+
+    /// Fades in while sliding `(dx, dy)` pixels into place. The element must be
+    /// positioned relatively (or absolutely) for the offset to apply.
+    pub fn enter<E: IntoElement + Styled + 'static>(el: E, id: impl Into<ElementId>, d: Duration, (dx, dy): (f32, f32)) -> AnimationElement<E> {
+        el.with_animation(id, ease(d), move |el, t| {
+            let k = 1. - t;
+            let el = el.opacity(t);
+            let el = if dx != 0. { el.left(px(dx * k)) } else { el };
+            if dy != 0. { el.top(px(dy * k)) } else { el }
+        })
+    }
+
+    /// Fades in.
+    pub fn fade<E: IntoElement + Styled + 'static>(el: E, id: impl Into<ElementId>, d: Duration) -> AnimationElement<E> {
+        el.with_animation(id, ease(d), |el, t| el.opacity(t))
+    }
+}
 
 /// A lucide icon, 14 px, in the surrounding text colour unless given its own.
 pub fn icon(name: &str) -> Icon {
@@ -246,7 +280,7 @@ pub struct Tooltip {
 impl gpui::Render for Tooltip {
     fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let t = cx.theme();
-        div()
+        let tip = div()
             .px(px(8.))
             .py(px(4.))
             .rounded(px(sz::R_SM))
@@ -254,7 +288,8 @@ impl gpui::Render for Tooltip {
             .shadow(t.glass_shadow())
             .text_size(px(sz::SM))
             .text_color(t.text)
-            .child(self.text.clone())
+            .child(self.text.clone());
+        motion::enter(tip.relative(), "tooltip", motion::FAST, (0., 3.))
     }
 }
 
@@ -323,7 +358,12 @@ pub fn switch(id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool
                 .rounded_full()
                 .p(px(2.))
                 .bg(if on { t.accent } else { t.line_strong })
-                .child(div().size(px(14.)).rounded_full().bg(gpui::white()).when(on, |d| d.ml(px(12.)))),
+                // A new id per state, so the knob slides each time it flips.
+                .child(div().size(px(14.)).rounded_full().bg(gpui::white()).with_animation(
+                    ElementId::Name(if on { "knob-on" } else { "knob-off" }.into()),
+                    motion::ease(motion::FAST),
+                    move |d, k| d.ml(px(if on { 12. * k } else { 12. * (1. - k) })),
+                )),
         )
         .on_click(move |_, w, cx| on_toggle(!on, w, cx))
 }

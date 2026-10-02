@@ -83,6 +83,7 @@ impl GeneratePanel {
                     crate::ui::input::focus(&this.prompt, window, cx);
                 }
                 StoreEvent::FocusPrompt => crate::ui::input::focus(&this.prompt, window, cx),
+                StoreEvent::EditText => {}
             }),
             cx.subscribe(&prompt, |this, _, e: &InputEvent, cx| match e {
                 InputEvent::Submit => this.submit(cx),
@@ -657,7 +658,7 @@ impl GeneratePanel {
                             .justify_center()
                             .bg(t.accent)
                             .text_color(t.text_on_accent)
-                            .tooltip(|_, cx| crate::ui::tooltip("Generate (⌘↵)".into(), cx))
+                            .tooltip(|_, cx| crate::ui::tooltip(format!("Generate ({})", crate::actions::keys_label("M-enter")).into(), cx))
                             .child(icon(if self.submitting { "loader-circle" } else { "arrow-up" }).size(px(17.)).text_color(t.text_on_accent))
                             .when(!can_submit, |d| d.opacity(0.35).cursor_not_allowed())
                             .when(can_submit, |d| {
