@@ -250,6 +250,7 @@ fn settings(fx: &Fixtures, name: &str, format: ExportFormat) -> ExportSettings {
         height: None,
         fps: None,
         range: None,
+        encoder: Default::default(),
     }
 }
 
@@ -350,7 +351,7 @@ async fn exports_a_sparse_timeline_and_cancels_midway() {
     match res {
         Err(MediaError::Cancelled) => assert!(seen.into_inner()),
         // A fast machine may finish before the first progress report.
-        Ok(()) => assert!(Path::new(&st.path).exists()),
+        Ok(_) => assert!(Path::new(&st.path).exists()),
         Err(e) => panic!("{e}"),
     }
     assert!(!fx.root.join(".midway.webm.part").exists());
@@ -384,4 +385,68 @@ async fn cancels_and_reports_errors() {
         other => panic!("{other:?}"),
     }
     assert!(!Path::new(&st.path).exists());
+}
+
+/// The same ffmpeg under another path, so hardware assumed for it stays out of the other tests.
+#[cfg(unix)]
+fn private_tools(tools: &Tools, dir: &Path) -> Tools {
+    let (ffmpeg, ffprobe) = (dir.join("ffmpeg-alias"), dir.join("ffprobe-alias"));
+    std::os::unix::fs::symlink(&tools.ffmpeg, &ffmpeg).unwrap();
+    std::os::unix::fs::symlink(&tools.ffprobe, &ffprobe).unwrap();
+    Tools { ffmpeg, ffprobe }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn falls_back_to_the_cpu_when_the_hardware_encoder_fails() {
+    use kimchi_media::accel::{CANDIDATES, Verified};
+    use kimchi_media::{EncoderChoice, Hardware};
+    let Some(tools) = tools() else { return };
+    let fx = fixtures(&tools);
+    let (project, overlays) = sample_project(&tools, &fx).await;
+    let tools = private_tools(&tools, &fx.root);
+    // An NVIDIA encoder that "passed" detection: on a machine without one, the export fails on it.
+    let nvenc = *CANDIDATES.iter().find(|c| c.name == "h264_nvenc").unwrap();
+    Hardware::assume(&tools, Hardware { encoders: vec![Verified { encoder: nvenc, constant_quality: true }], vaapi_device: None })
+        .await;
+
+    let st = settings(&fx, "fallback.mp4", ExportFormat::Mp4);
+    assert_eq!(kimchi_media::export::planned_encoder(&tools, &project, &st).await.unwrap().as_deref(), Some("h264_nvenc"));
+    let done = export(&tools, &project, &overlays, &st, |_| {}, CancellationToken::new()).await.unwrap();
+    // Either this machine really has NVENC, or the export was redone on the CPU.
+    assert_ne!(done.hardware, done.fell_back, "{done:?}");
+    if done.fell_back {
+        assert_eq!(done.encoder.as_deref(), Some("libx264"));
+    }
+    let (duration, w, _, audio) = shape(&tools, Path::new(&st.path)).await;
+    assert!((duration - 2.5).abs() < 0.1 && w == Some(W) && audio);
+    assert!(!fx.root.join(".fallback.mp4.part").exists());
+
+    // Asked for the CPU: the GPU isn't touched.
+    let mut st = settings(&fx, "cpu.mp4", ExportFormat::Mp4);
+    st.encoder = EncoderChoice::Software;
+    let done = export(&tools, &project, &overlays, &st, |_| {}, CancellationToken::new()).await.unwrap();
+    assert_eq!((done.encoder.as_deref(), done.hardware, done.fell_back), (Some("libx264"), false, false));
+
+    // Asked for hardware where there is none for the format: a clear error, nothing written.
+    let mut st = settings(&fx, "gpu.webm", ExportFormat::Webm);
+    st.encoder = EncoderChoice::Hardware;
+    match export(&tools, &project, &overlays, &st, |_| {}, CancellationToken::new()).await {
+        Err(MediaError::Unsupported(msg)) => assert!(msg.contains("no hardware VP9/AV1 encoder"), "{msg}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(!Path::new(&st.path).exists());
+}
+
+#[tokio::test]
+async fn detects_hardware_encoders() {
+    let Some(tools) = tools() else { return };
+    let started = std::time::Instant::now();
+    let (hw, formats) = kimchi_media::export::encoders(&tools).await.unwrap();
+    eprintln!("hardware here: {hw:?} in {:?}", started.elapsed());
+    assert!(started.elapsed().as_secs() < 30);
+    let mp4 = formats.iter().find(|f| f.format == ExportFormat::Mp4).unwrap();
+    assert!(mp4.software.is_some() && mp4.auto.is_some());
+    assert_eq!(mp4.hardware.is_some(), hw.best(kimchi_media::accel::Codec::H264).is_some());
+    assert_eq!(mp4.auto, mp4.hardware.clone().or(mp4.software.clone()));
 }

@@ -98,7 +98,7 @@ pub async fn render_frame(
     let (project, overlays) = playable(project, overlays);
     let caps = Caps::detect(tools).await?;
     let st = settings(width, height, fps, (from, from + 1.0 / fps));
-    let (plan, _) = export::compile(&project, &overlays, &st, &caps, Sink::Frames)?;
+    let (plan, _) = export::compile(&project, &overlays, &st, &caps, &crate::Hardware::none(), Sink::Frames)?;
     let script = Script::write(&plan.graph).await?;
     let mut args = head();
     args.extend(plan.body(script.path(), &caps));
@@ -165,7 +165,7 @@ impl PreviewStream {
         let caps = Caps::detect(tools).await?;
         let st = settings(width, height, fps, (from, end));
 
-        let (plan, _) = export::compile(&project, &overlays, &st, &caps, Sink::Frames)?;
+        let (plan, _) = export::compile(&project, &overlays, &st, &caps, &crate::Hardware::none(), Sink::Frames)?;
         let script = Script::write(&plan.graph).await?;
         let mut args = head();
         args.extend(plan.body(script.path(), &caps));
@@ -200,7 +200,7 @@ impl PreviewStream {
             }
         }));
 
-        let (plan, audible) = export::compile(&project, &overlays, &st, &caps, Sink::Samples)?;
+        let (plan, audible) = export::compile(&project, &overlays, &st, &caps, &crate::Hardware::none(), Sink::Samples)?;
         if audible > 0 {
             let script = Script::write(&plan.graph).await?;
             let mut args = head();
@@ -315,6 +315,7 @@ fn settings(width: u32, height: u32, fps: f64, range: (f64, f64)) -> ExportSetti
         height: Some(height),
         fps: Some(fps),
         range: Some(range),
+        encoder: Default::default(),
     }
 }
 

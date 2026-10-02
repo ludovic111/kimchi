@@ -68,6 +68,14 @@ pub(crate) fn summarize(stderr: &str, status: ExitStatus) -> String {
         "Terminating thread",
         "Nothing was written into output file",
     ];
+    // A hardware decoder that isn't there: ffmpeg says so, then decodes in software.
+    const HW_PROBING: [&str; 5] = [
+        "Device creation failed",
+        "Cannot load libcuda",
+        "Could not dynamically load CUDA",
+        "hwaccel initialisation returned error",
+        "Device does not support the VK_",
+    ];
     // "[in#0 @ 0x7a0c58000] moov atom not found" → "moov atom not found"
     let unprefix = |l: &'_ str| -> String {
         match l.split_once("] ") {
@@ -81,6 +89,7 @@ pub(crate) fn summarize(stderr: &str, status: ExitStatus) -> String {
         .filter(|l| {
             l.chars().any(char::is_alphanumeric)
                 && !NOISE.iter().any(|n| l.starts_with(n))
+                && !HW_PROBING.iter().any(|n| l.contains(n))
                 && !l.starts_with("x265 [info]")
         })
         .collect();
@@ -95,11 +104,18 @@ pub struct Caps {
     /// Major version, 0 if unknown (e.g. git builds).
     pub version: u32,
     pub encoders: HashSet<String>,
+    /// Hardware decoders it was built with (`videotoolbox`, `cuda`, `vaapi`, `d3d11va`…).
+    pub hwaccels: HashSet<String>,
 }
 
 impl Caps {
     pub fn new(version: u32, encoders: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self { version, encoders: encoders.into_iter().map(Into::into).collect() }
+        Self { version, encoders: encoders.into_iter().map(Into::into).collect(), hwaccels: HashSet::new() }
+    }
+
+    pub fn with_hwaccels(mut self, hwaccels: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.hwaccels = hwaccels.into_iter().map(Into::into).collect();
+        self
     }
 
     pub fn has(&self, encoder: &str) -> bool {
@@ -120,9 +136,12 @@ impl Caps {
         }
         let version = output(&tools.ffmpeg, &["-hide_banner", "-version"]).await?;
         let encoders = output(&tools.ffmpeg, &["-hide_banner", "-encoders"]).await?;
+        // Old builds without -hwaccels just get no hardware decoding.
+        let hwaccels = output(&tools.ffmpeg, &["-hide_banner", "-hwaccels"]).await.unwrap_or_default();
         let caps = Caps {
             version: parse_version(&String::from_utf8_lossy(&version)),
             encoders: parse_encoders(&String::from_utf8_lossy(&encoders)),
+            hwaccels: parse_hwaccels(&String::from_utf8_lossy(&hwaccels)),
         };
         cache.lock().unwrap().insert(tools.ffmpeg.clone(), caps.clone());
         Ok(caps)
@@ -152,6 +171,11 @@ fn parse_encoders(s: &str) -> HashSet<String> {
         .collect()
 }
 
+fn parse_hwaccels(s: &str) -> HashSet<String> {
+    // "Hardware acceleration methods:\nvideotoolbox\n\n"
+    s.lines().skip_while(|l| !l.starts_with("Hardware acceleration methods")).skip(1).map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +189,8 @@ mod tests {
             "Encoders:\n V..... = Video\n ------\n V....D libx264              libx264 H.264\n A....D aac   AAC\n",
         );
         assert!(enc.contains("libx264") && enc.contains("aac") && !enc.contains("="));
+        let hw = parse_hwaccels("Hardware acceleration methods:\ncuda\nvaapi\n\n");
+        assert_eq!(hw, HashSet::from(["cuda".to_string(), "vaapi".to_string()]));
     }
 
     #[cfg(unix)]
@@ -177,5 +203,9 @@ mod tests {
                       Error opening input file /x/a.mp4.\n.\nConversion failed!\n";
         assert_eq!(summarize(stderr, status), "moov atom not found\nError opening input file /x/a.mp4.");
         assert_eq!(summarize("", status), "ffmpeg exited with exit status: 1");
+        let stderr = "[CUDA @ 0x643e585572c0] Cannot load libcuda.so.1\nDevice creation failed: -1.\n\
+                      [hevc @ 0x6435f4500] Failed setup for format vulkan: hwaccel initialisation returned error.\n\
+                      [in#1 @ 0x77a0c58000] moov atom not found\n";
+        assert_eq!(summarize(stderr, status), "moov atom not found");
     }
 }

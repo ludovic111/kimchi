@@ -116,6 +116,9 @@ pub struct ExportStatus {
     #[serde(default)]
     pub error: Option<String>,
     pub started_at: DateTime<Utc>,
+    /// The ffmpeg video encoder (`h264_videotoolbox`, `libx264`…); the CPU's after a fallback.
+    #[serde(default)]
+    pub encoder: Option<String>,
 }
 
 /// What the window shows. The window pushes it with [`Session::set_ui_state`];

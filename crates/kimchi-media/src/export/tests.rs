@@ -2,6 +2,7 @@ use chrono::Utc;
 use kimchi_core::{Asset, AssetOrigin, MediaMeta, ProjectSettings, TextStyle, Track, Transform, new_id};
 
 use super::*;
+use crate::accel::{EncoderChoice, Hardware, Verified};
 
 fn caps() -> Caps {
     Caps::new(9, ["libx264", "libx265", "prores_ks", "libvpx-vp9", "libopus", "aac", "gif"])
@@ -51,11 +52,12 @@ fn settings(format: ExportFormat) -> ExportSettings {
         height: None,
         fps: None,
         range: None,
+        encoder: Default::default(),
     }
 }
 
 fn plan(p: &Project, format: ExportFormat) -> Plan {
-    build(p, &Overlays::new(), &settings(format), &caps()).unwrap()
+    build(p, &Overlays::new(), &settings(format), &caps(), &Hardware::none()).unwrap()
 }
 
 fn input_files(plan: &Plan) -> Vec<&str> {
@@ -148,7 +150,7 @@ fn transforms_solids_text_and_fades() {
     let text = Clip::new("t", 1.0, 1.0, ClipContent::Text { style: TextStyle::default() });
     let overlays = Overlays::from([(text.id, PathBuf::from("text.png"))]);
     let p = project(vec![(TrackKind::Video, vec![text]), (TrackKind::Video, vec![solid])], vec![]);
-    let plan = build(&p, &overlays, &settings(ExportFormat::Mp4), &caps()).unwrap();
+    let plan = build(&p, &overlays, &settings(ExportFormat::Mp4), &caps(), &Hardware::none()).unwrap();
     let g = &plan.graph;
     assert!(
         g.contains(
@@ -162,7 +164,7 @@ fn transforms_solids_text_and_fades() {
     assert!(g.contains("[0:v:0]setpts=PTS-STARTPTS+1.0/TB[v"), "{g}");
     assert!(g.contains("overlay=x=0:y=0:"), "{g}");
     // A text clip without a rendered overlay is skipped rather than failing the export.
-    let plan = build(&p, &Overlays::new(), &settings(ExportFormat::Mp4), &caps()).unwrap();
+    let plan = build(&p, &Overlays::new(), &settings(ExportFormat::Mp4), &caps(), &Hardware::none()).unwrap();
     assert!(plan.inputs.is_empty());
 }
 
@@ -177,7 +179,7 @@ fn range_shifts_and_cuts_clips() {
     let p = project(vec![(TrackKind::Video, vec![a, b, late])], vec![v]);
     let mut st = settings(ExportFormat::Mp4);
     st.range = Some((3.0, 6.0));
-    let plan = build(&p, &Overlays::new(), &st, &caps()).unwrap();
+    let plan = build(&p, &Overlays::new(), &st, &caps(), &Hardware::none()).unwrap();
     assert_eq!(plan.duration, 3.0);
     // `a` is still fading in at 3 s: decode from its start, fade, then drop the first 3 s.
     // `b` starts inside the window; `late` is outside and ignored.
@@ -215,9 +217,9 @@ fn formats_and_fallbacks() {
     assert!(prores.graph.contains("format=yuv422p10le[vout]") && prores.output.join(" ").contains("pcm_s16le"));
 
     let vt = Caps::new(9, ["h264_videotoolbox", "aac"]);
-    let mp4 = build(&p, &Overlays::new(), &settings(ExportFormat::Mp4), &vt).unwrap();
+    let mp4 = build(&p, &Overlays::new(), &settings(ExportFormat::Mp4), &vt, &Hardware::none()).unwrap();
     assert!(mp4.output.join(" ").contains("-c:v h264_videotoolbox -b:v"));
-    assert!(matches!(build(&p, &Overlays::new(), &settings(ExportFormat::Hevc), &vt), Err(MediaError::Unsupported(_))));
+    assert!(matches!(build(&p, &Overlays::new(), &settings(ExportFormat::Hevc), &vt, &Hardware::none()), Err(MediaError::Unsupported(_))));
 
     let hevc = plan(&p, ExportFormat::Hevc);
     assert!(hevc.output.join(" ").contains("-tag:v hvc1"));
@@ -238,15 +240,15 @@ fn output_size_and_empty_projects() {
     let p = project(vec![(TrackKind::Video, vec![clip])], vec![v]);
     let mut st = settings(ExportFormat::Mp4);
     st.width = Some(1281);
-    let plan = build(&p, &Overlays::new(), &st, &caps()).unwrap();
+    let plan = build(&p, &Overlays::new(), &st, &caps(), &Hardware::none()).unwrap();
     // Even dimensions, offsets scaled from project pixels to output pixels.
     assert!(plan.graph.contains("s=1280x720:"), "{}", plan.graph);
     assert!(plan.graph.contains("(main_w-overlay_w)/2+200.0"), "{}", plan.graph);
 
     let empty = project(vec![(TrackKind::Video, vec![])], vec![]);
-    assert!(matches!(build(&empty, &Overlays::new(), &st, &caps()), Err(MediaError::Unsupported(_))));
+    assert!(matches!(build(&empty, &Overlays::new(), &st, &caps(), &Hardware::none()), Err(MediaError::Unsupported(_))));
     st.range = Some((5.0, 6.0));
-    assert!(matches!(build(&p, &Overlays::new(), &st, &caps()), Err(MediaError::Unsupported(_))));
+    assert!(matches!(build(&p, &Overlays::new(), &st, &caps(), &Hardware::none()), Err(MediaError::Unsupported(_))));
 }
 
 #[test]
@@ -258,4 +260,84 @@ fn numbers_and_colors() {
     assert_eq!(color("#abc"), "0xaabbcc");
     assert_eq!(color("#11223344"), "0x11223344");
     assert_eq!(color("nope"), "black");
+}
+
+fn verified(name: &str) -> Verified {
+    Verified { encoder: *accel::CANDIDATES.iter().find(|c| c.name == name).unwrap(), constant_quality: true }
+}
+
+#[test]
+fn hardware_encoders_first_cpu_on_request() {
+    let v = asset(MediaKind::Video, "v.mp4", true);
+    let p = project(vec![(TrackKind::Video, vec![media(&v, 0.0, 2.0)])], vec![v]);
+    let hw = Hardware {
+        encoders: vec![verified("h264_nvenc"), verified("hevc_vaapi"), verified("av1_nvenc")],
+        vaapi_device: Some("/dev/dri/renderD129".into()),
+    };
+    let with = |format, choice, width: Option<u32>| {
+        let mut st = settings(format);
+        st.encoder = choice;
+        st.width = width;
+        build(&p, &Overlays::new(), &st, &caps(), &hw)
+    };
+
+    let mp4 = with(ExportFormat::Mp4, EncoderChoice::Auto, None).unwrap();
+    assert!(mp4.output.join(" ").contains("-c:v h264_nvenc -preset p5 -tune hq -rc vbr -cq 24 -b:v 0 -pix_fmt nv12"));
+    assert!(mp4.graph.contains("format=nv12[vout]") && mp4.output.join(" ").contains("-c:a aac"));
+    assert_eq!((mp4.encoder.as_deref(), mp4.hardware), (Some("h264_nvenc"), true));
+
+    // VA-API: the device is opened before the inputs and the frames go up at the end of the graph.
+    let hevc = with(ExportFormat::Hevc, EncoderChoice::Auto, None).unwrap();
+    assert_eq!(hevc.inputs[..4].join(" "), "-init_hw_device vaapi=kva:/dev/dri/renderD129 -filter_hw_device kva");
+    assert!(hevc.graph.contains("format=nv12,hwupload[vout]"));
+    assert!(hevc.output.join(" ").contains("-tag:v hvc1") && !hevc.output.contains(&s("-pix_fmt")));
+
+    let cpu = with(ExportFormat::Mp4, EncoderChoice::Software, None).unwrap();
+    assert_eq!((cpu.encoder.as_deref(), cpu.hardware), (Some("libx264"), false));
+    assert!(cpu.graph.contains("format=yuv420p[vout]"));
+
+    // H.264 hardware stops at 4096 wide: Auto goes to the CPU, Hardware says why.
+    let big = with(ExportFormat::Mp4, EncoderChoice::Auto, Some(7680)).unwrap();
+    assert_eq!(big.encoder.as_deref(), Some("libx264"));
+    match with(ExportFormat::Mp4, EncoderChoice::Hardware, Some(7680)) {
+        Err(MediaError::Unsupported(msg)) => assert!(msg.contains("too big"), "{msg}"),
+        other => panic!("{other:?}"),
+    }
+
+    // WebM: VP9 on the CPU unless hardware is asked for, which may give AV1.
+    assert_eq!(with(ExportFormat::Webm, EncoderChoice::Auto, None).unwrap().encoder.as_deref(), Some("libvpx-vp9"));
+    assert_eq!(with(ExportFormat::Webm, EncoderChoice::Hardware, None).unwrap().encoder.as_deref(), Some("av1_nvenc"));
+    assert!(matches!(with(ExportFormat::Prores, EncoderChoice::Hardware, None), Err(MediaError::Unsupported(_))));
+
+    // Sound only and GIF never touch the GPU.
+    let gif = with(ExportFormat::Gif, EncoderChoice::Auto, None).unwrap();
+    assert_eq!((gif.encoder.as_deref(), gif.hardware), (Some("gif"), false));
+    let audio = with(ExportFormat::Audio, EncoderChoice::Hardware, None).unwrap();
+    assert_eq!((audio.encoder, audio.hardware), (None, false));
+}
+
+#[test]
+fn heavy_sources_decode_in_hardware_up_to_a_limit() {
+    let with_hw = caps().with_hwaccels(["videotoolbox", "cuda", "vaapi"]);
+    let mut assets = vec![];
+    let mut clips = vec![];
+    for i in 0..6 {
+        let mut a = asset(MediaKind::Video, &format!("uhd{i}.mov"), false);
+        (a.meta.width, a.meta.height, a.meta.video_codec) = (Some(3840), Some(2160), Some("hevc".into()));
+        clips.push(media(&a, i as f64, 1.0));
+        assets.push(a);
+    }
+    let light = asset(MediaKind::Video, "hd.mp4", false);
+    clips.push(media(&light, 0.0, 1.0));
+    assets.push(light);
+    let p = project(vec![(TrackKind::Video, clips)], assets);
+    let plan = build(&p, &Overlays::new(), &settings(ExportFormat::Mp4), &with_hw, &Hardware::none()).unwrap();
+    let hw = plan.inputs.iter().filter(|a| *a == "-hwaccel").count();
+    assert_eq!(hw, accel::MAX_HW_DECODERS);
+    // The 1080p H.264 source decodes in software, right before its -i.
+    let i = plan.inputs.iter().position(|a| a == "hd.mp4").unwrap();
+    assert_ne!(plan.inputs[i - 3], "-hwaccel");
+    // A build without hardware decoders gets none.
+    let plan = build(&p, &Overlays::new(), &settings(ExportFormat::Mp4), &caps(), &Hardware::none()).unwrap();
+    assert!(!plan.inputs.contains(&s("-hwaccel")));
 }

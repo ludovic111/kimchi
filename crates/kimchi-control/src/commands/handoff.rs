@@ -59,7 +59,7 @@ async fn to_ryolune(s: &Arc<Session>, a: &Args) -> CmdResult {
     let dir = handoff_dir("ryolune");
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
     let wav = dir.join(format!("{name}.wav"));
-    let settings = ExportSettings { path: wav.to_string_lossy().into_owned(), format: ExportFormat::Wav, quality: Quality::High, width: None, height: None, fps: None, range: Some((from, to)) };
+    let settings = ExportSettings { path: wav.to_string_lossy().into_owned(), format: ExportFormat::Wav, quality: Quality::High, width: None, height: None, fps: None, range: Some((from, to)), encoder: Default::default() };
     let id = crate::commands::export::start(s, project.clone(), settings)?;
     crate::commands::export::wait(s, &id).await?;
 

@@ -290,3 +290,29 @@ async fn a_terminal_session_can_be_reverted_at_once() {
     let p = s.project().unwrap();
     assert_eq!(p.clips().count(), 1, "only the person's solid is left");
 }
+
+/// export.encoders says what each format is encoded with here; export.start takes the choice and
+/// its status names the encoder that ran.
+#[tokio::test(flavor = "multi_thread")]
+async fn exports_name_their_encoder() {
+    if kimchi_media::Tools::locate().is_err() {
+        eprintln!("ffmpeg not found; skipping");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    let enc = ok(&s, Source::Cli, "export.encoders", json!({})).await;
+    let mp4 = enc["formats"].as_array().unwrap().iter().find(|f| f["format"] == "mp4").unwrap().clone();
+    assert_eq!(mp4["software"]["id"], "libx264", "{enc}");
+    assert_eq!(mp4["software"]["label"], "x264 (CPU)");
+    assert_eq!(mp4["auto"], if mp4["hardware"].is_null() { mp4["software"].clone() } else { mp4["hardware"].clone() });
+
+    ok(&s, Source::Cli, "project.create", json!({ "name": "Encoders" })).await;
+    ok(&s, Source::Cli, "clip.addSolid", json!({ "color": "#336699", "start": 0, "duration": 1 })).await;
+    let out = dir.path().join("cpu.mp4");
+    let st = ok(&s, Source::Cli, "export.start", json!({ "path": out, "encoder": "software", "width": 320, "height": 180 })).await;
+    assert_eq!((st["done"].as_bool(), st["encoder"].as_str()), (Some(true), Some("libx264")), "{st}");
+    assert!(out.is_file());
+    let err = registry::call(&s, Source::Cli, "export.start", json!({ "path": out, "encoder": "quantum" })).await.unwrap_err();
+    assert!(err.contains("auto, hardware or software"), "{err}");
+}

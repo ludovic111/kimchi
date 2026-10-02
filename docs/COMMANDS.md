@@ -559,11 +559,15 @@ Remove finished, failed and cancelled jobs from the list. _(changes things)_
 
 ### `export.formats`
 
-Export formats and qualities. _(read only)_
+Export formats, qualities and encoder choices. _(read only)_
+
+### `export.encoders`
+
+The video encoders this computer uses per format: hardware ones (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API, Media Foundation) that passed a test encode, and the CPU ones. _(read only)_
 
 ### `export.start`
 
-Render the open project to a file through one ffmpeg graph (text is drawn the same as in the preview). Returns an export id; follow it with export.status, or pass wait. _(changes things · permission: files)_
+Render the open project to a file through one ffmpeg graph (text is drawn the same as in the preview), encoded on the GPU or media engine when there is one. Returns an export id; follow it with export.status, or pass wait. _(changes things · permission: files)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -575,6 +579,7 @@ Render the open project to a file through one ffmpeg graph (text is drawn the sa
 | `fps` | number |  | Output frame rate (default: the project's). |
 | `from` | number |  | Start of the range in seconds (default 0). |
 | `to` | number |  | End of the range in seconds (default: the end). |
+| `encoder` | string |  | auto (default: the GPU or media engine when there is one, redone on the CPU if it fails), hardware (GPU only; WebM may be AV1) or software (CPU only: slower, smallest files). |
 | `wait` | boolean |  | Wait until the job finishes and return it (always true with --file). |
 
 ### `export.status`

@@ -32,6 +32,7 @@ rewritten from the ground up in Rust.
 - Live preview compositor, on-canvas move/scale handles
 - Snapshot undo/redo for every edit, autosave
 - Export to MP4 (H.264), HEVC, ProRes, WebM, GIF or audio-only, through one ffmpeg filter graph
+- Hardware encoding where the computer has it (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API), checked with a test encode and redone on the CPU if it fails; 4K, HEVC and ProRes sources decode in hardware
 
 **Generation, woven into the edit**
 - **Generate at the playhead.** A placeholder clip appears where the shot will go and turns into the result when it's done
