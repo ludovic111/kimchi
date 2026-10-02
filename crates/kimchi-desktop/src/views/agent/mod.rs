@@ -22,7 +22,7 @@ pub enum Item {
     /// Streamed reply text of the agent.
     Assistant { text: String },
     /// One command run by the agent, an MCP client or the CLI.
-    Command { record: CommandRecord, result: Option<Value> },
+    Command { record: Box<CommandRecord>, result: Option<Value> },
     /// How a run ended.
     Outcome(Outcome),
 }

@@ -175,6 +175,14 @@ with the real path of `kimchi-mcp` on this computer (and `KIMCHI_CONTROL` when y
 - A failing tool answers with `isError: true` and the message, so the model can read it and try
   again. MCP requests are always held to the agent permissions.
 
+### Undoing what a terminal agent did
+
+Every edit an MCP client (or `kimchi-cli --agent`) makes is an ordinary undo step. On top of that,
+the bridge takes a checkpoint before a connection's first change: the Agent panel's **Changes**
+tab lists each such session ("From a terminal") with **Revert this session**, which puts the
+project back as it was in one step (`history.revertTo`; one undo brings the session back). The
+command records the panel shows also name the clips each command created.
+
 ## Permissions
 
 Settings › Agent › Permissions decide what an agent may do: the built-in agent, every MCP client

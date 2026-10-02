@@ -78,6 +78,3 @@ kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is
 - [ ] A pass with real mouse input in the running app: clicks, drags and typing are covered by GPUI
       UI tests, but nobody has used the window by hand yet.
 - [ ] Codex as an agent provider: run one real turn once Codex is installed.
-- [ ] Runs from Claude Code/Codex in a terminal (not the panel) have no checkpoint, so only
-      step-by-step undo; and `CommandRecord` has no result, so the timeline guesses which clips an
-      agent made.

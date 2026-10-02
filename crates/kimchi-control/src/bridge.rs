@@ -189,6 +189,9 @@ async fn connection(stream: TcpStream, session: &Arc<Session>, token: &str) -> s
     let hello = json!({ "app": "kimchi", "version": env!("CARGO_PKG_VERSION"), "protocol": VERSION });
     write.write_all(format!("{}\n", reply(&req.id, Ok(hello))).as_bytes()).await?;
 
+    // Agents and MCP clients get a checkpoint before their first change in this connection (and
+    // again after the project changes), so everything a terminal agent did can be reverted at once.
+    let mut checkpoint: Option<(kimchi_core::Id, u64)> = None;
     while let Some(line) = lines.next_line().await? {
         if line.len() > MAX_LINE {
             break;
@@ -197,7 +200,14 @@ async fn connection(stream: TcpStream, session: &Arc<Session>, token: &str) -> s
             continue;
         }
         let out = match serde_json::from_str::<Request>(&line) {
-            Ok(r) => reply(&r.id, crate::registry::call(session, source, &r.method, r.params).await),
+            Ok(r) => {
+                let mutates = crate::registry::spec(&r.method).is_some_and(|s| s.mutates);
+                if source.is_agent() && mutates && checkpoint.is_none_or(|(p, _)| Some(p) != session.current_id()) {
+                    checkpoint = session.checkpoint();
+                }
+                let cp = checkpoint.filter(|_| source.is_agent()).map(|(_, c)| c);
+                reply(&r.id, crate::registry::call_in(session, source, &r.method, r.params, cp).await)
+            }
             Err(e) => reply(&Value::Null, Err(format!("Invalid request: {e}"))),
         };
         write.write_all(format!("{out}\n").as_bytes()).await?;

@@ -73,12 +73,10 @@ struct DropHint {
     ok: bool,
 }
 
-/// Clips that appeared right before a command from the agent, MCP or the CLI.
+/// Clips the agent, MCP or the CLI created or touched (from their command records), for the accent mark.
 #[derive(Default)]
 struct AgentMarks {
     project: Option<Id>,
-    known: HashSet<Id>,
-    fresh: Vec<(Id, Instant)>,
     marked: HashMap<Id, Instant>,
     last_seq: u64,
 }
@@ -545,23 +543,14 @@ impl TimelineBody {
         let last_seq = s.commands.last().map(|r| r.seq).unwrap_or(0);
         let a = &mut self.agent;
         if a.project != Some(p.id) {
-            *a = AgentMarks { project: Some(p.id), known: p.clips().map(|(_, c)| c.id).collect(), last_seq, ..Default::default() };
+            *a = AgentMarks { project: Some(p.id), last_seq, ..Default::default() };
             return;
         }
         let now = Instant::now();
-        for (_, c) in p.clips() {
-            if a.known.insert(c.id) {
-                a.fresh.push((c.id, now));
-            }
-        }
-        a.fresh.retain(|(_, at)| now.duration_since(*at) < Duration::from_secs(3));
         let mut marked = false;
         for r in s.commands.iter().filter(|r| r.seq > a.last_seq && r.ok && r.mutates) {
-            for (id, _) in a.fresh.drain(..) {
-                a.marked.insert(id, now);
-                marked = true;
-            }
-            let mut ids: Vec<Id> = vec![];
+            // What the command created (from its result) and the clips it named.
+            let mut ids: Vec<Id> = r.created.clone();
             let one = |v: &Value| v.as_str().and_then(|s| s.parse::<Id>().ok());
             ids.extend(one(&r.params["clipId"]));
             ids.extend(r.params["clipIds"].as_array().into_iter().flatten().filter_map(one));

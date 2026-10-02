@@ -311,7 +311,7 @@ pub enum AgentEvent {
     /// One command the agent ran (a card): who, what, parameters, ok or error.
     /// `result` is the command's JSON answer when the agent ran it in-process
     /// (API and local providers); the CLI providers' answers stay in the CLI.
-    Command { record: CommandRecord, result: Option<Value> },
+    Command { record: Box<CommandRecord>, result: Option<Value> },
     /// Tokens used by one model request, when the provider reports them.
     Usage { input_tokens: u64, output_tokens: u64 },
     /// The run finished. `summary` is the final reply; `checkpoint` (set when the
@@ -534,7 +534,7 @@ impl Run {
         if record.ok && record.mutates {
             self.shared.changes.fetch_add(1, Ordering::AcqRel);
         }
-        self.emit(AgentEvent::Command { record, result });
+        self.emit(AgentEvent::Command { record: Box::new(record), result });
     }
 
     /// Forwards every queued command record from `source` (the CLI providers' MCP calls).

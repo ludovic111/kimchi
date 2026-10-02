@@ -94,6 +94,16 @@ pub struct CommandRecord {
     /// Whether the command can change the project, files or the app.
     pub mutates: bool,
     pub at: DateTime<Utc>,
+    /// Clips the command created (from its result), so the window can mark them.
+    #[serde(default)]
+    pub created: Vec<Id>,
+    /// The result, when it is small (a few KB); `None` for errors and large answers.
+    #[serde(default)]
+    pub result: Option<Value>,
+    /// For agents and MCP clients: the checkpoint taken before their first change in this
+    /// connection, so a whole session from a terminal can be reverted (`history.revertTo`).
+    #[serde(default)]
+    pub checkpoint: Option<u64>,
 }
 
 /// Progress of one export.
@@ -374,6 +384,13 @@ impl Session {
         let id = project.id;
         *self.doc.lock() = Some(OpenDoc { editor: Editor::new(project), location });
         self.emit(Event::ProjectSwitched { project_id: Some(id) });
+    }
+
+    /// Remembers the open project (see `Editor::checkpoint`), without an undo step or an event.
+    pub fn checkpoint(&self) -> Option<(Id, u64)> {
+        let mut guard = self.doc.lock();
+        let doc = guard.as_mut()?;
+        Some((doc.editor.project().id, doc.editor.checkpoint()))
     }
 
     pub fn close_doc(&self) {

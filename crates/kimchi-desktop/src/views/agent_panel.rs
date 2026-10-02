@@ -31,7 +31,7 @@ const EXAMPLES: [&str; 4] = [
 ];
 
 pub struct AgentPanel {
-    store: Entity<Store>,
+    pub(crate) store: Entity<Store>,
     tab: Tab,
     composer: Entity<TextInput>,
     pub(crate) items: Vec<Item>,
@@ -47,6 +47,8 @@ pub struct AgentPanel {
     statuses: Vec<ProviderStatus>,
     checking: bool,
     pub(crate) history: Option<History>,
+    /// Terminal sessions (by checkpoint) reverted from the Changes tab.
+    pub(crate) reverted_sessions: std::collections::HashSet<u64>,
     project_seen: Option<usize>,
     pub(crate) expanded: HashSet<u64>,
     scroll: ScrollHandle,
@@ -89,6 +91,7 @@ impl AgentPanel {
             statuses: vec![],
             checking: false,
             history: None,
+            reverted_sessions: Default::default(),
             project_seen: None,
             expanded: HashSet::new(),
             scroll: ScrollHandle::new(),
@@ -182,7 +185,7 @@ impl AgentPanel {
             return;
         }
         self.seen.insert(record.seq, self.items.len());
-        self.items.push(Item::Command { record, result });
+        self.items.push(Item::Command { record: Box::new(record), result });
         self.scroll.scroll_to_bottom();
     }
 
@@ -250,7 +253,7 @@ impl AgentPanel {
             }
             AgentEvent::Command { record, result } => {
                 self.last_seq = self.last_seq.max(record.seq);
-                self.add_command(record, result);
+                self.add_command(*record, result);
             }
             AgentEvent::Usage { input_tokens, output_tokens } => {
                 if let Some(a) = &mut self.active {

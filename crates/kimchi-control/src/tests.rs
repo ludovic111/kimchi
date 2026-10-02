@@ -259,3 +259,34 @@ async fn hands_the_cut_to_ryolune_and_takes_audio_back() {
     assert_eq!(p.clip(clip).unwrap().start, 1.0);
     assert_eq!(p.tracks[p.locate_clip(clip).unwrap().0].kind, kimchi_core::TrackKind::Audio);
 }
+
+/// A terminal agent (MCP over the bridge): its records name the clips it created and carry one
+/// checkpoint, taken before its first change, that reverts the whole session.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_terminal_session_can_be_reverted_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({ "name": "Mine" })).await;
+    ok(&s, Source::Window, "clip.addSolid", json!({ "color": "#111111", "start": 0 })).await;
+    let path = dir.path().join("control.json");
+    let _server = crate::bridge::Server::start_at(s.clone(), path.clone()).await.unwrap();
+    let mut rx = s.subscribe();
+    let mut c = crate::bridge::Client::connect(&path, "mcp").await.unwrap();
+    c.call("project.overview", json!({})).await.unwrap();
+    c.call("clip.addText", json!({ "text": "One", "start": 1 })).await.unwrap();
+    c.call("clip.addText", json!({ "text": "Two", "start": 6 })).await.unwrap();
+    let mut records = vec![];
+    while let Ok(Ok(e)) = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+        if let crate::Event::Command { record } = e {
+            records.push(record);
+        }
+    }
+    let adds: Vec<_> = records.iter().filter(|r| r.command == "clip.addText").collect();
+    assert_eq!(adds.len(), 2);
+    assert_eq!(adds[0].created.len(), 1, "{:?}", adds[0]);
+    let cp = adds[0].checkpoint.expect("a checkpoint for the session");
+    assert_eq!(adds[1].checkpoint, Some(cp), "one checkpoint per connection");
+    ok(&s, Source::Window, "history.revertTo", json!({ "checkpoint": cp })).await;
+    let p = s.project().unwrap();
+    assert_eq!(p.clips().count(), 1, "only the person's solid is left");
+}

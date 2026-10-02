@@ -111,6 +111,9 @@ impl Run {
             error: result.as_ref().err().cloned(),
             mutates: spec.mutates,
             at: Default::default(),
+            created: result.as_ref().map(kimchi_control::registry::created_clips).unwrap_or_default(),
+            result: None,
+            checkpoint: None,
         });
         let out = tool_output(&result);
         self.command(record, result.ok());

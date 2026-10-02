@@ -128,6 +128,7 @@ impl AgentPanel {
                             })
                     })),
             )
+            .children(self.outside_sessions(cx))
             .child(
                 div()
                     .flex()
@@ -169,5 +170,73 @@ impl AgentPanel {
                     }),
             )
             .into_any_element()
+    }
+}
+
+impl AgentPanel {
+    /// Agents working from a terminal (Claude Code, Codex, any MCP client): their commands carry the
+    /// checkpoint the bridge took before their first change, so each session reverts in one click.
+    fn outside_sessions(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let t = cx.theme().clone();
+        let store = self.store.read(cx);
+        let mut sessions: Vec<(u64, kimchi_control::Source, usize, chrono::DateTime<chrono::Utc>)> = vec![];
+        for r in store.commands.iter().filter(|r| r.mutates && r.ok) {
+            let Some(cp) = r.checkpoint else { continue };
+            match sessions.iter_mut().find(|s| s.0 == cp) {
+                Some(s) => s.2 += 1,
+                None => sessions.push((cp, r.source, 1, r.at)),
+            }
+        }
+        if sessions.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(caps("From a terminal", cx))
+                .children(sessions.into_iter().rev().map(|(cp, source, n, at)| {
+                    let reverted = self.reverted_sessions.contains(&cp);
+                    div()
+                        .id(("outside-session", cp as usize))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .p(px(8.))
+                        .rounded(px(sz::R_MD))
+                        .bg(t.bg_sunken.opacity(0.5))
+                        .border_1()
+                        .border_color(t.line)
+                        .child(source_badge(source.as_str(), cx))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(sz::XS))
+                                .text_color(t.text_2)
+                                .child(format!("since {} · {n} change{}", at.with_timezone(&chrono::Local).format("%H:%M"), if n == 1 { "" } else { "s" })),
+                        )
+                        .when(reverted, |d| d.child(div().text_size(px(sz::XS)).text_color(t.text_2).child("Reverted")))
+                        .when(!reverted, |d| {
+                            d.child(
+                                Button::new(("outside-revert", cp as usize), "Revert this session")
+                                    .small()
+                                    .with_icon("rotate-ccw")
+                                    .on_click(cx.listener(move |this, _, _, cx| this.revert_session(cp, cx))),
+                            )
+                        })
+                }))
+                .into_any_element(),
+        )
+    }
+
+    fn revert_session(&mut self, checkpoint: u64, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| {
+            s.run_then("history.revertTo", json!({ "checkpoint": checkpoint }), cx, |s, _, cx| s.info("Reverted the session: one undo brings it back.", cx))
+        });
+        self.reverted_sessions.insert(checkpoint);
+        cx.notify();
     }
 }

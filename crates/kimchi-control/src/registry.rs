@@ -163,6 +163,12 @@ pub fn spec(name: &str) -> Option<&'static Spec> {
 /// Runs a command. This is the only door into kimchi: the window, the agent,
 /// the CLI and MCP all come through here.
 pub async fn call(session: &Arc<Session>, source: Source, name: &str, params: Value) -> CmdResult {
+    call_in(session, source, name, params, None).await
+}
+
+/// [`call`], recording `checkpoint` on the command's record (the bridge passes the one it took
+/// before a client's first change).
+pub async fn call_in(session: &Arc<Session>, source: Source, name: &str, params: Value, checkpoint: Option<u64>) -> CmdResult {
     let spec = match spec(name) {
         Some(s) => s,
         None => return Err(unknown_command(name)),
@@ -178,10 +184,30 @@ pub async fn call(session: &Arc<Session>, source: Source, name: &str, params: Va
             error: result.as_ref().err().cloned(),
             mutates: spec.mutates,
             at: chrono::Utc::now(),
+            created: result.as_ref().map(created_clips).unwrap_or_default(),
+            result: result.as_ref().ok().filter(|v| v.to_string().len() <= 4096).cloned(),
+            checkpoint,
         };
         session.emit(Event::Command { record });
     }
     result
+}
+
+/// Clip ids a command's result says it created: `{clips: [{id}]}` (inserts, titles, duplicates),
+/// `{created: [id]}` (split), `{clips: [id]}` (imports placed on the timeline), and a pending
+/// generation's placeholder is found by the window through the job instead.
+pub fn created_clips(v: &Value) -> Vec<kimchi_core::Id> {
+    let id = |x: &Value| x.as_str().or_else(|| x.get("id").and_then(Value::as_str)).and_then(|s| s.parse::<kimchi_core::Id>().ok());
+    let mut out: Vec<kimchi_core::Id> = vec![];
+    for key in ["clips", "created"] {
+        out.extend(v.get(key).and_then(Value::as_array).into_iter().flatten().filter_map(id));
+    }
+    if let Some(results) = v.get("results").and_then(Value::as_array) {
+        for r in results {
+            out.extend(created_clips(&r["result"]));
+        }
+    }
+    out
 }
 
 /// Boxed so `project.batch` can call commands recursively.
