@@ -47,7 +47,7 @@ impl Editor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
         let sub = cx.observe(&store, |_, _, cx| cx.notify());
-        Self {
+        let this = Self {
             left: cx.new(|cx| LeftPanel::new(window, cx)),
             preview: cx.new(|cx| PreviewView::new(window, cx)),
             inspector: cx.new(|cx| Inspector::new(window, cx)),
@@ -62,7 +62,40 @@ impl Editor {
             agent_w: AGENT_W,
             resizing: None,
             _sub: sub,
+        };
+        this.publish_layout(cx);
+        this
+    }
+
+    /// Tells `ui.state` the panel sizes.
+    fn publish_layout(&self, cx: &App) {
+        let layout = kimchi_control::session::UiLayout { left: self.left_w, inspector: self.right_w, timeline: self.timeline_h, agent: self.agent_w };
+        self.store.read(cx).session.update_ui_state(|s| s.layout = layout);
+    }
+
+    /// `ui.setLayout`: sizes in pixels, each within what the editor allows.
+    pub fn set_layout(&mut self, params: &serde_json::Value, cx: &mut Context<Self>) -> kimchi_control::session::UiLayout {
+        if params["reset"].as_bool() == Some(true) {
+            for which in [Splitter::Left, Splitter::Right, Splitter::Timeline, Splitter::Agent] {
+                self.reset_size(which, cx);
+            }
         }
+        let get = |k: &str| params[k].as_f64().map(|v| v as f32);
+        if let Some(v) = get("left") {
+            self.left_w = v.clamp(280., 520.);
+        }
+        if let Some(v) = get("inspector") {
+            self.right_w = v.clamp(260., 440.);
+        }
+        if let Some(v) = get("timeline") {
+            self.timeline_h = v.clamp(180., 620.);
+        }
+        if let Some(v) = get("agent") {
+            self.agent_w = v.clamp(300., 560.);
+        }
+        self.publish_layout(cx);
+        cx.notify();
+        kimchi_control::session::UiLayout { left: self.left_w, inspector: self.right_w, timeline: self.timeline_h, agent: self.agent_w }
     }
 
     /// Width the timeline's tracks have (for zoom to fit).
@@ -99,6 +132,7 @@ impl Editor {
 
     fn resize_end(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.resizing = None;
+        self.publish_layout(cx);
         cx.notify();
     }
 
@@ -143,6 +177,7 @@ impl Editor {
             Splitter::Timeline => self.timeline_h = TIMELINE_H,
             Splitter::Agent => self.agent_w = AGENT_W,
         }
+        self.publish_layout(cx);
         cx.notify();
     }
 
@@ -294,11 +329,7 @@ impl Editor {
                                     .selected(jobs_open)
                                     .color(if active > 0 { t.accent_text } else { t.text_2 })
                                     .on_click(|_, _, cx| {
-                                        cx.store().update(cx, |s, cx| {
-                                            s.jobs_open = !s.jobs_open;
-                                            s.sync_ui(cx);
-                                            cx.notify();
-                                        })
+                                        cx.store().update(cx, |s, cx| s.set_jobs_open(!s.jobs_open, cx))
                                     }),
                             )
                             .when(jobs_open, |d| d.child(self.jobs.clone())),
@@ -307,11 +338,7 @@ impl Editor {
                         Button::icon("agent", "bot", tip("Agent", &act::ToggleAgent))
                             .selected(agent_open)
                             .on_click(|_, _, cx| {
-                                cx.store().update(cx, |s, cx| {
-                                    s.agent_open = !s.agent_open;
-                                    s.sync_ui(cx);
-                                    cx.notify();
-                                })
+                                cx.store().update(cx, |s, cx| s.set_agent_open(!s.agent_open, cx))
                             }),
                     )
                     .child(Button::icon("palette", "command", tip("Command palette", &act::Palette)).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Palette, cx))))

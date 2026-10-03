@@ -127,7 +127,23 @@ impl Playback {
         cx.notify();
     }
 
+    /// Start over at the end while playing.
+    pub fn set_looping(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.looping = on;
+        self.publish();
+        cx.notify();
+    }
+
     // ---- shuttle (J/K/L) --------------------------------------------------------
+
+    /// Plays at `rate`: 1 streams picture and sound, anything else (-8 to 8) is the silent shuttle.
+    pub fn play_at(&mut self, rate: f64, cx: &mut Context<Self>) {
+        if rate == 1.0 {
+            self.play(cx);
+        } else {
+            self.start_shuttle(rate.clamp(-MAX_SHUTTLE, MAX_SHUTTLE), cx);
+        }
+    }
 
     /// L: play; pressed again while playing, faster (2×, 4×, 8×).
     pub fn shuttle_forward(&mut self, cx: &mut Context<Self>) {
@@ -223,10 +239,12 @@ impl Playback {
     }
 
     fn publish(&self) {
-        let (playhead, playing) = (self.playhead, self.playing);
+        let (playhead, playing, looping, shuttle) = (self.playhead, self.playing, self.looping, self.shuttle);
         self.session.update_ui_state(|s| {
             s.playhead = playhead;
             s.playing = playing;
+            s.looping = looping;
+            s.shuttle = shuttle;
         });
     }
 }

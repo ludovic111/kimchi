@@ -138,7 +138,7 @@ impl Workspace {
         Self { store, focus, home, editor, dialogs, _subs: subs }
     }
 
-    /// `ui.*`, `timeline.seek/play/pause`, `app.quit`, `app.notify`.
+    /// `ui.*`, `timeline.seek/play/pause`, `app.quit`, `app.restart`, `app.notify`.
     fn ui_command(&mut self, command: &str, params: Value, window: &mut Window, cx: &mut Context<Self>) -> CmdResult {
         let store = self.store.clone();
         let playback = store.read(cx).playback.clone();
@@ -153,8 +153,10 @@ impl Workspace {
                 if store.read(cx).project.is_none() {
                     return Err(kimchi_control::session::NO_PROJECT.into());
                 }
-                playback.update(cx, |p, cx| p.play(cx));
-                Ok(json!({ "playing": true, "from": playback.read(cx).playhead }))
+                let speed = params["speed"].as_f64().unwrap_or(1.0);
+                let from = playback.read(cx).playhead;
+                playback.update(cx, |p, cx| p.play_at(speed, cx));
+                Ok(json!({ "playing": true, "from": from, "speed": speed }))
             }
             "timeline.pause" => {
                 playback.update(cx, |p, cx| p.pause(cx));
@@ -171,6 +173,24 @@ impl Workspace {
                 let s = store.read(cx);
                 Ok(json!({ "selection": s.selection, "selectedAsset": s.selected_asset }))
             }
+            "ui.showPanel" if params["open"] == json!(false) => {
+                let panel = params["panel"].as_str().unwrap_or("");
+                store.update(cx, |s, cx| match panel {
+                    "agent" => s.set_agent_open(false, cx),
+                    "jobs" => s.set_jobs_open(false, cx),
+                    "settings" | "diagnostics" | "export" | "palette" | "shortcuts" | "whatsNew" => {
+                        let name = if panel == "diagnostics" { "settings" } else { panel };
+                        if s.dialog.as_ref().is_some_and(|d| d.name() == name) {
+                            s.close_dialog(cx);
+                        }
+                    }
+                    _ => {}
+                });
+                if !matches!(panel, "agent" | "jobs" | "settings" | "diagnostics" | "export" | "palette" | "shortcuts" | "whatsNew") {
+                    return Err(format!("`{panel}` can't be closed: the left panel always shows one tab (open another), and home is left by opening a project."));
+                }
+                Ok(json!({ "panel": panel, "open": false }))
+            }
             "ui.showPanel" => {
                 let panel = params["panel"].as_str().unwrap_or("");
                 store.update(cx, |s, cx| match panel {
@@ -179,14 +199,8 @@ impl Workspace {
                     "text" => s.set_left_tab(LeftTab::Text, cx),
                     "motion" => s.set_left_tab(LeftTab::Motion, cx),
                     "captions" => s.set_left_tab(LeftTab::Captions, cx),
-                    "agent" => {
-                        s.agent_open = true;
-                        cx.notify();
-                    }
-                    "jobs" => {
-                        s.jobs_open = true;
-                        cx.notify();
-                    }
+                    "agent" => s.set_agent_open(true, cx),
+                    "jobs" => s.set_jobs_open(true, cx),
                     "settings" => s.open_dialog(Dialog::Settings { section: params["section"].as_str().map(str::to_string) }, cx),
                     "export" => s.open_dialog(Dialog::Export, cx),
                     "palette" => s.open_dialog(Dialog::Palette, cx),
@@ -220,6 +234,32 @@ impl Workspace {
                     store.update(cx, |s, cx| s.set_zoom(p, cx));
                 }
                 Ok(json!({ "pixelsPerSecond": store.read(cx).pps }))
+            }
+            "ui.setTimeline" => {
+                if let Some(on) = params["snapping"].as_bool() {
+                    store.update(cx, |s, cx| s.set_snapping(on, cx));
+                }
+                if let Some(on) = params["ripple"].as_bool() {
+                    store.update(cx, |s, cx| s.set_ripple(on, cx));
+                }
+                if let Some(on) = params["loop"].as_bool() {
+                    playback.update(cx, |p, cx| p.set_looping(on, cx));
+                }
+                let s = store.read(cx);
+                Ok(json!({ "snapping": s.snapping, "ripple": s.ripple, "loop": playback.read(cx).looping }))
+            }
+            "ui.setLayout" => Ok(json!(self.editor.update(cx, |e, cx| e.set_layout(&params, cx)))),
+            "ui.action" => {
+                let name = params["action"].as_str().unwrap_or("");
+                let action = cx.build_action(&format!("kimchi::{name}"), None).map_err(|e| format!("The window has no action `{name}`: {e}"))?;
+                // As a key would: on what has focus, bubbling up to the workspace.
+                window.dispatch_action(action, cx);
+                Ok(json!({ "action": name }))
+            }
+            "ui.reveal" => {
+                let path = params["path"].as_str().unwrap_or("");
+                cx.reveal_path(std::path::Path::new(path));
+                Ok(json!({ "revealed": path }))
             }
             "ui.screenshot" => views::screenshot::capture(params["path"].as_str(), window),
             "app.quit" => {
@@ -487,8 +527,7 @@ impl Workspace {
     fn toggle_loop(&mut self, _: &ToggleLoop, _: &mut Window, cx: &mut Context<Self>) {
         let pb = self.store.read(cx).playback.clone();
         let on = pb.update(cx, |p, cx| {
-            p.looping = !p.looping;
-            cx.notify();
+            p.set_looping(!p.looping, cx);
             p.looping
         });
         self.store.update(cx, |s, cx| s.flash(if on { "Loop on" } else { "Loop off" }, cx));
@@ -594,7 +633,7 @@ impl Workspace {
 
     fn toggle_snap(&mut self, _: &ToggleSnap, _: &mut Window, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| {
-            s.snapping = !s.snapping;
+            s.set_snapping(!s.snapping, cx);
             let msg = if s.snapping { "Snapping on" } else { "Snapping off" };
             s.info(msg, cx);
         });
@@ -656,19 +695,11 @@ impl Workspace {
     }
 
     fn toggle_agent(&mut self, _: &ToggleAgent, _: &mut Window, cx: &mut Context<Self>) {
-        self.store.update(cx, |s, cx| {
-            s.agent_open = !s.agent_open;
-            s.sync_ui(cx);
-            cx.notify();
-        });
+        self.store.update(cx, |s, cx| s.set_agent_open(!s.agent_open, cx));
     }
 
     fn toggle_jobs(&mut self, _: &ToggleJobs, _: &mut Window, cx: &mut Context<Self>) {
-        self.store.update(cx, |s, cx| {
-            s.jobs_open = !s.jobs_open;
-            s.sync_ui(cx);
-            cx.notify();
-        });
+        self.store.update(cx, |s, cx| s.set_jobs_open(!s.jobs_open, cx));
     }
 
     fn toggle_theme(&mut self, _: &ToggleTheme, _: &mut Window, cx: &mut Context<Self>) {

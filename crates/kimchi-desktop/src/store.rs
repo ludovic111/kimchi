@@ -448,6 +448,12 @@ impl Store {
             left_tab: self.left_tab.as_str().into(),
             open,
             theme: if crate::theme::ActiveTheme::theme(cx).is_dark() { "dark".into() } else { "light".into() },
+            looping: pb.looping,
+            shuttle: pb.shuttle,
+            snapping: self.snapping,
+            ripple: self.ripple,
+            // The editor keeps its panel sizes up to date itself.
+            layout: self.session.ui_state().layout,
         });
     }
 
@@ -622,6 +628,32 @@ impl Store {
 
     pub fn close_dialog(&mut self, cx: &mut Context<Self>) {
         self.dialog = None;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    /// The Agent panel, docked on the right.
+    pub fn set_agent_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.agent_open = open;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    /// The generation jobs popover.
+    pub fn set_jobs_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.jobs_open = open;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    pub fn set_snapping(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.snapping = on;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    pub fn set_ripple(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.ripple = on;
         self.sync_ui(cx);
         cx.notify();
     }

@@ -9,7 +9,15 @@ use crate::session::{CmdResult, Session};
 
 pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
     match cx.spec.name {
-        "timeline.seek" | "timeline.play" | "timeline.pause" => s.ui_call(cx.spec.name, serde_json::Value::Object(a.0)).await,
+        "timeline.play" => {
+            if let Some(v) = a.opt_f64("speed")
+                && (v == 0.0 || !(-8.0..=8.0).contains(&v))
+            {
+                return Err("speed goes from -8 to 8 (not 0: timeline.pause stops)".into());
+            }
+            s.ui_call(cx.spec.name, serde_json::Value::Object(a.0)).await
+        }
+        "timeline.seek" | "timeline.pause" => s.ui_call(cx.spec.name, serde_json::Value::Object(a.0)).await,
         "timeline.closeGap" => {
             let id = resolve::track(&s.project()?, a.str("trackId")?)?;
             s.apply(cx.label(), cx.source, &Edit::CloseGap { track_id: id, time: a.f64("time")? }, None)?;

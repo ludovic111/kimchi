@@ -333,7 +333,9 @@ pub static SPECS: &[Spec] = &[
     ]),
     // ---- timeline ---------------------------------------------------------
     edit("timeline.seek", "Move the playhead.", &[req("time", Number, "Timeline time in seconds.")]).window(),
-    edit("timeline.play", "Start playback from the playhead.", &[]).window(),
+    edit("timeline.play", "Start playback from the playhead.", &[
+        opt("speed", Number, "1 (default) plays with sound; 2 to 8 faster, -1 to -8 backwards, without sound (like L and J)."),
+    ]).window(),
     edit("timeline.pause", "Stop playback.", &[]).window(),
     edit("timeline.closeGap", "Close the empty space at a time on a track by pulling the later clips left.", &[TRACK_ID, req("time", Number, "A time inside the gap, in seconds.")]),
     query("timeline.markers", "List markers by time.", &[]),
@@ -485,13 +487,34 @@ pub static SPECS: &[Spec] = &[
     edit("app.notify", "Show a short message in the window.", &[req("text", String, "Message."), opt("kind", String, "info (default), success or error.")]).window(),
     // ---- ui ---------------------------------------------------------------
     query("ui.state", "What the window shows: home or editor, playhead, playing, selection, zoom, open panel and dialogs, theme.", &[]),
-    edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears."), opt("assetId", String, "A media item to select instead.")]).window(),
-    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home.", &[
+    edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears.").of(String), opt("assetId", String, "A media item to select instead.")]).window(),
+    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it.", &[
         req("panel", String, "Panel name."),
         opt("section", String, "For settings: models, agent, appearance, updates, diagnostics or about."),
+        opt("open", Boolean, "false closes the panel or dialog instead (agent, jobs or a dialog; default true)."),
+        opt("all", Boolean, "For whatsNew: the notes of every release, not only this one's."),
     ]).window(),
     edit("ui.closeDialogs", "Close open dialogs and popovers.", &[]).window(),
     edit("ui.zoom", "Zoom the timeline.", &[opt("pixelsPerSecond", Number, "4-600."), opt("fit", Boolean, "Fit the whole project in view.")]).window(),
+    edit("ui.setTimeline", "Timeline and playback options in the window: snapping, ripple delete and loop. Only the given ones change; returns all three.", &[
+        opt("snapping", Boolean, "Dragged clips, edges and the playhead stick to cuts, markers and the playhead (N)."),
+        opt("ripple", Boolean, "Deleting in the window closes the gap, as clip.delete ripple does."),
+        opt("loop", Boolean, "Playback starts over at the end."),
+    ]).window(),
+    edit("ui.setLayout", "Resize the editor's panels, in pixels (each within its limits), or put them back as they start. Returns the sizes.", &[
+        opt("left", Number, "Width of the left panel (280-520)."),
+        opt("inspector", Number, "Width of the inspector, on the right (260-440)."),
+        opt("timeline", Number, "Height of the timeline (180-620)."),
+        opt("agent", Number, "Width of the Agent panel (300-560)."),
+        opt("reset", Boolean, "Back to the starting sizes first."),
+    ]).window(),
+    edit("ui.action", "Do what a keyboard shortcut or menu item of the window does, by its action name. It acts on the window's selection, playhead and clipboard as the key would, a moment after the answer. Agents need the permission of what it does (NewProject: projects, ToggleTheme: settings, Quit: app control…).", &[
+        req("action", String, "PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit."),
+    ]).window(),
+    edit("ui.reveal", "Show a file in the file manager (Finder, Explorer…): a path, or a media item's file.", &[
+        opt("path", String, "A file or folder (an export, a log folder…)."),
+        opt("assetId", String, "A media item (id or unique name) instead."),
+    ]).window(),
     edit("ui.screenshot", "Save a PNG of the window and return its path.", &[opt("path", String, "Destination .png (default: a temporary file).")]).perm(Perm::Files).window(),
 ];
 
