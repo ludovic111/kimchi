@@ -146,6 +146,12 @@ pub static SPECS: &[Spec] = &[
         opt("ripple", Boolean, "Close the gap (default false)."),
     ]),
     edit("clip.duplicate", "Copy clips to the end of their track.", &[req("clipIds", Array, "Clips to duplicate (ids or names).")]),
+    edit("clip.paste", "Paste copies of clips: the earliest copy starts at time and the others keep their spacing and tracks. Whatever they land on is overwritten. One undo step.", &[
+        opt("clipIds", Array, "Clips in the project to copy (ids or names)."),
+        opt("clips", Array, "Clip objects as returned by clip.get (with trackId), e.g. clips deleted since (a cut)."),
+        opt("time", Number, "Where the earliest copy starts, in seconds. Defaults to the playhead."),
+        opt("trackId", String, "Put every copy on this track instead of each clip's own."),
+    ]),
     edit("clip.update", "Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, speed, text style or solid colour. Only the given fields change. One undo step.", &[
         CLIP_ID,
         opt("name", String, "Clip name."),
@@ -260,8 +266,8 @@ pub static SPECS: &[Spec] = &[
     edit("timeline.removeMarker", "Remove a marker.", &[req("markerId", String, "Marker id or unique label, as listed by timeline.markers.")]),
     // ---- history ----------------------------------------------------------
     query("history.list", "The undo and redo steps: which command made each one and who (window, agent, cli, mcp).", &[]),
-    edit("history.undo", "Undo the last step, whoever made it.", &[]),
-    edit("history.redo", "Redo the last undone step.", &[]),
+    edit("history.undo", "Undo the last step, whoever made it. Returns the command that made the step.", &[]),
+    edit("history.redo", "Redo the last undone step. Returns the command that made the step.", &[]),
     edit("history.checkpoint", "Remember the project as it is now; history.revertTo puts it back.", &[]),
     edit("history.revertTo", "Put the project back as it was at a checkpoint, as one new undo step (so the revert can be undone too).", &[req("checkpoint", Integer, "Id returned by history.checkpoint.")]),
     // ---- generate ---------------------------------------------------------

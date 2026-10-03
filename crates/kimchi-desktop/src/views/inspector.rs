@@ -79,9 +79,17 @@ pub struct Inspector {
 type ToParams = fn(f64) -> Value;
 
 impl Inspector {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
-        let mut subs = vec![cx.observe(&store, |_, _, cx| cx.notify())];
+        let mut subs = vec![
+            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&store, window, |this: &mut Self, _, e: &crate::store::StoreEvent, window, cx| {
+                if let crate::store::StoreEvent::EditText = e {
+                    crate::ui::input::focus(&this.content, window, cx);
+                    this.content.update(cx, |i, cx| i.select_all_text(cx));
+                }
+            }),
+        ];
         // Animated values follow the playhead.
         let playback = store.read(cx).playback.clone();
         subs.push(cx.observe(&playback, |this: &mut Self, _, cx| {
@@ -628,15 +636,16 @@ impl Inspector {
                 .selected((fps - r).abs() < 0.01)
                 .on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.run("project.setSettings", json!({ "fps": r }), cx)))
         }));
-        let keys = [
-            ("Play / pause", "Space"),
-            ("Split", "S"),
-            ("Ripple delete", "⇧⌫"),
-            ("Generate", "⌘G"),
-            ("Command palette", "⌘K"),
-            ("Add a title", "T"),
-            ("Snapping", "N"),
-            ("Marker", "M"),
+        use crate::actions as act;
+        let keys: [(&str, &dyn gpui::Action); 8] = [
+            ("Play / pause", &act::PlayPause),
+            ("Split", &act::Split),
+            ("Copy / paste", &act::CopyClips),
+            ("Previous / next cut", &act::PrevEdit),
+            ("Generate", &act::FocusGenerate),
+            ("Command palette", &act::Palette),
+            ("Add a title", &act::AddText),
+            ("Undo", &act::Undo),
         ];
         let t = cx.theme().clone();
         let body = vec![
@@ -651,9 +660,22 @@ impl Inspector {
             section(cx)
                 .border_b_0()
                 .child(caps("Shortcuts", cx))
-                .children(keys.iter().map(|(what, k)| {
-                    div().flex().items_center().justify_between().text_size(px(sz::SM)).text_color(t.text_2).child(*what).child(kbd(*k, cx))
+                .children(keys.iter().map(|(what, a)| {
+                    let k = match *what {
+                        "Copy / paste" => format!("{} {}", act::keys_label("M-c"), act::keys_label("M-v")),
+                        "Previous / next cut" => "↑ ↓".to_string(),
+                        _ => act::hint(*a).unwrap_or_default().to_string(),
+                    };
+                    div().flex().items_center().justify_between().text_size(px(sz::SM)).text_color(t.text_2).child(*what).child(kbd(k, cx))
                 }))
+                .child(
+                    Button::new("all-shortcuts", "All shortcuts")
+                        .small()
+                        .ghost()
+                        .with_icon("keyboard")
+                        .tooltip(act::tip("Keyboard shortcuts", &act::ShowShortcuts))
+                        .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(crate::store::Dialog::Shortcuts, cx))),
+                )
                 .into_any_element(),
         ];
         vec![header("Project", None, cx).into_any_element(), scroll("inspector-project", body).into_any_element()]

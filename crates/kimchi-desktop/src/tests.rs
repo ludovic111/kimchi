@@ -186,3 +186,116 @@ fn people_edit_motion_scenes_in_the_inspector(cx: &mut TestAppContext) {
     let steps = f.call("history.list", json!({}));
     assert_eq!((steps["undo"][0]["label"].as_str(), steps["undo"][0]["source"].as_str()), (Some("motion.updateLayer"), Some("window")), "{steps}");
 }
+
+fn playhead(cx: &mut VisualTestContext) -> f64 {
+    cx.update(|_, cx| cx.store().read(cx).playback.read(cx).playhead)
+}
+
+fn seek(cx: &mut VisualTestContext, t: f64) {
+    cx.update(|_, cx| {
+        let pb = cx.store().read(cx).playback.clone();
+        pb.update(cx, |p, cx| p.seek(t, cx));
+    });
+    cx.run_until_parked();
+}
+
+/// Selects the project's only clip, as a click on it would.
+fn select_the_clip(f: &Fixture, cx: &mut VisualTestContext) -> kimchi_core::Id {
+    let id = f.project().clips().next().unwrap().1.id;
+    cx.update(|_, cx| cx.store().update(cx, |s, cx| s.set_selection(vec![id], cx)));
+    cx.run_until_parked();
+    id
+}
+
+#[gpui::test]
+fn copy_and_paste_land_at_the_playhead_end_to_end(cx: &mut TestAppContext) {
+    let (f, _, cx) = setup(cx);
+    let original = select_the_clip(&f, cx);
+    cx.simulate_keystrokes(&format!("{M}-c"));
+    seek(cx, 10.);
+    cx.simulate_keystrokes(&format!("{M}-v"));
+    let p = f.settle(cx, |p| p.clips().count() == 2);
+    let mut starts: Vec<f64> = p.clips().map(|(_, c)| c.start).collect();
+    starts.sort_by(f64::total_cmp);
+    assert_eq!(starts, vec![0., 10.]);
+    // The playhead moved past the copy, so pasting again lays the next one after it.
+    store_settles(cx, |s| s.selection.first().is_some_and(|id| *id != original));
+    let t = playhead(cx);
+    assert!((t - 14.).abs() < 1e-6, "playhead after the paste, got {t}");
+    let sel = cx.update(|_, cx| cx.store().read(cx).selection.clone());
+    assert!(sel.len() == 1 && sel[0] != original, "the copy is selected");
+}
+
+#[gpui::test]
+fn up_and_down_jump_between_cuts(cx: &mut TestAppContext) {
+    let (_f, _, cx) = setup(cx);
+    seek(cx, 1.);
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    assert_eq!(playhead(cx), 4., "the clip's end");
+    cx.simulate_keystrokes("up");
+    cx.run_until_parked();
+    assert_eq!(playhead(cx), 0., "its start");
+}
+
+#[gpui::test]
+fn q_and_w_trim_to_the_playhead(cx: &mut TestAppContext) {
+    let (f, _, cx) = setup(cx);
+    seek(cx, 1.);
+    cx.simulate_keystrokes("q");
+    let p = f.settle(cx, |p| p.clips().next().unwrap().1.start == 1.);
+    assert_eq!(p.clips().next().unwrap().1.start, 1.);
+    seek(cx, 3.);
+    cx.simulate_keystrokes("w");
+    let p = f.settle(cx, |p| p.clips().next().unwrap().1.end() == 3.);
+    let c = p.clips().next().unwrap().1;
+    assert_eq!((c.start, c.end()), (1., 3.));
+}
+
+#[gpui::test]
+fn j_k_l_shuttle(cx: &mut TestAppContext) {
+    let (_f, _, cx) = setup(cx);
+    let state = |cx: &mut VisualTestContext| cx.update(|_, cx| {
+        let p = cx.store().read(cx).playback.read(cx);
+        (p.playing, p.shuttle)
+    });
+    cx.simulate_keystrokes("l");
+    cx.run_until_parked();
+    assert_eq!(state(cx), (true, 0.), "l plays");
+    cx.simulate_keystrokes("l");
+    cx.run_until_parked();
+    assert_eq!(state(cx), (false, 2.), "again: twice as fast");
+    cx.simulate_keystrokes("k");
+    cx.run_until_parked();
+    assert_eq!(state(cx), (false, 0.), "k stops");
+    seek(cx, 2.);
+    cx.simulate_keystrokes("j");
+    cx.run_until_parked();
+    assert_eq!(state(cx), (false, -1.), "j plays backwards");
+    cx.simulate_keystrokes("space");
+    cx.run_until_parked();
+    assert_eq!(state(cx), (false, 0.), "space stops a shuttle too");
+}
+
+#[gpui::test]
+fn question_mark_shows_the_shortcuts(cx: &mut TestAppContext) {
+    let (_f, _, cx) = setup(cx);
+    cx.simulate_keystrokes("?");
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| cx.store().read(cx).dialog.clone()), Some(Dialog::Shortcuts));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| cx.store().read(cx).dialog.clone()), None);
+}
+
+#[gpui::test]
+fn undo_says_what_it_undid(cx: &mut TestAppContext) {
+    let (f, _, cx) = setup(cx);
+    cx.simulate_keystrokes("t");
+    f.settle(cx, |p| texts(p) == 1);
+    store_settles(cx, |s| s.can_undo);
+    cx.simulate_keystrokes(&format!("{M}-z"));
+    store_settles(cx, |s| s.toasts.iter().any(|t| t.flash));
+    let toasts: Vec<String> = cx.update(|_, cx| cx.store().read(cx).toasts.iter().map(|t| t.text.to_string()).collect());
+    assert!(toasts.iter().any(|t| t == "Undid new title"), "{toasts:?}");
+}

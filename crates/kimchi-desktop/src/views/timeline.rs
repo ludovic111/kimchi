@@ -13,7 +13,7 @@ use gpui::{
 };
 use serde_json::json;
 
-use crate::actions::{AddMarker, AddText, Delete, Duplicate, Split};
+use crate::actions::{AddMarker, AddText, Delete, Duplicate, Split, ToggleSnap, ZoomFit, ZoomIn, ZoomOut, tip};
 use crate::playback::Playback;
 use crate::store::{ComposeRequest, ComposeTarget, MAX_PPS, MIN_PPS, Store, StoreExt};
 use crate::theme::{ActiveTheme, MONO, size as sz};
@@ -100,69 +100,41 @@ impl Timeline {
         let sep = || div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.line_strong);
         // Narrow timelines (agent panel open, small window) drop the least needed parts first.
         let width = f32::from(self.lanes.get().size.width) + HEADER_W;
-        let (compact, narrow, tiny) = (width < 1000., width < 860., width < 760.);
-        let pb = self.playback.clone();
-        let transport = {
-            let (p1, p2, p3, p4, p5, p6) = (pb.clone(), pb.clone(), pb.clone(), pb.clone(), pb.clone(), pb.clone());
-            div()
-                .flex()
-                .items_center()
-                .gap(px(2.))
-                .child(Button::icon("go-start", "skip-back", "Go to start (Home)").small().on_click(move |_, _, cx| p1.update(cx, |p, cx| p.seek(0., cx))))
-                .child(Button::icon("step-back", "step-back", "Previous frame (←)").small().on_click(move |_, _, cx| p2.update(cx, |p, cx| p.step(-1., cx))))
-                .child(
-                    Button::icon("play", if playing { "pause" } else { "play" }, if playing { "Pause (Space)" } else { "Play (Space)" })
-                        .selected(playing)
-                        .on_click(move |_, _, cx| p3.update(cx, |p, cx| p.toggle(cx))),
-                )
-                .child(Button::icon("step-forward", "step-forward", "Next frame (→)").small().on_click(move |_, _, cx| p4.update(cx, |p, cx| p.step(1., cx))))
-                .child(
-                    Button::icon("go-end", "skip-forward", "Go to end (End)")
-                        .small()
-                        .on_click(move |_, _, cx| p5.update(cx, |p, cx| p.seek(cx.store().read(cx).duration(), cx))),
-                )
-                .child(
-                    Button::icon("loop", "repeat", if looping { "Loop: on" } else { "Loop: off" }).small().selected(looping).on_click(move |_, _, cx| {
-                        p6.update(cx, |p, cx| {
-                            p.looping = !p.looping;
-                            cx.notify();
-                        })
-                    }),
-                )
-                .child(
-                    div()
-                        .ml(px(8.))
-                        .flex()
-                        .items_baseline()
-                        .gap(px(6.))
-                        .font_family(MONO)
-                        .child(div().text_size(px(sz::BASE)).text_color(t.text).child(smpte(playhead, fps)))
-                        .when(!narrow, |d| d.child(div().text_size(px(sz::XS)).text_color(t.text_3).child(format!("/ {}", smpte(duration, fps))))),
-                )
-        };
+        let (compact, narrow, tiny) = (width < 860., width < 720., width < 620.);
+        // The transport lives under the preview; the timeline keeps the time, where the eye is.
+        let shuttle = self.playback.read(cx).shuttle;
+        let clock = div()
+            .flex()
+            .items_baseline()
+            .gap(px(6.))
+            .font_family(MONO)
+            .child(div().text_size(px(sz::BASE)).text_color(if playing || shuttle != 0. { t.accent_text } else { t.text }).child(smpte(playhead, fps)))
+            .when(!narrow, |d| d.child(div().text_size(px(sz::XS)).text_color(t.text_3).child(format!("/ {}", smpte(duration, fps)))))
+            .when(shuttle != 0., |d| d.child(div().text_size(px(sz::XS)).text_color(t.accent_text).child(rate_label(shuttle))))
+            .when(looping, |d| d.child(crate::ui::icon("repeat").size(px(11.)).text_color(t.text_3)));
         let tools = div()
             .flex()
             .items_center()
             .gap(px(2.))
-            .child(Button::icon("split", "scissors", "Split at playhead (S)").small().on_click(|_, w, cx| w.dispatch_action(Box::new(Split), cx)))
-            .child(Button::icon("delete", "trash", "Delete (⌫)").small().disabled(!has_sel).on_click(|_, w, cx| w.dispatch_action(Box::new(Delete), cx)))
-            .child(Button::icon("duplicate", "copy", "Duplicate (⌘D)").small().disabled(!has_sel).on_click(|_, w, cx| w.dispatch_action(Box::new(Duplicate), cx)))
+            .child(Button::icon("split", "scissors", tip("Split at the playhead", &Split)).small().on_click(|_, w, cx| w.dispatch_action(Box::new(Split), cx)))
+            .child(Button::icon("delete", "trash", tip("Delete", &Delete)).small().disabled(!has_sel).on_click(|_, w, cx| w.dispatch_action(Box::new(Delete), cx)))
+            .child(Button::icon("duplicate", "copy", tip("Duplicate", &Duplicate)).small().disabled(!has_sel).on_click(|_, w, cx| w.dispatch_action(Box::new(Duplicate), cx)))
             .child(sep())
-            .child(Button::icon("snap", "magnet", if snapping { "Snapping: on (N)" } else { "Snapping: off (N)" }).small().selected(snapping).on_click(|_, _, cx| {
+            .child(Button::icon("snap", "magnet", tip(if snapping { "Snapping: on" } else { "Snapping: off" }, &ToggleSnap)).small().selected(snapping).on_click(|_, _, cx| {
                 cx.store().update(cx, |s, cx| {
                     s.snapping = !s.snapping;
                     cx.notify();
                 })
             }))
-            .child(Button::icon("ripple", "wrap-text", if ripple { "Ripple delete: on" } else { "Ripple delete: off" }).small().selected(ripple).on_click(|_, _, cx| {
+            .child(Button::icon("ripple", "wrap-text", if ripple { "Ripple delete: on (deleting closes the gap)" } else { "Ripple delete: off" }).small().selected(ripple).on_click(|_, _, cx| {
                 cx.store().update(cx, |s, cx| {
                     s.ripple = !s.ripple;
                     cx.notify();
                 })
             }))
             .child(sep())
-            .child(Button::icon("marker", "map-pin", "Add marker (M)").small().on_click(|_, w, cx| w.dispatch_action(Box::new(AddMarker), cx)))
-            .child(Button::icon("text", "type", "Add text (T)").small().on_click(|_, w, cx| w.dispatch_action(Box::new(AddText), cx)))
+            .child(Button::icon("marker", "map-pin", tip("Add a marker", &AddMarker)).small().on_click(|_, w, cx| w.dispatch_action(Box::new(AddMarker), cx)))
+            .child(Button::icon("text", "type", tip("Add a title", &AddText)).small().on_click(|_, w, cx| w.dispatch_action(Box::new(AddText), cx)))
             // Also in the "+" menu above the track headers.
             .when(!tiny, |d| {
                 d.child(Button::icon("video-track", "film", "Add video track").small().on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("track.add", json!({ "kind": "video" }), cx))))
@@ -183,7 +155,7 @@ impl Timeline {
                 .flex_none()
                 .relative()
                 .cursor_pointer()
-                .tooltip(|_, cx| crate::ui::tooltip("Zoom (pinch, or ⌘ + scroll)".into(), cx))
+                .tooltip(|_, cx| crate::ui::tooltip(if cfg!(target_os = "macos") { "Zoom (pinch, or ⌘ + scroll)" } else { "Zoom (pinch, or Ctrl + scroll)" }.into(), cx))
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::slide_down))
                 .child(canvas(move |b, _, _| cell.set(b), |_, _, _, _| {}).absolute().inset_0())
                 .child(div().absolute().left_0().right_0().top(px(8.5)).h(px(3.)).rounded_full().bg(t.line_strong))
@@ -209,14 +181,14 @@ impl Timeline {
                     }),
             )
             .child(sep())
-            .child(Button::icon("zoom-out", "zoom-out", "Zoom out (−)").small().on_click(move |_, _, cx| z1.update(cx, |this, cx| this.zoom_by(1. / 1.3, cx))))
+            .child(Button::icon("zoom-out", "zoom-out", tip("Zoom out", &ZoomOut)).small().on_click(move |_, _, cx| z1.update(cx, |this, cx| this.zoom_by(1. / 1.3, cx))))
             .when(!narrow, |d| d.child(slider))
-            .child(Button::icon("zoom-in", "zoom-in", "Zoom in (+)").small().on_click(move |_, _, cx| z2.update(cx, |this, cx| this.zoom_by(1.3, cx))))
+            .child(Button::icon("zoom-in", "zoom-in", tip("Zoom in", &ZoomIn)).small().on_click(move |_, _, cx| z2.update(cx, |this, cx| this.zoom_by(1.3, cx))))
             .child(
                 Button::new("fit", "Fit")
                     .small()
                     .ghost()
-                    .tooltip("Zoom to fit (⇧Z)")
+                    .tooltip(tip("Zoom to fit", &ZoomFit))
                     .on_click(move |_, _, cx| body.update(cx, |b, cx| b.fit(cx))),
             );
         div()
@@ -233,7 +205,7 @@ impl Timeline {
             .border_b_1()
             .border_color(t.line)
             .overflow_hidden()
-            .child(transport)
+            .child(clock)
             .child(tools)
             .child(zoom)
             .into_any_element()
@@ -265,6 +237,12 @@ impl Timeline {
             })
             .into_any_element()
     }
+}
+
+/// Shuttle speed as shown next to the clock: "2×", "◀ 4×".
+pub fn rate_label(rate: f64) -> String {
+    let n = format!("{}", rate.abs());
+    if rate < 0. { format!("◀ {n}×") } else { format!("{n}×") }
 }
 
 impl Render for Timeline {

@@ -201,7 +201,7 @@ fn the_clip_menu_has_edits_but_no_frame_actions_for_titles(cx: &mut TestAppConte
     cx.simulate_mouse_down(point(b.origin.x + px(60.), b.origin.y + px(30.)), MouseButton::Right, Modifiers::default());
     cx.run_until_parked();
     let labels: Vec<String> = menu(cx, None).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(labels, vec!["Split at playhead", "Duplicate", "Delete", "Ripple delete"]);
+    assert_eq!(labels, vec!["Split at playhead", "Trim start to playhead", "Trim end to playhead", "Copy", "Cut", "Duplicate", "Delete", "Ripple delete"]);
 }
 
 #[gpui::test]
@@ -305,4 +305,32 @@ fn zooming_from_elsewhere_keeps_the_playhead_in_place(cx: &mut TestAppContext) {
     let scroll = cx.update(|_, cx| view.read(cx).body.read(cx).scroll_x);
     // At 60 px/s the playhead was 240 px in; it still is.
     assert!((4. * 240. - scroll - 240.).abs() < 1e-6, "scroll {scroll}");
+}
+
+#[gpui::test]
+fn dragging_on_empty_space_selects_what_it_touches(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    let b = lanes(&view, cx);
+    let p = f.project();
+    // From 2.5 s (empty, after A) to 6.7 s: the band touches B only.
+    drag(cx, point(b.origin.x + px(150.), b.origin.y + px(10.)), point(b.origin.x + px(400.), b.origin.y + px(60.)), Modifiers::default());
+    cx.run_until_parked();
+    let sel = cx.update(|_, cx| cx.store().read(cx).selection.clone());
+    assert_eq!(sel, vec![p.tracks[0].clips[1].id]);
+    // The playhead didn't move: that was a selection, not a click.
+    assert_eq!(cx.update(|_, cx| cx.store().read(cx).playback.read(cx).playhead), 0.);
+}
+
+#[gpui::test]
+fn alt_dragging_a_clip_copies_it(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    let b = lanes(&view, cx);
+    let original = f.project().tracks[0].clips[0].id;
+    // A (0..2 s) dragged 9 s right with ⌥ held: a copy at 9 s, A stays.
+    let from = point(b.origin.x + px(60.), b.origin.y + px(30.));
+    drag(cx, from, point(from.x + px(540.), from.y), Modifiers { alt: true, ..Default::default() });
+    let p = f.settle(cx, |p| p.tracks[0].clips.len() == 3);
+    let starts: Vec<f64> = p.tracks[0].clips.iter().map(|c| c.start).collect();
+    assert_eq!(starts, vec![0., 5., 9.]);
+    assert_eq!(p.tracks[0].clips[0].id, original, "the original didn't move");
 }

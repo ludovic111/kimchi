@@ -10,7 +10,7 @@ pub mod presets;
 pub mod store;
 pub mod templates;
 
-pub use edit::{ClipMove, ClipPatch, Edge, Edit, EditError, EditOutcome, TrackPatch};
+pub use edit::{ClipMove, ClipPatch, Edge, Edit, EditError, EditOutcome, TrackClip, TrackPatch};
 pub use history::Editor;
 pub use model::*;
 pub use store::{Library, ProjectSummary};

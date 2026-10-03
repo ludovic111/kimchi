@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use kimchi_core::{Clip, ClipContent, ClipMove, ClipPatch, Edge, Edit, Fit, Id, Project, TextAlign, TextStyle};
+use kimchi_core::{Clip, ClipContent, ClipMove, ClipPatch, Edge, Edit, Fit, Id, Project, TextAlign, TextStyle, TrackClip};
 use serde_json::{Map, Value, json};
 
 use crate::commands::project::clip_summary;
@@ -124,6 +124,35 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             let p = s.project()?;
             let ids = resolve::clips(&p, &a.strings("clipIds"))?;
             let out = s.apply(cx.label(), cx.source, &Edit::DuplicateClips { clip_ids: ids }, None)?;
+            created(s, &out.created_clips)
+        }
+        "clip.paste" => {
+            let p = s.project()?;
+            let mut clips: Vec<TrackClip> = vec![];
+            for key in a.strings("clipIds") {
+                let id = resolve::clip(&p, &key)?;
+                let (ti, ci) = p.locate_clip(id).ok_or("clip not found")?;
+                clips.push(TrackClip { track_id: p.tracks[ti].id, clip: p.tracks[ti].clips[ci].clone() });
+            }
+            for (i, v) in a.array("clips").into_iter().flatten().enumerate() {
+                let track = v.get("trackId").and_then(Value::as_str).ok_or_else(|| format!("clips[{i}] needs trackId"))?;
+                let track_id = resolve::track(&p, track)?;
+                let clip: Clip = serde_json::from_value(v.clone()).map_err(|e| format!("clips[{i}] isn't a clip: {e}"))?;
+                clips.push(TrackClip { track_id, clip });
+            }
+            if clips.is_empty() {
+                return Err("give clipIds or clips to paste".into());
+            }
+            let time = a.opt_f64("time").unwrap_or_else(|| s.ui_state().playhead).max(0.0);
+            let earliest = clips.iter().map(|c| c.clip.start).fold(f64::INFINITY, f64::min);
+            let only = opt_track(&p, &a)?;
+            for c in &mut clips {
+                c.clip.start = c.clip.start - earliest + time;
+                if let Some(t) = only {
+                    c.track_id = t;
+                }
+            }
+            let out = s.apply(cx.label(), cx.source, &Edit::PasteClips { clips }, None)?;
             created(s, &out.created_clips)
         }
         "clip.update" => {

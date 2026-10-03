@@ -273,6 +273,6 @@ impl Render for JobsPopover {
             .absolute()
             .inset_0()
             .child(bounds_probe(self.anchor.clone()))
-            .child(div().absolute().top(relative(1.)).right(px(-60.)).child(deferred(anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(panel)).with_priority(3)))
+            .child(div().absolute().top(relative(1.)).right(px(-60.)).child(deferred(anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(crate::ui::motion::enter(panel.relative(), "jobs-in", crate::ui::motion::FAST, (0., -6.)))).with_priority(3)))
     }
 }

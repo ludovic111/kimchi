@@ -21,6 +21,7 @@ use crate::playback::Playback;
 use crate::preview::{AudioBuffer, AudioOut};
 use crate::store::{Store, StoreExt};
 use crate::theme::{ActiveTheme, MONO, size as sz};
+use crate::actions::{self as act, tip};
 use crate::ui::{Button, drag, icon, smpte};
 
 /// Largest frame the preview asks for (pixels, longest side).
@@ -446,7 +447,7 @@ impl PreviewView {
         let pb = self.playback.read(cx);
         let s = self.store.read(cx);
         let fps = s.fps();
-        let (now, total, playing, looping) = (pb.playhead, s.duration(), pb.playing, pb.looping);
+        let (now, total, playing, looping, shuttle) = (pb.playhead, s.duration(), pb.moving(), pb.looping, pb.shuttle);
         let scale_pct = s.project.as_ref().map(|p| (self.stage(p).1 * 100.0).round() as i32).unwrap_or(100);
         let pb_entity = self.playback.clone();
         let seek = move |time: f64| {
@@ -477,15 +478,16 @@ impl PreviewView {
                     .font_family(MONO)
                     .text_size(px(sz::SM))
                     .child(div().text_color(t.text).child(smpte(now, fps)))
-                    .child(div().text_color(t.text_3).child(format!("/ {}", smpte(total, fps)))),
+                    .child(div().text_color(t.text_3).child(format!("/ {}", smpte(total, fps))))
+                    .when(shuttle != 0., |d| d.child(div().text_color(t.accent_text).child(crate::views::timeline::rate_label(shuttle)))),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(2.))
-                    .child(Button::icon("tp-start", "skip-back", "Start (Home)").on_click(seek(0.0)))
-                    .child(Button::icon("tp-prev", "step-back", "Previous frame (←)").on_click(step(-1.0)))
+                    .child(Button::icon("tp-start", "skip-back", tip("Go to start", &act::GoToStart)).on_click(seek(0.0)))
+                    .child(Button::icon("tp-prev", "step-back", tip("Previous frame", &act::StepBack)).on_click(step(-1.0)))
                     .child(
                         div()
                             .id("tp-play")
@@ -499,12 +501,12 @@ impl PreviewView {
                             .text_color(t.text_on_accent)
                             .cursor_pointer()
                             .hover(|s| s.bg(t.accent_hover))
-                            .tooltip(|_, cx| crate::ui::tooltip("Play / pause (Space)".into(), cx))
+                            .tooltip(move |_, cx| crate::ui::tooltip(tip(if playing { "Pause" } else { "Play" }, &act::PlayPause), cx))
                             .on_click(move |_, _, cx| pb_toggle.update(cx, |p, cx| p.toggle(cx)))
                             .child(icon(if playing { "pause" } else { "play" }).size(px(16.)).text_color(t.text_on_accent)),
                     )
-                    .child(Button::icon("tp-next", "step-forward", "Next frame (→)").on_click(step(1.0)))
-                    .child(Button::icon("tp-end", "skip-forward", "End (End)").on_click(seek(total))),
+                    .child(Button::icon("tp-next", "step-forward", tip("Next frame", &act::StepForward)).on_click(step(1.0)))
+                    .child(Button::icon("tp-end", "skip-forward", tip("Go to end", &act::GoToEnd)).on_click(seek(total))),
             )
             .child(
                 div()
@@ -513,7 +515,7 @@ impl PreviewView {
                     .justify_end()
                     .items_center()
                     .gap(px(8.))
-                    .child(Button::icon("tp-loop", "repeat", "Loop").selected(looping).on_click(move |_, _, cx| {
+                    .child(Button::icon("tp-loop", "repeat", tip(if looping { "Loop: on" } else { "Loop: off" }, &act::ToggleLoop)).selected(looping).on_click(move |_, _, cx| {
                         pb_loop.update(cx, |p, cx| {
                             p.looping = !p.looping;
                             cx.notify();
@@ -541,6 +543,7 @@ impl Render for PreviewView {
         let playhead = self.playback.read(cx).playhead;
         let viewport = self.viewport.clone();
         let entity = cx.entity();
+        let accent = t.accent;
 
         let stage = project.as_ref().map(|p| {
             let (b, scale) = self.stage(p);
@@ -625,6 +628,12 @@ impl Render for PreviewView {
                     .relative()
                     .overflow_hidden()
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+                    // Media dropped on the picture goes on the timeline at the playhead.
+                    .drag_over::<crate::views::timeline::dnd::MediaDrag>(move |st, _, _, _| st.border_2().border_color(accent))
+                    .on_drop::<crate::views::timeline::dnd::MediaDrag>(|d, _, cx| {
+                        let asset = d.asset_id;
+                        cx.store().update(cx, |s, cx| s.run_then("clip.insertMedia", json!({ "assetId": asset }), cx, |s, v, cx| s.set_selection(crate::app::created(&v), cx)));
+                    })
                     .child(
                         canvas(
                             move |bounds, _, cx| {

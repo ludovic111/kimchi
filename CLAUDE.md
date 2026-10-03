@@ -37,6 +37,9 @@ Rules that keep it working:
   `build-gpui-apps` skill (installed in `.claude/skills/`) covers this revision. Views keep retained
   state (text fields, scrubs, subscriptions) in their entity; drags use `ui::drag::track`; icons
   are `ui::icon` (inherits the text colour); panels in the editor are cached views.
+- Shortcuts: one table, `actions::SHORTCUTS` (binds the keys, fills the `?` sheet and the palette);
+  tooltips and menus name keys with `actions::tip` / `hint`, never a hard-coded ⌘ (Linux and Windows
+  show Ctrl). Things that appear animate in with `ui::motion` (GPUI skips it under reduce motion).
 - Design system: `crates/kimchi-desktop/assets/tokens.json` is a copy of `../lsuite/design/tokens.json`
   (re-copy when it changes). GPUI has no backdrop blur: tier 1 is translucent over the window's own
   backdrop (native blur behind on macOS), tiers 2–3 are their tint over the raised surface.
@@ -54,7 +57,7 @@ Rules that keep it working:
 kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
 
-- [x] **Command registry**: 103 `family.verb` commands (project, media, track, clip, motion,
+- [x] **Command registry**: 104 `family.verb` commands (project, media, track, clip, motion,
       timeline, history, generate, export, handoff, app, ui), one undo history for every client,
       batches as one step, `project.overview`, names or ids everywhere.
 - [x] **CLI**: `kimchi-cli <command>` on the running app or `--file project.json`; `batch`, `doctor`,
