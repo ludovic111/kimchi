@@ -85,7 +85,7 @@ impl GeneratePanel {
                     crate::ui::input::focus(&this.prompt, window, cx);
                 }
                 StoreEvent::FocusPrompt => crate::ui::input::focus(&this.prompt, window, cx),
-                StoreEvent::EditText | StoreEvent::AskRemoveAsset(_) => {}
+                StoreEvent::EditText | StoreEvent::AskRemoveAsset(_) | StoreEvent::OpenStudio(_) => {}
             }),
             cx.subscribe(&prompt, |this, _, e: &InputEvent, cx| match e {
                 InputEvent::Submit => this.submit(cx),

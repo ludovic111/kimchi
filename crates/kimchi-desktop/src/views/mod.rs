@@ -17,5 +17,6 @@ pub mod motion_panel;
 pub mod overlays;
 pub mod preview;
 pub mod screenshot;
+pub mod studio;
 pub mod text_panel;
 pub mod timeline;

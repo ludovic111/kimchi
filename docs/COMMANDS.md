@@ -781,6 +781,16 @@ Reorder a layer (2D: later draws on top) or object (3D), or move it into a group
 | `parent` | string |  | A group or composition (2D) or object (3D) to move it into; "" = the top level. Omit to stay in the same list. |
 | `index` | integer |  | Position in its list (0 = first, drawn first in 2D). Default: last. |
 
+### `motion.renameLayer`
+
+Give a layer, object, light, camera, composition or shared material of a motion clip a new id; everything that refers to it follows (parents, mattes and masks, modifier and constraint targets, expressions' prop("id", …), the active camera, comp layers, objects using the material). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | Its id now. |
+| `newId` | string | required | The new id (unique in the scene). |
+
 ### `motion.duplicateLayer`
 
 Copy a layer, object or light (with its children) next to itself under a new id. One undo step. _(changes things)_
@@ -1431,7 +1441,7 @@ Do what a keyboard shortcut or menu item of the window does, by its action name.
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `action` | string | required | PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit. |
+| `action` | string | required | PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide. |
 
 ### `ui.reveal`
 
@@ -1449,3 +1459,25 @@ Save a PNG of the window and return its path. _(changes things · permission: fi
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `path` | string |  | Destination .png (default: a temporary file). |
+
+### `ui.studio`
+
+Open, drive or close the Studio, the window's editor for motion clips (a Blender-like 3D editor, an After Effects-like 2D one). Every parameter is optional and applied in order; the answer is the Studio's state (also in ui.state). Edits to the scene itself are motion.* commands. _(changes things · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string |  | Open this motion clip (id or name). |
+| `close` | boolean |  | Back to the edit. |
+| `select` | array |  | Select these ids (layers, objects, lights, cameras; "scene"; "material:<id>", "comp:<id>"); empty clears. |
+| `mode` | string |  | object or edit (3D mesh editing of the selected mesh object). |
+| `selectMode` | string |  | Edit mode: vertex, edge or face. |
+| `editSelection` | object |  | Edit mode: {"vertices": [...], "faces": [...]} indices of the mesh. |
+| `tool` | string |  | 3D: select, move, rotate, scale. 2D: select, anchor, pen, rect, ellipse, star, polygon, text. |
+| `shading` | string |  | 3D: solid, material or rendered. |
+| `view` | any |  | 3D: front, back, left, right, top, bottom, camera (through the active camera), persp or ortho; or a view {"position": [x,y,z], "target": [x,y,z], "fov": 40, "ortho": false, "orthoSize": 6}. |
+| `frame` | boolean |  | Frame the selection in the view (all when nothing is selected). |
+| `grid` | boolean |  | 3D: floor grid and axes. |
+| `helpers` | boolean |  | 3D: draw lights and cameras. |
+| `composition` | string |  | 2D: show and edit this composition ("" = the scene). |
+| `showGraph` | boolean |  | The timeline area shows the graph editor (true) or the dope sheet. |
+| `graphProperty` | string |  | The property the graph editor shows, e.g. position.x (of the selected item). |

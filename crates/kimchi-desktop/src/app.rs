@@ -136,6 +136,11 @@ impl Workspace {
         })
         .detach();
 
+        // Back from the Studio: the workspace takes the keyboard again.
+        let studio = editor.read(cx).studio.clone();
+        subs.push(cx.subscribe_in(&studio, window, |ws, _, e: &views::studio::StudioEvent, window, cx| match e {
+            views::studio::StudioEvent::Closed => window.focus(&ws.focus, cx),
+        }));
         store.update(cx, |s, cx| s.sync_ui(cx));
         Self { store, focus, home, editor, dialogs, _subs: subs }
     }
@@ -264,6 +269,13 @@ impl Workspace {
                 Ok(json!({ "revealed": path }))
             }
             "ui.screenshot" => views::screenshot::capture(params["path"].as_str(), window),
+            "ui.studio" => {
+                if store.read(cx).project.is_none() {
+                    return Err(kimchi_control::session::NO_PROJECT.into());
+                }
+                let studio = self.editor.read(cx).studio.clone();
+                studio.update(cx, |s, cx| s.ui_command(params, window, cx))
+            }
             "app.quit" => {
                 cx.quit();
                 Ok(json!({ "quitting": true }))
@@ -454,6 +466,15 @@ impl Workspace {
 
     fn palette(&mut self, _: &Palette, _: &mut Window, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| if s.dialog == Some(Dialog::Palette) { s.close_dialog(cx) } else { s.open_dialog(Dialog::Palette, cx) });
+    }
+
+    fn open_studio(&mut self, _: &OpenStudio, _: &mut Window, cx: &mut Context<Self>) {
+        let s = self.store.read(cx);
+        let motion = s.selected_clips().into_iter().find(|c| matches!(c.content, kimchi_core::ClipContent::Motion { .. })).map(|c| c.id);
+        self.store.update(cx, |s, cx| match motion {
+            Some(id) => s.open_studio(id, cx),
+            None => s.flash("Select a motion clip to open it in the Studio.", cx),
+        });
     }
 
     fn duplicate(&mut self, _: &Duplicate, _: &mut Window, cx: &mut Context<Self>) {
@@ -950,6 +971,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::export))
             .on_action(cx.listener(Self::palette))
             .on_action(cx.listener(Self::duplicate))
+            .on_action(cx.listener(Self::open_studio))
             .on_action(cx.listener(Self::split))
             .on_action(cx.listener(Self::focus_generate))
             .on_action(cx.listener(Self::select_all))

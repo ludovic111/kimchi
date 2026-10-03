@@ -13,23 +13,23 @@ use serde_json::{Value, json};
 use crate::app::Workspace;
 use crate::store::{Dialog, StoreExt};
 
-struct Fixture {
-    rt: tokio::runtime::Runtime,
+pub(crate) struct Fixture {
+    pub rt: tokio::runtime::Runtime,
     _dir: tempfile::TempDir,
-    session: Arc<Session>,
+    pub session: Arc<Session>,
 }
 
 impl Fixture {
-    fn call(&self, name: &str, params: Value) -> Value {
+    pub fn call(&self, name: &str, params: Value) -> Value {
         self.rt.block_on(kimchi_control::call(&self.session, Source::Cli, name, params)).unwrap_or_else(|e| panic!("{name}: {e}"))
     }
 
-    fn project(&self) -> Project {
+    pub fn project(&self) -> Project {
         self.session.read(|ed| ed.project().clone()).unwrap()
     }
 
     /// Lets the window and Tokio work until `done` holds (or 3 s pass).
-    fn settle(&self, cx: &mut VisualTestContext, done: impl Fn(&Project) -> bool) -> Project {
+    pub fn settle(&self, cx: &mut VisualTestContext, done: impl Fn(&Project) -> bool) -> Project {
         let start = Instant::now();
         loop {
             cx.run_until_parked();
@@ -50,7 +50,7 @@ const M: &str = "ctrl";
 
 /// Lets the window catch up until its store satisfies `done` (or 3 s pass): the store hears
 /// about changes through the session's events, a moment after the session has them.
-fn store_settles(cx: &mut VisualTestContext, done: impl Fn(&crate::store::Store) -> bool) {
+pub(crate) fn store_settles(cx: &mut VisualTestContext, done: impl Fn(&crate::store::Store) -> bool) {
     let start = Instant::now();
     while !cx.update(|_, cx| done(cx.store().read(cx))) && start.elapsed() < Duration::from_secs(3) {
         cx.run_until_parked();
@@ -62,7 +62,7 @@ fn texts(p: &Project) -> usize {
     p.clips().filter(|(_, c)| matches!(c.content, ClipContent::Text { .. })).count()
 }
 
-fn setup(cx: &mut TestAppContext) -> (Fixture, gpui::Entity<Workspace>, &mut VisualTestContext) {
+pub(crate) fn setup(cx: &mut TestAppContext) -> (Fixture, gpui::Entity<Workspace>, &mut VisualTestContext) {
     cx.executor().allow_parking();
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -161,6 +161,11 @@ fn people_edit_motion_scenes_in_the_inspector(cx: &mut TestAppContext) {
     let p = f.settle(cx, |p| motion(p).is_some());
     let clip = motion(&p).expect("a motion clip");
     store_settles(cx, |s| s.selection == vec![clip.id]);
+    // It opens in the Studio; back to the edit for the inspector.
+    store_settles(cx, |s| s.studio.is_some());
+    let studio = cx.update(|_, cx| view.read(cx).editor().read(cx).studio.clone());
+    cx.update(|_, cx| studio.update(cx, |s, cx| s.close(cx)));
+    cx.run_until_parked();
     // Pick its text layer, then type in the words field.
     let inspector = cx.update(|_, cx| view.read(cx).editor().read(cx).inspector.clone());
     cx.update(|_, cx| inspector.update(cx, |i, cx| i.pick(clip.id, "text1", cx)));

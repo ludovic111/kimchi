@@ -12,6 +12,14 @@ use crate::session::{CmdResult, Session};
 
 pub const PANELS: &[&str] = &["media", "generate", "text", "motion", "captions", "agent", "jobs", "settings", "export", "palette", "home", "shortcuts", "whatsNew", "diagnostics"];
 
+/// `ui.studio`'s words, checked before the window sees them.
+const STUDIO_CHOICES: [(&str, &[&str]); 4] = [
+    ("mode", &["object", "edit"]),
+    ("selectMode", &["vertex", "edge", "face"]),
+    ("tool", &["select", "move", "rotate", "scale", "anchor", "pen", "rect", "ellipse", "star", "polygon", "text"]),
+    ("shading", &["solid", "material", "rendered"]),
+];
+
 /// The window's shortcut and menu actions `ui.action` runs, each with the permission an agent
 /// needs for it: what the action ends up doing (it runs as the window, so the registry wouldn't
 /// check it again).
@@ -78,6 +86,45 @@ pub const ACTIONS: &[(&str, Perm)] = &[
     ("ToggleTheme", Perm::Settings),
     ("RestartApp", Perm::AppControl),
     ("Quit", Perm::AppControl),
+    // The Studio's keys (they act on the Studio when it is open and has the keyboard).
+    ("OpenStudio", Perm::Edit),
+    ("StudioEscape", Perm::Edit),
+    ("StudioPlay", Perm::Edit),
+    ("StudioGrab", Perm::Edit),
+    ("StudioRotate", Perm::Edit),
+    ("StudioScale", Perm::Edit),
+    ("StudioAdd", Perm::Edit),
+    ("StudioDelete", Perm::Edit),
+    ("StudioDuplicate", Perm::Edit),
+    ("StudioToggleEdit", Perm::Edit),
+    ("StudioSelectAll", Perm::Edit),
+    ("StudioBoxSelect", Perm::Edit),
+    ("StudioKey1", Perm::Edit),
+    ("StudioKey2", Perm::Edit),
+    ("StudioKey3", Perm::Edit),
+    ("StudioKey7", Perm::Edit),
+    ("StudioKey0", Perm::Edit),
+    ("StudioOrtho", Perm::Edit),
+    ("StudioFrame", Perm::Edit),
+    ("StudioFill", Perm::Edit),
+    ("StudioFrameAll", Perm::Edit),
+    ("StudioInsert", Perm::Edit),
+    ("StudioExtrude", Perm::Edit),
+    ("StudioBevel", Perm::Edit),
+    ("StudioLoopCut", Perm::Edit),
+    ("StudioMerge", Perm::Edit),
+    ("StudioFlip", Perm::Edit),
+    ("StudioRecalc", Perm::Edit),
+    ("StudioToolSelect", Perm::Edit),
+    ("StudioToolCycle", Perm::Edit),
+    ("StudioPen", Perm::Edit),
+    ("StudioShape", Perm::Edit),
+    ("StudioText", Perm::Edit),
+    ("StudioAnchor", Perm::Edit),
+    ("StudioFit", Perm::Edit),
+    ("StudioGraph", Perm::Edit),
+    ("StudioHide", Perm::Edit),
+    ("StudioUnhide", Perm::Edit),
 ];
 
 pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
@@ -148,6 +195,26 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             s.ui_call(cx.spec.name, Value::Object(a.0)).await
         }
         "ui.closeDialogs" | "ui.screenshot" => s.ui_call(cx.spec.name, Value::Object(a.0)).await,
+        "ui.studio" => {
+            let mut params = a.0.clone();
+            if let Some(k) = a.opt_str("clipId") {
+                let p = s.project()?;
+                let id = resolve::clip(&p, k)?;
+                if !matches!(p.clip(id).map(|c| &c.content), Some(kimchi_core::ClipContent::Motion { .. })) {
+                    return Err(format!("\"{k}\" isn't a motion clip; only motion clips open in the Studio."));
+                }
+                params.insert("clipId".into(), json!(id));
+            }
+            for (key, allowed) in STUDIO_CHOICES {
+                if let Some(v) = a.opt_str(key)
+                    && !allowed.contains(&v)
+                {
+                    let hint = crate::registry::closest(v, allowed).map(|c| format!(" Did you mean {c}?")).unwrap_or_default();
+                    return Err(format!("{key} is one of {}, not `{v}`.{hint}", allowed.join(", ")));
+                }
+            }
+            s.ui_call(cx.spec.name, Value::Object(params)).await
+        }
         _ => Err(crate::commands::unhandled(cx)),
     }
 }

@@ -150,6 +150,26 @@ impl Palette {
                     Cmd::action("Ripple delete selection", "trash", act::RippleDelete).keywords("remove close gap"),
                 ]);
             }
+            if s.selected_clips().iter().any(|c| matches!(c.content, kimchi_core::ClipContent::Motion { .. })) {
+                v.push(Cmd::action("Open in the Studio", "box", act::OpenStudio).keywords("motion 3d 2d edit scene blender after effects"));
+            }
+            if s.studio.is_some() {
+                v.extend([
+                    Cmd::action("Studio: back to the edit", "chevron-left", act::StudioEscape).keywords("close leave"),
+                    Cmd::action("Studio: add…", "plus", act::StudioAdd).keywords("object layer light camera shape"),
+                    Cmd::action("Studio: edit mode", "hexagon", act::StudioToggleEdit).keywords("mesh model vertices faces"),
+                    Cmd::action("Studio: frame the selection", "scan", act::StudioFrame).keywords("view zoom"),
+                    Cmd::action("Studio: through the camera", "video", act::StudioKey0).keywords("view"),
+                    Cmd::action("Studio: perspective / orthographic", "box", act::StudioOrtho).keywords("view"),
+                    Cmd::action("Studio: keyframe the selection", "diamond", act::StudioInsert).keywords("animate key"),
+                    Cmd::action("Studio: dope sheet / graph editor", "spline", act::StudioGraph).keywords("curves keys timing"),
+                    Cmd::action("Studio: play the clip", "play", act::StudioPlay),
+                    Cmd::action("Studio: duplicate", "copy", act::StudioDuplicate),
+                    Cmd::action("Studio: delete", "trash", act::StudioDelete),
+                    Cmd::action("Studio: pen tool", "pen-tool", act::StudioPen).keywords("path mask draw"),
+                    Cmd::action("Studio: fit the canvas", "maximize-2", act::StudioFit),
+                ]);
+            }
             v.push(Cmd::action("Agent", "bot", act::ToggleAgent).keywords("assistant chat ai").ai());
         }
         v.extend([

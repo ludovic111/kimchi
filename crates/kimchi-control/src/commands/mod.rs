@@ -388,6 +388,11 @@ pub static SPECS: &[Spec] = &[
         opt("parent", String, "A group or composition (2D) or object (3D) to move it into; \"\" = the top level. Omit to stay in the same list."),
         opt("index", Integer, "Position in its list (0 = first, drawn first in 2D). Default: last."),
     ]),
+    edit("motion.renameLayer", "Give a layer, object, light, camera, composition or shared material of a motion clip a new id; everything that refers to it follows (parents, mattes and masks, modifier and constraint targets, expressions' prop(\"id\", …), the active camera, comp layers, objects using the material). One undo step.", &[
+        CLIP_ID,
+        req("id", String, "Its id now."),
+        req("newId", String, "The new id (unique in the scene)."),
+    ]),
     edit("motion.duplicateLayer", "Copy a layer, object or light (with its children) next to itself under a new id. One undo step.", &[
         CLIP_ID,
         req("id", String, "What to copy."),
@@ -643,13 +648,30 @@ pub static SPECS: &[Spec] = &[
         opt("reset", Boolean, "Back to the starting sizes first."),
     ]).window(),
     edit("ui.action", "Do what a keyboard shortcut or menu item of the window does, by its action name. It acts on the window's selection, playhead and clipboard as the key would, a moment after the answer. Agents need the permission of what it does (NewProject: projects, ToggleTheme: settings, Quit: app control…).", &[
-        req("action", String, "PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit."),
+        req("action", String, "PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide."),
     ]).window(),
     edit("ui.reveal", "Show a file in the file manager (Finder, Explorer…): a path, or a media item's file.", &[
         opt("path", String, "A file or folder (an export, a log folder…)."),
         opt("assetId", String, "A media item (id or unique name) instead."),
     ]).window(),
     edit("ui.screenshot", "Save a PNG of the window and return its path.", &[opt("path", String, "Destination .png (default: a temporary file).")]).perm(Perm::Files).window(),
+    edit("ui.studio", "Open, drive or close the Studio, the window's editor for motion clips (a Blender-like 3D editor, an After Effects-like 2D one). Every parameter is optional and applied in order; the answer is the Studio's state (also in ui.state). Edits to the scene itself are motion.* commands.", &[
+        opt("clipId", String, "Open this motion clip (id or name)."),
+        opt("close", Boolean, "Back to the edit."),
+        opt("select", Array, "Select these ids (layers, objects, lights, cameras; \"scene\"; \"material:<id>\", \"comp:<id>\"); empty clears."),
+        opt("mode", String, "object or edit (3D mesh editing of the selected mesh object)."),
+        opt("selectMode", String, "Edit mode: vertex, edge or face."),
+        opt("editSelection", Object, "Edit mode: {\"vertices\": [...], \"faces\": [...]} indices of the mesh."),
+        opt("tool", String, "3D: select, move, rotate, scale. 2D: select, anchor, pen, rect, ellipse, star, polygon, text."),
+        opt("shading", String, "3D: solid, material or rendered."),
+        opt("view", Any, "3D: front, back, left, right, top, bottom, camera (through the active camera), persp or ortho; or a view {\"position\": [x,y,z], \"target\": [x,y,z], \"fov\": 40, \"ortho\": false, \"orthoSize\": 6}."),
+        opt("frame", Boolean, "Frame the selection in the view (all when nothing is selected)."),
+        opt("grid", Boolean, "3D: floor grid and axes."),
+        opt("helpers", Boolean, "3D: draw lights and cameras."),
+        opt("composition", String, "2D: show and edit this composition (\"\" = the scene)."),
+        opt("showGraph", Boolean, "The timeline area shows the graph editor (true) or the dope sheet."),
+        opt("graphProperty", String, "The property the graph editor shows, e.g. position.x (of the selected item)."),
+    ]).window(),
 ];
 
 /// Runs the handler for a validated command.

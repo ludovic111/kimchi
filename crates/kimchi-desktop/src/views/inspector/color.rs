@@ -18,6 +18,8 @@ pub struct ColorField {
     input: Entity<TextInput>,
     /// Typed or picked colours get this alpha suffix when they have none (e.g. `cc` for a text box).
     alpha: Option<&'static str>,
+    /// Without the row of ready colours (dense panels: the Studio's properties).
+    pub compact: bool,
     _sub: Subscription,
 }
 
@@ -58,7 +60,7 @@ impl ColorField {
             }
             InputEvent::Changed(_) => {}
         });
-        Self { value: String::new(), input, alpha, _sub: sub }
+        Self { value: String::new(), input, alpha, compact: false, _sub: sub }
     }
 
     /// Shows `v` (from the project) unless the code is being typed.
@@ -111,7 +113,7 @@ impl gpui::Render for ColorField {
                     )
                     .child(div().flex_1().min_w_0().child(self.input.clone())),
             )
-            .child(div().flex().flex_wrap().gap(px(4.)).children(SWATCHES.iter().enumerate().map(|(i, s)| {
+            .when(!self.compact, |d| d.child(div().flex().flex_wrap().gap(px(4.)).children(SWATCHES.iter().enumerate().map(|(i, s)| {
                 let selected = rgb == *s;
                 let c = s.to_string();
                 div()
@@ -129,7 +131,7 @@ impl gpui::Render for ColorField {
                         move |_, cx| crate::ui::tooltip(s.clone(), cx)
                     })
                     .on_click(cx.listener(move |this, _, _, cx| this.commit(c.clone(), cx)))
-            })))
+            }))))
     }
 }
 
