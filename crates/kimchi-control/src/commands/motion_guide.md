@@ -4,8 +4,12 @@ kimchi draws animation itself, the same in the preview and the export. There are
 
 1. **Animate any clip** (video, image, title, solid, motion clip): `clip.setKeyframes` on its
    placement (x, y, scale, rotation, opacity, blur…), or a ready-made `clip.animate` preset.
-2. **Motion clips** (`motion.add`): a scene of 2D layers (shapes, paths, text, images) or a
-   3D scene (camera, lights, objects), written as JSON, every property animatable.
+2. **Motion clips** (`motion.add`): a 2D scene, like an After Effects composition (layers of
+   shapes, paths, text, images, particles; nested compositions, parenting, masks, track mattes,
+   effects, shape operators, text animators, motion blur), or a 3D scene, like a Blender scene
+   (cameras, lights, a world, objects: primitives, editable meshes, extruded text and logos,
+   lathed profiles, curves, particles, models; materials, modifiers, constraints, two render
+   engines), written as JSON, every property animatable and drivable by an expression.
 3. **Templates** (`motion.addTemplate`): a lower third, a title card, a 3D title… from a few
    values; the clip remembers them so `motion.setTemplate` can change them later.
 
@@ -13,10 +17,13 @@ To change part of a scene, prefer the small commands: `motion.updateLayer {clipI
 some properties of one layer, object, light, the camera or the scene (an animated property gets a
 keyframe at `time` instead), `motion.addKeyframe` / `motion.removeKeyframe` / `motion.setKeyframes`
 animate one property, `motion.setLayer` adds or replaces a whole layer, `motion.removeLayer` deletes
-one. People make the same changes in the inspector, so keep ids readable (`title`, `logo`, `floor`).
+one; `motion.setStackItem` adds a modifier, constraint, effect, operator, mask or text animator
+(`motion.stackTypes` lists them all with every parameter), `motion.setExpression` drives a
+property with a formula, `motion.editMesh` models a mesh. People make the same changes in the
+Studio (the window's motion editor), so keep ids readable (`title`, `logo`, `floor`).
 
 Work in this order: add, then **look** (`project.renderFrame` with a few `times`; the result is
-a PNG path you can open), then fix what you see. A motion clip sits on a video track like any
+a PNG path you can open; `motion.view` shows a 3D scene from any side), then fix what you see. A motion clip sits on a video track like any
 clip: tracks above draw over it, its own placement and fades apply, and without a `background`
 it is transparent over what's below.
 
@@ -115,6 +122,72 @@ size radius`, ellipse `width height size`, polygon `sides radius roundness`, sta
 innerRadius`, path `d`, text `text fontSize fontWeight letterSpacing lineHeight value reveal`,
 image `width height radius`. The scene's own keyframes (id `scene`) animate `background`.
 
+**More layer types**: `null` (draws nothing: a handle others follow), `adjustment` (its
+`effects` apply to everything below it in its list, inside its masks), `comp` `{comp, speed,
+offset, loop, time}` (shows a composition: comp time = (scene time − start) × speed + offset, or
+`time` when set — animate `time` to remap it), `particles` (see Particles below).
+
+**Compositions** (precomps): `"compositions": [{"id": "card", "width": 800, "height": 400,
+"duration": 3, "background": null, "layers": [...]}]` at the scene's top level; a `comp` layer
+shows one, placed and transformed like any layer, with its own time. Ids are unique across the
+whole scene. `motion.precompose {clipId, ids, compositionId}` moves layers into a new one.
+
+**Parenting**: `"parent": "<sibling id>"`: the layer follows the parent's position, rotation and
+scale (its own values become relative), like After Effects. Parent to a `null` to move a group of
+layers without grouping them.
+
+**Masks** (on the layer itself, in its own pixels from its centre): `"masks": [{"type": "path",
+"d": "M-200 -100 L200 -100 L200 100 Z", "mode": "add", "feather": 20}, {"type": "ellipse",
+"center": [0, 0], "size": [300, 300], "mode": "subtract"}]`. Modes `add subtract intersect
+difference none`; `feather`, `expansion`, `opacity`, `inverted`. Animate `masks.<id>.d` to morph a
+path mask, `masks.<id>.feather`…
+
+**Track mattes**: `"matte": {"layer": "<sibling id>", "mode": "alpha"|"alphaInverted"|"luma"|
+"lumaInverted"}`: the other layer's picture decides where this one shows (it isn't drawn itself).
+The older `mask`/`maskInvert` is an alpha matte of a sibling's shape.
+
+**Effects** (applied to the layer's picture in order): `"effects": [{"type": "glow", "radius": 30},
+{"type": "colorCorrect", "saturation": 0.3}]`. Types: blur, directionalBlur, radialBlur, glow,
+dropShadow, stroke (outline), echo, colorCorrect, levels, tint, tritone, fill, gradientRamp,
+invert, threshold, posterize, vignette, noise (grain), fractalNoise, halftone, scanlines,
+turbulentDisplace, waveWarp, ripple, twirl, bulge, mosaic, chromaticAberration, glitch, mirror,
+kaleidoscope, motionTile, cornerPin, sharpen. Each has an id (default its type) and parameters
+(`motion.stackTypes {"family": "effects"}`); animate them as `effects.<id>.<param>`:
+`{"effects.glow.radius": [[0, 0], [1, 40]]}`.
+
+**Shape operators** (on rect, ellipse, polygon, star, path outlines, in order):
+`"operators": [{"type": "repeater", "copies": 8, "rotation": 45, "position": [0, 0]}]`. Types:
+repeater (copies with a transform step and an opacity ramp; works on groups too), offset,
+zigzag, wiggle (boiling lines), roundCorners, twist, puckerBloat.
+
+**Text animators** (text layers): `"animators": [{"type": "range", "by": "char", "start": 0,
+"end": 30, "offset": -30, "y": 40, "opacity": 0, "shape": "rampUp"}]` moves, turns, scales, fades,
+blurs or recolours the letters (words, lines) a range picks; animate `animators.<id>.offset`
+from −100 to 100 to sweep it across. `"type": "wiggly"` jitters them. Properties: x, y, scale,
+rotation, opacity, fill, blur, tracking, skew, amount. **Text on a path**: `"path": "M-400 0 C…"`
+(the baseline follows it), `pathOffset` 0–1 slides the text along.
+
+**Motion blur**: `"motionBlur": true` on a layer blurs it along its motion in exports and renders
+(the scene's `shutter`, default 0.5 = a 180° shutter, and `motionBlurSamples`, default 8).
+
+**Blend modes** also: `exclusion hue saturation color luminosity`.
+
+## Particles
+
+`{"id": "sparks", "type": "particles", "rate": 60, "lifetime": 1.5, "speed": 300, "spread": 40,
+"direction": [0, -1, 0], "gravity": [0, 500, 0], "size": 8, "sizeEnd": 0, "color": "#ffd27a",
+"colorEnd": "#ff5a36", "shape": "spark", "emitter": "point"}` — a 2D layer or a 3D object. Many
+small things are born from the layer's (object's) position and fly, fall, swirl and fade.
+`rate` per second and/or `burst` at `emitFrom`; `emitUntil`; `lifetime` (+ `lifetimeRandom`);
+`emitter` point, line, rect/box, circle/disc, ring, sphere (`emitterSize`); `direction`,
+`spread` (degrees), `speed` (+ `speedRandom`), `gravity`, `drag`, `turbulence`; `size`,
+`sizeEnd`, `sizeRandom`, `spin`, `spinRandom`; `color`, `colorEnd`, `colors` (each picks one:
+confetti); `fadeIn`/`fadeOut` (share of life); `shape` 2D circle, square, triangle, star, spark,
+image / 3D sphere, cube, tetra, spark, image (`asset`); `trail` (default true: particles stay
+where they were born when the emitter moves); `prewarm`; `seed`. Units: pixels in 2D (y down),
+world units in 3D (defaults 200 px/s or 2 units/s). The same frame always shows the same
+particles. Birth settings (`rate`, `lifetime`) can't be animated; the others can.
+
 ## Text reveals
 
 `"reveal": {"by": "char"|"word"|"line", "style": "fade"|"rise"|"drop"|"slide"|"pop"|"type"|"blur",
@@ -148,34 +221,131 @@ World units, y up. The camera looks from `position` at `target` (`fov` vertical 
 reflect them. `shadows` (default true): the strongest directional light casts soft shadows.
 `fog` (default true): with a background, distant things fade into it (a soft horizon).
 
-**Lights**: `{id, type: "directional"|"point", color, intensity, direction (directional: where it
-shines towards), position (point), range (point: distance where it fades out, 0 = never)}`.
+**Lights**: `{id, type: "directional"|"point"|"spot"|"area", color, intensity, direction (where
+it shines towards), position (point, spot, area), range (point and spot: distance where it fades
+out, 0 = never), angle (spot: the cone's full angle, default 45), blend (spot: soft edge 0–1),
+size (area: [width, height]; point/spot: bulb radius; sun: softness), castShadows, hidden}`.
+Shadows come from the main directional light and spot lights (soft ones grow with `size`).
+
+**Cameras**: the main `camera` (id `camera`) and more in `"cameras": [{"id": "close", "position":
+…, "target": …}]`; `"activeCamera": "close"` picks the one filming, and scene keyframes
+`{"activeCamera": [[0, "camera"], [2, "close"]]}` cut between them. Each: `position`, `target`,
+`fov`, `roll`, `projection` (`perspective` or `orthographic` with `orthoSize`, the height it
+covers), depth of field `fStop` (like a lens: 1.4 very blurry, 8 sharp; 0 = off) and
+`focusDistance` (0 = the target's distance), `constraints` (a `lookAt` keeps it on an object,
+`followPath` flies it along a curve).
+
+**World**: `"environment": {"type": "gradient", "top": "#5b7fb8", "horizon": "#d8e2ee",
+"bottom": "#3a3632", "strength": 1, "visible": true}` lights the scene from all around and is
+reflected by shiny things. Types `color` (`color`), `gradient`, `sky` (a daylight sky lit by the
+main directional light), `image` (`image`: a 360° panorama picture; `rotation` degrees).
+`visible` shows it behind the objects (instead of `background`). Without one, `ambient` and
+`ambientColor` do the same job more simply.
 
 **Every object**: `id`, `type`, `position` [x, y, z], `rotation` [x, y, z] degrees (applied x, then
-y, then z), `scale` (number or [x, y, z]), `material`, `children` (objects that move with it,
-positions relative to it), `start`/`end`, `hidden`, `keyframes`.
+y, then z), `scale` (number or [x, y, z]), `material`, `modifiers`, `constraints`, `children`
+(objects that move with it, positions relative to it), `castShadow`, `start`/`end`, `hidden`,
+`expressions`, `keyframes`. An object's front is its +z side.
 
-**Types**: `box` `{size: [w, h, d] or number, bevel (rounded edges)}`, `sphere` `{radius}`,
-`cylinder` `{radius, height}`, `cone` `{radius, height}`, `torus` `{radius, tube}`, `plane`
+**Types**: `box` `{size: [w, h, d] or number, bevel (rounded edges)}`, `sphere` `{radius,
+segments}`, `icosphere` `{radius, detail}`, `cylinder` `{radius, height, segments}` (3 = a
+prism, 6 = a hexagon), `cone` `{radius, height, segments}` (4 = a pyramid), `capsule` `{radius,
+height}`, `torus` `{radius, tube}`, `grid` `{width, height, rows, cols}` (a flat subdivided
+sheet, y up: for waves and terrain), `extrude` `{d: SVG path data (a logo, an icon), size (its
+larger side in world units, default 2), depth, bevel}` (holes stay holes), `lathe` `{profile:
+[[radius, height]…], segments, angle}` (a profile turned around y: vases, glasses), `curve`
+`{points: [[x, y, z]…], closed, smooth, radius (0 = an invisible path for followPath), sides,
+trimStart, trimEnd}` (a tube along the points; animate `trimEnd` 0 → 1 to draw it on), `mesh`
+`{vertices: [[x, y, z]…], faces: [[0, 1, 2, 3]…] (counter-clockwise seen from outside), uvs,
+autoSmooth (degrees)}` (see Modelling), `particles` (see Particles), `plane`
 `{width, height}` (faces +z: a card facing the camera; rotate [-90, 0, 0] for a floor), `text`
-`{text, fontFamily, fontWeight, size (letter height), depth, align, letterSpacing}` (extruded,
-centred), `model` `{src: a .glb/.gltf file path or media item}` (centred, scaled to 2 units, keeps
+`{text, fontFamily, fontWeight, size (letter height), depth, align, letterSpacing, bevel}`
+(extruded, centred), `model` `{src: a .glb/.gltf/.obj/.stl file path or media item}` (centred,
+scaled to 2 units, keeps
 its own materials; `color` tints it), `image` `{asset, width}` (a picture card in its own colours),
 `group` (only children).
 
 **Material**: `{color, metallic 0–1, roughness 0–1 (0 mirror, 1 matte), emissive (a colour that
-glows), emissiveIntensity, opacity, texture (picture wrapped on it), flat (faceted look), unlit
-(the colour as is, no lighting)}`.
+glows), emissiveIntensity, opacity, transmission (glass: 0 opaque … 1 clear) with ior (1.33
+water, 1.5 glass, 2.4 diamond), clearcoat (a varnish layer, car paint), texture (picture wrapped
+on it), textureScale ([u, v] repeats), pattern (a procedural surface: `{"type": "marble",
+"color": "#f2efe9", "color2": "#8a8178", "scale": 2, "bump": 0.3}`; types checker, stripes,
+dots, noise, marble, wood, voronoi, bricks, gradient), flat (faceted look), unlit (the colour as
+is, no lighting)}`. **Shared materials**: `"materials": [{"id": "gold", "color": "#e8b04a",
+"metallic": 1, "roughness": 0.25}]` at the scene's top level, used as `"material": "gold"`
+(`motion.setMaterial` adds or changes one).
+
+**Modifiers** (evaluated in order on the shape, like Blender's stack; any object):
+`"modifiers": [{"type": "array", "count": 8, "rotation": [0, 45, 0], "relative": [0, 0, 0],
+"offset": [1.5, 0, 0]}, {"type": "bevel", "width": 0.04}]`. Types: subdivision (smooth),
+mirror, array (lines, circles, spirals), bevel, solidify, displace (noise bumps; animate
+`evolution`), twist, bend, taper, wave (moves on its own), smooth, wireframe, boolean (cut with,
+join with or intersect another object: `{"type": "boolean", "object": "cutter", "operation":
+"difference"}`; hide the cutter), decimate, triangulate, explode (animate `progress`), build
+(faces appear: animate `progress`), weld, spherify, noise (jitter / boil). Parameters:
+`motion.stackTypes {"family": "modifiers"}`; animate them as `modifiers.<id>.<param>`.
+
+**Constraints** (after keyframes and expressions): `lookAt {target}` (face an object; cameras
+and lights aim at it), `followPath {path: a curve's id, progress 0–1, align}` (animate
+`constraints.followPath.progress`), `copyPosition`, `copyRotation`, `copyScale {target}`,
+`limitPosition {min, max}`, `floor {height}`; each with `influence` 0–1.
+
+**Render settings** (`"render"`): the preview while editing always uses the fast standard engine;
+exports and clips rendered ahead use `engine`: `"standard"` (fast, like Eevee) or `"path"` (a
+path tracer, like Cycles: true reflections, refraction through glass, soft shadows, bounced
+light; slow, best rendered ahead) with `samples` (64), `bounces` (4), `denoise` (true). Both:
+`exposure` (stops), `toneMapping` (`standard` or `filmic`), `bloom` (glow around bright things,
+0 = off) with `bloomThreshold` and `bloomRadius`, `motionBlur` (share of a frame the shutter is
+open, 0.5 = 180°; 0 = off) with `motionBlurSamples`, `ambientOcclusion` (darker creases, 0–1).
 
 **Animatable**: objects `position position.x position.y position.z` (or `x y z`), `rotation
 rotation.x rotation.y rotation.z`, `scale scale.x scale.y scale.z`, `color opacity metallic
-roughness emissive emissiveIntensity`, plus `size bevel` (box), `radius` (sphere, cylinder, cone,
-torus), `height`, `tube`, `width`, `text size depth letterSpacing` (text). Camera (id `camera`):
-`position target fov roll` and their `.x/.y/.z`. Lights: `intensity color range position
-direction`. Scene (id `scene`): `background ambient ambientColor`.
+roughness emissive emissiveIntensity transmission ior clearcoat textureScale pattern.<param>`,
+`modifiers.<id>.<param>`, `constraints.<id>.<param>`, plus `size bevel` (box), `radius`
+(sphere, icosphere, cylinder, cone, capsule, torus, curve), `height`, `tube`, `width`, `text size
+depth letterSpacing bevel` (text), `d size depth` (extrude), `angle` (lathe), `trimStart trimEnd
+points` (curve), particle settings. Cameras (id `camera` or theirs): `position target fov roll
+orthoSize fStop focusDistance` and the `.x/.y/.z`s. Lights: `intensity color range angle blend
+size position direction`. Scene (id `scene`): `background ambient ambientColor activeCamera
+environment.strength environment.rotation environment.color/top/horizon/bottom render.exposure
+render.bloom render.bloomThreshold render.bloomRadius render.motionBlur
+render.ambientOcclusion`.
 
 3D draws on the GPU (Metal on Macs including Apple Silicon, Vulkan or DirectX 12 elsewhere), or
-on the CPU when there is none; both give the same picture.
+on the CPU when there is none; both give the same picture. The path tracer runs on the CPU.
+
+## Modelling
+
+Any object can become an editable mesh: `motion.convertToMesh {clipId, id}` (keeps its
+modifiers, or bakes them with `applyModifiers`); `motion.applyModifier` bakes one modifier or
+the stack. Then `motion.editMesh {clipId, id, op, faces | vertices | select, params}` works like
+Blender's edit mode, and answers with the new selection to chain the next step:
+
+```json
+{"op": "extrude", "select": {"facing": [0, 1, 0]}, "params": {"distance": 0.6}}
+{"op": "inset", "faces": [6], "params": {"amount": 0.15}}
+{"op": "scale", "faces": [6], "params": {"factor": [0.5, 1, 0.5]}}
+{"op": "bevel", "select": {"all": true}, "params": {"width": 0.04, "segments": 3}}
+```
+
+Ops: extrude, extrudeIndividual, inset, bevel, subdivide, loopCut, delete, dissolve, merge,
+fill, bridge, flip, recalcNormals, move, rotate, scale, mirror, duplicate, triangulate, poke,
+smooth, spin, knife, unwrap. Selections: vertex and face indices (`motion.get` shows the mesh),
+or `{"all": true}`, `{"facing": [x, y, z], "angle": 30}`, `{"inside": [[x0, y0, z0], [x1, y1,
+z1]]}`, `{"loop": [v0, v1]}`, `{"ring": [v0, v1]}`. Add a `subdivision` modifier for smooth,
+organic shapes; `bevel` for crisp product shots.
+
+EXPRESSIONS_GUIDE
+
+## Rendering ahead
+
+A motion clip is drawn live: quickly in the preview, at full quality (the scene's engine,
+samples, motion blur) in the export. `motion.render {clipIds}` renders it ahead at full quality
+into a file the timeline then plays: smooth playback, fast exports, and the path tracer's
+quality while editing. `motion.renderStatus` follows it and shows each clip's state (live,
+rendered, outdated: the scene changed since, so it is drawn live again until rendered again);
+`motion.unrender` goes back to live. Render heavy 3D (path tracer, many particles, big
+subdivisions) once the scene is settled.
 
 ## Templates
 
@@ -192,6 +362,8 @@ clip is an ordinary motion clip: `motion.get` shows its scene, `motion.setLayer`
 - `project.renderFrame {"times": [0.2, 0.6, 1.2, 2.5]}` gives one labelled image of those moments:
   check positions, overlaps, legibility, that entrances end where they should.
 - `motion.get {clipId}` shows the scene as kimchi stored it (defaults left out).
+- `motion.view {clipId, axis: "front"|"top"|…}` or `{view: {position, target}}` shows a 3D scene
+  from another side (with a grid), `shading: "rendered"` with the final engine.
 - Errors name the field and the fix ("Unknown field `colour` in rect layer \"card\". Did you
   mean `color`?").
 - Keep text inside the frame's safe area (about 5% from each edge), sizes ≥ 3% of the height

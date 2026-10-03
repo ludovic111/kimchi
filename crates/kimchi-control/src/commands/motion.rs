@@ -255,8 +255,14 @@ fn missing(scene: &Scene, clip: &Clip, id: &str, property: &str) -> String {
     }
 }
 
+/// The guide with the expression language's own section filled in.
+fn guide_text() -> String {
+    GUIDE.replace("EXPRESSIONS_GUIDE", kimchi_core::expr::GUIDE.trim())
+}
+
 fn guide(topic: &str) -> CmdResult<String> {
-    let sections: Vec<(&str, &str)> = GUIDE
+    let full = guide_text();
+    let sections: Vec<(&str, &str)> = full
         .split("\n## ")
         .skip(1)
         .map(|sec| {
@@ -265,17 +271,21 @@ fn guide(topic: &str) -> CmdResult<String> {
         })
         .collect();
     let pick = |names: &[&str]| -> String {
-        let head = GUIDE.split("\n## ").next().unwrap_or("");
+        let head = full.split("\n## ").next().unwrap_or("");
         let body: Vec<String> = sections.iter().filter(|(t, _)| names.iter().any(|n| t.to_lowercase().starts_with(n))).map(|(_, b)| format!("## {b}")).collect();
         format!("{head}\n{}", body.join("\n"))
     };
     Ok(match topic {
-        "all" | "" => GUIDE.to_string(),
-        "2d" => pick(&["2d", "text reveal", "keyframes", "checking"]),
-        "3d" => pick(&["3d", "keyframes", "checking"]),
+        "all" | "" => guide_text(),
+        "2d" => pick(&["2d", "text reveal", "particles", "keyframes", "expressions", "rendering", "checking"]),
+        "3d" => pick(&["3d", "modelling", "particles", "keyframes", "expressions", "rendering", "checking"]),
         "keyframes" => pick(&["keyframes", "clip animation"]),
         "templates" => pick(&["templates", "clip animation"]),
-        other => return Err(format!("topic is 2d, 3d, keyframes, templates or all, not \"{other}\"")),
+        "expressions" => pick(&["expressions"]),
+        "modelling" | "modeling" => pick(&["modelling", "3d"]),
+        "particles" => pick(&["particles"]),
+        "rendering" | "render" => pick(&["rendering"]),
+        other => return Err(format!("topic is 2d, 3d, keyframes, templates, expressions, modelling, particles, rendering or all, not \"{other}\"")),
     })
 }
 
