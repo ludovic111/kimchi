@@ -241,7 +241,7 @@ impl Scene {
         match self {
             Scene::Flat(s) => {
                 check_layer_keys(item)?;
-                let mut layer: Layer = serde_json::from_value(item.clone()).map_err(|e| format!("layer: {e}"))?;
+                let mut layer: Layer = serde_json::from_value(item.clone()).map_err(|e| format!("layer: {e}{}", where_bad(item, |v| serde_json::from_value::<Layer>(v).is_ok())))?;
                 normalize(&mut layer.keyframes);
                 layer.name_items();
                 let id = layer.id.clone();
@@ -270,7 +270,7 @@ impl Scene {
                 let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
                 if LIGHT_TYPES.contains(&kind) {
                     check_keys(item, LIGHT_KEYS, &format!("light \"{}\"", item.get("id").and_then(Value::as_str).unwrap_or("?")))?;
-                    let mut light: Light = serde_json::from_value(item.clone()).map_err(|e| format!("light: {e}"))?;
+                    let mut light: Light = serde_json::from_value(item.clone()).map_err(|e| format!("light: {e}{}", where_bad(item, |v| serde_json::from_value::<Light>(v).is_ok())))?;
                     normalize(&mut light.keyframes);
                     stack::name_items(&mut light.constraints);
                     let id = light.id.clone();
@@ -286,7 +286,7 @@ impl Scene {
                         o.remove("type");
                     }
                     check_keys(&body, CAMERA_KEYS, "the camera")?;
-                    let mut cam: Camera = serde_json::from_value(body).map_err(|e| format!("camera: {e}"))?;
+                    let mut cam: Camera = serde_json::from_value(body.clone()).map_err(|e| format!("camera: {e}{}", where_bad(&body, |v| serde_json::from_value::<Camera>(v).is_ok())))?;
                     normalize(&mut cam.keyframes);
                     stack::name_items(&mut cam.constraints);
                     if cam.id.is_empty() || cam.id == "camera" {
@@ -302,7 +302,7 @@ impl Scene {
                     return Ok(id);
                 }
                 check_object_keys(item)?;
-                let mut obj: Object3d = serde_json::from_value(item.clone()).map_err(|e| format!("object: {e}"))?;
+                let mut obj: Object3d = serde_json::from_value(item.clone()).map_err(|e| format!("object: {e}{}", where_bad(item, |v| serde_json::from_value::<Object3d>(v).is_ok())))?;
                 normalize(&mut obj.keyframes);
                 obj.name_items();
                 let id = obj.id.clone();
@@ -1478,6 +1478,12 @@ mod tests {
         assert!(e.contains("(at layers › \"g\" › layers › \"sparks\" › emitterSize)"), "{e}");
         let e = err(json!({"type": "3d", "objects": [{"id": "cube", "type": "box", "position": "up"}]}));
         assert!(e.contains("(at objects › \"cube\" › position)"), "{e}");
+        let mut s = Scene::from_json(&json!({"type": "3d", "objects": [{"id": "cube", "type": "box"}]})).unwrap();
+        let e = s.upsert(&json!({"id": "cube", "type": "box", "size": [1, 2]}), None).unwrap_err();
+        assert!(e.contains("(at size"), "{e}");
+        let mut s = Scene::from_json(&json!({"layers": []})).unwrap();
+        let e = s.upsert(&json!({"id": "a", "type": "rect", "rotation": "45deg"}), None).unwrap_err();
+        assert!(e.contains("(at rotation)"), "{e}");
     }
 
     #[test]
