@@ -470,6 +470,8 @@ fn compositions_have_their_own_time() {
     let plain = base(json!({"id": "l", "type": "comp", "comp": "c", "start": 0.25}));
     assert_eq!(x_of(&render(plain.clone(), 0.75)).map(f64::round), Some(0.0));
     assert_eq!(x_of(&render(plain.clone(), 0.1)), None, "not on before its start");
+    assert_eq!(x_of(&render(plain.clone(), 1.25)).map(f64::round), Some(50.0), "its last moment");
+    assert_eq!(x_of(&render(plain.clone(), 1.5)), None, "gone after its duration");
     // Speed and offset.
     let fast = base(json!({"id": "l", "type": "comp", "comp": "c", "speed": 2, "offset": 0.1}));
     assert_eq!(x_of(&render(fast, 0.2)).map(f64::round), Some(0.0));

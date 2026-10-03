@@ -125,7 +125,8 @@ image `width height radius`. The scene's own keyframes (id `scene`) animate `bac
 **More layer types**: `null` (draws nothing: a handle others follow), `adjustment` (its
 `effects` apply to everything below it in its list, inside its masks), `comp` `{comp, speed,
 offset, loop, time}` (shows a composition: comp time = (scene time − start) × speed + offset, or
-`time` when set — animate `time` to remap it), `particles` (see Particles below).
+`time` when set — animate `time` to remap it; past a composition's `duration` it shows nothing
+unless it loops), `particles` (see Particles below).
 
 **Compositions** (precomps): `"compositions": [{"id": "card", "width": 800, "height": 400,
 "duration": 3, "background": null, "layers": [...]}]` at the scene's top level; a `comp` layer

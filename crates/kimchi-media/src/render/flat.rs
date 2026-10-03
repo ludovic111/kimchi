@@ -648,7 +648,9 @@ fn composition(target: &mut Pixmap, l: &Layer, id: &str, speed: f64, offset: f64
     if looped {
         ct = ct.rem_euclid(c.length());
     }
-    if !ct.is_finite() {
+    // Like After Effects, a composition with a set duration has nothing to show past its end
+    // (or before its start) unless it loops.
+    if !ct.is_finite() || c.duration.is_some_and(|d| !(-1e-9..=d + 1e-9).contains(&ct)) {
         return;
     }
     let (cw, ch) = (c.width.unwrap_or(cx.project.0).max(1.0), c.height.unwrap_or(cx.project.1).max(1.0));
