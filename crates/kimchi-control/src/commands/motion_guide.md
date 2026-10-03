@@ -323,16 +323,17 @@ Blender's edit mode, and answers with the new selection to chain the next step:
 
 ```json
 {"op": "extrude", "select": {"facing": [0, 1, 0]}, "params": {"distance": 0.6}}
-{"op": "inset", "faces": [6], "params": {"amount": 0.15}}
+{"op": "inset", "faces": [6], "params": {"thickness": 0.15}}
 {"op": "scale", "faces": [6], "params": {"factor": [0.5, 1, 0.5]}}
 {"op": "bevel", "select": {"all": true}, "params": {"width": 0.04, "segments": 3}}
 ```
 
 Ops: extrude, extrudeIndividual, inset, bevel, subdivide, loopCut, delete, dissolve, merge,
-fill, bridge, flip, recalcNormals, move, rotate, scale, mirror, duplicate, triangulate, poke,
+fill, bridge, flip, recalcNormals, translate (move), rotate, scale, mirror, duplicate, triangulate, poke,
 smooth, spin, knife, unwrap. Selections: vertex and face indices (`motion.get` shows the mesh),
 or `{"all": true}`, `{"facing": [x, y, z], "angle": 30}`, `{"inside": [[x0, y0, z0], [x1, y1,
-z1]]}`, `{"loop": [v0, v1]}`, `{"ring": [v0, v1]}`. Add a `subdivision` modifier for smooth,
+z1]]}`, `{"edgeLoop": [v0, v1]}`, `{"edgeRing": [v0, v1]}` (add `"linked": true` to grow to
+everything connected). `motion.stackTypes {"family": "editOps"}` lists each operation's values. Add a `subdivision` modifier for smooth,
 organic shapes; `bevel` for crisp product shots.
 
 EXPRESSIONS_GUIDE

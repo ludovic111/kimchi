@@ -32,10 +32,11 @@ pub struct ToolDef {
 
 /// Every registry command an agent may ever run, in registry order (stable, so
 /// prompt caches hold). Person-only commands are left out: an agent is always refused them.
+/// So is the `agent` family: the built-in agent doesn't drive itself.
 pub fn tool_defs() -> Vec<ToolDef> {
     kimchi_control::specs()
         .iter()
-        .filter(|s| s.perm != Perm::PersonOnly)
+        .filter(|s| s.perm != Perm::PersonOnly && s.family() != "agent")
         .map(|s| ToolDef { name: s.tool_name(), command: s.name, description: s.doc, schema: kimchi_control::input_schema(s) })
         .collect()
 }

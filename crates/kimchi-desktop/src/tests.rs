@@ -344,3 +344,65 @@ fn the_captions_tab_lists_captions_and_goes_to_them(cx: &mut TestAppContext) {
     assert!((playhead(cx) - 2.5).abs() < 0.01);
     let _ = view;
 }
+
+/// Runs a command as a script would (from Tokio, through the window when it needs it).
+fn remote(f: &Fixture, cx: &mut VisualTestContext, name: &str, params: Value) -> Value {
+    let (s, name_owned) = (f.session.clone(), name.to_string());
+    let task = f.rt.spawn(async move { kimchi_control::call(&s, Source::Cli, &name_owned, params).await });
+    let start = Instant::now();
+    while !task.is_finished() && start.elapsed() < Duration::from_secs(3) {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    cx.run_until_parked();
+    f.rt.block_on(task).unwrap().unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+/// What a script can do in the window: options, shortcuts by name (on the window's own clipboard),
+/// panels and their sizes; and the Agent panel draws the agent's conversation, scripts' cards included.
+#[gpui::test]
+fn scripts_reach_what_the_window_does(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    f.call("clip.addText", json!({ "text": "A", "start": 5, "duration": 1 }));
+    f.settle(cx, |p| p.clips().count() == 2);
+    let v = remote(&f, cx, "ui.setTimeline", json!({ "snapping": false, "ripple": true, "loop": true }));
+    assert_eq!(v, json!({ "snapping": false, "ripple": true, "loop": true }));
+    assert!(cx.update(|_, cx| {
+        let s = cx.store().read(cx);
+        !s.snapping && s.ripple && s.playback.read(cx).looping
+    }));
+    let state = f.call("ui.state", json!({}));
+    assert_eq!((&state["snapping"], &state["ripple"], &state["loop"]), (&json!(false), &json!(true), &json!(true)), "{state}");
+
+    // Select all, copy, move the playhead, paste: as the keys do.
+    remote(&f, cx, "ui.action", json!({ "action": "SelectAll" }));
+    store_settles(cx, |s| s.selection.len() == 2);
+    remote(&f, cx, "ui.action", json!({ "action": "CopyClips" }));
+    remote(&f, cx, "timeline.seek", json!({ "time": 10 }));
+    remote(&f, cx, "ui.action", json!({ "action": "PasteClips" }));
+    let p = f.settle(cx, |p| p.clips().count() == 4);
+    assert_eq!(p.clips().count(), 4, "two copies pasted");
+    assert!(p.clips().any(|(_, c)| (c.start - 10.0).abs() < 1e-6));
+
+    remote(&f, cx, "ui.showPanel", json!({ "panel": "agent" }));
+    assert!(cx.update(|_, cx| cx.store().read(cx).agent_open));
+    remote(&f, cx, "ui.showPanel", json!({ "panel": "agent", "open": false }));
+    assert!(!cx.update(|_, cx| cx.store().read(cx).agent_open));
+    let l = remote(&f, cx, "ui.setLayout", json!({ "left": 9999, "timeline": 250 }));
+    assert_eq!((l["left"].as_f64(), l["timeline"].as_f64()), (Some(520.0), Some(250.0)), "kept within limits");
+    assert_eq!(f.call("ui.state", json!({}))["layout"]["timeline"], 250.0);
+
+    f.call("timeline.addMarker", json!({ "time": 1, "label": "Here" }));
+    let panel = cx.update(|_, cx| view.read(cx).editor().read(cx).agent.clone());
+    let has_card = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            panel.read(cx).snap.entries.iter().any(|e| matches!(e, kimchi_agent::Entry::Command { record, run: None, .. } if record.command == "timeline.addMarker"))
+        })
+    };
+    let start = Instant::now();
+    while !has_card(cx) && start.elapsed() < Duration::from_secs(3) {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(has_card(cx), "the script's command is a card in the Agent panel");
+}

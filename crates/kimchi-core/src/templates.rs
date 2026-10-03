@@ -372,6 +372,126 @@ pub static TEMPLATES: &[Template] = &[
         ],
         build: shapes_3d,
     },
+    Template {
+        id: "glitchTitle",
+        name: "Glitch title",
+        doc: "A title that tears and splits into red and blue in bursts, over scanlines: tech, gaming, music.",
+        kind: "2d",
+        duration: 4.0,
+        params: &[
+            Param { name: "text", kind: "text", default: "\"SIGNAL LOST\"", doc: "The title." },
+            Param { name: "color", kind: "color", default: "\"#ffffff\"", doc: "Text colour." },
+            Param { name: "background", kind: "colorOrNone", default: "\"#07070a\"", doc: "Background; null for none." },
+        ],
+        build: glitch_title,
+    },
+    Template {
+        id: "particleBurst",
+        name: "Particle burst",
+        doc: "A word pops in with a burst of sparks and a shockwave ring: reveals, wins, launches.",
+        kind: "2d",
+        duration: 3.0,
+        params: &[
+            Param { name: "text", kind: "text", default: "\"LAUNCH\"", doc: "The word." },
+            Param { name: "accent", kind: "color", default: "\"#ffb347\"", doc: "Spark and ring colour." },
+            Param { name: "textColor", kind: "color", default: "\"#ffffff\"", doc: "Text colour." },
+            Param { name: "background", kind: "colorOrNone", default: "\"#0b0b10\"", doc: "Background; null for none." },
+        ],
+        build: particle_burst,
+    },
+    Template {
+        id: "kineticSweep",
+        name: "Kinetic sweep",
+        doc: "Big type whose letters rise out of a blur one after another, a text animator sweeping across, then a line below.",
+        kind: "2d",
+        duration: 4.0,
+        params: &[
+            Param { name: "title", kind: "text", default: "\"MAKE IT MOVE\"", doc: "The big line." },
+            Param { name: "subtitle", kind: "text", default: "\"motion design in kimchi\"", doc: "The line below; empty for none." },
+            Param { name: "accent", kind: "color", default: "\"#ff5a36\"", doc: "Accent colour (the letters pass through it)." },
+            Param { name: "textColor", kind: "color", default: "\"#ffffff\"", doc: "Text colour." },
+            Param { name: "background", kind: "colorOrNone", default: "\"#101014\"", doc: "Background; null for none." },
+        ],
+        build: kinetic_sweep,
+    },
+    Template {
+        id: "radialBurst",
+        name: "Radial burst",
+        doc: "Rays drawn on by a repeater, turning slowly around a pulsing disc: a classic motion design backdrop.",
+        kind: "2d",
+        duration: 6.0,
+        params: &[
+            Param { name: "colors", kind: "list", default: "[\"#ff5a36\", \"#ffd166\"]", doc: "Ray colour and disc colour." },
+            Param { name: "rays", kind: "number", default: "24", doc: "How many rays." },
+            Param { name: "background", kind: "colorOrNone", default: "\"#1b1030\"", doc: "Background; null for none." },
+        ],
+        build: radial_burst,
+    },
+    Template {
+        id: "liquidBackground",
+        name: "Liquid background",
+        doc: "Two colours flowing into each other like ink in water (fractal noise and turbulence): a living backdrop for titles.",
+        kind: "2d",
+        duration: 10.0,
+        params: &[
+            Param { name: "colorA", kind: "color", default: "\"#3a0ca3\"", doc: "Dark colour." },
+            Param { name: "colorB", kind: "color", default: "\"#f72585\"", doc: "Light colour." },
+            Param { name: "speed", kind: "number", default: "0.15", doc: "How fast it flows." },
+        ],
+        build: liquid_background,
+    },
+    Template {
+        id: "productShot",
+        name: "Product shot",
+        doc: "A glass bottle on a marble pedestal, the camera gliding around it under soft studio light; path traced (render it ahead for smooth playback).",
+        kind: "3d",
+        duration: 6.0,
+        params: &[
+            Param { name: "liquid", kind: "color", default: "\"#ff5a36\"", doc: "Colour of what's inside." },
+            Param { name: "cap", kind: "color", default: "\"#d9b46c\"", doc: "Cap colour (metal)." },
+            Param { name: "background", kind: "colorOrNone", default: "\"#e9e4dc\"", doc: "Studio backdrop colour; null for none." },
+            Param { name: "engine", kind: "choice:path|standard", default: "\"path\"", doc: "Final render engine: path (true glass) or standard (fast)." },
+        ],
+        build: product_shot,
+    },
+    Template {
+        id: "logoExtrude",
+        name: "Extruded logo",
+        doc: "A logo outline (SVG path data) extruded in bevelled gold, a light sweeping across it as the camera pushes in, with a glow.",
+        kind: "3d",
+        duration: 5.0,
+        params: &[
+            Param { name: "path", kind: "text", default: "\"M0 -100 L29 -40 L95 -31 L47 15 L59 81 L0 50 L-59 81 L-47 15 L-95 -31 L-29 -40 Z\"", doc: "SVG path data of the logo (any size; it is fitted)." },
+            Param { name: "color", kind: "color", default: "\"#e8b04a\"", doc: "Metal colour." },
+            Param { name: "background", kind: "colorOrNone", default: "\"#0d0d12\"", doc: "Background; null for none." },
+        ],
+        build: logo_extrude,
+    },
+    Template {
+        id: "particleField3d",
+        name: "Particle field",
+        doc: "Glowing dust drifting in 3D depth with a soft focus, around a title: an intro or a calm background.",
+        kind: "3d",
+        duration: 8.0,
+        params: &[
+            Param { name: "text", kind: "text", default: "\"KIMCHI\"", doc: "The title; empty for none." },
+            Param { name: "color", kind: "color", default: "\"#9ad1ff\"", doc: "Dust colour." },
+            Param { name: "background", kind: "colorOrNone", default: "\"#05060c\"", doc: "Background; null for none." },
+        ],
+        build: particle_field_3d,
+    },
+    Template {
+        id: "morphBlob",
+        name: "Morphing blob",
+        doc: "A glossy blob that keeps changing shape (noise displacement on a smooth sphere) under a coloured sky: abstract, organic.",
+        kind: "3d",
+        duration: 8.0,
+        params: &[
+            Param { name: "color", kind: "color", default: "\"#7a3cff\"", doc: "Blob colour." },
+            Param { name: "background", kind: "colorOrNone", default: "\"#0e0b16\"", doc: "Background; null for none." },
+        ],
+        build: morph_blob,
+    },
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -937,6 +1057,242 @@ fn shapes_3d(v: &Values, c: &Ctx) -> Value {
         "objects": objects,
     });
     bg3d(&mut scene, v);
+    scene
+}
+
+// ---------------------------------------------------------------------------------------------
+// Templates for the 0.7 engines: effects, particles, text animators, repeaters, path tracing,
+// extrusions, modifiers.
+
+fn glitch_title(v: &Values, c: &Ctx) -> Value {
+    let d = c.duration;
+    let text = v.s("text");
+    let size = (c.width * 1.4 / text.chars().count().max(1) as f64).clamp(60.0, c.height * 0.22);
+    let mut scene = json!({
+        "layers": [
+            {"id": "title", "type": "text", "text": text, "fontSize": size, "fontWeight": 800, "letterSpacing": size * 0.04, "fill": v.s("color"),
+             "effects": [
+                {"id": "glitch", "type": "glitch", "amount": 0.0, "speed": 10},
+                {"id": "split", "type": "chromaticAberration", "amount": 0.0},
+                {"id": "glow", "type": "glow", "radius": 24, "intensity": 0.6}
+             ],
+             "keyframes": {
+                "opacity": [k(0.0, 0.0, "hold"), k(0.1, 1.0, "hold"), k(0.18, 0.0, "hold"), k(0.26, 1.0, "hold"), k(d - 0.3, 1.0, "linear"), k(d, 0.0, "easeIn")],
+                "effects.glitch.amount": [k(0.0, 0.9, "linear"), k(0.6, 0.0, "easeOut"), k(d * 0.48, 0.0, "hold"), k(d * 0.48 + 0.08, 0.8, "linear"), k(d * 0.48 + 0.35, 0.0, "easeOut")],
+                "effects.split.amount": [k(0.0, 18.0, "linear"), k(0.7, 2.0, "easeOut"), k(d * 0.48, 2.0, "hold"), k(d * 0.48 + 0.08, 22.0, "linear"), k(d * 0.48 + 0.4, 2.0, "easeOut")]
+             }},
+            {"id": "lines", "type": "adjustment", "effects": [{"id": "scan", "type": "scanlines", "spacing": c.height / 135.0, "amount": 0.35, "speed": 40}, {"id": "grain", "type": "noise", "amount": 0.08}]}
+        ]
+    });
+    if let Some(bg) = v.opt("background") {
+        scene["background"] = json!(bg);
+    }
+    scene
+}
+
+fn particle_burst(v: &Values, c: &Ctx) -> Value {
+    let d = c.duration;
+    let text = v.s("text");
+    let size = (c.width * 1.2 / text.chars().count().max(1) as f64).clamp(60.0, c.height * 0.2);
+    let accent = v.s("accent");
+    let mut scene = json!({
+        "layers": [
+            {"id": "ring", "type": "ellipse", "width": 40, "height": 40, "stroke": {"color": accent, "width": 10},
+             "keyframes": {"scale": [k(0.15, 0.2, "linear"), k(1.1, 18.0, "easeOutCubic")], "strokeWidth": [k(0.15, 14.0, "linear"), k(1.1, 1.0, "easeOut")], "opacity": [k(0.15, 1.0, "linear"), k(1.1, 0.0, "easeIn")]}},
+            {"id": "sparks", "type": "particles", "rate": 0, "burst": 160, "emitFrom": 0.15, "lifetime": 1.6, "lifetimeRandom": 0.5,
+             "speed": c.height * 0.9, "speedRandom": 0.7, "spread": 360, "drag": 2.2, "gravity": [0, c.height * 0.25, 0],
+             "size": 7, "sizeEnd": 0.2, "shape": "spark", "stretch": 0.04, "colors": [accent, "#ffffff", accent], "fadeOut": 0.5, "seed": 7},
+            {"id": "word", "type": "text", "text": text, "fontSize": size, "fontWeight": 800, "fill": v.s("textColor"),
+             "effects": [{"id": "glow", "type": "glow", "radius": 30, "intensity": 0.8, "color": accent}],
+             "keyframes": {"scale": [k(0.1, 0.0, "linear"), k(0.55, 1.0, "easeOutBack")], "opacity": [k(d - 0.4, 1.0, "linear"), k(d, 0.0, "easeIn")],
+                           "effects.glow.intensity": [k(0.15, 3.0, "linear"), k(1.0, 0.8, "easeOut")]}}
+        ]
+    });
+    if let Some(bg) = v.opt("background") {
+        scene["background"] = json!(bg);
+    }
+    scene
+}
+
+fn kinetic_sweep(v: &Values, c: &Ctx) -> Value {
+    let d = c.duration;
+    let title = v.s("title");
+    let size = (c.width * 1.5 / title.chars().count().max(1) as f64).clamp(60.0, c.height * 0.2);
+    let mut layers = vec![json!({
+        "id": "title", "type": "text", "text": title, "fontSize": size, "fontWeight": 800, "fill": v.s("textColor"), "y": -size * 0.15,
+        "animators": [
+            {"id": "rise", "type": "range", "by": "char", "start": 0, "end": 100, "offset": -100, "shape": "rampUp", "y": size * 0.6, "opacity": 0, "blur": 18, "scale": 0.8},
+            {"id": "flash", "type": "range", "by": "char", "start": 0, "end": 12, "offset": -20, "shape": "triangle", "fill": v.s("accent")}
+        ],
+        "keyframes": {
+            "animators.rise.offset": [k(0.0, -100.0, "linear"), k(1.4, 100.0, "easeOutCubic")],
+            "animators.flash.offset": [k(0.2, -20.0, "linear"), k(2.0, 110.0, "easeInOutSine")],
+            "opacity": [k(d - 0.4, 1.0, "linear"), k(d, 0.0, "easeIn")]
+        }
+    })];
+    if let Some(sub) = v.opt("subtitle") {
+        layers.push(json!({"id": "subtitle", "type": "text", "text": sub, "fontSize": size * 0.28, "fontWeight": 500, "fill": v.s("accent"), "y": size * 0.62,
+            "letterSpacing": size * 0.02, "reveal": {"by": "word", "style": "rise"},
+            "keyframes": {"reveal": [k(0.9, 0.0, "linear"), k(1.8, 1.0, "easeOut")], "opacity": [k(d - 0.4, 1.0, "linear"), k(d, 0.0, "easeIn")]}}));
+    }
+    let mut scene = json!({"layers": layers, "shutter": 0.5});
+    if let Some(bg) = v.opt("background") {
+        scene["background"] = json!(bg);
+    }
+    scene
+}
+
+fn radial_burst(v: &Values, c: &Ctx) -> Value {
+    let d = c.duration;
+    let colors = v.list("colors");
+    let ray = colors.first().and_then(Value::as_str).unwrap_or("#ff5a36").to_string();
+    let disc = colors.get(1).and_then(Value::as_str).unwrap_or("#ffd166").to_string();
+    let rays = v.n("rays").clamp(3.0, 120.0).round();
+    let reach = (c.width.hypot(c.height) / 2.0).ceil();
+    let mut scene = json!({
+        "layers": [
+            {"id": "rays", "type": "group", "layers": [
+                {"id": "ray", "type": "path", "d": format!("M0 {} L0 {}", -c.height * 0.12, -reach), "stroke": {"color": ray, "width": (c.width / rays * 0.9).max(6.0), "cap": "butt"},
+                 "operators": [{"id": "repeat", "type": "repeater", "copies": rays, "rotation": 360.0 / rays, "position": [0, 0], "endOpacity": 0.55}],
+                 "keyframes": {"trimEnd": [k(0.0, 0.0, "linear"), k(1.2, 1.0, "easeOutCubic")]}}
+             ],
+             "expressions": {"rotation": "time * 12"}},
+            {"id": "disc", "type": "ellipse", "width": c.height * 0.22, "height": c.height * 0.22, "fill": disc,
+             "effects": [{"id": "glow", "type": "glow", "radius": 40, "intensity": 1.0, "color": disc}],
+             "keyframes": {"scale": [k(0.0, 0.0, "linear"), k(0.8, 1.0, "easeOutBack")]},
+             "expressions": {"scale": "value * (1 + 0.04 * sin(time * 3))"}}
+        ]
+    });
+    let _ = d;
+    if let Some(bg) = v.opt("background") {
+        scene["background"] = json!(bg);
+    }
+    scene
+}
+
+fn liquid_background(v: &Values, c: &Ctx) -> Value {
+    json!({
+        "layers": [
+            {"id": "ink", "type": "rect", "width": c.width * 1.2, "height": c.height * 1.2, "fill": v.s("colorA"),
+             "effects": [
+                {"id": "noise", "type": "fractalNoise", "scale": c.height * 0.6, "complexity": 5, "contrast": 1.3, "colorA": v.s("colorA"), "colorB": v.s("colorB")},
+                {"id": "flow", "type": "turbulentDisplace", "amount": c.height * 0.06, "size": c.height * 0.4}
+             ],
+             "expressions": {
+                "effects.noise.evolution": format!("time * {}", v.n("speed")),
+                "effects.flow.evolution": format!("time * {} * 0.7", v.n("speed"))
+             }},
+            {"id": "shade", "type": "adjustment", "effects": [{"id": "vignette", "type": "vignette", "amount": 0.45}]}
+        ]
+    })
+}
+
+fn product_shot(v: &Values, c: &Ctx) -> Value {
+    let d = c.duration;
+    let mut scene = json!({
+        "camera": {"target": [0, 0.95, 0], "fov": 34, "fStop": 2.8,
+                   "constraints": [{"id": "orbit", "type": "followPath", "path": "orbit", "progress": 0, "align": false}],
+                   "keyframes": {"constraints.orbit.progress": [k(0.0, -0.08, "linear"), k(d, 0.12, "easeInOutSine")]}},
+        "environment": {"type": "gradient", "top": "#fbf8f3", "horizon": "#e9e4dc", "bottom": "#8d877e", "strength": 1.1},
+        "lights": [
+            {"id": "softbox", "type": "area", "position": [-3, 4, 3], "direction": [0.6, -0.8, -0.6], "size": [3, 3], "intensity": 2.2, "color": "#fff6ea"},
+            {"id": "rim", "type": "spot", "position": [3, 3, -3], "direction": [-0.6, -0.5, 0.6], "angle": 40, "blend": 0.5, "intensity": 1.6}
+        ],
+        "materials": [
+            {"id": "glass", "color": "#ffffff", "transmission": 1, "ior": 1.5, "roughness": 0.05},
+            {"id": "marble", "color": "#f2efe9", "roughness": 0.25, "pattern": {"type": "marble", "color": "#f4f1ec", "color2": "#8e8478", "scale": 1.5, "turbulence": 5}}
+        ],
+        "objects": [
+            {"id": "orbit", "type": "curve", "closed": true, "points": [[0, 1.7, 6.2], [6.2, 1.7, 0], [0, 1.7, -6.2], [-6.2, 1.7, 0]], "hidden": true},
+            {"id": "pedestal", "type": "cylinder", "radius": 1.3, "height": 0.6, "position": [0, -0.3, 0], "material": "marble",
+             "modifiers": [{"id": "bevel", "type": "bevel", "width": 0.04, "segments": 3}]},
+            {"id": "bottle", "type": "lathe", "segments": 64, "position": [0, 0, 0], "material": "glass",
+             "profile": [[0.0, 0.0], [0.42, 0.0], [0.46, 0.06], [0.46, 1.1], [0.36, 1.35], [0.16, 1.55], [0.15, 1.85], [0.0, 1.85]],
+             "children": [
+                {"id": "liquid", "type": "lathe", "segments": 64, "profile": [[0.0, 0.04], [0.41, 0.04], [0.41, 0.95], [0.0, 0.95]],
+                 "material": {"color": v.s("liquid"), "transmission": 0.85, "ior": 1.33, "roughness": 0.1}},
+                {"id": "cap", "type": "cylinder", "radius": 0.18, "height": 0.28, "position": [0, 1.95, 0],
+                 "material": {"color": v.s("cap"), "metallic": 1, "roughness": 0.25}}
+             ]},
+            {"id": "floor", "type": "plane", "width": 40, "height": 40, "position": [0, -0.6, 0], "rotation": [-90, 0, 0],
+             "material": {"color": v.opt("background").unwrap_or_else(|| "#e9e4dc".into()), "roughness": 0.85}}
+        ],
+        "render": {"engine": v.s("engine"), "samples": 48, "bounces": 6, "toneMapping": "filmic", "ambientOcclusion": 0.4}
+    });
+    if let Some(bg) = v.opt("background") {
+        scene["background"] = json!(bg);
+    }
+    scene
+}
+
+fn logo_extrude(v: &Values, c: &Ctx) -> Value {
+    let d = c.duration;
+    let mut scene = json!({
+        "camera": {"position": [0, 0.3, 9], "target": [0, 0, 0], "fov": 34,
+                   "keyframes": {"position": [k(0.0, json!([1.6, 0.9, 10.5]), "linear"), k(d, json!([0, 0.2, 7.2]), "easeOutCubic")]}},
+        "environment": {"type": "gradient", "top": "#ffffff", "horizon": "#6e6a78", "bottom": "#121216", "strength": 1.3},
+        "materials": [{"id": "gold", "color": v.s("color"), "metallic": 1, "roughness": 0.22, "clearcoat": 0.3}],
+        "lights": [
+            {"id": "key", "type": "directional", "direction": [-0.5, -0.6, -0.8], "intensity": 1.2},
+            {"id": "sweep", "type": "spot", "position": [-6, 2, 5], "direction": [0.8, -0.2, -0.6], "angle": 28, "blend": 0.6, "intensity": 3.5,
+             "keyframes": {"position.x": [k(0.0, -6.0, "linear"), k(d, 6.0, "easeInOutSine")], "direction.x": [k(0.0, 0.8, "linear"), k(d, -0.8, "easeInOutSine")]}}
+        ],
+        "objects": [
+            {"id": "logo", "type": "extrude", "d": v.s("path"), "size": 3.2, "depth": 0.5, "bevel": 0.06, "material": "gold",
+             "keyframes": {"rotation.y": [k(0.0, -35.0, "linear"), k(1.8, 0.0, "easeOutCubic"), k(d, 8.0, "linear")],
+                           "scale": [k(0.0, 0.6, "linear"), k(1.2, 1.0, "easeOutBack")], "opacity": [k(0.0, 0.0, "linear"), k(0.3, 1.0, "linear")]}}
+        ],
+        "render": {"bloom": 0.35, "bloomThreshold": 1.1, "toneMapping": "filmic"}
+    });
+    if let Some(bg) = v.opt("background") {
+        scene["background"] = json!(bg);
+    }
+    scene
+}
+
+fn particle_field_3d(v: &Values, c: &Ctx) -> Value {
+    let d = c.duration;
+    let mut objects = vec![json!({
+        "id": "dust", "type": "particles", "rate": 70, "lifetime": 6, "prewarm": 6, "emitter": "box", "emitterSize": [14, 7, 12],
+        "speed": 0.15, "spread": 360, "turbulence": 0.6, "size": 0.05, "sizeRandom": 0.7, "color": v.s("color"), "fadeIn": 0.3, "fadeOut": 0.4, "seed": 3,
+        "material": {"color": v.s("color"), "emissive": v.s("color"), "emissiveIntensity": 2.0, "unlit": true}
+    })];
+    if let Some(text) = v.opt("text") {
+        objects.push(json!({"id": "title", "type": "text", "text": text, "size": (6.0 / text.chars().count().max(1) as f64 * 1.6).clamp(0.4, 1.4), "depth": 0.08,
+            "material": {"color": "#ffffff", "emissive": "#ffffff", "emissiveIntensity": 0.4, "roughness": 0.4},
+            "keyframes": {"opacity": [k(0.4, 0.0, "linear"), k(1.6, 1.0, "easeOut"), k(d - 0.6, 1.0, "linear"), k(d, 0.0, "easeIn")]}}));
+    }
+    let mut scene = json!({
+        "camera": {"position": [0, 0, 8], "target": [0, 0, 0], "fov": 40, "fStop": 1.8, "focusDistance": 8,
+                   "keyframes": {"position.z": [k(0.0, 9.5, "linear"), k(d, 7.0, "easeInOutSine")], "focusDistance": [k(0.0, 9.5, "linear"), k(d, 7.0, "easeInOutSine")]}},
+        "ambient": 0.2,
+        "objects": objects,
+        "fog": false,
+        "render": {"bloom": 0.8, "bloomThreshold": 0.7}
+    });
+    if let Some(bg) = v.opt("background") {
+        scene["background"] = json!(bg);
+    }
+    scene
+}
+
+fn morph_blob(v: &Values, c: &Ctx) -> Value {
+    let _ = c;
+    let mut scene = json!({
+        "camera": {"position": [0, 0.3, 6], "target": [0, 0, 0], "fov": 35},
+        "environment": {"type": "gradient", "top": "#ff7ab6", "horizon": "#5b3cc4", "bottom": "#0b0716", "strength": 1.2},
+        "lights": [{"id": "key", "type": "directional", "direction": [-0.4, -0.7, -0.6], "intensity": 1.3}],
+        "objects": [
+            {"id": "blob", "type": "icosphere", "radius": 1.3, "detail": 4,
+             "material": {"color": v.s("color"), "roughness": 0.2, "clearcoat": 1, "metallic": 0.1},
+             "modifiers": [{"id": "displace", "type": "displace", "strength": 0.35, "scale": 1.4, "octaves": 2}, {"id": "smooth", "type": "smooth", "iterations": 2, "factor": 0.5}],
+             "expressions": {"modifiers.displace.evolution": "time * 0.35", "rotation.y": "time * 12", "rotation.x": "sin(time * 0.5) * 10"}}
+        ],
+        "render": {"toneMapping": "filmic"}
+    });
+    if let Some(bg) = v.opt("background") {
+        scene["background"] = json!(bg);
+    }
     scene
 }
 

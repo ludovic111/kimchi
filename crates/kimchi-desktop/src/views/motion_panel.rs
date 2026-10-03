@@ -234,11 +234,7 @@ impl Render for MotionPanel {
                             .child("Describe a shot to the agent: kinetic type, an animated chart, a 3D logo or a product turntable. It writes the scene, then checks its frames."),
                     )
                     .child(Button::new("motion-agent", "Ask the agent").small().with_icon("message-square").on_click(|_, _, cx| {
-                        cx.store().update(cx, |s, cx| {
-                            s.agent_open = true;
-                            s.sync_ui(cx);
-                            cx.notify();
-                        })
+                        cx.store().update(cx, |s, cx| s.set_agent_open(true, cx))
                     })),
             )
     }

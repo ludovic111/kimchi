@@ -3756,8 +3756,10 @@ dependencies = [
 name = "kimchi-agent"
 version = "0.6.0"
 dependencies = [
+ "chrono",
  "futures",
  "kimchi-control",
+ "kimchi-core",
  "parking_lot",
  "reqwest",
  "serde",

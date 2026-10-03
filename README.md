@@ -41,10 +41,14 @@ rewritten from the ground up in Rust.
 **Animation, motion graphics and 3D** (drawn by kimchi, the same in the preview and the export)
 - **Keyframes on any clip**: position, scale, rotation, opacity, blur, volume, text size and colour, with easings (ease, back, elastic, bounce, cubic-bezier, spring). Toggle a keyframe per property at the playhead in the inspector, or drag on the canvas
 - **Presets**: fade, rise, slide, pop, zoom, focus in and out; Ken Burns, pan, pulse, float, shake, spin
-- **Motion clips**: 2D scenes of shapes, paths (with draw-on), text with letter/word/line reveals and counters, images, groups, masks, gradients, blur, shadows, glows and blend modes
-- **3D clips**: camera moves, lights with soft shadows, boxes, spheres, cylinders, tori, extruded 3D text, glTF models and picture cards, metallic/rough materials. On the GPU (Metal on Macs, Apple Silicon included; Vulkan or DirectX 12 elsewhere), on the CPU otherwise
-- **Templates**: lower third, title card, kinetic type, counter, bar chart, logo reveal, callout, quote, subscribe button, aurora background, wipe transition, 3D title, 3D logo spin, turntable, floating shapes; change their words and colours in the inspector
-- **Edit scenes by hand** in the inspector (pick a layer, object or the camera; keyframe its properties; add text, shapes, pictures, 3D objects and lights) or **ask the agent**: it writes the scene, then looks at the frames it made
+- **2D motion design, like After Effects**: shapes, paths (with draw-on), text, images, particles, nulls, adjustment layers and nested compositions with time remap; parenting, masks (add, subtract, intersect, feathered), track mattes (alpha and luma), blend modes; 34 effects (blurs, glow, drop shadow, outline, echo, colour correction, levels, tint, gradient ramp, fractal noise, grain, halftone, turbulent displace, wave warp, ripple, twirl, bulge, mosaic, chromatic aberration, glitch, kaleidoscope, motion tile, corner pin…), shape operators (repeater, zig zag, wiggle, offset, round corners, twist, pucker & bloat), text animators (range and wiggly selectors), text on a path, motion blur
+- **3D, like Blender**: primitives (box, sphere, icosphere, cylinder, cone, capsule, torus, plane, grid), extruded text and logos (SVG paths, holes kept), lathed profiles, curve tubes that draw on, glTF / OBJ / STL models, and editable meshes (extrude, inset, bevel, loop cut, subdivide, bridge, spin, knife…); a modifier stack (subdivision, mirror, array, bevel, solidify, boolean, displace, twist, bend, taper, wave, wireframe, explode, build…); constraints (look at, follow a path, copy, limit); cameras with depth of field, orthographic views and cuts between cameras; directional, point, spot and area lights with soft shadows; environments (gradient, sky, 360° panorama); materials with glass, metal, clear coat, textures and procedural patterns (marble, wood, checker, cells…); particles; bloom, motion blur, ambient occlusion and filmic tone mapping
+- **Two render engines**: a fast GPU engine (Metal on Macs, Apple Silicon included; Vulkan or DirectX 12 elsewhere; on the CPU otherwise) and a path tracer for real reflections, refraction through glass, soft light and bounced light
+- **Expressions** on any property: `wiggle(2, 30)`, `loopOut("pingpong")`, `time * 90`, `prop("ball", "x") + 100`, staggering by `index`
+- **The Studio**: a workspace for a motion clip with an outliner, a 3D viewport (orbit, move / rotate / scale handles, edit mode) or a 2D canvas (handles, pen tool), the properties of what's selected (modifiers, effects, materials, expressions, world and render settings), a dope sheet and a graph editor
+- **Render now or at export**: a motion clip is drawn live (quick in the preview, full quality in the export), or rendered ahead into a file the timeline plays smoothly; edit the scene and it goes back to live until you render it again
+- **Templates**: lower third, title card, kinetic type, counter, bar chart, logo reveal, callout, quote, subscribe button, aurora background, wipe transition, glitch title, particle burst, kinetic sweep, radial burst, liquid background, 3D title, 3D logo spin, turntable, floating shapes, product shot, extruded logo, particle field, morphing blob; change their words and colours in the inspector
+- **Ask the agent**: it writes the scene (`motion.guide` explains every feature), models meshes, then looks at the frames it made from any angle
 - Hardware encoding where the computer has it (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API), checked with a test encode and redone on the CPU if it fails; 4K, HEVC and ProRes sources decode in hardware
 
 **Generation, woven into the edit**
@@ -120,8 +124,10 @@ kimchi hands cuts to [ryolune](https://lsuite.xyz/ryolune) to score them and tak
 
 ```
 crates/
-  kimchi-core      project model, edits, undo history (shared by every client), keyframes, motion scenes, templates
-  kimchi-media     ffmpeg probing, decoding and encoding; the compositor: text, 2D motion, 3D (GPU and CPU), colour, transitions
+  kimchi-core      project model, edits, undo history (shared by every client), keyframes, motion scenes, meshes and
+                   modifiers, expressions, particles, templates
+  kimchi-media     ffmpeg probing, decoding and encoding; the compositor: text, 2D motion and effects, 3D (GPU, CPU and
+                   the path tracer), colour, transitions, motion clips rendered ahead
   kimchi-captions  SRT / WebVTT, and speech to text with Whisper (candle, on the CPU)
   kimchi-gen       the generation harness: Provider trait, 15 providers, keys, job queue
   kimchi-control   the command registry, session, permissions, loopback bridge, lsuite discovery, updater
@@ -135,8 +141,8 @@ crates/
 - Every change is an `Edit` (plain data) applied by `kimchi-core`, behind a named command in `kimchi-control`.
   The window never mutates the project; it renders what the session holds.
 - The preview and the export share one compositor (`kimchi-media/src/render`): ffmpeg decodes each clip and encodes
-  the result; every frame is put together in Rust (tiny-skia for pictures, text and 2D motion; wgpu or a CPU
-  rasteriser for 3D), so what you see is what renders.
+  the result; every frame is put together in Rust (tiny-skia for pictures, text and 2D motion; wgpu, a CPU
+  rasteriser or a CPU path tracer for 3D), so what you see is what renders.
 - Providers implement one trait (`info`, `models`, `check`, `generate`). The harness handles keys, concurrency (one job at a time on local GPUs), cancellation, downloads and progress events.
 - The interface follows the [lsuite design system](https://lsuite.xyz/design): chili coral, glass chrome over a
   tinted backdrop, solid work surfaces, Manrope and IBM Plex Mono, dark and light, tested contrast.

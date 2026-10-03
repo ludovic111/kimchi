@@ -519,6 +519,8 @@ impl Placement {
     }
 }
 
+// A motion clip's scene is big; there is one content per clip, so boxing it would only add noise.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClipContent {

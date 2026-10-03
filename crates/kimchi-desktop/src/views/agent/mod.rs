@@ -1,73 +1,17 @@
-//! The agent panel's parts (the panel itself is `views::agent_panel`): what
-//! the conversation holds, one card per command, and the Changes tab.
+//! The agent panel's parts (the panel itself is `views::agent_panel`): one
+//! card per command, and the Changes tab. What the conversation holds lives in
+//! `kimchi_agent::Host`, shared with the `agent.*` commands.
 
 pub mod cards;
 pub mod changes;
 
-use std::time::Instant;
-
 use chrono::{DateTime, Local};
 use gpui::{App, Div, Hsla, div, prelude::*, px};
-use kimchi_agent::{ProviderKind, RunHandle};
-use kimchi_control::{CommandRecord, Source};
+use kimchi_control::Source;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::theme::{ActiveTheme, MONO};
-
-/// One entry of the conversation, in the order things happened.
-#[derive(Clone, Debug)]
-pub enum Item {
-    User { text: String },
-    /// Streamed reply text of the agent.
-    Assistant { text: String },
-    /// One command run by the agent, an MCP client or the CLI.
-    Command { record: Box<CommandRecord>, result: Option<Value> },
-    /// How a run ended.
-    Outcome(Outcome),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OutcomeKind {
-    Done,
-    Error,
-    Cancelled,
-}
-
-#[derive(Clone, Debug)]
-pub struct Outcome {
-    /// Index in `AgentPanel::runs`.
-    pub run: usize,
-    pub kind: OutcomeKind,
-    pub message: Option<String>,
-    pub changes: usize,
-    pub tokens: (u64, u64),
-    pub secs: f32,
-}
-
-/// A run started from the panel, for "Revert this run".
-#[derive(Clone, Debug)]
-pub struct RunSummary {
-    pub prompt: String,
-    pub provider: ProviderKind,
-    /// Taken before the run's first change (none: it changed nothing).
-    pub checkpoint: Option<u64>,
-    pub changes: usize,
-    pub finished: bool,
-    pub reverted: bool,
-    pub at: DateTime<Local>,
-}
-
-/// The run in progress.
-pub struct Active {
-    pub handle: RunHandle,
-    pub run: usize,
-    pub status: Option<String>,
-    pub started: Instant,
-    pub tokens: (u64, u64),
-    /// Reply text arrived (else the final summary is shown as the reply).
-    pub streamed: bool,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {

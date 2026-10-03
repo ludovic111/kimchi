@@ -255,7 +255,8 @@ impl Renderer {
         match scene {
             Scene::Flat(s) => {
                 let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
-                let (sx, quality, frame) = (self.sx, self.quality, 1.0 / self.fps);
+                // One output frame lasts `speed` frames of scene time (motion blur spans it).
+                let (sx, quality, frame) = (self.sx, self.quality, clip.speed.abs().max(1e-6) / self.fps);
                 let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(&clip)) };
                 let shown = match comp.and_then(|c| s.composition(c)) {
                     Some(c) => kimchi_core::Scene2d { background: c.background.clone(), layers: c.layers.clone(), compositions: s.compositions.clone(), ..s.clone() },
@@ -425,7 +426,7 @@ impl Renderer {
                     match &scene {
                         Scene::Flat(s) => {
                             let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
-                            let (sx, quality, frame) = (self.sx, self.quality, 1.0 / self.fps);
+                            let (sx, quality, frame) = (self.sx, self.quality, clip.speed.abs().max(1e-6) / self.fps);
                             let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(clip)) };
                             let mut pics = ScenePictures { r: self, clip: clip.id, streaming, used };
                             let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame, eval };

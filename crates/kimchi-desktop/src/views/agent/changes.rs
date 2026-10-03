@@ -16,7 +16,7 @@ impl AgentPanel {
         let t = cx.theme().clone();
         let history = self.history.clone().unwrap_or_default();
         let agent_steps = history.undo.iter().filter(|s| s.source != "window").count();
-        let runs: Vec<(usize, crate::views::agent::RunSummary)> = self.runs.iter().cloned().enumerate().rev().collect();
+        let runs: Vec<kimchi_agent::RunInfo> = self.snap.runs.iter().rev().cloned().collect();
 
         // Undo steps newest first; consecutive steps by the person fold into one line.
         let mut rows: Vec<AnyElement> = vec![];
@@ -85,7 +85,8 @@ impl AgentPanel {
                     .gap(px(6.))
                     .child(caps("Runs from this panel", cx))
                     .when(runs.is_empty(), |d| d.child(div().text_size(px(sz::SM)).text_color(t.text_2).child("None yet.")))
-                    .children(runs.into_iter().map(|(i, r)| {
+                    .children(runs.into_iter().map(|r| {
+                        let i = r.id as usize;
                         let changes = match r.changes {
                             0 => "no changes".to_string(),
                             1 => "1 change".to_string(),
@@ -114,16 +115,22 @@ impl AgentPanel {
                                             .truncate()
                                             .text_size(px(sz::XS))
                                             .text_color(t.text_2)
-                                            .child(format!("{} · {} · {}", r.at.format("%H:%M"), r.provider.label(), if r.finished { changes } else { "running…".into() })),
+                                            .child(format!(
+                                                "{} · {} · {}",
+                                                r.started_at.with_timezone(&chrono::Local).format("%H:%M"),
+                                                r.provider.label(),
+                                                if r.finished() { changes } else { "running…".into() }
+                                            )),
                                     ),
                             )
                             .when(r.reverted, |d| d.child(div().text_size(px(sz::XS)).text_color(t.text_2).child("Reverted")))
-                            .when(r.finished && !r.reverted && r.checkpoint.is_some(), |d| {
+                            .when(r.can_revert(), |d| {
+                                let id = r.id;
                                 d.child(
                                     Button::new(("changes-revert", i), "Revert this run")
                                         .small()
                                         .with_icon("rotate-ccw")
-                                        .on_click(cx.listener(move |this, _, _, cx| this.revert_run(i, cx))),
+                                        .on_click(cx.listener(move |this, _, _, cx| this.revert_run(id, cx))),
                                 )
                             })
                     })),
@@ -179,8 +186,19 @@ impl AgentPanel {
     fn outside_sessions(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let t = cx.theme().clone();
         let store = self.store.read(cx);
+        // The built-in agent's own commands (Claude Code and Codex reach kimchi over MCP too)
+        // belong to its runs, above.
+        let ours: std::collections::HashSet<u64> = self
+            .snap
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                kimchi_agent::Entry::Command { record, run: Some(_), .. } => Some(record.seq),
+                _ => None,
+            })
+            .collect();
         let mut sessions: Vec<(u64, kimchi_control::Source, usize, chrono::DateTime<chrono::Utc>)> = vec![];
-        for r in store.commands.iter().filter(|r| r.mutates && r.ok) {
+        for r in store.commands.iter().filter(|r| r.mutates && r.ok && !ours.contains(&r.seq)) {
             let Some(cp) = r.checkpoint else { continue };
             match sessions.iter_mut().find(|s| s.0 == cp) {
                 Some(s) => s.2 += 1,

@@ -19,14 +19,17 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "motion.stackTypes" => {
             let want = a.opt_str("family");
             let mut out = Map::new();
-            for (field, noun, types) in stack::families() {
+            let mut families: Vec<(&str, &str, &[stack::TypeSpec])> = stack::families().to_vec();
+            families.push(("editOps", "mesh operation", kimchi_core::mesh::ops::EDIT_OPS));
+            for (field, noun, types) in families {
                 if want.is_some_and(|w| w != field) {
                     continue;
                 }
                 out.insert(field.into(), json!({ "noun": noun, "types": types.iter().map(type_json).collect::<Vec<_>>() }));
             }
             if out.is_empty() {
-                let names: Vec<&str> = stack::families().iter().map(|f| f.0).collect();
+                let mut names: Vec<&str> = stack::families().iter().map(|f| f.0).collect();
+                names.push("editOps");
                 return Err(format!("family is one of {}", names.join(", ")));
             }
             Ok(Value::Object(out))

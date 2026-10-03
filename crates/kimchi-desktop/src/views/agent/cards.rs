@@ -3,24 +3,39 @@
 //! of each run with "Revert this run".
 
 use gpui::{AnyElement, Context, FontWeight, SharedString, div, prelude::*, px};
-use kimchi_control::CommandRecord;
+use kimchi_agent::{RunInfo, RunState};
+use kimchi_control::{CommandRecord, Source};
 use serde_json::Value;
 
 use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::{Button, icon};
-use crate::views::agent::{Outcome, OutcomeKind, RunSummary, clock, params_summary, source_badge, source_label, tokens};
+use crate::views::agent::{clock, params_summary, source_badge, source_label, tokens};
 use crate::views::agent_panel::AgentPanel;
+
+/// How a run ended, as the conversation's entry for it says.
+pub struct Ending<'a> {
+    pub run: u64,
+    pub state: RunState,
+    pub error: Option<&'a str>,
+    pub changes: usize,
+    pub seconds: f64,
+    pub tokens: u64,
+}
 
 /// Most characters of a command's answer shown in an open card.
 const RESULT_PREVIEW: usize = 1600;
 
 impl AgentPanel {
-    pub(crate) fn user_bubble(&self, i: usize, text: &str, cx: &mut Context<Self>) -> AnyElement {
+    /// A request; one sent from the CLI or an MCP client says so.
+    pub(crate) fn user_bubble(&self, i: usize, text: &str, source: Source, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         div()
             .id(("user", i))
             .flex()
             .justify_end()
+            .items_start()
+            .gap(px(6.))
+            .when(source != Source::Window, |d| d.child(div().mt(px(9.)).child(source_badge(source_label(source), cx))))
             .child(
                 div()
                     .max_w(gpui::relative(0.88))
@@ -111,25 +126,25 @@ impl AgentPanel {
             .into_any_element()
     }
 
-    pub(crate) fn outcome_row(&self, i: usize, o: &Outcome, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn outcome_row(&self, i: usize, o: Ending, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
-        let run: Option<RunSummary> = self.runs.get(o.run).cloned();
-        let can_revert = run.as_ref().is_some_and(|r| r.checkpoint.is_some() && !r.reverted);
-        let reverted = run.as_ref().is_some_and(|r| r.reverted);
+        let run: Option<&RunInfo> = self.snap.run(o.run);
+        let can_revert = run.is_some_and(RunInfo::can_revert);
+        let reverted = run.is_some_and(|r| r.reverted);
         let mut facts = vec![];
         facts.push(match o.changes {
             0 => "no changes".to_string(),
             1 => "1 change".to_string(),
             n => format!("{n} changes"),
         });
-        facts.push(format!("{:.0}s", o.secs.max(1.0)));
-        if o.tokens.0 + o.tokens.1 > 0 {
-            facts.push(format!("{} tokens", tokens(o.tokens.0 + o.tokens.1)));
+        facts.push(format!("{:.0}s", o.seconds.max(1.0)));
+        if o.tokens > 0 {
+            facts.push(format!("{} tokens", tokens(o.tokens)));
         }
-        let (ic, color, title): (&'static str, gpui::Hsla, SharedString) = match o.kind {
-            OutcomeKind::Done => ("circle-check", t.success, "Done".into()),
-            OutcomeKind::Error => ("circle-alert", t.danger, "Stopped on an error".into()),
-            OutcomeKind::Cancelled => ("circle-stop", t.text_2, if o.changes > 0 { "Stopped; finished edits stay".into() } else { "Stopped".into() }),
+        let (ic, color, title): (&'static str, gpui::Hsla, SharedString) = match o.state {
+            RunState::Done | RunState::Running => ("circle-check", t.success, "Done".into()),
+            RunState::Error => ("circle-alert", t.danger, "Stopped on an error".into()),
+            RunState::Cancelled => ("circle-stop", t.text_2, if o.changes > 0 { "Stopped; finished edits stay".into() } else { "Stopped".into() }),
         };
         let run_ix = o.run;
         div()
@@ -137,7 +152,7 @@ impl AgentPanel {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .when(o.kind == OutcomeKind::Error, |d| {
+            .when(o.state == RunState::Error, |d| {
                 d.p(px(10.)).rounded(px(sz::R_MD)).bg(t.danger.opacity(0.08)).border_1().border_color(t.danger.opacity(0.35))
             })
             .child(
@@ -161,7 +176,7 @@ impl AgentPanel {
                     })
                     .when(reverted, |d| d.child(div().flex_none().text_size(px(sz::XS)).text_color(t.text_2).child("Reverted"))),
             )
-            .when_some(o.message.clone(), |d, m| d.child(div().text_size(px(sz::SM)).text_color(t.text).child(m)))
+            .when_some(o.error.map(str::to_string), |d, m| d.child(div().text_size(px(sz::SM)).text_color(t.text).child(m)))
             .into_any_element()
     }
 }

@@ -195,6 +195,8 @@ pub enum StoreEvent {
 pub struct Store {
     pub session: Arc<Session>,
     pub playback: Entity<Playback>,
+    /// The built-in agent's conversation and runs (the Agent panel draws it; `agent.*` drives it).
+    pub agent: Arc<kimchi_agent::Host>,
 
     pub project: Option<Arc<Project>>,
     pub can_undo: bool,
@@ -249,7 +251,7 @@ impl StoreExt for App {
 }
 
 impl Store {
-    pub fn new(session: Arc<Session>, playback: Entity<Playback>, cx: &mut Context<Self>) -> Self {
+    pub fn new(session: Arc<Session>, playback: Entity<Playback>, agent: Arc<kimchi_agent::Host>, cx: &mut Context<Self>) -> Self {
         let mut rx = session.subscribe();
         let pump = cx.spawn(async move |this, cx| {
             loop {
@@ -273,6 +275,7 @@ impl Store {
         let mut store = Self {
             session: session.clone(),
             playback,
+            agent,
             project: None,
             can_undo: false,
             can_redo: false,
@@ -466,6 +469,12 @@ impl Store {
             left_tab: self.left_tab.as_str().into(),
             open,
             theme: if crate::theme::ActiveTheme::theme(cx).is_dark() { "dark".into() } else { "light".into() },
+            looping: pb.looping,
+            shuttle: pb.shuttle,
+            snapping: self.snapping,
+            ripple: self.ripple,
+            // The editor keeps its panel sizes up to date itself.
+            layout: self.session.ui_state().layout,
         });
     }
 
@@ -640,6 +649,32 @@ impl Store {
 
     pub fn close_dialog(&mut self, cx: &mut Context<Self>) {
         self.dialog = None;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    /// The Agent panel, docked on the right.
+    pub fn set_agent_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.agent_open = open;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    /// The generation jobs popover.
+    pub fn set_jobs_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.jobs_open = open;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    pub fn set_snapping(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.snapping = on;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    pub fn set_ripple(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.ripple = on;
         self.sync_ui(cx);
         cx.notify();
     }

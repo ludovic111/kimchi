@@ -46,8 +46,10 @@ pub(crate) fn noise3(x: f32, y: f32, z: f32, seed: u32) -> f32 {
     if !(x.is_finite() && y.is_finite() && z.is_finite()) {
         return 0.0;
     }
-    // Keep the lattice in i32 range for absurd inputs (the pattern just repeats).
-    let wrap = |v: f32| v.rem_euclid(65536.0);
+    // Keep the lattice in i32 range for absurd inputs (the pattern just repeats out there).
+    // Ordinary values, negative ones included, are left alone: wrapping them would put a seam
+    // at 0 (the canvas centre).
+    let wrap = |v: f32| if v.abs() < 1.0e6 { v } else { v.rem_euclid(65536.0) };
     let (x, y, z) = (wrap(x), wrap(y), wrap(z));
     let (xi, yi, zi) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
     let (xf, yf, zf) = (x - xi as f32, y - yi as f32, z - zi as f32);
@@ -83,6 +85,16 @@ pub(crate) fn fbm(x: f32, y: f32, z: f32, octaves: u32, seed: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_seam_at_zero() {
+        for y in [-0.3f32, 0.4, 2.7] {
+            let (a, b) = (noise3(-1e-4, y, 0.5, 3), noise3(1e-4, y, 0.5, 3));
+            assert!((a - b).abs() < 1e-3, "{a} vs {b} across x = 0");
+            let (a, b) = (noise3(y, -1e-4, 0.5, 3), noise3(y, 1e-4, 0.5, 3));
+            assert!((a - b).abs() < 1e-3, "{a} vs {b} across y = 0");
+        }
+    }
 
     #[test]
     fn noise_is_smooth_bounded_and_repeatable() {

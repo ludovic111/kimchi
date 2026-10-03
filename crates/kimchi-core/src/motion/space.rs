@@ -481,6 +481,8 @@ pub(super) const OBJECT_KEYS: &[&str] = &[
     "hidden", "expressions", "keyframes", "animate",
 ];
 
+// Particle systems have many settings; one shape per object, so boxing them would only add noise.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Shape3d {
