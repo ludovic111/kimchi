@@ -315,5 +315,90 @@ pub fn boolean(a: &PolyMesh, b: &PolyMesh, op: BoolOp) -> PolyMesh {
     let map = weld_map(&m.positions, eps * 10.0);
     m.remap(&map);
     m.compact();
+    close_t_junctions(&mut m, eps * 10.0);
     m
+}
+
+/// The splits leave T-junctions: a vertex in the middle of a neighbour's edge that the
+/// neighbour doesn't have, so the result has cracks (open edges) where it should be closed, and
+/// what reads its edges (solidify's rims, smooth normals, edit mode) sees holes. Puts each such
+/// vertex into the edge it lies on.
+fn close_t_junctions(m: &mut PolyMesh, tol: f64) {
+    use std::collections::HashMap;
+    // A split can uncover another; a few rounds are plenty.
+    for _ in 0..4 {
+        let open: Vec<(u32, u32, usize)> = m.edges().into_iter().filter(|e| e.faces.len() == 1).map(|e| (e.a, e.b, e.faces[0])).collect();
+        if open.is_empty() {
+            return;
+        }
+        let mut ends: Vec<u32> = open.iter().flat_map(|&(a, b, _)| [a, b]).collect();
+        ends.sort_unstable();
+        ends.dedup();
+        if open.len().saturating_mul(ends.len()) > 20_000_000 {
+            tracing::debug!(edges = open.len(), "boolean: too many open edges to mend");
+            return;
+        }
+        // Per face: the vertices to put into each of its edges, in order along it.
+        let mut into: HashMap<usize, HashMap<(u32, u32), Vec<(f64, u32)>>> = HashMap::new();
+        for &(a, b, f) in &open {
+            let (pa, pb) = (m.positions[a as usize], m.positions[b as usize]);
+            let d = sub(pb, pa);
+            let l2 = dot(d, d);
+            if l2 <= tol * tol {
+                continue;
+            }
+            let mut on: Vec<(f64, u32)> = ends
+                .iter()
+                .filter(|&&v| v != a && v != b)
+                .filter_map(|&v| {
+                    let p = m.positions[v as usize];
+                    let t = dot(sub(p, pa), d) / l2;
+                    (t > 1e-9 && t < 1.0 - 1e-9 && dist(p, mad(pa, d, t)) <= tol).then_some((t, v))
+                })
+                .collect();
+            if !on.is_empty() {
+                on.sort_by(|x, y| x.0.total_cmp(&y.0));
+                into.entry(f).or_default().insert((a, b), on);
+            }
+        }
+        if into.is_empty() {
+            return;
+        }
+        for (f, edges) in into {
+            let face = m.faces[f].clone();
+            let uv = m.uvs.as_ref().map(|u| u[f].clone());
+            let (mut nf, mut nuv) = (vec![], vec![]);
+            for k in 0..face.len() {
+                let (a, b) = (face[k], face[(k + 1) % face.len()]);
+                nf.push(a);
+                if let Some(u) = &uv {
+                    nuv.push(u[k]);
+                }
+                let (list, forward) = match edges.get(&(a.min(b), a.max(b))) {
+                    Some(l) => (l, a < b),
+                    None => continue,
+                };
+                let mut add = |t: f64, v: u32| {
+                    // A face never goes through one of its own corners twice.
+                    if face.contains(&v) || nf.contains(&v) {
+                        return;
+                    }
+                    nf.push(v);
+                    if let Some(u) = &uv {
+                        let (ua, ub) = (u[k], u[(k + 1) % face.len()]);
+                        nuv.push([ua[0] + (ub[0] - ua[0]) * t, ua[1] + (ub[1] - ua[1]) * t]);
+                    }
+                };
+                if forward {
+                    list.iter().for_each(|&(t, v)| add(t, v));
+                } else {
+                    list.iter().rev().for_each(|&(t, v)| add(1.0 - t, v));
+                }
+            }
+            m.faces[f] = nf;
+            if let Some(u) = m.uvs.as_mut() {
+                u[f] = nuv;
+            }
+        }
+    }
 }

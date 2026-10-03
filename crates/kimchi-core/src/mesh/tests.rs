@@ -458,6 +458,12 @@ fn solidify_after_a_boolean_stays_even() {
         *p = add(*p, [0.5, 0.5, 0.5]);
     }
     let cut = super::csg::boolean(&ball, &bite, super::csg::BoolOp::Difference);
+    // T-junctions mended: the cracks along every split are closed (a sliver or two folded onto a
+    // neighbour may remain).
+    let edges = cut.edges();
+    let odd = edges.iter().filter(|e| e.faces.len() != 2).count();
+    assert!(odd * 500 < edges.len(), "{odd} of {} edges aren't shared by two faces", edges.len());
+    well_formed(&cut);
     let n = cut.positions.len();
     for t in [0.1, -0.1] {
         let shell = run(&cut, "solidify", json!({"thickness": t}), 0.0);
