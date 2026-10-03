@@ -527,6 +527,7 @@ pub fn world_bounds(s: &Scene3d, worlds: &HashMap<String, M4>, t: f64, id: &str)
 }
 
 /// The nearest object a ray hits (against each object's box in its own space).
+#[cfg(test)]
 pub fn pick3d(s: &Scene3d, worlds: &HashMap<String, M4>, t: f64, o: V3, d: V3) -> Option<String> {
     let mut best: Option<(f64, String)> = None;
     walk_objects(&s.objects, &mut |obj| {

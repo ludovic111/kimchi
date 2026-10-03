@@ -225,6 +225,7 @@ pub fn ray_line(o: V3, d: V3, p: V3, axis: V3) -> Option<f64> {
 }
 
 /// Ray against an axis-aligned box: the distance to the first hit.
+#[cfg(test)]
 pub fn ray_box(o: V3, d: V3, lo: V3, hi: V3) -> Option<f64> {
     let (mut t0, mut t1) = (0.0f64, f64::INFINITY);
     for i in 0..3 {

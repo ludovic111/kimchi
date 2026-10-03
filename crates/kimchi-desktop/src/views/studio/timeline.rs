@@ -11,7 +11,7 @@ use gpui::{
     SharedString, Subscription, Window, canvas, div, point, prelude::*, px,
 };
 use kimchi_core::anim::value_at;
-use kimchi_core::{Easing, KeyValue, Keyframe, Keyframes, Scene};
+use kimchi_core::{Easing, KeyValue, Keyframes, Scene};
 use serde_json::{Value, json};
 
 use super::model;
@@ -939,6 +939,7 @@ impl Render for StudioTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kimchi_core::Keyframe;
 
     #[test]
     fn named_easings_have_bezier_handles() {
