@@ -319,6 +319,7 @@ fn cli_invocations_attach_kimchi_only() {
         assert!(args.windows(2).any(|w| w == ["-c", c]), "{c} in {args:?}");
     }
     assert!(!args.iter().any(|a| a == "mcp_servers.kimchi.enabled=false"));
+    assert!(args.windows(2).any(|w| w == ["-c", "mcp_servers.kimchi.default_tools_approval_mode=\"approve\""]), "Codex runs kimchi's tools without asking");
     assert!(args.contains(&"mcp_servers.kimchi.command=\"/Apps/kimchi \\\"x\\\"/kimchi-mcp\"".to_string()), "{args:?}");
     assert!(args.windows(2).any(|w| w == ["resume", "thread-9"]));
     assert_eq!(args.last().unwrap(), "-");
