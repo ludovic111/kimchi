@@ -230,7 +230,7 @@ impl Properties {
                     body.insert(
                         1,
                         Self::section(
-                            "Mesh",
+                            "Editing",
                             vec![
                                 div().text_size(px(sz::SM)).text_color(t.text_2).child(format!("{} vertices · {} faces", vertices.len(), faces.len())).into_any_element(),
                                 Button::new("edit-mesh", "Edit the mesh").small().with_icon("hexagon").tooltip(crate::actions::tip("Edit mode", &crate::actions::StudioToggleEdit)).on_click(move |_, _, cx| studio.update(cx, |s, cx| s.toggle_edit(cx))).into_any_element(),

@@ -303,7 +303,7 @@ impl Properties {
             .gap(px(4.))
             .min_h(px(26.))
             .child(div().w(px(104.)).flex_none().text_size(px(sz::XS)).text_color(t.text_2).child(label.to_string()))
-            .child(div().flex_1().min_w_0().child(control))
+            .child(div().flex_1().min_w_0().overflow_hidden().child(control))
             .child(diamond)
             .into_any_element()
     }

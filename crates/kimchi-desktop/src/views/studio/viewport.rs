@@ -57,6 +57,8 @@ struct MeshModal {
     amount: f64,
     /// Extrude: how far the new faces have been moved so far, and the drag's undo key.
     applied: f64,
+    /// G in edit mode: only moving the selection along its normal (no extrude first).
+    moving: bool,
     busy: bool,
     key: String,
 }
@@ -845,13 +847,15 @@ impl Viewport {
         let normal = if math::len(n) < 1e-9 { view.toward_viewer(pivot) } else { math::norm(n) };
         let key = self.studio.update(cx, |s, _| s.drag_key());
         let unit = view.units_per_pixel(pivot);
-        self.mesh_modal = Some(MeshModal { kind, mouse0: self.mouse, normal, unit, typed: String::new(), amount: 0.0, applied: 0.0, busy: kind == ModalKind::Extrude, key });
+        self.mesh_modal = Some(MeshModal { kind, mouse0: self.mouse, normal, unit, typed: String::new(), amount: 0.0, applied: 0.0, moving: !extrude_first, busy: kind == ModalKind::Extrude, key });
         if kind == ModalKind::Extrude && extrude_first {
             // Extrude in place, then pull the new faces out.
             let st = self.studio.read(cx);
             let clip = st.clip;
             let id = st.active().map(str::to_string);
-            let mut p = json!({ "clipId": clip, "id": id, "op": "extrude", "params": { "distance": 0 } });
+            // The same undo key as the pull that follows: one step for the whole extrude.
+            let key = self.mesh_modal.as_ref().map(|m| m.key.clone()).unwrap_or_default();
+            let mut p = json!({ "clipId": clip, "id": id, "op": "extrude", "params": { "distance": 0 }, "coalesce": key });
             let s = sel.params();
             p["vertices"] = s["vertices"].clone();
             p["faces"] = s["faces"].clone();
@@ -2044,6 +2048,9 @@ impl Render for Viewport {
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(Self::mouse_move))
+            // A release right after the press (before the window-wide tracker exists) ends the drag too.
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::drag_end))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::drag_end))
             .on_scroll_wheel(cx.listener(Self::scroll))
             .child(
                 canvas(
@@ -2116,6 +2123,7 @@ impl Viewport {
         }
         if let Some(m) = &self.mesh_modal {
             let what = match m.kind {
+                ModalKind::Extrude if m.moving => "Move along the normal",
                 ModalKind::Extrude => "Extrude",
                 ModalKind::Inset => "Inset",
                 ModalKind::Bevel => "Bevel",

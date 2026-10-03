@@ -683,7 +683,8 @@ impl Studio {
         let r = (math::len(math::sub(hi, lo)) / 2.0).max(0.25);
         let dir = math::norm(math::sub(self.view.position, self.view.target));
         let dir = if math::len(dir) < 1e-6 { [0.0, 0.3, 1.0] } else { dir };
-        let dist = r / (self.view.fov.to_radians() / 2.0).tan().max(0.05) * 1.15;
+        // Room around it: the box's sphere fills about half the view's height.
+        let dist = r / (self.view.fov.to_radians() / 2.0).tan().max(0.05) * 1.9;
         self.view.target = c;
         self.view.position = math::add(c, math::scale(dir, dist));
         self.view.ortho_size = r * 2.4;
