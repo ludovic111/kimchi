@@ -363,7 +363,7 @@ mod tests {
         let Scene::Flat(s) = Scene::from_json(&scene).unwrap() else { panic!("2d") };
         let mut canvas = Pixmap::new(200, 100).unwrap();
         let mut pics = NoPictures;
-        let mut fx = Flat { pictures: &mut pics, scale: 1.0 };
+        let mut fx = Flat { pictures: &mut pics, scale: 1.0, quality: super::super::Quality::Final };
         draw(&mut canvas, &s, t, Transform::from_translate(100.0, 50.0), &mut fx);
         canvas
     }
