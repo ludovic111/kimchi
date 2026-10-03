@@ -35,6 +35,7 @@ pub mod stack;
 
 pub use flat::*;
 pub use space::*;
+pub use eval::{EvalOptions, Evaluated3d, MAX_PROP_DEPTH};
 pub use stack::{Animator, Constraint, Effect, Mask, Modifier, Operator, Pattern};
 
 /// Formulas by property name (`{"rotation": "time * 90", "x": "wiggle(2, 30)"}`).
@@ -942,8 +943,7 @@ fn validate_layer(l: &Layer, ids: &mut HashSet<String>, all: &HashSet<String>, c
         _ => {}
     }
     check_expressions(&l.expressions, &owner, |name| {
-        let v = l.get(name).ok_or_else(|| format!("no property `{name}`"))?;
-        l.clone().set(name, &v)
+        if l.get(name).is_some() || l.prop_names().iter().any(|p| p == name) { Ok(()) } else { Err(format!("no property `{name}`")) }
     })?;
     let mut probe = l.clone();
     for (name, keys) in &l.keyframes {
@@ -1090,9 +1090,7 @@ fn validate_object(o: &Object3d, ids: &mut HashSet<String>, refs: &mut Vec<Strin
         return Err(format!("{owner}: the boolean \"{}\" can't use the object itself", m.id));
     }
     check_expressions(&o.expressions, &owner, |n| {
-        let mut p = o.clone();
-        let v = o.get(n).ok_or_else(|| format!("no property `{n}`"))?;
-        p.set(n, &v)
+        if o.get(n).is_some() || o.prop_names().iter().any(|p| p == n) || matches!(n, "x" | "y" | "z") { Ok(()) } else { Err(format!("no property `{n}`")) }
     })?;
     let mut probe = o.clone();
     for (name, keys) in &o.keyframes {

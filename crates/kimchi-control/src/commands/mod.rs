@@ -10,6 +10,8 @@ pub mod handoff;
 pub mod history;
 pub mod media;
 pub mod motion;
+pub mod motion_edit;
+pub mod motion_mesh;
 pub mod project;
 pub mod timeline;
 pub mod track;
@@ -331,6 +333,111 @@ pub static SPECS: &[Spec] = &[
         req("values", Object, "Values to change."),
         crate::registry::COALESCE,
     ]),
+    query("motion.stackTypes", "The building blocks a scene's things can stack, with every parameter, its range and default: 3D modifiers (subdivision, mirror, array, bevel, boolean, twist…), constraints (lookAt, followPath…) and material patterns; 2D effects (blur, glow, colour, distortions…), shape operators (repeater, zig zag…), masks and text animators.", &[
+        opt("family", String, "modifiers, constraints, pattern, effects, operators, masks or animators (default: all)."),
+    ]),
+    edit("motion.setStackItem", "Add a modifier or constraint (3D object, light, camera), or an effect, operator, mask or text animator (2D layer), or replace the one with the same id. Items run in order; animate a parameter with motion.setKeyframes property \"<field>.<itemId>.<param>\". One undo step.", &[
+        CLIP_ID,
+        req("id", String, "The layer, object, light or camera."),
+        req("field", String, "modifiers, constraints, effects, operators, masks or animators."),
+        req("item", Object, "{\"type\": \"blur\", \"radius\": 12} (see motion.stackTypes); with an id it replaces that item."),
+        opt("index", Integer, "Position in the stack for a new item (default: last)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.removeStackItem", "Remove a modifier, constraint, effect, operator, mask or text animator. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "The layer, object, light or camera."),
+        req("field", String, "modifiers, constraints, effects, operators, masks or animators."),
+        req("itemId", String, "The item's id."),
+    ]),
+    edit("motion.moveStackItem", "Change where a modifier, constraint, effect, operator, mask or animator runs in its stack. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "The layer, object, light or camera."),
+        req("field", String, "modifiers, constraints, effects, operators, masks or animators."),
+        req("itemId", String, "The item's id."),
+        req("index", Integer, "New position (0 = first)."),
+    ]),
+    edit("motion.setExpression", "Drive a property with a formula evaluated every frame (After Effects expressions, Blender drivers): \"time * 90\", \"wiggle(2, 30)\", \"value + sin(time * 4) * 20\", \"prop('ball', 'x') + 100\", \"loopOut('pingpong')\". motion.guide topic expressions lists the language. Empty removes it. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "A layer, object, light or camera id."),
+        req("property", String, "The property, e.g. rotation, x, opacity, rotation.y, effects.blur.radius."),
+        opt("expression", String, "The formula; empty or omitted removes it."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.setMaterial", "Add or replace a shared material in a 3D scene (objects use it with \"material\": \"<id>\"). One undo step.", &[
+        CLIP_ID,
+        req("material", Object, "{\"id\": \"gold\", \"color\": \"#e8b04a\", \"metallic\": 1, \"roughness\": 0.25} (fields as an object's material: color, metallic, roughness, emissive, emissiveIntensity, opacity, transmission, ior, clearcoat, texture, pattern, textureScale, flat, unlit)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.removeMaterial", "Remove a shared material; objects that used it keep a copy of it as their own. One undo step.", &[CLIP_ID, req("materialId", String, "The material's id.")]),
+    edit("motion.setComposition", "Add or change a composition of a 2D scene (After Effects' precomp: layers with their own time and canvas, shown by comp layers). Without layers, the composition's layers stay as they are. One undo step.", &[
+        CLIP_ID,
+        req("composition", Object, "{\"id\": \"card\", \"width\": 800, \"height\": 400, \"duration\": 3, \"background\": null, \"layers\": [...]}."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.removeComposition", "Remove a composition (no comp layer may still show it). One undo step.", &[CLIP_ID, req("compositionId", String, "The composition's id.")]),
+    edit("motion.precompose", "Move layers of a 2D scene into a new composition and put one comp layer showing it where they were (After Effects' Pre-compose). One undo step.", &[
+        CLIP_ID,
+        req("ids", Array, "The layers (siblings in the same list)."),
+        req("compositionId", String, "The new composition's id (also the comp layer's)."),
+    ]),
+    edit("motion.moveLayer", "Reorder a layer (2D: later draws on top) or object (3D), or move it into a group, composition (2D) or another object (3D, it then moves with it). One undo step.", &[
+        CLIP_ID,
+        req("id", String, "The layer or object."),
+        opt("parent", String, "A group or composition (2D) or object (3D) to move it into; \"\" = the top level. Omit to stay in the same list."),
+        opt("index", Integer, "Position in its list (0 = first, drawn first in 2D). Default: last."),
+    ]),
+    edit("motion.duplicateLayer", "Copy a layer, object or light (with its children) next to itself under a new id. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "What to copy."),
+        opt("newId", String, "The copy's id (default: the id with a number)."),
+    ]),
+    edit("motion.convertToMesh", "Turn a 3D object's shape (box, sphere, cylinder, extruded text or path, lathe, curve…) into an editable mesh, optionally with its modifiers applied. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "The object."),
+        opt("applyModifiers", Boolean, "Bake the modifier stack into the mesh (default false: modifiers stay)."),
+    ]),
+    edit("motion.applyModifier", "Bake a modifier (or the whole stack) into an object's mesh, like Blender's Apply; the object becomes a mesh. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "The object."),
+        opt("modifierId", String, "One modifier (applied with the ones before it); omit for all."),
+    ]),
+    edit("motion.editMesh", "Model a mesh object like Blender's edit mode: extrude, inset, bevel, subdivide, loop cut, delete, merge, fill, bridge, flip, move/rotate/scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap. Selections are vertex and/or face indices (motion.get shows them) or helpers. Returns the new selection. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "A mesh object (motion.convertToMesh makes one from any shape)."),
+        req("op", String, "The operation: extrude, extrudeIndividual, inset, bevel, subdivide, loopCut, delete, dissolve, merge, fill, bridge, flip, recalcNormals, move, rotate, scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap."),
+        opt("vertices", Array, "Selected vertex indices."),
+        opt("faces", Array, "Selected face indices."),
+        opt("select", Object, "Instead of indices: {\"all\": true}, {\"facing\": [0, 1, 0], \"angle\": 30}, {\"inside\": [[x0,y0,z0],[x1,y1,z1]]}, {\"loop\": [v0, v1]}, {\"ring\": [v0, v1]}."),
+        opt("params", Object, "The operation's values, e.g. {\"distance\": 0.5} (extrude), {\"amount\": 0.1, \"depth\": 0} (inset), {\"width\": 0.05, \"segments\": 2} (bevel), {\"cuts\": 1} (subdivide, loopCut), {\"offset\": [0, 1, 0]} (move), {\"angle\": 45, \"axis\": \"y\", \"pivot\": [0,0,0]} (rotate, spin), {\"factor\": [1,2,1]} (scale), {\"axis\": \"x\"} (mirror), {\"method\": \"box\"} (unwrap)."),
+    ]),
+    query("motion.view", "Render a motion clip's scene alone, the way the Studio shows it, to a PNG: a 3D scene from any angle (an axis, or a free view) with the floor grid and selection, or through its camera; a 2D scene or one of its compositions. For looking at a 3D scene from another side.", &[
+        CLIP_ID,
+        opt("time", Number, "Timeline seconds (default: the playhead)."),
+        opt("axis", String, "front, back, left, right, top or bottom: look along that axis at the scene."),
+        opt("view", Object, "A free view: {\"position\": [x,y,z], \"target\": [x,y,z], \"fov\": 40, \"ortho\": false, \"orthoSize\": 6}."),
+        opt("throughCamera", Boolean, "Through the scene's active camera (default true without axis or view)."),
+        opt("shading", String, "solid, material (default) or rendered (the final engine)."),
+        opt("grid", Boolean, "Floor grid (default true off-camera)."),
+        opt("selected", Array, "Ids drawn with a selection outline."),
+        opt("composition", String, "2D: show this composition instead of the scene."),
+        opt("width", Integer, "Picture width (default 960)."),
+    ]),
+    edit("motion.shiftKeyframes", "Move keyframes of a layer, object, light or camera in time (the dope sheet's drag): all of them, one property's, or those at some times. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "A layer, object, light or camera id, \"camera\" or \"scene\"."),
+        req("by", Number, "Seconds to move them (negative = earlier)."),
+        opt("property", String, "Only this property (default: every one)."),
+        opt("times", Array, "Only the keyframes at these timeline times (seconds)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.render", "Render motion clips ahead at full quality (the 3D engine and samples the scene asks for, motion blur…) into a file the timeline then plays: smooth playback and fast exports for heavy scenes. A clip that isn't rendered is drawn live (quick in the preview, full quality in the export). Editing the scene afterwards makes the render out of date: the clip is drawn live again until it is rendered again. Returns render ids; follow them with motion.renderStatus, or pass wait.", &[
+        req("clipIds", Array, "Motion clips (ids or names)."),
+        WAIT,
+    ]),
+    query("motion.renderStatus", "Renders running and finished, with progress; and each motion clip's state: live, rendered or outdated.", &[opt("renderId", String, "One render.")]),
+    edit("motion.cancelRender", "Stop a render; the clip stays as it was.", &[req("renderId", String, "Render id from motion.render or motion.renderStatus.")]),
+    edit("motion.unrender", "Go back to drawing motion clips live (forget their rendered frames). One undo step.", &[req("clipIds", Array, "Motion clips (ids or names).")]),
     // ---- timeline ---------------------------------------------------------
     edit("timeline.seek", "Move the playhead.", &[req("time", Number, "Timeline time in seconds.")]).window(),
     edit("timeline.play", "Start playback from the playhead.", &[]).window(),

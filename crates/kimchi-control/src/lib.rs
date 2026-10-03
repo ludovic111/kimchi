@@ -13,6 +13,7 @@ pub mod diagnostics;
 pub mod discovery;
 pub mod registry;
 pub mod release_notes;
+pub mod renders;
 pub mod resolve;
 pub mod secrets;
 pub mod session;
