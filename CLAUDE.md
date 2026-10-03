@@ -66,9 +66,11 @@ Rules that keep it working:
 kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
 
-- [x] **Command registry**: 122 `family.verb` commands (project, media, track, clip, transition,
-      captions, motion, timeline, history, generate, export, handoff, app, ui), one undo history for every client,
-      batches as one step, `project.overview`, names or ids everywhere.
+- [x] **Command registry**: 141 `family.verb` commands (project, media, track, clip, transition,
+      captions, motion, timeline, history, generate, export, handoff, app, agent, ui), one undo history for every client,
+      batches as one step, `project.overview`, names or ids everywhere. Everything the window does has a command:
+      `agent.*` drives the Agent panel's conversation (`kimchi_agent::Host`), `ui.action` runs any shortcut or
+      menu item by name, `ui.setTimeline` / `ui.setLayout` / `ui.reveal` cover the window's own options.
 - [x] **CLI**: `kimchi-cli <command>` on the running app or `--file project.json`; `batch`, `doctor`,
       `mcp-config`, `docs`.
 - [x] **MCP**: `kimchi-mcp --live | --file | --headless`, tools generated from the registry; docs in
@@ -140,8 +142,8 @@ the verified NSIS installer on restart or quit (`update::apply_on_quit`), `app.r
 
 kimchi 0.5.0 is released (2026-10-03): keyframes, motion graphics and 3D, transitions, colour,
 reverse and freeze frames, local captions, GPU export; notarized macOS for Apple Silicon and Intel,
-Windows and Linux. The lsuite page (New in 0.5, new captures) and STANDARD.md's kimchi column
-(122 commands) are up to date.
+Windows and Linux. The lsuite page (New in 0.5, new captures) is up to date; STANDARD.md's kimchi column
+still says 122 commands (now 141, with `agent.*` and the new `ui.*`).
 
 - [ ] A pass with real mouse input in the running app: clicks, drags and typing are covered by GPUI
       UI tests and the app was driven through `kimchi-cli`, but nobody has used the window by hand yet.
