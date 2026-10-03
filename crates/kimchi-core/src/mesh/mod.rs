@@ -33,6 +33,7 @@ use crate::motion::stack::Modifier;
 
 use self::math::*;
 
+pub use self::csg::{BoolOp, boolean};
 pub use self::triangulate::{ear_clip, ear_clip_with_holes};
 
 /// The most faces a modifier may make; past it the step is skipped (and logged) so a scene

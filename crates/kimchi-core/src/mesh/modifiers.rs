@@ -26,7 +26,14 @@ pub(super) fn apply(mut mesh: PolyMesh, modifiers: &[Modifier], t: f64, object: 
             "array" => array(mesh, m),
             "bevel" => {
                 let edges = bevel::sharp_edges(&mesh, m.n("angle"));
-                bevel::bevel_edges(&mesh, &edges, m.n("width"), m.n("segments").round() as usize).0
+                let mut segments = m.n("segments").round().max(1.0) as usize;
+                // Each bevelled edge adds a strip; corners add patches about as big.
+                let room = MAX_FACES.saturating_sub(mesh.faces.len()) / (edges.len() * 2).max(1);
+                if segments > room {
+                    tracing::warn!(segments, room, "bevel segments reduced: too many faces");
+                    segments = room;
+                }
+                if segments == 0 { mesh } else { bevel::bevel_edges(&mesh, &edges, m.n("width"), segments).0 }
             }
             "solidify" => solidify(mesh, m.n("thickness"), m.b("rim")),
             "displace" => displace(mesh, m),

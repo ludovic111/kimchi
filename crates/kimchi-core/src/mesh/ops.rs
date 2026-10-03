@@ -1400,6 +1400,10 @@ pub fn spin(m: &mut PolyMesh, sel: &Selection, angle: f64, steps: usize, axis: [
     let full = (angle.abs() - 360.0).abs() < 1e-9;
     let turn = |p: V3, k: usize| add(center, rotate(sub(p, center), axis, (angle * k as f64 / steps as f64).to_radians()));
     let faces = sel.face_list(m);
+    let per_step: usize = faces.iter().map(|&f| m.faces[f].len()).sum::<usize>().max(sel.edge_list(m).len());
+    if per_step * steps + m.faces.len() > super::MAX_FACES {
+        return Err(format!("spinning {per_step} edges {steps} times would make too many faces; use fewer steps"));
+    }
     if !faces.is_empty() {
         let originals: Vec<Vec<u32>> = faces.iter().map(|&f| m.faces[f].clone()).collect();
         let mut region_verts: Vec<u32> = originals.iter().flatten().copied().collect();
