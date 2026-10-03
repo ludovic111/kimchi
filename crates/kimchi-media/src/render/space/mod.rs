@@ -9,10 +9,13 @@
 //! `KIMCHI_GPU=0` forces the CPU renderer; `KIMCHI_GPU=any` accepts a software GPU adapter
 //! (llvmpipe), to run the GPU renderer on machines without one.
 
+mod bvh;
 pub(crate) mod cpu;
+mod denoise;
 pub(crate) mod gpu;
 pub(crate) mod math;
 pub(crate) mod mesh;
+pub mod trace;
 pub mod viewport;
 
 use std::collections::HashMap;
@@ -270,6 +273,9 @@ impl Space {
     pub(crate) fn render(&mut self, scene: &Scene3d, t: f64, width: u32, height: u32, pics: &mut dyn Pictures, quality: Quality) -> MediaResult<Pixmap> {
         let mut frame = self.frame(scene, t, width, height, pics);
         frame.quality = quality;
+        if quality == Quality::Final && scene.render.path_traced() {
+            return Ok(trace::render(&frame, &trace::Settings::of(&scene.render)));
+        }
         if let Engine::Gpu(g) = &mut self.engine {
             match g.render(&frame) {
                 Ok(p) => return Ok(p),
