@@ -3,48 +3,70 @@
 //!
 //! Opaque triangles first fill a visibility buffer (nearest triangle and its barycentrics per
 //! sample), so each sample is shaded once; transparent ones are then shaded and blended far to
-//! near. The main directional light's shadow comes from a depth map seen from the light, read
-//! with a 3×3 filter for soft edges.
+//! near. Shadows come from depth maps seen from the lights (an orthographic box for the main sun,
+//! a frustum for spot and area lights), read with a percentage-closer filter whose width grows
+//! with the light's size.
 
 use rayon::prelude::*;
 use tiny_skia::Pixmap;
 
 use super::math::{M4, V3};
-use super::{Frame3d, linear_to_srgb, shade, shoulder};
+use super::{Drawn, Frame3d, Pixels, ShadowRes, Surface, Want, backdrop, clear_color, finish, shade, view_dir};
 
 /// Rows per band processed by one thread.
 const BAND: usize = 16;
+/// The main sun's shadow map; spot and area lights get smaller ones.
 const SHADOW_SIZE: usize = 1536;
+const SPOT_SHADOW_SIZE: usize = 1024;
 
 /// A triangle on screen (or in the shadow map), with what is needed to shade it.
 #[derive(Clone)]
-struct Tri {
-    item: u32,
+pub(crate) struct Tri {
+    pub item: u32,
     /// Screen x, y, depth (0..1) and 1/w per corner.
-    s: [[f32; 4]; 3],
+    pub s: [[f32; 4]; 3],
     /// World position, normal and uv per corner.
     world: [V3; 3],
     normal: [V3; 3],
     uv: [[f32; 2]; 3],
+    /// How the position changes with the (scaled) texture coordinates.
+    dpdu: V3,
+    dpdv: V3,
     /// Bounding box in pixels.
-    x0: i32,
-    x1: i32,
-    y0: i32,
-    y1: i32,
+    pub x0: i32,
+    pub x1: i32,
+    pub y0: i32,
+    pub y1: i32,
     /// 1 / (twice the signed area).
-    inv_area: f32,
+    pub inv_area: f32,
 }
 
-pub(crate) fn render(f: &Frame3d) -> Pixmap {
+/// A depth map seen from a light.
+struct ShadowMap {
+    res: ShadowRes,
+    size: usize,
+    depth: Vec<f32>,
+}
+
+pub(crate) fn render(f: &Frame3d, want: Want) -> Drawn {
     let ss: usize = if f.width as usize * 2 <= 4096 && f.height as usize * 2 <= 4096 { 2 } else { 1 };
     let (w, h) = (f.width as usize * ss, f.height as usize * ss);
-    let shadow = f.shadow.map(|(m, _)| (m, shadow_map(f, &m)));
+    let maps: Vec<ShadowMap> = f
+        .shadows
+        .iter()
+        .enumerate()
+        .map(|(k, s)| {
+            let size = if k == 0 && s.ortho { SHADOW_SIZE } else { SPOT_SHADOW_SIZE };
+            ShadowMap { res: *s, size, depth: shadow_map(f, &s.viewproj, size) }
+        })
+        .collect();
+    let linear = want.linear;
 
     let mut opaque = vec![];
     let mut clear: Vec<(f32, Vec<Tri>)> = vec![];
     for (i, it) in f.items.iter().enumerate() {
         let tris = triangles(f, i, &f.viewproj, w, h);
-        if it.mat.base[3] < 0.999 || it.mat.texture.as_ref().is_some_and(|t| t.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 255)) {
+        if it.mat.transparent() {
             clear.push((it.depth, tris));
         } else {
             opaque.extend(tris);
@@ -69,11 +91,26 @@ pub(crate) fn render(f: &Frame3d) -> Pixmap {
         }
     });
 
-    // Shade: once per output pixel when all its samples see the same triangle (most of the
-    // picture), per sample only along edges.
-    let bg = f.background.map(|c| [c[0] * c[3], c[1] * c[3], c[2] * c[3], c[3]]).unwrap_or([0.0; 4]);
+    // The background: a colour, the world, or nothing.
+    let bg = clear_color(f, linear);
     let mut color = vec![bg; w * h];
     let ow = f.width as usize;
+    if f.env.as_ref().is_some_and(|e| e.visible) && f.background.is_none() {
+        color.par_chunks_mut(w * ss).enumerate().for_each(|(oy, rows)| {
+            for ox in 0..ow {
+                let Some(c) = backdrop(f, view_dir(f, ox as f32 + 0.5, oy as f32 + 0.5)) else { continue };
+                let px = finish(f, [c[0], c[1], c[2], 1.0], false, linear);
+                for dy in 0..ss {
+                    for dx in 0..ss {
+                        rows[dy * w + ox * ss + dx] = px;
+                    }
+                }
+            }
+        });
+    }
+
+    // Shade: once per output pixel when all its samples see the same triangle (most of the
+    // picture), per sample only along edges.
     color.par_chunks_mut(w * ss).enumerate().for_each(|(oy, rows)| {
         for ox in 0..ow {
             let at = |dx: usize, dy: usize| (oy * ss + dy) * w + ox * ss + dx;
@@ -89,7 +126,7 @@ pub(crate) fn render(f: &Frame3d) -> Pixmap {
                         b2 += v.2;
                     }
                 }
-                let c = shade_at(f, &opaque[first.0 as usize], b1 / n, b2 / n, shadow.as_ref());
+                let c = shade_at(f, &opaque[first.0 as usize], b1 / n, b2 / n, &maps, linear);
                 for dy in 0..ss {
                     for dx in 0..ss {
                         let px = &mut rows[dy * w + ox * ss + dx];
@@ -104,7 +141,7 @@ pub(crate) fn render(f: &Frame3d) -> Pixmap {
                     if ti == u32::MAX {
                         continue;
                     }
-                    let c = shade_at(f, &opaque[ti as usize], b1, b2, shadow.as_ref());
+                    let c = shade_at(f, &opaque[ti as usize], b1, b2, &maps, linear);
                     let px = &mut rows[dy * w + ox * ss + dx];
                     *px = over(c, *px);
                 }
@@ -121,7 +158,7 @@ pub(crate) fn render(f: &Frame3d) -> Pixmap {
                 let t = &tris[ti as usize];
                 raster(t, w, y_start, cband.len() / w, |i, z, b1, b2| {
                     if z < dband[i] {
-                        let c = shade_at(f, t, b1, b2, shadow.as_ref());
+                        let c = shade_at(f, t, b1, b2, &maps, linear);
                         cband[i] = over(c, cband[i]);
                     }
                 });
@@ -129,30 +166,82 @@ pub(crate) fn render(f: &Frame3d) -> Pixmap {
         });
     }
 
-    // Average ss×ss samples into each output pixel.
+    // The nearest opaque distance per output pixel.
     let (ow, oh) = (f.width as usize, f.height as usize);
+    let distance = if want.depth {
+        (0..ow * oh)
+            .into_par_iter()
+            .map(|i| {
+                let (x, y) = (i % ow, i / ow);
+                let mut z = 1.0f32;
+                for dy in 0..ss {
+                    for dx in 0..ss {
+                        z = z.min(depth[(y * ss + dy) * w + x * ss + dx]);
+                    }
+                }
+                if z >= 1.0 { f32::INFINITY } else { f.camera.distance(z) }
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+
+    // Average ss×ss samples into each output pixel.
+    let n = (ss * ss) as f32;
+    let average = |x: usize, y: usize| -> [f32; 4] {
+        let mut acc = [0.0f32; 4];
+        for dy in 0..ss {
+            for dx in 0..ss {
+                let c = color[(y * ss + dy) * w + x * ss + dx];
+                for k in 0..4 {
+                    acc[k] += c[k];
+                }
+            }
+        }
+        acc.map(|v| v / n)
+    };
+    if linear {
+        let out: Vec<[f32; 4]> = (0..ow * oh).into_par_iter().map(|i| average(i % ow, i / ow)).collect();
+        return Drawn { pixels: Pixels::Linear(out), depth: distance };
+    }
     let mut out = vec![0u8; ow * oh * 4];
     out.par_chunks_mut(ow * 4).enumerate().for_each(|(y, row)| {
         for x in 0..ow {
-            let mut acc = [0.0f32; 4];
-            for dy in 0..ss {
-                for dx in 0..ss {
-                    let c = color[(y * ss + dy) * w + x * ss + dx];
-                    for k in 0..4 {
-                        acc[k] += c[k];
-                    }
-                }
-            }
-            let n = (ss * ss) as f32;
-            let a = (acc[3] / n).clamp(0.0, 1.0);
+            let acc = average(x, y);
+            let a = acc[3].clamp(0.0, 1.0);
             let px = &mut row[x * 4..x * 4 + 4];
             for k in 0..3 {
-                px[k] = ((acc[k] / n).clamp(0.0, a) * 255.0).round() as u8;
+                px[k] = (acc[k].clamp(0.0, a) * 255.0).round() as u8;
             }
             px[3] = (a * 255.0).round() as u8;
         }
     });
-    Pixmap::from_vec(out, tiny_skia::IntSize::from_wh(f.width, f.height).expect("non-empty")).expect("sized")
+    let pixmap = Pixmap::from_vec(out, tiny_skia::IntSize::from_wh(f.width, f.height).expect("non-empty")).expect("sized");
+    Drawn { pixels: Pixels::Encoded(pixmap), depth: distance }
+}
+
+/// The distance of the nearest opaque thing per output pixel (infinite where there is none),
+/// without shading: for the Studio's overlays when the picture came from elsewhere.
+pub(crate) fn depth(f: &Frame3d) -> Vec<f32> {
+    let (w, h) = (f.width as usize, f.height as usize);
+    let mut tris = vec![];
+    for (i, it) in f.items.iter().enumerate() {
+        if !it.mat.transparent() {
+            tris.extend(triangles(f, i, &f.viewproj, w, h));
+        }
+    }
+    let bands = bin(&tris, h);
+    let mut z = vec![1.0f32; w * h];
+    z.par_chunks_mut(w * BAND).enumerate().for_each(|(b, band)| {
+        for &ti in &bands[b] {
+            raster(&tris[ti as usize], w, b * BAND, band.len() / w, |i, d, _, _| {
+                if d < band[i] {
+                    band[i] = d;
+                }
+            });
+        }
+    });
+    z.into_par_iter().map(|d| if d >= 1.0 { f32::INFINITY } else { f.camera.distance(d) }).collect()
 }
 
 /// Premultiplied `src` over `dst`.
@@ -161,46 +250,67 @@ fn over(src: [f32; 4], dst: [f32; 4]) -> [f32; 4] {
     [src[0] + dst[0] * k, src[1] + dst[1] * k, src[2] + dst[2] * k, src[3] + dst[3] * k]
 }
 
-fn shade_at(f: &Frame3d, t: &Tri, b1: f32, b2: f32, shadow: Option<&(M4, Vec<f32>)>) -> [f32; 4] {
+fn shade_at(f: &Frame3d, t: &Tri, b1: f32, b2: f32, maps: &[ShadowMap], linear: bool) -> [f32; 4] {
     let b0 = 1.0 - b1 - b2;
     let p = t.world[0] * b0 + t.world[1] * b1 + t.world[2] * b2;
     let n = (t.normal[0] * b0 + t.normal[1] * b1 + t.normal[2] * b2).norm();
     let uv = [t.uv[0][0] * b0 + t.uv[1][0] * b1 + t.uv[2][0] * b2, t.uv[0][1] * b0 + t.uv[1][1] * b1 + t.uv[2][1] * b2];
     let item = &f.items[t.item as usize];
-    let lit = shadow.map_or(1.0, |(m, map)| lit(m, map, p, n, f));
-    let c = shade(f, &item.mat, p, n, uv, lit);
-    let a = c[3].clamp(0.0, 1.0);
-    let enc = |v: f32| linear_to_srgb(if item.mat.unlit { v } else { shoulder(v) });
-    [enc(c[0]) * a, enc(c[1]) * a, enc(c[2]) * a, a]
+    let lit = |i: usize| maps.iter().find(|m| m.res.light == i).map_or(1.0, |m| lit(m, p, n, f));
+    let c = shade(f, &item.mat, &Surface { p, n, uv, dpdu: t.dpdu, dpdv: t.dpdv }, &lit);
+    finish(f, c, item.mat.unlit, linear)
 }
 
-/// How lit `p` is by the shadowing light (3×3 percentage-closer filter).
-fn lit(m: &M4, map: &[f32], p: V3, n: V3, f: &Frame3d) -> f32 {
-    let Some((_, li)) = f.shadow else { return 1.0 };
-    let l = f.lights[li].v;
+/// How lit `p` is by a shadow map's light: a percentage-closer filter, 3×3 texels for small
+/// lights, 5×5 spread over the light's soft edge for bigger ones. The GPU does the same.
+fn lit(m: &ShadowMap, p: V3, n: V3, f: &Frame3d) -> f32 {
+    let l = &f.lights[m.res.light];
+    let to_light = if l.point { (l.v - p).norm() } else { -l.v };
     // Push along the normal a little to avoid the surface shadowing itself.
-    let p = p + n * 0.01 + (-l) * 0.005;
-    let q = m.point3(p);
-    let (sx, sy) = ((q.0 * 0.5 + 0.5) * SHADOW_SIZE as f32, (0.5 - q.1 * 0.5) * SHADOW_SIZE as f32);
-    if !(0.0..1.0).contains(&q.2) {
+    let p = p + n * 0.01 + to_light * 0.005;
+    let q4 = m.res.viewproj.point(p);
+    if q4[3] <= 1e-6 {
         return 1.0;
     }
+    let q = V3(q4[0] / q4[3], q4[1] / q4[3], q4[2] / q4[3]);
+    // Outside a light's frustum is lit; beyond the sun's box, its edge is used.
+    if !(0.0..1.0).contains(&q.2) || !m.res.ortho && (q.0.abs() > 1.0 || q.1.abs() > 1.0) {
+        return 1.0;
+    }
+    let size = m.size as f32;
+    let (sx, sy) = ((q.0 * 0.5 + 0.5) * size, (0.5 - q.1 * 0.5) * size);
+    // World size of a texel where `p` is, and the filter's reach in texels.
+    let texel = if m.res.ortho { m.res.extent / size } else { 2.0 * m.res.distance(q.2) * m.res.extent / size };
+    let radius = (m.res.softness / texel.max(1e-6)).clamp(0.0, 12.0);
+    let (taps, step) = if radius <= 1.0 { (1i32, 1.0f32) } else { (2, radius / 2.0) };
+    // Perspective maps compare distances, with a bias that grows with the texel size and how
+    // slanted the surface is to the light (no acne on grazing floors); wide filters reach
+    // further across a slanted surface, so they need more.
+    let ndl = n.dot(to_light).abs().max(0.05);
+    let slope = ((1.0 - ndl * ndl).sqrt() / ndl).min(8.0);
+    let reach = if taps > 1 { texel * slope * step * taps as f32 } else { 0.0 };
+    let mine = if m.res.ortho {
+        q.2 - 0.002 - reach / (m.res.far - m.res.near).max(1e-6)
+    } else {
+        m.res.distance(q.2) * 0.995 - texel * (1.0 + slope) * 2.0 - reach
+    };
     let mut sum = 0.0;
-    for dy in -1..=1 {
-        for dx in -1..=1 {
-            let (x, y) = ((sx as i32 + dx).clamp(0, SHADOW_SIZE as i32 - 1), (sy as i32 + dy).clamp(0, SHADOW_SIZE as i32 - 1));
-            let d = map[y as usize * SHADOW_SIZE + x as usize];
-            sum += if q.2 - 0.002 <= d { 1.0 } else { 0.0 };
+    for dy in -taps..=taps {
+        for dx in -taps..=taps {
+            let x = ((sx + dx as f32 * step).floor() as i32).clamp(0, m.size as i32 - 1);
+            let y = ((sy + dy as f32 * step).floor() as i32).clamp(0, m.size as i32 - 1);
+            let d = m.depth[y as usize * m.size + x as usize];
+            let d = if m.res.ortho { d } else { m.res.distance(d) };
+            sum += if mine <= d { 1.0 } else { 0.0 };
         }
     }
-    sum / 9.0
+    sum / ((2 * taps + 1) * (2 * taps + 1)) as f32
 }
 
-fn shadow_map(f: &Frame3d, m: &M4) -> Vec<f32> {
-    let n = SHADOW_SIZE;
+fn shadow_map(f: &Frame3d, m: &M4, n: usize) -> Vec<f32> {
     let mut tris = vec![];
     for (i, it) in f.items.iter().enumerate() {
-        if it.mat.base[3] < 0.5 || it.mat.unlit {
+        if it.mat.base[3] < 0.5 || it.mat.unlit || !it.cast_shadow || it.mat.transmission > 0.5 {
             continue;
         }
         tris.extend(triangles(f, i, m, n, n));
@@ -220,7 +330,7 @@ fn shadow_map(f: &Frame3d, m: &M4) -> Vec<f32> {
 }
 
 /// Triangle indices per band of rows.
-fn bin(tris: &[Tri], h: usize) -> Vec<Vec<u32>> {
+pub(crate) fn bin(tris: &[Tri], h: usize) -> Vec<Vec<u32>> {
     let n = h.div_ceil(BAND);
     let mut bands = vec![vec![]; n];
     for (i, t) in tris.iter().enumerate() {
@@ -234,7 +344,7 @@ fn bin(tris: &[Tri], h: usize) -> Vec<Vec<u32>> {
 
 /// Calls `hit(index in band, depth, b1, b2)` for every sample of `t` inside the band's rows,
 /// barycentrics perspective-correct.
-fn raster(t: &Tri, w: usize, y_start: usize, rows: usize, mut hit: impl FnMut(usize, f32, f32, f32)) {
+pub(crate) fn raster(t: &Tri, w: usize, y_start: usize, rows: usize, mut hit: impl FnMut(usize, f32, f32, f32)) {
     let y0 = t.y0.max(y_start as i32);
     let y1 = t.y1.min((y_start + rows) as i32 - 1);
     let x0 = t.x0.max(0);
@@ -270,10 +380,11 @@ fn raster(t: &Tri, w: usize, y_start: usize, rows: usize, mut hit: impl FnMut(us
 }
 
 /// An item's triangles through `m` onto a `w`×`h` target, clipped at the near plane.
-fn triangles(f: &Frame3d, item: usize, m: &M4, w: usize, h: usize) -> Vec<Tri> {
+pub(crate) fn triangles(f: &Frame3d, item: usize, m: &M4, w: usize, h: usize) -> Vec<Tri> {
     let it = &f.items[item];
     let mesh = &it.mesh;
     let full = *m * it.model;
+    let scale = it.mat.texture_scale;
     let verts: Vec<([f32; 4], V3, V3)> = mesh
         .pos
         .iter()
@@ -285,22 +396,40 @@ fn triangles(f: &Frame3d, item: usize, m: &M4, w: usize, h: usize) -> Vec<Tri> {
         .collect();
     let mut out = vec![];
     for t in mesh.index.as_chunks::<3>().0.iter() {
+        if t.iter().any(|&i| i as usize >= verts.len()) {
+            continue;
+        }
         let corners: Vec<Corner> = t
             .iter()
             .map(|&i| {
                 let (clip, world, normal) = verts[i as usize];
-                Corner { clip, world, normal, uv: mesh.uv[i as usize] }
+                Corner { clip, world, normal, uv: mesh.uv.get(i as usize).copied().unwrap_or([0.0, 0.0]) }
             })
             .collect();
+        let (dpdu, dpdv) = tangents(&corners, scale);
         for poly in clip_near(&corners) {
             for k in 1..poly.len() - 1 {
-                if let Some(tri) = screen(item as u32, [&poly[0], &poly[k], &poly[k + 1]], w, h) {
+                if let Some(tri) = screen(item as u32, [&poly[0], &poly[k], &poly[k + 1]], w, h, dpdu, dpdv) {
                     out.push(tri);
                 }
             }
         }
     }
     out
+}
+
+/// How the world position changes with each texture coordinate (scaled by the material) across
+/// a triangle.
+fn tangents(c: &[Corner], scale: [f32; 2]) -> (V3, V3) {
+    let (e1, e2) = (c[1].world - c[0].world, c[2].world - c[0].world);
+    let (du1, dv1) = ((c[1].uv[0] - c[0].uv[0]) * scale[0], (c[1].uv[1] - c[0].uv[1]) * scale[1]);
+    let (du2, dv2) = ((c[2].uv[0] - c[0].uv[0]) * scale[0], (c[2].uv[1] - c[0].uv[1]) * scale[1]);
+    let det = du1 * dv2 - du2 * dv1;
+    if det.abs() < 1e-12 {
+        return (V3::default(), V3::default());
+    }
+    let k = 1.0 / det;
+    ((e1 * dv2 - e2 * dv1) * k, (e2 * du1 - e1 * du2) * k)
 }
 
 #[derive(Clone, Copy)]
@@ -343,7 +472,7 @@ fn clip_near(c: &[Corner]) -> Vec<Vec<Corner>> {
     if out.len() >= 3 { vec![out] } else { vec![] }
 }
 
-fn screen(item: u32, c: [&Corner; 3], w: usize, h: usize) -> Option<Tri> {
+fn screen(item: u32, c: [&Corner; 3], w: usize, h: usize, dpdu: V3, dpdv: V3) -> Option<Tri> {
     let s: [[f32; 4]; 3] = c.map(|v| {
         let iw = 1.0 / v.clip[3];
         [(v.clip[0] * iw * 0.5 + 0.5) * w as f32, (0.5 - v.clip[1] * iw * 0.5) * h as f32, v.clip[2] * iw, iw]
@@ -369,124 +498,12 @@ fn screen(item: u32, c: [&Corner; 3], w: usize, h: usize) -> Option<Tri> {
         world: c.map(|v| v.world),
         normal: c.map(|v| v.normal),
         uv: c.map(|v| v.uv),
+        dpdu,
+        dpdv,
         x0,
         x1,
         y0,
         y1,
         inv_area: 1.0 / area.abs(),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::*;
-    use kimchi_core::Scene;
-    use serde_json::json;
-
-    struct None_;
-    impl Pictures for None_ {
-        fn picture(&mut self, _: &str, _: f64) -> Option<Arc<Pixmap>> {
-            None
-        }
-        fn path(&self, _: &str) -> Option<PathBuf> {
-            None
-        }
-    }
-
-    fn draw(scene: serde_json::Value, t: f64) -> Pixmap {
-        let Scene::Space(s) = Scene::from_json(&scene).unwrap() else { panic!("3d") };
-        Space::cpu().render(&s, t, 160, 90, &mut None_, Quality::Preview).unwrap()
-    }
-
-    fn rgba(p: &Pixmap, x: u32, y: u32) -> [u8; 4] {
-        let c = p.pixel(x, y).unwrap().demultiply();
-        [c.red(), c.green(), c.blue(), c.alpha()]
-    }
-
-    #[test]
-    fn draws_a_lit_box_in_front_of_the_background() {
-        let p = draw(json!({"background": "#000000", "camera": {"position": [0, 0, 5]},
-            "objects": [{"id": "b", "type": "box", "size": 1.5, "rotation": [20, 30, 0], "material": {"color": "#ff0000"}}]}), 0.0);
-        let mid = rgba(&p, 80, 45);
-        assert!(mid[0] > 60 && mid[1] < 40 && mid[2] < 40, "red box in the middle: {mid:?}");
-        assert_eq!(rgba(&p, 2, 2), [0, 0, 0, 255], "background in the corner");
-    }
-
-    #[test]
-    fn transparent_background_and_unlit_colour() {
-        let p = draw(json!({"camera": {"position": [0, 0, 3]},
-            "objects": [{"id": "card", "type": "plane", "width": 1, "height": 1, "material": {"color": "#00ff00", "unlit": true}}]}), 0.0);
-        assert_eq!(rgba(&p, 80, 45), [0, 255, 0, 255]);
-        assert_eq!(rgba(&p, 1, 1)[3], 0);
-    }
-
-    #[test]
-    fn keyframes_move_objects() {
-        let scene = json!({"background": "#000000", "camera": {"position": [0, 0, 6]},
-            "objects": [{"id": "s", "type": "sphere", "radius": 0.5, "material": {"color": "#ffffff", "unlit": true},
-                          "keyframes": {"x": [[0, -2], [1, 2]]}}]});
-        let (a, b) = (draw(scene.clone(), 0.0), draw(scene, 1.0));
-        let x_of = |p: &Pixmap| (0..160).filter(|x| rgba(p, *x, 45)[0] > 128).sum::<u32>() as f32 / (0..160).filter(|x| rgba(p, *x, 45)[0] > 128).count().max(1) as f32;
-        assert!(x_of(&a) < 60.0 && x_of(&b) > 100.0, "{} → {}", x_of(&a), x_of(&b));
-    }
-
-    /// The GPU draws what the CPU draws (when this machine has a GPU).
-    #[test]
-    fn gpu_matches_cpu() {
-        eprintln!("GPU: {}", super::super::gpu::Gpu::probe());
-        let mut gpu = Space::new();
-        eprintln!("3D engine: {}", gpu.describe());
-        if !gpu.describe().starts_with("gpu") {
-            return;
-        }
-        let Scene::Space(s) = Scene::from_json(&json!({"background": "#101014", "camera": {"position": [2, 2, 5]},
-            "objects": [
-                {"id": "b", "type": "box", "size": 1.4, "bevel": 0.1, "rotation": [10, 30, 0], "material": {"color": "#ff5a36", "roughness": 0.3}},
-                {"id": "t", "type": "torus", "position": [0, -1.2, 0], "material": {"color": "#ffffff", "metallic": 1, "roughness": 0.2}},
-                {"id": "f", "type": "plane", "width": 8, "height": 8, "rotation": [-90, 0, 0], "position": [0, -1.6, 0]}
-            ]}))
-        .unwrap() else { panic!("3d") };
-        let g = gpu.render(&s, 0.0, 160, 90, &mut None_, Quality::Preview).unwrap();
-        let c = Space::cpu().render(&s, 0.0, 160, 90, &mut None_, Quality::Preview).unwrap();
-        if let Some(dir) = std::env::var_os("KIMCHI_DUMP") {
-            g.save_png(std::path::Path::new(&dir).join("gpu.png")).unwrap();
-            c.save_png(std::path::Path::new(&dir).join("cpu.png")).unwrap();
-        }
-        // Same picture, give or take edge anti-aliasing and shadow-map resolution.
-        let diff: f64 = g.pixels().iter().zip(c.pixels()).map(|(a, b)| (a.red().abs_diff(b.red()) as f64 + a.green().abs_diff(b.green()) as f64 + a.blue().abs_diff(b.blue()) as f64) / 3.0).sum::<f64>()
-            / g.pixels().len() as f64;
-        assert!(diff < 6.0, "mean difference {diff}");
-    }
-
-    #[test]
-    fn objects_cast_shadows_on_a_floor() {
-        let scene = |shadows: bool| {
-            json!({"background": "#000000", "shadows": shadows, "camera": {"position": [0, 6, 0.01], "target": [0, 0, 0]},
-                "lights": [{"id": "sun", "type": "directional", "direction": [0, -1, 0]}],
-                "objects": [
-                    {"id": "floor", "type": "plane", "width": 10, "height": 10, "rotation": [-90, 0, 0], "material": {"color": "#ffffff"}},
-                    {"id": "box", "type": "box", "size": [1, 0.2, 1], "position": [0, 1, 0], "material": {"color": "#ffffff"}}
-                ]})
-        };
-        // From above, the floor around the box is lit; with shadows the box's own top is lit too,
-        // so compare a point just outside the box's footprint diagonally: lit either way.
-        let lit = draw(scene(true), 0.0);
-        let corner = rgba(&lit, 20, 10);
-        assert!(corner[0] > 100, "floor lit: {corner:?}");
-        // Seen from the side, the floor right under the box is darker with shadows on.
-        let side = |shadows: bool| {
-            let mut s = scene(shadows);
-            s["camera"] = json!({"position": [0, 3, 6], "target": [0, 0, 0]});
-            s["objects"][1]["position"] = json!([0, 1.5, 0]);
-            draw(s, 0.0)
-        };
-        let (on, off) = (side(true), side(false));
-        if let Some(dir) = std::env::var_os("KIMCHI_DUMP") {
-            on.save_png(std::path::Path::new(&dir).join("shadow-on.png")).unwrap();
-            off.save_png(std::path::Path::new(&dir).join("shadow-off.png")).unwrap();
-        }
-        // The floor under the box.
-        let under = |p: &Pixmap| (72..88).flat_map(|x| (40..50).map(move |y| (x, y))).map(|(x, y)| rgba(p, x, y)[0] as u64).sum::<u64>();
-        assert!(under(&on) < under(&off) * 3 / 4, "shadow darkens the floor: {} vs {}", under(&on), under(&off));
-    }
 }

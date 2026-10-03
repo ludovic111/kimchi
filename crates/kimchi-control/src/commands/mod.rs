@@ -272,7 +272,7 @@ pub static SPECS: &[Spec] = &[
     edit("captions.clear", "Remove every caption. One undo step.", &[]),
     // ---- motion -----------------------------------------------------------
     query("motion.guide", "How to make motion graphics and 3D with kimchi: the scene formats (2D layers, 3D objects, camera, lights), every property, keyframes and easings, text reveals, masks, effects, templates and presets, with examples. Read it before writing a scene.", &[
-        opt("topic", String, "2d, 3d, keyframes, templates or all (default)."),
+        opt("topic", String, "2d, 3d, keyframes, templates, expressions, modelling, particles, rendering or all (default)."),
     ]),
     query("motion.templates", "Motion templates (lower third, title card, kinetic type, counter, bar chart, logo reveal, callout, quote, subscribe, aurora, wipe, 3D title, 3D logo spin, turntable, floating shapes) with the values each takes.", &[]),
     query("motion.presets", "The ready-made clip animations clip.animate applies.", &[]),

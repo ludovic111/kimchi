@@ -18,19 +18,19 @@ pub(crate) struct Mesh {
 }
 
 impl Mesh {
-    fn push(&mut self, p: V3, n: V3, uv: [f32; 2]) -> u32 {
+    pub(crate) fn push(&mut self, p: V3, n: V3, uv: [f32; 2]) -> u32 {
         self.pos.push(p.arr());
         self.normal.push(n.norm().arr());
         self.uv.push(uv);
         (self.pos.len() - 1) as u32
     }
 
-    fn tri(&mut self, a: u32, b: u32, c: u32) {
+    pub(crate) fn tri(&mut self, a: u32, b: u32, c: u32) {
         self.index.extend([a, b, c]);
     }
 
     /// A rows×cols grid of vertices made by `f(u, v)` (0..1 each), two triangles per cell.
-    fn grid(&mut self, rows: usize, cols: usize, f: impl Fn(f32, f32) -> (V3, V3)) {
+    pub(crate) fn grid(&mut self, rows: usize, cols: usize, f: impl Fn(f32, f32) -> (V3, V3)) {
         let base = self.pos.len() as u32;
         for r in 0..=rows {
             for c in 0..=cols {
@@ -383,13 +383,31 @@ pub(crate) struct Part {
     pub texture: Option<Arc<super::Texture>>,
 }
 
-/// A glTF/GLB file as parts, centred and scaled so its largest side is 2 units.
+/// A model file (glTF/GLB, OBJ or STL, by extension) as parts, centred and scaled so its
+/// largest side is 2 units.
 pub(crate) fn model(path: &Path) -> Result<Arc<Vec<Part>>, String> {
     static CACHE: OnceLock<Mutex<HashMap<std::path::PathBuf, Arc<Vec<Part>>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     if let Some(m) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
         return Ok(m.clone());
     }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let parts = match ext.as_str() {
+        "obj" => super::models::obj(path)?,
+        "stl" => super::models::stl(path)?,
+        _ => gltf_parts(path)?,
+    };
+    let parts = Arc::new(fit(parts));
+    let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() > 32 {
+        map.clear();
+    }
+    map.insert(path.to_path_buf(), parts.clone());
+    Ok(parts)
+}
+
+/// A glTF/GLB file as parts, as the file places them.
+fn gltf_parts(path: &Path) -> Result<Vec<Part>, String> {
     let (doc, buffers, images) = gltf::import(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut parts = vec![];
     let scene = doc.default_scene().or_else(|| doc.scenes().next()).ok_or("the model has no scene")?;
@@ -460,7 +478,11 @@ pub(crate) fn model(path: &Path) -> Result<Arc<Vec<Part>>, String> {
     if parts.is_empty() {
         return Err(format!("{} has no triangles to draw", path.display()));
     }
-    // Centre and fit into 2 units.
+    Ok(parts)
+}
+
+/// Parts centred together and scaled so the largest side is 2 units.
+pub(crate) fn fit(mut parts: Vec<Part>) -> Vec<Part> {
     let (mut lo, mut hi) = (V3(f32::MAX, f32::MAX, f32::MAX), V3(f32::MIN, f32::MIN, f32::MIN));
     for p in &parts {
         let (a, b) = p.mesh.bounds();
@@ -477,9 +499,7 @@ pub(crate) fn model(path: &Path) -> Result<Arc<Vec<Part>>, String> {
         }
         p.mesh = Arc::new(m);
     }
-    let parts = Arc::new(parts);
-    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_path_buf(), parts.clone());
-    Ok(parts)
+    parts
 }
 
 fn to_rgba(img: &gltf::image::Data) -> Option<Vec<u8>> {

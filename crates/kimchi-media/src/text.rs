@@ -203,6 +203,10 @@ pub(crate) struct Glyph {
     pub(crate) unit: Units,
     /// Middle of the glyph's advance box (for per-letter scaling), block-local.
     pub(crate) center: (f32, f32),
+    /// Width of its advance box (letter spacing not included).
+    pub(crate) advance: f32,
+    /// Its line's baseline, block-local y (text on a path sits there).
+    pub(crate) baseline: f32,
 }
 
 pub(crate) enum Ink {
@@ -326,7 +330,13 @@ fn layout(style: &TextStyle, device_scale: f32) -> Layout {
                 let (gx, gy) = ((x0 + x) as f32, (baseline + y) as f32);
                 if let Some(glyph) = fonts.glyph(g, gx, gy, requested, device_scale) {
                     let unit = unit_of[i].get(g.start).copied().unwrap_or_default();
-                    ink.push(Glyph { ink: glyph, unit, center: ((x0 + x + advance / 2.0) as f32, mid as f32) });
+                    ink.push(Glyph {
+                        ink: glyph,
+                        unit,
+                        center: ((x0 + x + advance / 2.0) as f32, mid as f32),
+                        advance: *advance as f32,
+                        baseline: baseline as f32,
+                    });
                 }
             }
         }

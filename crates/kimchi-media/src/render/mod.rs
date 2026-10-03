@@ -21,13 +21,20 @@
 //! frame before its end, and fades are linear in opacity.
 
 pub mod cache;
+pub(crate) mod effects2d;
 pub(crate) mod flat;
 pub mod grade;
+pub(crate) mod masks;
 pub(crate) mod mix;
+pub(crate) mod noise;
 pub(crate) mod paint;
+pub(crate) mod particles2d;
+pub(crate) mod shapeops;
 pub(crate) mod source;
 pub mod space;
+pub(crate) mod textfx;
 
+pub use flat::{hit_test, layer_bounds, layer_transform};
 pub use space::Quality;
 
 use std::collections::{HashMap, HashSet};
@@ -248,24 +255,21 @@ impl Renderer {
         match scene {
             Scene::Flat(s) => {
                 let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
-                let (sx, quality) = (self.sx, self.quality);
+                let (sx, quality, frame) = (self.sx, self.quality, 1.0 / self.fps);
+                let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(&clip)) };
                 let shown = match comp.and_then(|c| s.composition(c)) {
                     Some(c) => kimchi_core::Scene2d { background: c.background.clone(), layers: c.layers.clone(), compositions: s.compositions.clone(), ..s.clone() },
                     None => s.clone(),
                 };
                 let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
-                let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality };
+                let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame, eval };
                 flat::draw(&mut canvas, &shown, t, base, &mut fx);
             }
             Scene::Space(s) => {
-                let shown = match view {
-                    Some(v) if !opts.through_camera => v.apply(s),
-                    _ => s.clone(),
-                };
-                let quality = if opts.shading == space::viewport::Shading::Rendered { Quality::Final } else { Quality::Preview };
                 let (width, height) = (self.width, self.height);
+                let frame = clip.speed.abs().max(1e-6) / self.fps;
                 let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
-                let img = lock(space::shared()).render(&shown, t, width, height, &mut pics, quality)?;
+                let img = space::viewport::render_view(&mut lock(space::shared()), s, t, frame, width, height, &mut pics, view, opts)?;
                 draw_picture(&mut canvas, &img, Transform::identity(), 1.0);
             }
         }
@@ -421,15 +425,18 @@ impl Renderer {
                     match &scene {
                         Scene::Flat(s) => {
                             let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
-                            let (sx, quality) = (self.sx, self.quality);
+                            let (sx, quality, frame) = (self.sx, self.quality, 1.0 / self.fps);
+                            let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(clip)) };
                             let mut pics = ScenePictures { r: self, clip: clip.id, streaming, used };
-                            let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality };
+                            let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame, eval };
                             flat::draw(target, s, st, base, &mut fx);
                         }
                         Scene::Space(s) => {
                             let (width, height, quality) = (self.width, self.height, self.quality);
+                            // Scene seconds one output frame lasts (for motion blur).
+                            let frame = clip.scene_time(t + 1.0 / self.fps) - st;
                             let mut pics = ScenePictures { r: self, clip: clip.id, streaming, used };
-                            let img = lock(space::shared()).render(s, st, width, height, &mut pics, quality)?;
+                            let img = lock(space::shared()).render_frame(s, st, frame, width, height, &mut pics, quality)?;
                             draw_picture(target, &img, Transform::identity(), 1.0);
                         }
                     }
@@ -715,6 +722,11 @@ fn fitted(fit: Fit, sw: Option<u32>, sh: Option<u32>, w: f32, h: f32) -> (f32, f
             (iw * s, ih * s)
         }
     }
+}
+
+/// How many scene seconds a motion clip shows (what expressions call `duration`).
+fn scene_length(c: &Clip) -> f64 {
+    (c.scene_time(c.end()) - c.scene_time(c.start)).abs()
 }
 
 /// Opacity from the clip's fades at `t` (linear, like ffmpeg's `fade`).

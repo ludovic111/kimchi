@@ -71,19 +71,15 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 if arr.len() == before {
                     return Err(format!("no {field} item \"{item_id}\" on \"{id}\""));
                 }
+                // Its keyframes and formulas go with it.
+                let prefix = format!("{field}.{item_id}.");
+                for key in ["keyframes", "expressions"] {
+                    if let Some(m) = o.get_mut(key).and_then(Value::as_object_mut) {
+                        m.retain(|name, _| !name.starts_with(&prefix));
+                    }
+                }
                 Ok(())
             })?;
-            // Its keyframes go with it.
-            if let Some(k) = scene.keyframes_mut(id) {
-                let prefix = format!("{field}.{item_id}.");
-                k.retain(|name, _| !name.starts_with(&prefix));
-            }
-            if let Some(mut item) = scene.item_mut(id)
-                && let Some(ex) = item.expressions_mut()
-            {
-                let prefix = format!("{field}.{item_id}.");
-                ex.retain(|name, _| !name.starts_with(&prefix));
-            }
             scene.validate()?;
             set_scene(s, cx, &a, clip.id, scene, None)
         }
