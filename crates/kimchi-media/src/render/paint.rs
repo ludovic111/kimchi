@@ -91,6 +91,11 @@ pub(crate) fn blend(b: kimchi_core::motion::Blend) -> BlendMode {
         ColorBurn => BlendMode::ColorBurn,
         SoftLight => BlendMode::SoftLight,
         HardLight => BlendMode::HardLight,
+        Exclusion => BlendMode::Exclusion,
+        Hue => BlendMode::Hue,
+        Saturation => BlendMode::Saturation,
+        Color => BlendMode::Color,
+        Luminosity => BlendMode::Luminosity,
     }
 }
 

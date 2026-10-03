@@ -13,6 +13,7 @@ pub(crate) mod cpu;
 pub(crate) mod gpu;
 pub(crate) mod math;
 pub(crate) mod mesh;
+pub mod viewport;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -75,7 +76,17 @@ pub(crate) struct Mat {
     pub roughness: f32,
     pub emissive: [f32; 3],
     pub unlit: bool,
+    /// A picture or a pattern baked to a picture, multiplied with `base`.
     pub texture: Option<Arc<Texture>>,
+    /// Repeats of the texture across the surface.
+    pub texture_scale: [f32; 2],
+    /// Heights for bumps (a pattern's), and how strong.
+    pub bump: Option<(Arc<Texture>, f32)>,
+    /// Glass: 0 opaque … 1 clear, with its index of refraction.
+    pub transmission: f32,
+    pub ior: f32,
+    /// A clear varnish layer, 0–1.
+    pub clearcoat: f32,
 }
 
 pub(crate) struct Item {
@@ -87,14 +98,92 @@ pub(crate) struct Item {
     pub depth: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum LightKind {
+    Directional,
+    Point,
+    Spot,
+    Area,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LightRes {
+    pub kind: LightKind,
+    /// At a position (point, spot, area) rather than a direction.
     pub point: bool,
-    /// Direction the light travels (directional) or its position (point).
+    /// Direction the light travels (directional) or its position (point, spot, area).
     pub v: V3,
+    /// Where spot and area lights face (unit).
+    pub dir: V3,
     /// Linear colour × intensity.
     pub color: [f32; 3],
     pub range: f32,
+    /// Spot: cosines of the cone's edge and of where the soft edge begins.
+    pub cos_outer: f32,
+    pub cos_inner: f32,
+    /// Area: width and height; point/spot: bulb radius in `[0]`; sun: softness angle (radians) in `[0]`.
+    pub size: [f32; 2],
+    pub shadows: bool,
+}
+
+impl LightRes {
+    fn sun(v: V3, color: [f32; 3]) -> LightRes {
+        LightRes { kind: LightKind::Directional, point: false, v, dir: v, color, range: 0.0, cos_outer: -1.0, cos_inner: -1.0, size: [0.0, 0.0], shadows: true }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum EnvKind {
+    Color,
+    Gradient,
+    Sky,
+    Image,
+}
+
+/// The world around the scene (linear colours, strength applied).
+#[derive(Debug, Clone)]
+pub(crate) struct Env {
+    pub kind: EnvKind,
+    pub color: [f32; 3],
+    pub top: [f32; 3],
+    pub horizon: [f32; 3],
+    pub bottom: [f32; 3],
+    /// An equirectangular panorama.
+    pub image: Option<Arc<Texture>>,
+    pub strength: f32,
+    /// Radians around the vertical axis.
+    pub rotation: f32,
+    /// Drawn behind the objects.
+    pub visible: bool,
+}
+
+/// The camera a frame is filmed with.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CameraRes {
+    pub view: M4,
+    pub proj: M4,
+    pub eye: V3,
+    pub forward: V3,
+    pub right: V3,
+    pub up: V3,
+    pub ortho: bool,
+    /// Vertical field of view (radians), or the height orthographic frames cover.
+    pub fov_y: f32,
+    pub ortho_size: f32,
+    pub near: f32,
+    pub far: f32,
+    /// Depth of field: distance in focus and lens radius (world units; 0 = everything sharp).
+    pub focus: f32,
+    pub aperture: f32,
+}
+
+/// How good frames must be: quick while editing, the scene's own render settings for exports
+/// and renders on the timeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Quality {
+    #[default]
+    Preview,
+    Final,
 }
 
 pub(crate) struct Frame3d {
@@ -112,6 +201,12 @@ pub(crate) struct Frame3d {
     /// Fog: distance where it starts, where it is complete, and its colour (linear).
     pub fog: Option<(f32, f32, [f32; 3])>,
     pub items: Vec<Item>,
+    pub camera: CameraRes,
+    pub env: Option<Env>,
+    /// Stops, applied before tone mapping.
+    pub exposure: f32,
+    pub filmic: bool,
+    pub quality: Quality,
 }
 
 enum Engine {
@@ -172,8 +267,9 @@ impl Space {
     }
 
     /// `scene` at scene time `t`, `width`×`height`, premultiplied.
-    pub(crate) fn render(&mut self, scene: &Scene3d, t: f64, width: u32, height: u32, pics: &mut dyn Pictures) -> MediaResult<Pixmap> {
-        let frame = self.frame(scene, t, width, height, pics);
+    pub(crate) fn render(&mut self, scene: &Scene3d, t: f64, width: u32, height: u32, pics: &mut dyn Pictures, quality: Quality) -> MediaResult<Pixmap> {
+        let mut frame = self.frame(scene, t, width, height, pics);
+        frame.quality = quality;
         if let Engine::Gpu(g) = &mut self.engine {
             match g.render(&frame) {
                 Ok(p) => return Ok(p),
@@ -200,7 +296,7 @@ impl Space {
         let sky = [ac[0] * ambient, ac[1] * ambient, ac[2] * ambient];
         let ground = [sky[0] * 0.3, sky[1] * 0.3, sky[2] * 0.3];
 
-        let cam = scene.camera.at(t);
+        let cam = scene.camera_at(t);
         let eye = V3::from(cam.position.0);
         let target = V3::from(cam.target.0);
         let fwd = (target - eye).norm();
@@ -212,33 +308,62 @@ impl Space {
         let view = M4::look_at(eye, target, up);
         let proj = M4::perspective(cam.fov.clamp(1.0, 170.0) as f32, width as f32 / height.max(1) as f32, 0.05, 2000.0);
         let viewproj = proj * view;
+        let camera = CameraRes {
+            view,
+            proj,
+            eye,
+            forward: fwd,
+            right: side,
+            up,
+            ortho: false,
+            fov_y: (cam.fov.clamp(1.0, 170.0) as f32).to_radians(),
+            ortho_size: cam.ortho_size as f32,
+            near: 0.05,
+            far: 2000.0,
+            focus: (target - eye).len(),
+            aperture: 0.0,
+        };
 
         let lights: Vec<LightRes> = if scene.lights.is_empty() {
             vec![
-                LightRes { point: false, v: V3(-0.5, -1.0, -0.7).norm(), color: [1.5, 1.45, 1.4], range: 0.0 },
-                LightRes { point: false, v: V3(0.8, -0.3, -0.5).norm(), color: [0.35, 0.38, 0.45], range: 0.0 },
+                LightRes::sun(V3(-0.5, -1.0, -0.7).norm(), [1.5, 1.45, 1.4]),
+                LightRes::sun(V3(0.8, -0.3, -0.5).norm(), [0.35, 0.38, 0.45]),
             ]
         } else {
             scene
-                .lights
-                .iter()
-                .map(|l| l.at(t))
+                .lights_at(t)
+                .into_iter()
                 .map(|l| {
                     let c = linear_of(&l.color);
                     let k = l.intensity.max(0.0) as f32;
-                    let point = l.kind == "point";
+                    let kind = match l.kind.as_str() {
+                        "point" => LightKind::Point,
+                        "spot" => LightKind::Spot,
+                        "area" => LightKind::Area,
+                        _ => LightKind::Directional,
+                    };
+                    let point = kind != LightKind::Directional;
+                    let half = (l.angle.clamp(1.0, 179.0) as f32).to_radians() / 2.0;
+                    let inner = half * (1.0 - l.blend.clamp(0.0, 1.0) as f32);
+                    let size = l.size.unwrap_or([0.0, 0.0]);
                     LightRes {
+                        kind,
                         point,
                         v: if point { V3::from(l.position.0) } else { V3::from(l.direction.0).norm() },
+                        dir: V3::from(l.direction.0).norm(),
                         color: [c[0] * k, c[1] * k, c[2] * k],
                         range: l.range.max(0.0) as f32,
+                        cos_outer: half.cos(),
+                        cos_inner: inner.cos(),
+                        size: [size[0] as f32, size[1] as f32],
+                        shadows: l.cast_shadows,
                     }
                 })
                 .collect()
         };
 
         let mut items = vec![];
-        let objects: Vec<Object3d> = scene.objects.iter().map(|o| o.at(t)).collect();
+        let objects: Vec<Object3d> = scene.objects_at(t);
         for o in &objects {
             self.collect(o, M4::I, t, &view, pics, &mut items);
         }
@@ -275,7 +400,24 @@ impl Space {
             }
             _ => None,
         };
-        Frame3d { width, height, background, viewproj, eye, sky, ground, lights, shadow, fog, items }
+        Frame3d {
+            width,
+            height,
+            background,
+            viewproj,
+            eye,
+            sky,
+            ground,
+            lights,
+            shadow,
+            fog,
+            items,
+            camera,
+            env: None,
+            exposure: scene.render.exposure as f32,
+            filmic: scene.render.tone_mapping == "filmic",
+            quality: Quality::Preview,
+        }
     }
 
     fn collect(&mut self, o: &Object3d, parent: M4, t: f64, view: &M4, pics: &mut dyn Pictures, out: &mut Vec<Item>) {
@@ -291,7 +433,20 @@ impl Space {
             [e[0] * k, e[1] * k, e[2] * k]
         });
         let texture = m.texture.as_deref().and_then(|r| self.texture(pics, r, t));
-        let mat = Mat { base, metallic: m.metallic.clamp(0.0, 1.0) as f32, roughness: m.roughness.clamp(0.0, 1.0) as f32, emissive, unlit: m.unlit, texture };
+        let texture_scale = m.texture_scale.map_or([1.0, 1.0], |s| [s[0] as f32, s[1] as f32]);
+        let mat = Mat {
+            base,
+            metallic: m.metallic.clamp(0.0, 1.0) as f32,
+            roughness: m.roughness.clamp(0.0, 1.0) as f32,
+            emissive,
+            unlit: m.unlit,
+            texture,
+            texture_scale,
+            bump: None,
+            transmission: m.transmission.clamp(0.0, 1.0) as f32,
+            ior: m.ior.clamp(1.0, 3.0) as f32,
+            clearcoat: m.clearcoat.clamp(0.0, 1.0) as f32,
+        };
         let depth = |model: &M4| -view.point3(model.point3(V3::default())).2;
         match &o.shape {
             Shape3d::Group {} => {}
@@ -311,8 +466,8 @@ impl Space {
                             metallic: p.metallic,
                             roughness: p.roughness,
                             emissive: [p.emissive[0] + emissive[0], p.emissive[1] + emissive[1], p.emissive[2] + emissive[2]],
-                            unlit: m.unlit,
                             texture: p.texture.clone().or_else(|| mat.texture.clone()),
+                            ..mat.clone()
                         };
                         let mesh = if m.flat { self.faceted(&p.mesh) } else { p.mesh.clone() };
                         out.push(Item { mesh, model, normal: model.normal_matrix(), mat: pm, depth: depth(&model) });

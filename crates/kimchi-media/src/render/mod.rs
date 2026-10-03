@@ -27,6 +27,8 @@ pub(crate) mod paint;
 pub(crate) mod source;
 pub mod space;
 
+pub use space::Quality;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -62,6 +64,8 @@ pub struct Renderer {
     early: HashMap<Id, f64>,
     /// Each still picture's graded copy, by clip, with what it was made from.
     graded: HashMap<Id, (usize, String, Arc<Pixmap>)>,
+    /// Quick settings for the preview, the scenes' own render settings for exports.
+    quality: Quality,
 }
 
 /// What one track shows at an instant.
@@ -115,9 +119,18 @@ impl Renderer {
         Self::with_project(tools, playable(tools, project), width, height, fps, false)
     }
 
-    /// Render original media and report failures instead of omitting clips.
+    /// Render original media and report failures instead of omitting clips; motion clips at
+    /// their final quality.
     pub fn for_export(tools: &Tools, project: &Project, width: u32, height: u32, fps: f64) -> Self {
-        Self::with_project(tools, project.clone(), width, height, fps, true)
+        let mut r = Self::with_project(tools, project.clone(), width, height, fps, true);
+        r.quality = Quality::Final;
+        r
+    }
+
+    /// Draw motion clips at this quality (the preview's default is [`Quality::Preview`]).
+    pub fn with_quality(mut self, quality: Quality) -> Self {
+        self.quality = quality;
+        self
     }
 
     fn with_project(tools: &Tools, project: Project, width: u32, height: u32, fps: f64, strict: bool) -> Self {
@@ -143,6 +156,7 @@ impl Renderer {
             grabbed: HashMap::new(),
             early,
             graded: HashMap::new(),
+            quality: Quality::Preview,
         }
     }
 
@@ -179,6 +193,44 @@ impl Renderer {
             let key = StreamKey(clip.id, None);
             if !self.streams.contains_key(&key) {
                 let _ = self.start_stream(&clip, key, local);
+            }
+        }
+        Ok(canvas)
+    }
+
+    /// A motion clip's scene on its own at scene time `t`, for the Studio: a 3D scene from the
+    /// editor's `view` (or through its camera, with `opts.through_camera`), with the view's
+    /// overlays; a 2D scene on its canvas (or one of its compositions, `comp`).
+    pub fn scene_view(&mut self, clip_id: Id, t: f64, view: Option<&space::viewport::ViewCamera>, opts: &space::viewport::ViewOptions, comp: Option<&str>) -> MediaResult<Pixmap> {
+        let clip = self.project.clip(clip_id).cloned().ok_or_else(|| crate::MediaError::Unsupported(format!("no clip {clip_id}")))?;
+        let ClipContent::Motion { scene, .. } = &clip.content else {
+            return Err(crate::MediaError::Unsupported("not a motion clip".into()));
+        };
+        let (w, h) = (self.width as f32, self.height as f32);
+        let mut canvas = Pixmap::new(self.width, self.height).expect("non-empty canvas");
+        let mut used = HashSet::new();
+        match scene {
+            Scene::Flat(s) => {
+                let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
+                let (sx, quality) = (self.sx, self.quality);
+                let shown = match comp.and_then(|c| s.composition(c)) {
+                    Some(c) => kimchi_core::Scene2d { background: c.background.clone(), layers: c.layers.clone(), compositions: s.compositions.clone(), ..s.clone() },
+                    None => s.clone(),
+                };
+                let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
+                let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality };
+                flat::draw(&mut canvas, &shown, t, base, &mut fx);
+            }
+            Scene::Space(s) => {
+                let shown = match view {
+                    Some(v) if !opts.through_camera => v.apply(s),
+                    _ => s.clone(),
+                };
+                let quality = if opts.shading == space::viewport::Shading::Rendered { Quality::Final } else { Quality::Preview };
+                let (width, height) = (self.width, self.height);
+                let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
+                let img = lock(space::shared()).render(&shown, t, width, height, &mut pics, quality)?;
+                draw_picture(&mut canvas, &img, Transform::identity(), 1.0);
             }
         }
         Ok(canvas)
@@ -329,15 +381,15 @@ impl Renderer {
                     match &scene {
                         Scene::Flat(s) => {
                             let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
-                            let sx = self.sx;
+                            let (sx, quality) = (self.sx, self.quality);
                             let mut pics = ScenePictures { r: self, clip: clip.id, streaming, used };
-                            let mut fx = flat::Flat { pictures: &mut pics, scale: sx };
+                            let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality };
                             flat::draw(target, s, st, base, &mut fx);
                         }
                         Scene::Space(s) => {
-                            let (width, height) = (self.width, self.height);
+                            let (width, height, quality) = (self.width, self.height, self.quality);
                             let mut pics = ScenePictures { r: self, clip: clip.id, streaming, used };
-                            let img = lock(space::shared()).render(s, st, width, height, &mut pics)?;
+                            let img = lock(space::shared()).render(s, st, width, height, &mut pics, quality)?;
                             draw_picture(target, &img, Transform::identity(), 1.0);
                         }
                     }

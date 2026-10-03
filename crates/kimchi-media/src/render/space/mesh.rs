@@ -84,16 +84,18 @@ pub(crate) fn shape(s: &Shape3d) -> Option<Arc<Mesh>> {
     }
     let mesh = match s {
         Shape3d::Box { size, bevel } => rounded_box(V3::from(size.0) * 0.5, *bevel as f32),
-        Shape3d::Sphere { radius } => sphere(*radius as f32),
-        Shape3d::Cylinder { radius, height } => cylinder(*radius as f32, *radius as f32, *height as f32),
-        Shape3d::Cone { radius, height } => cylinder(*radius as f32, 0.0, *height as f32),
+        Shape3d::Sphere { radius, segments: 0.0 } => sphere(*radius as f32),
+        Shape3d::Cylinder { radius, height, segments: 0.0 } => cylinder(*radius as f32, *radius as f32, *height as f32),
+        Shape3d::Cone { radius, height, segments: 0.0 } => cylinder(*radius as f32, 0.0, *height as f32),
         Shape3d::Torus { radius, tube } => torus(*radius as f32, *tube as f32),
         Shape3d::Plane { width, height } => plane(*width as f32, *height as f32),
-        Shape3d::Text { text, font_family, font_weight, size, depth, align, letter_spacing } => {
+        Shape3d::Text { text, font_family, font_weight, size, depth, align, letter_spacing, .. } => {
             text_mesh(text, font_family, *font_weight, *size as f32, *depth as f32, *align, *letter_spacing)
         }
         Shape3d::Image { .. } => plane(1.0, 1.0),
-        Shape3d::Model { .. } | Shape3d::Group {} => return None,
+        Shape3d::Model { .. } | Shape3d::Group {} | Shape3d::Particles(_) => return None,
+        // Everything else is modelled in kimchi-core as polygons.
+        other => from_tris(&kimchi_core::mesh::shape_mesh(other)?.triangulate()),
     };
     let mesh = Arc::new(mesh);
     let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -102,6 +104,11 @@ pub(crate) fn shape(s: &Shape3d) -> Option<Arc<Mesh>> {
     }
     map.insert(key, mesh.clone());
     Some(mesh)
+}
+
+/// A mesh from kimchi-core's triangles.
+pub(crate) fn from_tris(t: &kimchi_core::mesh::TriMesh) -> Mesh {
+    Mesh { pos: t.positions.clone(), normal: t.normals.clone(), uv: t.uvs.clone(), index: t.indices.clone() }
 }
 
 /// A box with rounded edges (`bevel` is the radius, clamped to half the smallest side).
@@ -504,9 +511,9 @@ mod tests {
         for s in [
             Shape3d::Box { size: Vec3([2.0, 1.0, 1.0]), bevel: 0.0 },
             Shape3d::Box { size: Vec3([2.0, 1.0, 1.0]), bevel: 0.1 },
-            Shape3d::Sphere { radius: 0.5 },
-            Shape3d::Cylinder { radius: 0.5, height: 1.0 },
-            Shape3d::Cone { radius: 0.5, height: 1.0 },
+            Shape3d::Sphere { radius: 0.5, segments: 0.0 },
+            Shape3d::Cylinder { radius: 0.5, height: 1.0, segments: 0.0 },
+            Shape3d::Cone { radius: 0.5, height: 1.0, segments: 0.0 },
             Shape3d::Torus { radius: 0.5, tube: 0.2 },
             Shape3d::Plane { width: 1.0, height: 1.0 },
         ] {

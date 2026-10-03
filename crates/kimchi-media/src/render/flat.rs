@@ -25,6 +25,8 @@ pub(crate) struct Flat<'a> {
     pub pictures: &'a mut dyn Pictures,
     /// Output pixels per project pixel (blur radii and shadow offsets scale with it).
     pub scale: f32,
+    /// Motion blur and other slow touches only for final frames.
+    pub quality: super::Quality,
 }
 
 /// Draws `scene` at scene time `t` onto `canvas`; `base` maps project pixels from the canvas
@@ -137,6 +139,9 @@ fn content(target: &mut Pixmap, l: &Layer, ts: Transform, alpha: f32, cx: &Cx, f
         LayerKind::Polygon { sides, radius, roundness } => paint::polygon(*sides as f32, *radius as f32, *roundness as f32),
         LayerKind::Star { points, radius, inner_radius } => paint::star(*points as f32, *radius as f32, *inner_radius as f32),
         LayerKind::Path { d, points, closed } => paint::svg_path(d, points, *closed),
+        // Drawn by the 2D engine's newer parts (compositions, particles); nulls and adjustment
+        // layers draw nothing of their own.
+        LayerKind::Null {} | LayerKind::Adjustment {} | LayerKind::Comp { .. } | LayerKind::Particles(_) => return,
         LayerKind::Text(t) => {
             text(target, l, t, ts, alpha);
             return;

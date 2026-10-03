@@ -74,6 +74,9 @@ pub struct ClipPatch {
     /// `Some(None)` removes the transition.
     #[serde(default)]
     pub transition: Option<Option<crate::transition::Transition>>,
+    /// Motion clips: frames rendered ahead (`Some(None)` goes back to drawing it live).
+    #[serde(default)]
+    pub rendered: Option<Option<crate::model::Rendered>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -605,6 +608,12 @@ impl Project {
                 tr.duration = tr.duration.clamp(MIN_CLIP, 30.0);
                 tr
             });
+        }
+        if let Some(r) = &p.rendered {
+            if r.is_some() && !matches!(c.content, ClipContent::Motion { .. }) {
+                return Err(EditError::Invalid("only motion clips are rendered ahead".into()));
+            }
+            c.rendered = r.clone();
         }
         if let Some(style) = &p.text {
             match &mut c.content {

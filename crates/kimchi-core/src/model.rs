@@ -253,6 +253,39 @@ pub struct Clip {
     /// How the clip comes in at its start (see [`crate::transition`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<Transition>,
+    /// Motion clips rendered ahead of time: the frames to play instead of drawing the scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered: Option<Rendered>,
+}
+
+/// A motion clip rendered ahead ("Render" on the timeline): its frames in a file, played instead
+/// of drawing the scene while they still match it. When the scene (or the project's size or
+/// frame rate, or a picture it uses) changes, the key no longer matches and the clip is drawn
+/// live again until it is rendered again. Clips that aren't rendered are drawn live in the
+/// preview (fast settings) and at full quality in the export.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Rendered {
+    /// The video file (lossless, with transparency).
+    pub file: String,
+    /// What it was made from (see `kimchi_media::render::cache::key`).
+    pub key: String,
+    /// Scene time of the first frame.
+    pub from: f64,
+    pub fps: f64,
+    pub frames: u64,
+    pub width: u32,
+    pub height: u32,
+    /// The engine that made it (`standard` or `path`).
+    pub engine: String,
+}
+
+impl Rendered {
+    /// Does it have the frame for scene time `t`?
+    pub fn covers(&self, t: f64) -> bool {
+        let i = ((t - self.from) * self.fps).round();
+        i >= 0.0 && i < self.frames as f64
+    }
 }
 
 fn one() -> f64 {
@@ -281,6 +314,7 @@ impl Clip {
             keyframes: Keyframes::new(),
             effects: Effects::default(),
             transition: None,
+            rendered: None,
         }
     }
 

@@ -395,7 +395,7 @@ mod tests {
 
     fn draw(scene: serde_json::Value, t: f64) -> Pixmap {
         let Scene::Space(s) = Scene::from_json(&scene).unwrap() else { panic!("3d") };
-        Space::cpu().render(&s, t, 160, 90, &mut None_).unwrap()
+        Space::cpu().render(&s, t, 160, 90, &mut None_, Quality::Preview).unwrap()
     }
 
     fn rgba(p: &Pixmap, x: u32, y: u32) -> [u8; 4] {
@@ -446,8 +446,8 @@ mod tests {
                 {"id": "f", "type": "plane", "width": 8, "height": 8, "rotation": [-90, 0, 0], "position": [0, -1.6, 0]}
             ]}))
         .unwrap() else { panic!("3d") };
-        let g = gpu.render(&s, 0.0, 160, 90, &mut None_).unwrap();
-        let c = Space::cpu().render(&s, 0.0, 160, 90, &mut None_).unwrap();
+        let g = gpu.render(&s, 0.0, 160, 90, &mut None_, Quality::Preview).unwrap();
+        let c = Space::cpu().render(&s, 0.0, 160, 90, &mut None_, Quality::Preview).unwrap();
         if let Some(dir) = std::env::var_os("KIMCHI_DUMP") {
             g.save_png(std::path::Path::new(&dir).join("gpu.png")).unwrap();
             c.save_png(std::path::Path::new(&dir).join("cpu.png")).unwrap();

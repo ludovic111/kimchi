@@ -3,7 +3,9 @@
 pub mod anim;
 pub mod edit;
 pub mod effects;
+pub mod expr;
 pub mod history;
+pub mod mesh;
 pub mod model;
 pub mod motion;
 pub mod path;
