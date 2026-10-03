@@ -67,11 +67,11 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             };
             let smooth = *auto_smooth;
             let mut m = shape_mesh(&obj.shape).ok_or("not a mesh")?;
-            let sel = selection(&a, &m)?;
             let name = match a.str("op")? {
                 "move" => "translate",
                 other => other,
             };
+            let sel = selection(&a, &m, name)?;
             let params = a.object("params").cloned().unwrap_or_default();
             let op = EditOp::new(name, params);
             let new_sel = ops::apply(&mut m, &sel, &op)?;
@@ -128,10 +128,10 @@ fn others<'a>(sp: &'a Scene3d, t: f64, id: &'a str) -> impl Fn(&str) -> Option<P
 }
 
 /// The selection the command names: indices, or a helper (`select`).
-fn selection(a: &Args, m: &PolyMesh) -> CmdResult<Selection> {
+fn selection(a: &Args, m: &PolyMesh, op: &str) -> CmdResult<Selection> {
     if let Some(v) = a.get("select") {
         let pick: Select = serde_json::from_value(v.clone()).map_err(|e| format!("select: {e} (fields: all, vertices, faces, facing, angle, inside, edgeLoop, edgeRing, linked)"))?;
-        return pick.resolve(m);
+        return pick.resolve_for(m, op);
     }
     let list = |name: &str, max: usize| -> CmdResult<Vec<u32>> {
         let Some(arr) = a.array(name) else { return Ok(vec![]) };

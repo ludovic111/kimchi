@@ -598,6 +598,33 @@ fn bevel_subdivide_loop_cut() {
 }
 
 #[test]
+fn loop_cut_across_an_edge_ring_selection() {
+    // On a box an edge ring's vertices are all eight corners: the cut must still cross the ring
+    // that was asked for (new vertices along x for an edge along x), not any ring.
+    let mut m = cube(2.0);
+    let along_x = m.edges().into_iter().find(|e| {
+        let (a, b) = (m.positions[e.a as usize], m.positions[e.b as usize]);
+        (a[0] - b[0]).abs() > 1.0 && a[1] > 0.0 && a[2] > 0.0
+    });
+    let e = along_x.unwrap();
+    let pick: ops::Select = serde_json::from_value(json!({"edgeRing": [e.a, e.b]})).unwrap();
+    let sel = pick.resolve_for(&m, "loopCut").unwrap();
+    let op: ops::EditOp = serde_json::from_value(json!({"type": "loopCut", "cuts": 2})).unwrap();
+    let out = ops::apply(&mut m, &sel, &op).unwrap();
+    assert_eq!(out.vertices.len(), 8);
+    for &v in &out.vertices {
+        let x = m.positions[v as usize][0];
+        assert!(close(x.abs(), 1.0 / 3.0, 1e-9), "cut across x: {:?}", m.positions[v as usize]);
+    }
+    assert!(m.is_closed());
+    // Corners of several rings at once can't say where to cut.
+    let mut m = cube(2.0);
+    let all = Selection::all(&m);
+    let err = ops::loop_cut(&mut m, &all, 1, 0.0).unwrap_err();
+    assert!(err.contains("one ring"), "{err}");
+}
+
+#[test]
 fn delete_dissolve_merge() {
     let mut m = cube(1.0);
     { let sel = top_face(&m); ops::delete(&mut m, &sel, ops::Element::Faces).unwrap(); }

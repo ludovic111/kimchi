@@ -310,6 +310,23 @@ impl Select {
         let s = s.normalized();
         Ok(if self.linked { select_linked(m, &s) } else { s })
     }
+
+    /// The selection for one operation: a loop cut across `edgeRing` cuts that ring (its
+    /// vertices alone can't say which ring: on a box, they are every corner).
+    pub fn resolve_for(&self, m: &PolyMesh, op: &str) -> Result<Selection, String> {
+        if op == "loopCut"
+            && let Some([a, b]) = self.edge_ring
+            && self.vertices.is_empty()
+            && self.faces.is_empty()
+        {
+            let nv = m.positions.len() as u32;
+            if a >= nv || b >= nv || !m.edge_faces().contains_key(&(a.min(b), a.max(b))) {
+                return Err(format!("{a}–{b} is not an edge of the mesh"));
+            }
+            return Ok(Selection::of_vertices([a, b]).normalized());
+        }
+        self.resolve(m)
+    }
 }
 
 // ---- small helpers --------------------------------------------------------------------------
@@ -752,6 +769,13 @@ pub fn loop_cut(m: &mut PolyMesh, sel: &Selection, cuts: usize, slide: f64) -> R
     let (ring, ring_faces) = edge_ring_edges(m, a, b);
     if ring_faces.is_empty() {
         return Err(format!("the edge {a}–{b} has no quads beside it to cut across"));
+    }
+    // Several selected edges must be one ring, or which one to cut is a guess.
+    let in_ring: HashSet<(u32, u32)> = ring.iter().map(|&(s, e)| (s.min(e), s.max(e))).collect();
+    if let Some(&(x, y)) = edges.iter().find(|&&(x, y)| !in_ring.contains(&(x.min(y), x.max(y)))) {
+        return Err(format!(
+            "a loop cut crosses one ring of edges, and the selection has edges of several ({a}–{b} and {x}–{y}): select the two vertices of one edge the cut should cross"
+        ));
     }
     let c = cuts.clamp(1, 64);
     let slide = if slide.is_finite() { slide.clamp(-0.99, 0.99) } else { 0.0 };
