@@ -117,6 +117,28 @@ fn prop_reads_other_layers() {
 }
 
 #[test]
+fn prop_sees_formulas_on_parts_and_wholes() {
+    // `position` read while only `x` has a formula (a ping-pong loop), and the other way round.
+    let s = flat(json!({"layers": [
+        {"id": "ball", "type": "ellipse", "y": 10, "keyframes": {"x": [[0, 0], [1, 100]]}, "expressions": {"x": "loopOut('pingpong')"}},
+        {"id": "box", "type": "rect", "expressions": {"position": "[3, 4]"}},
+        {"id": "follow", "type": "rect", "expressions": {"position": "prop('ball', 'position') + [0, 80]", "rotation": "prop('box', 'y')"}}
+    ]}));
+    let l = s.layers_at(1.5);
+    assert_eq!(layer(&l, "ball").x, 50.0);
+    let f = layer(&l, "follow");
+    assert_eq!((f.x, f.y), (50.0, 90.0), "the ball's formula on x shows through its position");
+    assert_eq!(f.rotation, 4.0, "a part of a whole's formula");
+    let s = space(json!({"objects": [
+        {"id": "a", "type": "box", "expressions": {"x": "5", "position.y": "6"}},
+        {"id": "b", "type": "box", "expressions": {"position": "prop('a', 'position')", "rotation.x": "prop('a', 'position.x')"}}
+    ]}));
+    let objs = s.objects_at(0.0);
+    assert_eq!(objs[1].position.0, [5.0, 6.0, 0.0]);
+    assert_eq!(objs[1].rotation.0[0], 5.0, "x and position.x are one part");
+}
+
+#[test]
 fn circles_and_errors_keep_the_keyframed_value() {
     let s = flat(json!({"layers": [
         {"id": "a", "type": "rect", "x": 5, "expressions": {"x": "prop(\"b\", \"x\") + 1"}},

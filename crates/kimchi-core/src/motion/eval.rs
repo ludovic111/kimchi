@@ -902,12 +902,54 @@ fn prop_value(world: &dyn World, id: &str, name: &str, t: f64, chain: &Chain) ->
         let hint = crate::closest(name, &names).map(|c| format!(" Did you mean `{c}`?")).unwrap_or_default();
         return Err(format!("\"{id}\" has no property `{name}`.{hint}"));
     };
-    let Some(src) = found.item.expressions().and_then(|e| e.get(name)) else { return Ok(now) };
+    let Some(src) = found.item.expressions().and_then(|e| e.get(name)) else { return parts_driven(world, &found.item, id, name, now, t, chain) };
     let link = Chain { id, name, up: Some(chain) };
     let keys = found.item.keyframes().get(name).map_or(&[][..], Vec::as_slice);
     let ctx = PropCtx { world, item: found.item, name, time: t, now: Some(now.clone()), keys, index: found.index, dur: found.dur, seed: seed(id, name), chain: &link };
     let out = expr::eval(&*expr::compile(src)?, &ctx).map_err(|e| format!("its formula: {e}"))?;
     Ok(coerce(out, Some(&now)))
+}
+
+/// Vector properties whose parts have names of their own (`x` is `position.x` is `position[0]`).
+const VECTORS: &[(&str, &[&[&str]])] = &[
+    ("position", &[&["x", "position.x"], &["y", "position.y"], &["z", "position.z"]]),
+    ("rotation", &[&["rotation.x"], &["rotation.y"], &["rotation.z"]]),
+    ("scale", &[&["scale.x"], &["scale.y"], &["scale.z"]]),
+    ("target", &[&["target.x"], &["target.y"], &["target.z"]]),
+];
+
+/// `name` without a formula of its own, when a formula drives it through another name: a part
+/// read while the whole vector has a formula (`x` of a `position` formula), the whole read
+/// while parts have formulas, or a part under its other name (`position.x` for `x`).
+fn parts_driven(world: &dyn World, item: &Item, id: &str, name: &str, now: KeyValue, t: f64, chain: &Chain) -> Result<KeyValue, String> {
+    let Some(exprs) = item.expressions().filter(|e| !e.is_empty()) else { return Ok(now) };
+    for (whole, parts) in VECTORS {
+        if name == *whole {
+            let KeyValue::Vector(mut v) = now else { return Ok(now) };
+            for (i, names) in parts.iter().enumerate() {
+                if i < v.len()
+                    && let Some(part) = names.iter().find(|p| exprs.contains_key(**p))
+                    && let Some(n) = prop_value(world, id, part, t, chain)?.as_f64()
+                {
+                    v[i] = n;
+                }
+            }
+            return Ok(KeyValue::Vector(v));
+        }
+        if let Some(i) = parts.iter().position(|names| names.contains(&name)) {
+            if let Some(alias) = parts[i].iter().find(|p| **p != name && exprs.contains_key(**p)) {
+                return prop_value(world, id, alias, t, chain);
+            }
+            if exprs.contains_key(*whole) {
+                return Ok(match prop_value(world, id, whole, t, chain)? {
+                    KeyValue::Vector(v) => v.get(i).map_or(now, |n| KeyValue::Number(*n)),
+                    _ => now,
+                });
+            }
+            return Ok(now);
+        }
+    }
+    Ok(now)
 }
 
 /// Something with properties by keyframe name.
