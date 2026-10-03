@@ -4,7 +4,7 @@
 //! bounded buffer (playback and export ask for frames in order). [`grab`] decodes one frame
 //! (scrubbing). Stills are decoded once and kept.
 
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -29,7 +29,7 @@ impl Drop for Proc {
 
 fn command(tools: &Tools, args: &[String]) -> MediaResult<Child> {
     let mut cmd = Command::new(&tools.ffmpeg);
-    cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error"]).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error"]).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -38,6 +38,19 @@ fn command(tools: &Tools, args: &[String]) -> MediaResult<Child> {
     cmd.spawn().map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => MediaError::ToolsMissing,
         _ => MediaError::Io(e),
+    })
+}
+
+/// Drain stderr while frames are read; retain only the last lines of ffmpeg's explanation.
+fn read_stderr(child: &mut Child) -> std::thread::JoinHandle<String> {
+    let stderr = child.stderr.take().expect("piped stderr");
+    std::thread::spawn(move || {
+        let mut tail = std::collections::VecDeque::new();
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if tail.len() == 60 { tail.pop_front(); }
+            tail.push_back(line);
+        }
+        Vec::from(tail).join("\n")
     })
 }
 
@@ -97,9 +110,12 @@ pub(crate) fn grab(tools: &Tools, path: &Path, time: Option<f64>, w: u32, h: u32
     args.extend(["-i".into(), path.to_string_lossy().into_owned(), "-an".into(), "-frames:v".into(), "1".into()]);
     args.extend(["-vf".into(), scale(w, h), "-f".into(), "rawvideo".into(), "-".into()]);
     let mut child = Proc(command(tools, &args)?);
+    let errors = read_stderr(&mut child.0);
     let mut out = Vec::with_capacity(w as usize * h as usize * 4);
     child.0.stdout.take().expect("piped").read_to_end(&mut out)?;
     let status = child.0.wait()?;
+    let errors = errors.join().unwrap_or_default();
+    if !status.success() { return Err(MediaError::Ffmpeg(crate::process::summarize(&errors, status))); }
     let len = w as usize * h as usize * 4;
     if out.len() < len {
         // Seeking at (or past) the very end gives nothing: take the last frame instead.
@@ -127,8 +143,12 @@ fn grab_last(tools: &Tools, path: &Path, before: f64, w: u32, h: u32) -> MediaRe
         "-".into(),
     ];
     let mut child = Proc(command(tools, &args)?);
+    let errors = read_stderr(&mut child.0);
     let mut out = vec![];
     child.0.stdout.take().expect("piped").read_to_end(&mut out)?;
+    let status = child.0.wait()?;
+    let errors = errors.join().unwrap_or_default();
+    if !status.success() { return Err(MediaError::Ffmpeg(crate::process::summarize(&errors, status))); }
     let len = w as usize * h as usize * 4;
     let n = out.len() / len;
     if n == 0 {
@@ -140,7 +160,7 @@ fn grab_last(tools: &Tools, path: &Path, before: f64, w: u32, h: u32) -> MediaRe
 
 /// A clip's pictures, in order, at a fixed rate.
 pub(crate) struct VideoStream {
-    frames: Receiver<Pixmap>,
+    frames: Receiver<MediaResult<Pixmap>>,
     _proc: Arc<std::sync::Mutex<Proc>>,
     /// Owner-local time (clip or scene seconds) of frame 0.
     first: f64,
@@ -166,10 +186,12 @@ impl VideoStream {
         args.push(format!("{setpts},fps={fps},{}", scale(w, h)));
         args.extend(["-f".into(), "rawvideo".into(), "-".into()]);
         let mut child = command(tools, &args)?;
+        let errors = read_stderr(&mut child);
         let mut stdout = child.stdout.take().expect("piped");
         let proc = Arc::new(std::sync::Mutex::new(Proc(child)));
-        let (tx, rx): (SyncSender<Pixmap>, Receiver<Pixmap>) = sync_channel(AHEAD);
+        let (tx, rx): (SyncSender<MediaResult<Pixmap>>, Receiver<MediaResult<Pixmap>>) = sync_channel(AHEAD);
         let len = w as usize * h as usize * 4;
+        let worker_proc = proc.clone();
         std::thread::Builder::new()
             .name("kimchi-decode".into())
             .spawn(move || {
@@ -179,9 +201,14 @@ impl VideoStream {
                         break;
                     }
                     let Some(p) = pixmap(buf, w, h) else { break };
-                    if tx.send(p).is_err() {
+                    if tx.send(Ok(p)).is_err() {
                         break; // the stream was dropped
                     }
+                }
+                let status = worker_proc.lock().unwrap().0.wait();
+                let errors = errors.join().unwrap_or_default();
+                if let Ok(status) = status && !status.success() {
+                    let _ = tx.send(Err(MediaError::Ffmpeg(crate::process::summarize(&errors, status))));
                 }
             })
             .map_err(MediaError::Io)?;
@@ -189,23 +216,30 @@ impl VideoStream {
     }
 
     /// The frame for owner-local time `local`; the last one once the media has ended.
-    pub(crate) fn at(&mut self, local: f64) -> Option<Arc<Pixmap>> {
+    pub(crate) fn at(&mut self, local: f64) -> MediaResult<Option<Arc<Pixmap>>> {
         let want = ((local - self.first) * self.fps).round().max(0.0) as u64;
         while !self.ended && self.next <= want {
             match self.frames.recv() {
-                Ok(p) => {
+                Ok(Ok(p)) => {
                     self.last = Some(Arc::new(p));
                     self.next += 1;
                 }
+                Ok(Err(e)) => return Err(e),
                 Err(_) => self.ended = true,
             }
         }
-        self.last.clone()
+        Ok(self.last.clone())
     }
 
     /// Can it still serve `local` (not already past it)?
     pub(crate) fn serves(&self, local: f64) -> bool {
         let want = ((local - self.first) * self.fps).round();
         want >= self.next as f64 - 1.0
+    }
+}
+
+impl Drop for VideoStream {
+    fn drop(&mut self) {
+        let _ = self._proc.lock().unwrap().0.kill();
     }
 }

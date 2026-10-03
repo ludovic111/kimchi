@@ -356,7 +356,7 @@ impl Renderer {
         if !self.streams.get(&key).is_some_and(|s| s.serves(local)) {
             self.start_stream(clip, key.clone(), local)?;
         }
-        Ok(self.streams.get_mut(&key).and_then(|s| s.at(local)))
+        self.streams.get_mut(&key).map(|s| s.at(local)).unwrap_or(Ok(None))
     }
 
     /// Decodes, in parallel, the frame every visible video clip shows at `t`.
@@ -439,7 +439,7 @@ impl ScenePictures<'_> {
                         let s = VideoStream::start(&self.r.tools, &path, time.max(0.0), 1.0, self.r.fps, dw, dh, time.max(0.0)).ok()?;
                         self.r.streams.insert(key.clone(), s);
                     }
-                    self.r.streams.get_mut(&key)?.at(time)?
+                    self.r.streams.get_mut(&key)?.at(time).ok()??
                 } else {
                     Arc::new(source::grab(&self.r.tools, &path, Some(time.max(0.0)), dw, dh).ok()?)
                 }
