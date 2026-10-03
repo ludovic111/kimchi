@@ -16,10 +16,12 @@ use serde_json::{Map, Value, json};
 
 pub use kimchi_control;
 
-/// Where commands run.
+/// Where commands run. Calls may overlap (`kimchi-mcp` serves requests concurrently).
 pub enum Backend {
-    /// The running app. Connects on the first call and again after a lost connection.
-    Live { client: Option<Client>, name: &'static str },
+    /// The running app. Connects on the first call and again after a lost connection; each call
+    /// in flight has a connection of its own (a bridge connection answers one request at a time),
+    /// and idle ones are kept for the next calls.
+    Live { idle: std::sync::Mutex<Vec<Client>>, name: &'static str },
     /// A session in this process: on a project file (`file`) or on the library.
     Local { session: Arc<Session>, source: Source, file: Option<PathBuf> },
 }
@@ -29,12 +31,12 @@ impl Backend {
     /// (`cli`, `mcp` or `agent`): agent and MCP requests are held to the agent permissions.
     pub async fn live(name: &'static str) -> CmdResult<Self> {
         let client = Client::connect(&bridge::default_control_path(), name).await?;
-        Ok(Backend::Live { client: Some(client), name })
+        Ok(Backend::Live { idle: std::sync::Mutex::new(vec![client]), name })
     }
 
     /// The running app, connecting on the first call (the MCP server may start before the app).
     pub fn live_lazy(name: &'static str) -> Self {
-        Backend::Live { client: None, name }
+        Backend::Live { idle: std::sync::Mutex::new(vec![]), name }
     }
 
     /// A session on the library in this process. Refused while the app runs: it owns the
@@ -81,15 +83,19 @@ impl Backend {
         }
     }
 
-    pub async fn call(&mut self, command: &str, params: Value) -> CmdResult {
+    pub async fn call(&self, command: &str, params: Value) -> CmdResult {
         match self {
-            Backend::Live { client, name } => {
-                if client.is_none() {
-                    *client = Some(Client::connect(&bridge::default_control_path(), name).await?);
-                }
-                let result = client.as_mut().expect("connected above").call(command, params).await;
-                if result.as_ref().is_err_and(|e| e.starts_with("Lost the connection") || e.starts_with("kimchi closed the connection")) {
-                    *client = None;
+            Backend::Live { idle, name } => {
+                let taken = idle.lock().unwrap_or_else(|e| e.into_inner()).pop();
+                let mut client = match taken {
+                    Some(c) => c,
+                    None => Client::connect(&bridge::default_control_path(), name).await?,
+                };
+                // A call dropped half-way (cancelled) drops its connection with it, so no
+                // late answer is ever read as another call's.
+                let result = client.call(command, params).await;
+                if !result.as_ref().is_err_and(|e| e.starts_with("Lost the connection") || e.starts_with("kimchi closed the connection")) {
+                    idle.lock().unwrap_or_else(|e| e.into_inner()).push(client);
                 }
                 result
             }
@@ -264,7 +270,30 @@ pub fn parse_args(args: &[String]) -> Result<Invocation, String> {
             }
         }
     }
+    absolute_paths(&mut inv.params);
     Ok(inv)
+}
+
+/// Paths are relative to where the CLI runs, not to the app (whose folder is `/` when it was
+/// opened from the Dock): `path`, `paths` and a `lut` given as a path become absolute.
+fn absolute_paths(params: &mut serde_json::Map<String, Value>) {
+    let fix = |v: &mut Value| {
+        if let Value::String(s) = v
+            && !s.is_empty()
+            && !s.contains("://")
+            && let Ok(p) = absolute(Path::new(s.as_str()))
+        {
+            *s = p.to_string_lossy().into_owned();
+        }
+    };
+    for key in ["path", "lut"] {
+        if let Some(v) = params.get_mut(key) {
+            fix(v);
+        }
+    }
+    if let Some(Value::Array(list)) = params.get_mut("paths") {
+        list.iter_mut().for_each(fix);
+    }
 }
 
 fn kind_of(command: &str, key: &str) -> Option<Kind> {
@@ -431,9 +460,17 @@ pub fn mcp_config() -> Value {
     })
 }
 
+/// Quoted for this computer's shell: single quotes on Unix, double quotes on Windows (cmd and
+/// PowerShell don't take single-quoted paths; `"` can't appear in a Windows path).
 fn shell_quote(s: &str) -> String {
-    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+=:@,".contains(c)) {
+    quote_for(s, cfg!(windows))
+}
+
+fn quote_for(s: &str, windows: bool) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+=:@,".contains(c) || (windows && c == '\\')) {
         s.to_string()
+    } else if windows {
+        format!("\"{}\"", s.replace('"', "\\\""))
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
     }
@@ -466,6 +503,16 @@ mod tests {
         let inv = parse("export.start --path out.mp4 --wait no").unwrap();
         assert_eq!(inv.params["wait"], json!(false));
         assert!(parse("clip.addText --text").unwrap_err().contains("needs a value"));
+    }
+
+    #[test]
+    fn paths_are_made_absolute_where_the_cli_runs() {
+        let inv = parse("export.start path=out.mp4").unwrap();
+        let p = PathBuf::from(inv.params["path"].as_str().unwrap());
+        assert!(p.is_absolute() && p.ends_with("out.mp4"), "{p:?}");
+        let inv = parse("media.import --paths a.mp4 --paths /b.mp4").unwrap();
+        assert!(inv.params["paths"][0].as_str().is_some_and(|p| Path::new(p).is_absolute()));
+        assert_eq!(inv.params["paths"][1], json!("/b.mp4"));
     }
 
     #[test]
@@ -515,6 +562,14 @@ mod tests {
     fn typos_get_a_suggestion() {
         assert!(unknown_command("clip.addTxt").contains("clip.addText"));
         assert!(unknown_command("comands").contains("`commands`"));
+    }
+
+    #[test]
+    fn quoting_follows_the_shell() {
+        assert_eq!(quote_for("/usr/bin/kimchi-mcp", false), "/usr/bin/kimchi-mcp");
+        assert_eq!(quote_for("/Apps/My kimchi/it's", false), "'/Apps/My kimchi/it'\\''s'");
+        assert_eq!(quote_for(r"C:\kimchi\kimchi-mcp.exe", true), r"C:\kimchi\kimchi-mcp.exe");
+        assert_eq!(quote_for(r"C:\Program Files\kimchi\kimchi-mcp.exe", true), r#""C:\Program Files\kimchi\kimchi-mcp.exe""#);
     }
 
     #[test]

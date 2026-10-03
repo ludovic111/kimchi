@@ -199,10 +199,106 @@ fn checkpoints_revert_as_one_undoable_step() {
     let cp = ed.checkpoint();
     ed.apply(&Edit::DeleteClips { clip_ids: vec![id], ripple: false }, None).unwrap();
     assert!(ed.project().clip(id).is_none());
-    assert!(ed.revert_to(cp));
+    assert!(ed.revert_to(cp).unwrap());
     assert!(ed.project().clip(id).is_some());
     assert!(ed.undo());
     assert!(ed.project().clip(id).is_none());
+    // Ids are unique in the process: another editor's checkpoint isn't this one's.
+    let mut other = Editor::new(Project::new("Other", ProjectSettings::default()));
+    let theirs = other.checkpoint();
+    assert_ne!(theirs, cp);
+    assert!(!ed.revert_to(theirs).unwrap());
+}
+
+#[test]
+fn a_failed_edit_changes_nothing() {
+    let (mut p, a) = setup();
+    let first = insert(&mut p, &a, 0.0);
+    let second = insert(&mut p, &a, 20.0);
+    let video = p.locate_clip(first).map(|(ti, _)| p.tracks[ti].id).unwrap();
+    let audio = p.tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().id;
+    let mut ed = Editor::new(p);
+    let before = ed.project().clone();
+    // The first move is fine, the second can't go on an audio track.
+    let moves = vec![ClipMove { clip_id: first, track_id: video, start: 40.0 }, ClipMove { clip_id: second, track_id: audio, start: 0.0 }];
+    assert!(ed.apply(&Edit::MoveClips { moves }, None).is_err());
+    assert_eq!(ed.project(), &before);
+    assert_eq!(ed.project().clip(first).unwrap().start, 0.0);
+    assert!(!ed.can_undo());
+}
+
+#[test]
+fn a_nested_rollback_keeps_the_outer_batch() {
+    let (p, _) = setup();
+    let mut ed = Editor::new(p);
+    ed.begin_batch("project.batch", "agent");
+    ed.apply(&Edit::AddMarker { time: 1.0, label: "outer".into() }, None).unwrap();
+    ed.begin_batch("clip.setEffects", "agent");
+    ed.apply(&Edit::AddMarker { time: 2.0, label: "inner".into() }, None).unwrap();
+    ed.rollback_batch();
+    assert!(ed.in_batch());
+    assert_eq!(ed.project().markers.iter().map(|m| m.label.as_str()).collect::<Vec<_>>(), ["outer"]);
+    ed.end_batch();
+    assert!(!ed.in_batch());
+    assert_eq!(ed.undo_steps().len(), 1);
+    // A rolled-back inner batch that made the outer's first change takes the step with it.
+    ed.begin_batch("project.batch", "agent");
+    ed.begin_batch("inner", "agent");
+    ed.apply(&Edit::AddMarker { time: 3.0, label: "x".into() }, None).unwrap();
+    ed.rollback_batch();
+    ed.apply(&Edit::AddMarker { time: 4.0, label: "y".into() }, None).unwrap();
+    ed.end_batch();
+    assert_eq!(ed.undo_steps().len(), 2);
+    assert!(ed.undo());
+    assert_eq!(ed.project().markers.len(), 1);
+}
+
+#[test]
+fn outsiders_cant_edit_into_an_open_batch() {
+    let (p, _) = setup();
+    let mut ed = Editor::new(p);
+    ed.begin_batch("project.batch", "agent");
+    ed.set_outsider(true);
+    assert_eq!(ed.apply(&Edit::AddMarker { time: 1.0, label: "w".into() }, None), Err(EditError::Busy("agent".into())));
+    ed.set_outsider(false);
+    ed.apply(&Edit::AddMarker { time: 1.0, label: "a".into() }, None).unwrap();
+    ed.end_batch();
+    ed.set_outsider(true);
+    ed.apply(&Edit::AddMarker { time: 2.0, label: "w".into() }, None).unwrap();
+}
+
+#[test]
+fn slivers_times_and_gaps_are_handled() {
+    let (mut p, a) = setup();
+    let id = insert(&mut p, &a, 0.0);
+    let track = p.locate_clip(id).map(|(ti, _)| p.tracks[ti].id).unwrap();
+    // Overwriting all but a hundredth of a second drops the sliver.
+    let over = Clip::new("T", 0.01, 20.0, ClipContent::Solid { color: "#000000".into() });
+    p.apply(&Edit::AddClip { track_id: Some(track), clip: over }).unwrap();
+    assert!(p.clip(id).is_none());
+    // A clip already a sliver against its neighbour can't be trimmed, and doesn't panic.
+    let t = p.track_mut(track).unwrap();
+    let mut sliver = Clip::new("s", 20.01, 0.005, ClipContent::Solid { color: "#000000".into() });
+    sliver.id = new_id();
+    let sid = sliver.id;
+    t.clips.push(sliver);
+    p.apply(&Edit::TrimClip { clip_id: sid, edge: Edge::Start, time: 25.0 }).unwrap();
+    // Close gap inside a clip.
+    let e = p.apply(&Edit::CloseGap { track_id: track, time: 5.0 }).unwrap_err();
+    assert!(e.to_string().contains("no gap"), "{e}");
+    for edit in [
+        Edit::AddMarker { time: f64::INFINITY, label: "x".into() },
+        Edit::AddMarker { time: 1e300, label: "x".into() },
+        Edit::InsertAsset { asset_id: a.id, track_id: None, start: f64::NAN },
+        Edit::MoveClips { moves: vec![ClipMove { clip_id: sid, track_id: track, start: 1e12 }] },
+    ] {
+        assert!(p.apply(&edit).is_err(), "{edit:?}");
+    }
+    // Faster than the media left after the in point allows.
+    let id = insert(&mut p, &a, 100.0);
+    p.clip_mut(id).unwrap().in_point = 9.999;
+    p.clip_mut(id).unwrap().duration = 0.001;
+    assert!(p.apply(&Edit::UpdateClip { clip_id: id, patch: ClipPatch { speed: Some(16.0), ..Default::default() } }).is_err());
 }
 
 #[test]

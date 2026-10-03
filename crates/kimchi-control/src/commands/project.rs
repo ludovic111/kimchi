@@ -1,12 +1,17 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use kimchi_core::{ClipContent, Edit, Fit, MediaKind, Project, ProjectSettings, Transform};
 use serde_json::{Value, json};
 
 use crate::registry::{self, Args, Ctx};
 use crate::resolve;
-use crate::session::{CmdResult, Location, Session, err, read_project_file, write_project_file};
+use crate::commands::media::absolute;
+use crate::session::{CmdResult, Location, Session, Source, err, read_project_file, write_project_file};
+
+/// How long `project.batch` waits for another batch to end.
+const BATCH_WAIT: Duration = Duration::from_secs(30);
 
 pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
     match cx.spec.name {
@@ -53,7 +58,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         }
         "project.open" => {
             if let Some(path) = a.opt_str("path") {
-                let path = PathBuf::from(path);
+                let path = absolute(path)?;
                 let project = read_project_file(&path)?;
                 let v = json!({ "projectId": project.id, "name": project.name, "path": path });
                 s.open_doc(project, Location::File(path));
@@ -61,10 +66,8 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             }
             let key = a.opt_str("projectId").ok_or("Give projectId (from project.list) or path (a project file).")?;
             let id = resolve::project(&s.library.list(), key)?;
-            let project = s.library.load(id).map_err(|e| format!("Couldn't open the project: {e}"))?;
-            let v = json!({ "projectId": id, "name": project.name });
-            s.open_doc(project, Location::Library);
-            Ok(v)
+            let project = s.open_library_project(id)?;
+            Ok(json!({ "projectId": id, "name": project.name }))
         }
         "project.close" => {
             s.close_doc();
@@ -83,12 +86,8 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 Some(k) => resolve::project(&s.library.list(), k)?,
                 None => s.current_id().ok_or(crate::session::NO_PROJECT)?,
             };
-            let mut p = if s.current_id() == Some(id) { s.project()? } else { s.library.load(id).map_err(err)? };
-            p.id = kimchi_core::new_id();
-            p.name = format!("{} copy", p.name);
-            p.created_at = chrono::Utc::now();
-            p.updated_at = p.created_at;
-            s.library.save(&p).map_err(err)?;
+            let p = if s.current_id() == Some(id) { s.project()? } else { s.library.load(id).map_err(err)? };
+            let p = duplicate(s, p)?;
             Ok(json!(kimchi_core::store::summarize(&p)))
         }
         "project.rename" => {
@@ -97,12 +96,13 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 Some(k) => resolve::project(&s.library.list(), k)?,
                 None => s.current_id().ok_or(crate::session::NO_PROJECT)?,
             };
-            if s.current_id() == Some(id) {
+            // The name as the project now has it (an open project may be a file outside the library).
+            let name = if s.current_id() == Some(id) {
                 s.apply(cx.label(), cx.source, &edit, a.coalesce())?;
+                s.read(|ed| ed.project().name.clone())?
             } else {
-                s.with_project(id, |ed| ed.apply(&edit, None))?.map_err(err)?;
-            }
-            let name = s.library.load(id).map(|p| p.name).map_err(err)?;
+                s.with_project(id, |ed| ed.apply(&edit, None).map(|_| ed.project().name.clone()))?.map_err(err)?
+            };
             Ok(json!({ "projectId": id, "name": name }))
         }
         "project.setSettings" => {
@@ -126,7 +126,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             Ok(json!(settings))
         }
         "project.saveAs" => {
-            let path = PathBuf::from(a.str("path")?);
+            let path = absolute(a.str("path")?)?;
             write_project_file(&path, &s.project()?)?;
             Ok(json!({ "path": path }))
         }
@@ -155,40 +155,140 @@ async fn batch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         registry::validate(spec, &params).map_err(|e| format!("commands[{i}]: {e}"))?;
         calls.push((spec, params));
     }
-    let open = s.is_open();
-    if open {
-        s.edit(cx.label(), cx.source, |ed| {
-            ed.begin_batch(label.clone(), cx.source.as_str());
-            Ok(())
-        })?;
-    }
-    let mut results = Vec::with_capacity(calls.len());
-    let mut failure = None;
-    for (i, (spec, params)) in calls.into_iter().enumerate() {
-        match registry::call_boxed(s, cx.source, spec, params).await {
-            Ok(v) => results.push(json!({ "command": spec.name, "ok": true, "result": v })),
-            Err(e) => {
-                results.push(json!({ "command": spec.name, "ok": false, "error": e }));
-                failure = Some(format!("commands[{i}] ({}) failed: {e}", spec.name));
-                if atomic {
-                    break;
+    // One batch at a time. Its commands run in its scope; changes from anyone else wait for it
+    // to end (or are refused while it is open), so its rollback never takes theirs with it.
+    let open = match s.current_id() {
+        Some(id) => {
+            let lock = tokio::time::timeout(BATCH_WAIT, s.batch_lock.clone().lock_owned())
+                .await
+                .map_err(|_| "Another project.batch is still running; try again when it ends.".to_string())?;
+            s.edit(cx.label(), cx.source, |ed| {
+                ed.begin_batch(label.clone(), cx.source.as_str());
+                Ok(())
+            })?;
+            Some(BatchGuard { s: s.clone(), id, label: cx.label(), source: cx.source, rollback: atomic, closed: false, _lock: lock })
+        }
+        None => None,
+    };
+    let (results, failure) = crate::session::batch_scope(async {
+        let mut results = Vec::with_capacity(calls.len());
+        let mut failure = None;
+        for (i, (spec, params)) in calls.into_iter().enumerate() {
+            match registry::call_boxed(s, cx.source, spec, params).await {
+                Ok(v) => results.push(json!({ "command": spec.name, "ok": true, "result": v })),
+                Err(e) => {
+                    results.push(json!({ "command": spec.name, "ok": false, "error": e }));
+                    failure = Some(format!("commands[{i}] ({}) failed: {e}", spec.name));
+                    if atomic {
+                        break;
+                    }
                 }
             }
         }
-    }
-    if open {
-        s.edit(cx.label(), cx.source, |ed| {
-            if failure.is_some() && atomic {
-                ed.rollback_batch();
-            } else {
-                ed.end_batch();
-            }
-            Ok(())
-        })?;
+        (results, failure)
+    })
+    .await;
+    if let Some(mut g) = open {
+        g.rollback = failure.is_some() && atomic;
+        g.close()?;
     }
     match failure {
         Some(e) if atomic => Err(format!("{e}. Nothing was changed.")),
         _ => Ok(json!({ "results": results })),
+    }
+}
+
+/// The open batch of a `project.batch`. Dropped before it was closed (the caller stopped
+/// waiting: an agent's Stop), it rolls back an atomic batch and ends any other, so the project
+/// is never left inside a batch nobody will end.
+struct BatchGuard {
+    s: Arc<Session>,
+    id: kimchi_core::Id,
+    label: &'static str,
+    source: Source,
+    rollback: bool,
+    closed: bool,
+    /// Released after the batch is closed (fields drop after `drop`).
+    _lock: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl BatchGuard {
+    fn close(&mut self) -> CmdResult<()> {
+        self.closed = true;
+        self.s.close_batch(self.id, self.label, self.source, self.rollback)
+    }
+}
+
+impl Drop for BatchGuard {
+    fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
+        if let Err(e) = self.s.close_batch(self.id, self.label, self.source, self.rollback) {
+            tracing::warn!("couldn't close an interrupted batch: {e}");
+        }
+    }
+}
+
+/// `project.duplicate`: a copy in the library with its own copy of the project's folder (the
+/// generated media, previews), so deleting the original leaves the copy whole.
+fn duplicate(s: &Session, mut p: Project) -> CmdResult<Project> {
+    let new = kimchi_core::new_id();
+    let (from, to) = (s.library.project_dir(p.id), s.library.project_dir(new));
+    if from.is_dir() {
+        copy_dir(&from, &to).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&to);
+            format!("Couldn't copy the project's media: {e}")
+        })?;
+        // Every path into the original's folder (media, previews, LUTs, pictures in scenes).
+        let mut v = serde_json::to_value(&p).map_err(err)?;
+        rebase(&mut v, &from.to_string_lossy(), &to.to_string_lossy());
+        p = serde_json::from_value(v).map_err(err)?;
+    }
+    p.id = new;
+    p.name = format!("{} copy", p.name);
+    p.created_at = chrono::Utc::now();
+    p.updated_at = p.created_at;
+    s.library.save(&p).map_err(|e| {
+        let _ = std::fs::remove_dir_all(&to);
+        err(e)
+    })?;
+    Ok(p)
+}
+
+/// Copies a project folder, without its document (saved afterwards) and temp files.
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let n = name.to_string_lossy();
+        if n == "project.json" || n.ends_with(".tmp") {
+            continue;
+        }
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir(&entry.path(), &to.join(&name))?;
+        } else if ty.is_file() {
+            std::fs::copy(entry.path(), to.join(&name))?;
+        }
+    }
+    Ok(())
+}
+
+/// Rewrites every string that is `from` or a path under it to the same path under `to`.
+fn rebase(v: &mut Value, from: &str, to: &str) {
+    match v {
+        Value::String(st) => {
+            if let Some(rest) = st.strip_prefix(from)
+                && (rest.is_empty() || rest.starts_with(['/', '\\']))
+            {
+                *st = format!("{to}{rest}");
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| rebase(x, from, to)),
+        Value::Object(o) => o.values_mut().for_each(|x| rebase(x, from, to)),
+        _ => {}
     }
 }
 

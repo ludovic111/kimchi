@@ -60,10 +60,12 @@ impl Library {
         let dir = self.project_dir(project.id);
         fs::create_dir_all(&dir)?;
         let json = serde_json::to_vec_pretty(project).map_err(io::Error::other)?;
-        // Write-then-rename so a crash never leaves a half-written project.
-        let tmp = dir.join(format!("{FILE}.tmp"));
-        fs::write(&tmp, json)?;
-        fs::rename(tmp, dir.join(FILE))
+        // Write-then-rename so a crash never leaves a half-written project; a temp name of its
+        // own so two writers never rename each other's half-written file.
+        let tmp = dir.join(tmp_name(FILE));
+        fs::write(&tmp, json).and_then(|()| fs::rename(&tmp, dir.join(FILE))).inspect_err(|_| {
+            let _ = fs::remove_file(&tmp);
+        })
     }
 
     pub fn load(&self, id: Id) -> io::Result<Project> {
@@ -88,6 +90,12 @@ impl Library {
         out.sort_by_key(|p| std::cmp::Reverse(p.updated_at));
         out
     }
+}
+
+/// `<name>.<pid>-<n>.tmp`, unique in this process and among processes.
+pub fn tmp_name(name: &str) -> String {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("{name}.{}-{}.tmp", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 pub fn summarize(p: &Project) -> ProjectSummary {

@@ -16,7 +16,7 @@ pub async fn speech_samples(tools: &Tools, project: &Project, range: Option<(f64
     if audible == 0 {
         return Ok(vec![0.0; (plan.duration * SPEECH_SAMPLE_RATE as f64) as usize]);
     }
-    let script = (plan.graph.len() > export::INLINE_GRAPH_MAX).then(|| std::env::temp_dir().join(format!("kimchi-speech-{}.txt", kimchi_core::new_id())));
+    let script = (plan.graph.len() > export::INLINE_GRAPH_MAX).then(|| export::script_path("speech")).transpose()?;
     if let Some(path) = &script {
         tokio::fs::write(path, &plan.graph).await?;
     }

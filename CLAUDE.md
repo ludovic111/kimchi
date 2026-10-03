@@ -47,6 +47,12 @@ Rules that keep it working:
   (re-copy when it changes). GPUI has no backdrop blur: tier 1 is translucent over the window's own
   backdrop (native blur behind on macOS), tiers 2–3 are their tint over the raised surface.
   `theme.rs` has the contrast test.
+- **Releases have notes**: the version's section at the top of `CHANGELOG.md` (a test checks it matches the
+  workspace version) is what "What's new" shows after an update and what the release workflow puts in
+  `latest.json`. Write it for people, in the same plain voice.
+- Logs and crash reports (`kimchi-control/src/diagnostics.rs`): `tracing` goes to `<data>/logs/kimchi.log` too, a
+  panic writes `logs/crashes/crash-*.txt`, a run that ends without quitting leaves `unclean-*.txt` at the next
+  start. Log with `tracing`, never `println!` (stdout is MCP's protocol in `kimchi-mcp`).
 - Testing the app: `source` an env that sets `KIMCHI_DATA_DIR`, `KIMCHI_CONFIG_DIR`, `LSUITE_HOME`,
   `KIMCHI_NO_UPDATE=1` to scratch folders, run `target/debug/kimchi`, drive it with
   `target/debug/kimchi-cli …`, look with `kimchi-cli ui.screenshot path=…`. Debug builds don't read
@@ -114,6 +120,21 @@ Captions tab (⌘5), a Captions row in the export dialog.
       through candle would be faster on Apple Silicon.
 - [ ] Not done: an eyedropper for the chroma key colour, word-level caption timing (captions are
       timed per segment, tightened to the speech's energy), a reversed waveform on reversed clips.
+
+## Stability pass, logs, what's new, updates everywhere (2026-10-03, 0.6.0, not released yet)
+
+A bug hunt over every crate (data loss in failed edits and batches, duplicates sharing media, panics on odd
+input, providers giving up on one network blip, Codex reaching the person's own MCP servers), media
+compatibility (EXIF photos, alpha WebM, HDR, NTSC, hundreds of cuts, odd paths), window fixes (shortcuts while
+typing or behind dialogs, Ctrl+Enter off macOS, focus, window buttons on Windows / client-decorated Linux), logs
+and crash reports (Settings › Diagnostics, Help menu, `app.logs` / `app.crashReports` / `app.diagnostics`),
+What's new (`app.whatsNew`, `CHANGELOG.md`), updates every 6 h with optional auto-install, Windows installs through
+the verified NSIS installer on restart or quit (`update::apply_on_quit`), `app.restart`.
+
+- [ ] Windows: launch the 0.6.0 build; check the window buttons, dragging by the top bar, and an update from 0.6.0
+      to the next release through the installer (untested: no Windows machine here).
+- [ ] macOS: look at What's new, Diagnostics and the toasts; check a SIGTERM (log out) leaves no "didn't quit
+      properly" notice.
 
 ## Next session
 

@@ -994,7 +994,7 @@ Font families text clips can use: the bundled ones (Manrope, IBM Plex Mono, Inst
 
 ### `app.settings`
 
-Every setting with its value (agent permissions, updates, appearance, default models). _(read only)_
+Every setting with its value (agent permissions, updates, appearance, default models, diagnostics). _(read only)_
 
 ### `app.setSetting`
 
@@ -1021,6 +1021,45 @@ Check GitHub Releases for a newer kimchi and report it. _(read only)_
 ### `app.installUpdate`
 
 Download, verify (signature) and install the update found by app.checkUpdates; kimchi restarts into it. _(changes things · permission: app control)_
+
+### `app.restart`
+
+Quit and start kimchi again (into an installed update, when there is one). _(changes things · permission: app control · needs the window)_
+
+### `app.whatsNew`
+
+Release notes: what changed in this version, in another (version), or in every version since one (since). Markdown, newest first. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `version` | string |  | One version, e.g. 0.5.0. Defaults to this one. |
+| `since` | string |  | Every release newer than this version, up to this one. |
+| `all` | boolean |  | Every release. |
+
+### `app.diagnostics`
+
+What a bug report needs: version, system, ffmpeg, 3D renderer, folders, log level, the log file and recent crash reports. Contains no keys or project content. _(read only)_
+
+### `app.logs`
+
+kimchi's log files and the last lines of this run's log (or of another file it lists). _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `lines` | integer |  | How many lines (default 100, up to 2000). |
+| `file` | string |  | A log file name from the list, e.g. kimchi.1.log (the previous run). |
+
+### `app.crashReports`
+
+Crash reports, newest first: panics kimchi caught and runs that ended without quitting. With id, one report's text. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `id` | string |  | A report's id from the list. |
+
+### `app.clearCrashReports`
+
+Delete every crash report. _(changes things · permission: files)_
 
 ### `app.quit`
 
@@ -1052,12 +1091,12 @@ Select clips (or one media item) in the window. _(changes things · needs the wi
 
 ### `ui.showPanel`
 
-Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette; or home. _(changes things · needs the window)_
+Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. _(changes things · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `panel` | string | required | Panel name. |
-| `section` | string |  | For settings: models, agent, appearance, updates or about. |
+| `section` | string |  | For settings: models, agent, appearance, updates, diagnostics or about. |
 
 ### `ui.closeDialogs`
 
@@ -1074,7 +1113,7 @@ Zoom the timeline. _(changes things · needs the window)_
 
 ### `ui.screenshot`
 
-Save a PNG of the window and return its path. _(changes things · needs the window)_
+Save a PNG of the window and return its path. _(changes things · permission: files · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |

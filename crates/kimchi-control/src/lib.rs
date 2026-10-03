@@ -9,8 +9,10 @@
 
 pub mod bridge;
 pub mod commands;
+pub mod diagnostics;
 pub mod discovery;
 pub mod registry;
+pub mod release_notes;
 pub mod resolve;
 pub mod secrets;
 pub mod session;

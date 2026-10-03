@@ -146,7 +146,7 @@ impl PreviewStream {
             stream.duration = 0.0;
             return Ok(stream);
         }
-        let project = crate::render::playable(project);
+        let project = crate::render::playable(tools, project);
         let caps = Caps::detect(tools).await?;
         let st = settings(width, height, fps, (from, end));
 
@@ -294,7 +294,7 @@ impl Script {
         if graph.len() <= export::INLINE_GRAPH_MAX {
             return Ok(Self(None));
         }
-        let path = std::env::temp_dir().join(format!("kimchi-preview-{}.txt", kimchi_core::new_id()));
+        let path = export::script_path("preview")?;
         tokio::fs::write(&path, graph).await?;
         Ok(Self(Some(path)))
     }

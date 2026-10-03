@@ -191,7 +191,7 @@ impl JobsPopover {
                                     .text_color(t.text_2)
                                     .cursor_pointer()
                                     .hover(|s| s.bg(t.hover).text_color(t.text))
-                                    .tooltip(|_, cx| crate::ui::tooltip(if cfg!(target_os = "macos") { "Show in Finder".into() } else { "Show in folder".into() }, cx))
+                                    .tooltip(|_, cx| crate::ui::tooltip(crate::ui::reveal_label().into(), cx))
                                     .on_click(move |_, _, cx| cx.reveal_path(&path))
                                     .child(icon("folder-open")),
                             )
@@ -252,7 +252,17 @@ impl Render for JobsPopover {
                                 .cursor_pointer()
                                 .hover(|s| s.text_color(t.text))
                                 .child("Clear finished")
-                                .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("generate.clearFinished", json!({}), cx))),
+                                .on_click(|_, _, cx| {
+                                    // The command answers with the jobs left; no event says so.
+                                    cx.store().update(cx, |s, cx| {
+                                        s.run_then("generate.clearFinished", json!({}), cx, |s, v, cx| {
+                                            if let Ok(jobs) = serde_json::from_value(v) {
+                                                s.jobs = jobs;
+                                                cx.notify();
+                                            }
+                                        })
+                                    })
+                                }),
                         )
                     }),
             )

@@ -280,7 +280,8 @@ impl TextInput {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
-        if self.multiline && !self.submit_on_enter && !window.modifiers().platform {
+        // ⌘ on macOS, Ctrl elsewhere (the binding is `secondary-enter`).
+        if self.multiline && !self.submit_on_enter && !window.modifiers().secondary() {
             self.replace_text_in_range(None, "\n", window, cx);
             return;
         }

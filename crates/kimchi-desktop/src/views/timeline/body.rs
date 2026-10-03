@@ -614,7 +614,8 @@ impl TimelineBody {
         if !hint.ok {
             return;
         }
-        let track = hint.row.and_then(|r| self.store.read(cx).project.as_ref().map(|p| p.tracks[r].id));
+        // The row was measured during the drag; the tracks may have changed since (an agent, undo).
+        let track = hint.row.and_then(|r| self.store.read(cx).project.as_ref().and_then(|p| p.tracks.get(r).map(|t| t.id)));
         let mut params = json!({ "assetId": d.asset_id, "start": hint.time });
         if let Some(t) = track {
             params["trackId"] = json!(t);
@@ -656,8 +657,8 @@ impl TimelineBody {
         }
         let time = hint.as_ref().map(|h| h.time).unwrap_or_else(|| self.playhead(cx));
         let mut params = json!({ "paths": list, "place": true, "start": time });
-        if let Some(r) = hint.and_then(|h| h.row) {
-            params["trackId"] = json!(p.tracks[r].id);
+        if let Some(t) = hint.and_then(|h| h.row).and_then(|r| p.tracks.get(r)) {
+            params["trackId"] = json!(t.id);
         }
         self.store.update(cx, |s, cx| {
             s.dropping = false;

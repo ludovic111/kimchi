@@ -482,7 +482,14 @@ async fn save_outputs(cx: &Ctx, out: &GenOutput, dir: &Path, job_id: &str) -> Ge
         };
         let kind = util::kind_for_mime(&mime).unwrap_or(item.kind);
         let path = dir.join(format!("{short}-{}.{}", i + 1, util::extension_for(&mime)));
-        tokio::fs::write(&path, &data).await?;
+        // Written aside, then renamed: a crash or a full disk never leaves a truncated file
+        // under the name the library will import.
+        let part = path.with_extension(format!("{}.part", util::extension_for(&mime)));
+        if let Err(e) = tokio::fs::write(&part, &data).await {
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(e.into());
+        }
+        tokio::fs::rename(&part, &path).await?;
         saved.push(SavedOutput { path: path.to_string_lossy().into_owned(), kind, mime });
     }
     Ok(saved)

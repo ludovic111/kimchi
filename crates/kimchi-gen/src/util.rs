@@ -91,22 +91,45 @@ pub fn decode_err(cx: &Ctx, message: impl Into<String>) -> GenError {
     GenError::Decode { provider: cx.provider.clone(), message: message.into() }
 }
 
+/// Network trouble and busy or failing servers (429, 5xx) are worth asking again;
+/// anything the provider said about the job itself is not.
+pub fn is_transient(e: &GenError) -> bool {
+    match e {
+        GenError::Network { .. } => true,
+        GenError::Http { status, .. } => *status == 429 || (500..600).contains(status),
+        _ => false,
+    }
+}
+
+/// Consecutive transient errors [`poll`] rides out before giving up.
+pub const POLL_RETRIES: u32 = 5;
+
 /// Polls `f` until it yields `Some`, sleeping `every` between attempts.
-/// `f` returning `Err` aborts immediately.
+/// A transient error ([`is_transient`]) is retried with a growing pause, up to
+/// [`POLL_RETRIES`] in a row; any other `Err` aborts immediately.
 pub async fn poll<T, F, Fut>(every: Duration, timeout: Duration, mut f: F) -> GenResult<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = GenResult<Option<T>>>,
 {
     let started = Instant::now();
+    let mut failures = 0u32;
     loop {
-        if let Some(v) = f().await? {
-            return Ok(v);
+        let mut pause = every;
+        match f().await {
+            Ok(Some(v)) => return Ok(v),
+            Ok(None) => failures = 0,
+            Err(e) if is_transient(&e) && failures < POLL_RETRIES => {
+                failures += 1;
+                tracing::debug!("poll retry {failures}/{POLL_RETRIES}: {e}");
+                pause = (every * 2u32.pow(failures)).min(Duration::from_secs(30)).max(every);
+            }
+            Err(e) => return Err(e),
         }
         if started.elapsed() > timeout {
             return Err(GenError::Timeout(timeout.as_secs()));
         }
-        tokio::time::sleep(every).await;
+        tokio::time::sleep(pause).await;
     }
 }
 
@@ -288,6 +311,52 @@ fn guess_from_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn http(status: u16) -> GenError {
+        GenError::Http { provider: "p".into(), status, message: String::new() }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn poll_rides_out_transient_errors() {
+        let calls = std::cell::Cell::new(0);
+        let got = poll(Duration::from_secs(1), Duration::from_secs(3600), || {
+            calls.set(calls.get() + 1);
+            let n = calls.get();
+            async move {
+                match n {
+                    1 => Err(http(503)),
+                    2 => Err(GenError::Network { provider: "p".into(), message: "reset".into() }),
+                    3 => Ok(None),
+                    4 => Err(http(429)),
+                    _ => Ok(Some(n)),
+                }
+            }
+        })
+        .await;
+        assert_eq!(got.unwrap(), 5);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn poll_gives_up_after_consecutive_failures_and_on_real_errors() {
+        let calls = std::cell::Cell::new(0u32);
+        let got: GenResult<()> = poll(Duration::from_secs(1), Duration::from_secs(3600), || {
+            calls.set(calls.get() + 1);
+            async { Err(http(502)) }
+        })
+        .await;
+        assert!(matches!(got, Err(GenError::Http { status: 502, .. })));
+        assert_eq!(calls.get(), POLL_RETRIES + 1);
+
+        calls.set(0);
+        let got: GenResult<()> = poll(Duration::from_secs(1), Duration::from_secs(3600), || {
+            calls.set(calls.get() + 1);
+            async { Err(GenError::Provider("the job failed".into())) }
+        })
+        .await;
+        assert!(matches!(got, Err(GenError::Provider(_))));
+        assert_eq!(calls.get(), 1);
+        assert!(!is_transient(&http(404)));
+    }
 
     #[test]
     fn ratios() {

@@ -15,8 +15,8 @@ pub struct Settings {
     pub updates: UpdateSettings,
     pub appearance: Appearance,
     pub generate: GenerateDefaults,
+    pub diagnostics: DiagnosticsSettings,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
@@ -64,13 +64,31 @@ impl Default for Permissions {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UpdateSettings {
-    /// Check GitHub Releases when the app starts. `KIMCHI_NO_UPDATE=1` also turns it off.
+    /// Check GitHub Releases when the app starts, and every few hours while it runs.
+    /// `KIMCHI_NO_UPDATE=1` also turns it off.
     pub check_on_start: bool,
+    /// Download and install a found update without asking; it is used from the next start.
+    pub auto_install: bool,
+    /// Show what's new once after kimchi updates.
+    pub show_whats_new: bool,
 }
 
 impl Default for UpdateSettings {
     fn default() -> Self {
-        Self { check_on_start: true }
+        Self { check_on_start: true, auto_install: false, show_whats_new: true }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DiagnosticsSettings {
+    /// How much kimchi writes to its log: `info`, `debug` or `trace`. `RUST_LOG` wins when set.
+    pub log_level: String,
+}
+
+impl Default for DiagnosticsSettings {
+    fn default() -> Self {
+        Self { log_level: "debug".into() }
     }
 }
 
@@ -99,8 +117,19 @@ pub struct GenerateDefaults {
 }
 
 impl Settings {
+    /// Reads `settings.json`. A file that can't be read as settings is kept as
+    /// `settings.json.bad` (so the next save doesn't lose it) and the defaults are used.
     pub fn load(dir: &Path) -> Self {
-        std::fs::read(dir.join("settings.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        let path = dir.join("settings.json");
+        let Ok(bytes) = std::fs::read(&path) else { return Self::default() };
+        match serde_json::from_slice(&bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("{} isn't valid ({e}); kept as settings.json.bad, using the defaults", path.display());
+                let _ = std::fs::rename(&path, dir.join("settings.json.bad"));
+                Self::default()
+            }
+        }
     }
 
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
@@ -141,10 +170,25 @@ impl Settings {
         if !same_type {
             return Err(format!("`{key}` expects {}, got {value}", type_name(slot)));
         }
+        if let Some(allowed) = choices(key)
+            && !value.as_str().is_some_and(|v| allowed.contains(&v))
+        {
+            return Err(format!("`{key}` is one of {}, not {value}.", allowed.iter().map(|a| format!("\"{a}\"")).collect::<Vec<_>>().join(", ")));
+        }
         *slot = value;
         *self = serde_json::from_value(root).map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+/// The values a text setting takes, for those with a fixed set.
+pub fn choices(key: &str) -> Option<&'static [&'static str]> {
+    Some(match key {
+        "appearance.mode" => &["system", "dark", "light"],
+        "agent.provider" => &["claude-code", "codex", "anthropic", "openai", "ollama"],
+        "diagnostics.logLevel" => crate::diagnostics::LEVELS,
+        _ => return None,
+    })
 }
 
 fn unknown(key: &str) -> String {

@@ -64,13 +64,21 @@ pub async fn import(s: &Arc<Session>, cx: &Ctx, paths: &[String]) -> CmdResult<V
     let mut added = Vec::new();
     let mut failures = Vec::new();
     for path in paths {
-        let p = PathBuf::from(path);
+        // Absolute, so the project doesn't depend on the folder kimchi started in and a name
+        // like `-take2.mov` never reaches ffprobe looking like an option.
+        let p = match absolute(path) {
+            Ok(p) => p,
+            Err(e) => {
+                failures.push(e);
+                continue;
+            }
+        };
         match kimchi_media::probe(&tools, &p).await {
             Ok(probe) => added.push(Asset {
                 id: new_id(),
                 name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone()),
                 kind: probe.kind,
-                path: path.clone(),
+                path: path_str(&p),
                 meta: probe.meta,
                 origin: AssetOrigin::Imported,
                 created_at: chrono::Utc::now(),
@@ -158,6 +166,15 @@ fn publish(s: &Session, project_id: Id, asset: &Asset) {
 
 pub fn path_str(p: &Path) -> String {
     p.to_string_lossy().into_owned()
+}
+
+/// A path a command was given, made absolute against kimchi's working folder (clients should
+/// send absolute paths: the app's folder isn't theirs).
+pub fn absolute(path: &str) -> CmdResult<PathBuf> {
+    if path.trim().is_empty() {
+        return Err("The path is empty.".into());
+    }
+    std::path::absolute(path).map_err(|e| format!("{path}: {e}"))
 }
 
 /// Saves the frame a clip shows at timeline time `time` as a PNG and returns

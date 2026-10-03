@@ -18,6 +18,9 @@ pub enum EditError {
     AssetNotFound(Id),
     #[error("track is locked")]
     Locked,
+    /// A batch from another client (`agent`, `cli`…) is open; its step would swallow this change.
+    #[error("a batch of changes from the {0} is running; try again when it ends")]
+    Busy(String),
     #[error("{0}")]
     Invalid(String),
 }
@@ -144,8 +147,28 @@ pub struct EditOutcome {
     pub created_tracks: Vec<Id>,
 }
 
+/// Latest time (and longest duration) an edit accepts, in seconds (about 115 days): beyond it
+/// sums overflow to infinity, which a project file can't hold.
+pub const MAX_TIME: f64 = 1e7;
+
+/// Refuses a time or duration that isn't a number or is absurdly far.
+fn check_time(what: &str, v: f64) -> EditResult {
+    if v.is_finite() && v.abs() <= MAX_TIME {
+        Ok(())
+    } else {
+        Err(EditError::Invalid(format!("{what} {v} is out of range (at most {MAX_TIME} s)")))
+    }
+}
+
+fn check_clip_times(c: &Clip) -> EditResult {
+    check_time("start", c.start)?;
+    check_time("duration", c.duration)?;
+    check_time("in point", c.in_point)
+}
+
 impl Project {
     pub fn apply(&mut self, edit: &Edit) -> EditResult<EditOutcome> {
+        self.check_times(edit)?;
         let mut out = EditOutcome::default();
         match edit {
             Edit::RenameProject { name } => {
@@ -294,6 +317,10 @@ impl Project {
                 if t.locked {
                     return Err(EditError::Locked);
                 }
+                // Pulling clips left onto a clip under `time` would overlap them.
+                if t.clips.iter().any(|c| c.start < *time - 1e-9 && c.end() > *time + 1e-9) {
+                    return Err(EditError::Invalid("no gap at that time: a clip is there".into()));
+                }
                 let prev_end = t.clips.iter().filter(|c| c.end() <= *time + 1e-9).map(Clip::end).fold(0.0, f64::max);
                 let next_start = t.clips.iter().filter(|c| c.start >= *time - 1e-9).map(|c| c.start).fold(f64::INFINITY, f64::min);
                 if next_start.is_finite() && next_start > prev_end {
@@ -332,6 +359,31 @@ impl Project {
         }
         self.updated_at = chrono::Utc::now();
         Ok(out)
+    }
+
+    /// Times and durations an edit brings in must be finite and within [`MAX_TIME`].
+    fn check_times(&self, edit: &Edit) -> EditResult {
+        match edit {
+            Edit::InsertAsset { start, .. } => check_time("start", *start),
+            Edit::AddClip { clip, .. } => check_clip_times(clip),
+            Edit::MoveClips { moves } => moves.iter().try_for_each(|m| check_time("start", m.start)),
+            Edit::TrimClip { time, .. } | Edit::Split { time, .. } | Edit::CloseGap { time, .. } | Edit::AddMarker { time, .. } => check_time("time", *time),
+            Edit::PasteClips { clips } => clips.iter().try_for_each(|c| check_clip_times(&c.clip)),
+            // Copies go after the track's end.
+            Edit::DuplicateClips { clip_ids } => clip_ids.iter().try_for_each(|id| {
+                let (ti, ci) = self.locate_clip(*id).ok_or(EditError::ClipNotFound(*id))?;
+                check_time("end", self.tracks[ti].end() + self.tracks[ti].clips[ci].duration)
+            }),
+            Edit::UpdateClip { patch, .. } => {
+                for (what, v) in [("volume", patch.volume), ("fade in", patch.fade_in), ("fade out", patch.fade_out), ("speed", patch.speed)] {
+                    if v.is_some_and(|v| !v.is_finite()) {
+                        return Err(EditError::Invalid(format!("{what} must be a number")));
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
     }
 
     /// New video tracks go on top of the stack, new audio tracks at the bottom.
@@ -423,8 +475,12 @@ impl Project {
         let (forward, speed) = (!c.reverse, c.speed);
         match edge {
             Edge::Start => {
-                let lo = prev_end.max(c.start - before);
-                let new_start = time.clamp(lo, c.end() - MIN_CLIP);
+                let (lo, hi) = (prev_end.max(c.start - before), c.end() - MIN_CLIP);
+                // A sliver hard against its neighbour has nowhere to go.
+                if lo > hi {
+                    return Ok(());
+                }
+                let new_start = time.clamp(lo, hi);
                 let delta = new_start - c.start;
                 // Forward clips lose (or gain) source at the head; reversed ones at the tail.
                 if forward {
@@ -524,11 +580,15 @@ impl Project {
             let speed = speed.clamp(0.1, 16.0);
             // Keep the same source range: the clip gets shorter or longer on the timeline.
             let source_span = c.duration * c.speed;
-            c.speed = speed;
-            c.duration = (source_span / speed).max(MIN_CLIP);
+            let mut duration = (source_span / speed).max(MIN_CLIP);
             if let Some(len) = source_len {
-                c.duration = c.duration.min((len - c.in_point) / speed);
+                duration = duration.min((len - c.in_point) / speed);
             }
+            if duration < MIN_CLIP - 1e-9 {
+                return Err(EditError::Invalid(format!("at {speed}x there isn't a frame of media left after the clip's in point")));
+            }
+            c.speed = speed;
+            c.duration = duration;
         }
         if let Some(reverse) = p.reverse {
             if reverse && source_len.is_none() {
@@ -607,7 +667,8 @@ fn left_part(c: &Clip, time: f64) -> Clip {
     left
 }
 
-/// Inserts `clip` into `track`, overwriting whatever was underneath it.
+/// Inserts `clip` into `track`, overwriting whatever was underneath it. What is left of a
+/// covered clip shorter than [`MIN_CLIP`] goes too (a sliver nobody can see or grab).
 pub fn place(track: &mut Track, clip: Clip, assets: &[Asset]) {
     let _ = assets;
     let (s, e) = (clip.start, clip.end());
@@ -615,14 +676,12 @@ pub fn place(track: &mut Track, clip: Clip, assets: &[Asset]) {
     for c in track.clips.drain(..) {
         if c.end() <= s + 1e-9 || c.start >= e - 1e-9 {
             keep.push(c);
-        } else if c.start >= s - 1e-9 && c.end() <= e + 1e-9 {
-            // Fully covered: gone.
-        } else if c.start < s && c.end() > e {
+            continue;
+        }
+        if c.start < s && s - c.start >= MIN_CLIP {
             keep.push(left_part(&c, s));
-            keep.push(split_right(&c, e));
-        } else if c.start < s {
-            keep.push(left_part(&c, s));
-        } else {
+        }
+        if c.end() > e && c.end() - e >= MIN_CLIP {
             keep.push(split_right(&c, e));
         }
     }

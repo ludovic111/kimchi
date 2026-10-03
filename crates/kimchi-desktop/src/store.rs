@@ -48,6 +48,8 @@ pub enum Dialog {
     Export,
     Palette,
     Shortcuts,
+    /// Release notes: since a version (after an update) or this one; `all` for every release.
+    WhatsNew { since: Option<String>, all: bool },
 }
 
 impl Dialog {
@@ -57,6 +59,7 @@ impl Dialog {
             Dialog::Export => "export",
             Dialog::Palette => "palette",
             Dialog::Shortcuts => "shortcuts",
+            Dialog::WhatsNew { .. } => "whatsNew",
         }
     }
 }
@@ -68,6 +71,8 @@ pub struct Toast {
     pub text: SharedString,
     /// A passing status ("Undid split"): the next one replaces it instead of stacking.
     pub flash: bool,
+    /// A button on the toast: its label and the dialog it opens.
+    pub action: Option<(SharedString, Dialog)>,
 }
 
 /// Clips copied or cut in the window, as they were, with the track each was on (a cut
@@ -181,6 +186,8 @@ pub enum StoreEvent {
     FocusPrompt,
     /// Put the cursor in the selected title's words (double-click on a title).
     EditText,
+    /// Ask before removing this media file (Delete with media selected): its clips go too.
+    AskRemoveAsset(kimchi_core::Id),
 }
 
 pub struct Store {
@@ -352,6 +359,8 @@ impl Store {
             Event::ProjectSwitched { .. } => {
                 self.selection.clear();
                 self.selected_asset = None;
+                // Copied clips name this project's tracks and media.
+                self.clipboard = Clipboard::default();
                 self.dialog = None;
                 self.refresh_project();
                 self.library = self.session.library.list();
@@ -454,12 +463,30 @@ impl Store {
         self.push_toast(ToastKind::Info, text.into(), true, cx);
     }
 
+    /// A toast with a button that opens a dialog; it stays a little longer.
+    pub fn toast_with(&mut self, kind: ToastKind, text: impl Into<SharedString>, label: impl Into<SharedString>, open: Dialog, cx: &mut Context<Self>) {
+        self.push(Toast { id: 0, kind, text: text.into(), flash: false, action: Some((label.into(), open)) }, cx);
+    }
+
     fn push_toast(&mut self, kind: ToastKind, text: SharedString, flash: bool, cx: &mut Context<Self>) {
+        self.push(Toast { id: 0, kind, text, flash, action: None }, cx);
+    }
+
+    fn push(&mut self, mut toast: Toast, cx: &mut Context<Self>) {
         let id = self.next_toast;
         self.next_toast += 1;
-        self.toasts.push(Toast { id, kind, text, flash });
+        toast.id = id;
+        // The same message twice in a row (a failing command retried) shows once.
+        self.toasts.retain(|t| t.text != toast.text);
+        let (kind, flash, action) = (toast.kind, toast.flash, toast.action.is_some());
+        self.toasts.push(toast);
+        // Never more than a handful on screen.
+        while self.toasts.len() > 4 {
+            self.toasts.remove(0);
+        }
         let ms = match kind {
             _ if flash => 1800,
+            _ if action => 12000,
             ToastKind::Error => 7000,
             _ => 4200,
         };

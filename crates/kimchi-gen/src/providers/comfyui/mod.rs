@@ -5,6 +5,8 @@
 //! schedulers), `POST /upload/image`, `POST /prompt`, `GET /ws?clientId=` for live progress,
 //! `GET /history/{id}`, `GET /view`, and `POST /queue {delete}` + `POST /interrupt` on cancel.
 //! When the websocket can't be opened (e.g. an https reverse proxy) we poll `/history` instead.
+//! Either way `GET /queue` is checked now and then: a prompt that is neither queued nor in the
+//! history was cleared (or ComfyUI restarted), and the job fails instead of waiting for ever.
 //!
 //! # Models
 //! * `ckpt:<file>`: every installed checkpoint, run through the built-in SD-style graphs next to
@@ -193,13 +195,13 @@ impl Provider for ComfyUi {
         };
         let started = Instant::now();
         let live = match ws {
-            Some(ws) => watch(cx, ws, &id, &graph).await,
+            Some(ws) => tokio::time::timeout(RUN_LIMIT, watch(cx, ws, &id, &graph)).await.unwrap_or(Err(GenError::Timeout(RUN_LIMIT.as_secs()))),
             None => Ok(false),
         };
         let entry = match live {
             // History is written just before the final "executing" message; allow a little slack.
             Ok(true) => history(cx, &id, Duration::from_millis(250), Duration::from_secs(30), None).await,
-            Ok(false) => history(cx, &id, Duration::from_secs(1), Duration::from_secs(6 * 3600), Some(started)).await,
+            Ok(false) => history(cx, &id, Duration::from_secs(1), RUN_LIMIT.saturating_sub(started.elapsed()), Some(started)).await,
             Err(e) => Err(e),
         };
         cancel.disarm();
@@ -569,7 +571,25 @@ where
 {
     let mut running = false;
     let mut fraction = None;
-    while let Some(msg) = ws.next().await {
+    // Status messages come whenever the queue changes (also when someone clears it); the tick
+    // covers a quiet socket. Just queued, so the first look can wait.
+    let mut looked = Instant::now();
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + LOOK_EVERY, LOOK_EVERY);
+    loop {
+        let msg = tokio::select! {
+            msg = ws.next() => match msg {
+                Some(msg) => msg,
+                None => return Ok(false),
+            },
+            _ = tick.tick() => {
+                looked = Instant::now();
+                match whereabouts(cx, id).await {
+                    Whereabouts::Gone => return Err(gone()),
+                    Whereabouts::Done => return Ok(true),
+                    Whereabouts::Queued => continue,
+                }
+            }
+        };
         let text = match msg {
             Ok(Message::Text(t)) => t,
             Ok(_) => continue, // binary previews, pings
@@ -582,9 +602,17 @@ where
             node.as_str().map(|n| graph[n]["class_type"].as_str().unwrap_or(n).to_string()).unwrap_or_default()
         };
         match m["type"].as_str().unwrap_or("") {
-            "status" if !running => {
+            "status" => {
+                if looked.elapsed() >= Duration::from_secs(5) {
+                    looked = Instant::now();
+                    match whereabouts(cx, id).await {
+                        Whereabouts::Gone => return Err(gone()),
+                        Whereabouts::Done => return Ok(true),
+                        Whereabouts::Queued => {}
+                    }
+                }
                 let left = data["status"]["exec_info"]["queue_remaining"].as_u64().unwrap_or(0);
-                if left > 1 {
+                if left > 1 && !running {
                     cx.report(Progress::message(format!("In queue ({} ahead)", left - 1)));
                 }
             }
@@ -617,7 +645,39 @@ where
             _ => {}
         }
     }
-    Ok(false)
+}
+
+/// The longest a run may take, queue included.
+const RUN_LIMIT: Duration = Duration::from_secs(6 * 3600);
+/// How often a quiet run checks that its prompt is still known to ComfyUI.
+const LOOK_EVERY: Duration = Duration::from_secs(30);
+
+#[derive(Debug, PartialEq)]
+enum Whereabouts {
+    /// Queued or running, or ComfyUI couldn't say (a failed request proves nothing).
+    Queued,
+    Done,
+    Gone,
+}
+
+/// Where our prompt is: `/queue` first, then `/history`, in that order, since a prompt leaves the
+/// queue as its history entry is written.
+async fn whereabouts(cx: &Ctx, id: &str) -> Whereabouts {
+    let get = |path: String| async move { util::send_json::<Value>(cx, cx.http.get(cx.url(&path)).timeout(Duration::from_secs(20))).await };
+    let Ok(q) = get("/queue".into()).await else { return Whereabouts::Queued };
+    let queued = ["queue_running", "queue_pending"].iter().flat_map(|k| q[*k].as_array().into_iter().flatten()).any(|item| item[1].as_str() == Some(id));
+    if queued {
+        return Whereabouts::Queued;
+    }
+    match get(format!("/history/{id}")).await {
+        Ok(h) if h.get(id).is_some() => Whereabouts::Done,
+        Ok(_) => Whereabouts::Gone,
+        Err(_) => Whereabouts::Queued,
+    }
+}
+
+fn gone() -> GenError {
+    GenError::Provider("The job left ComfyUI's queue without finishing (the queue was cleared, or ComfyUI restarted).".into())
 }
 
 fn run_error(data: &Value) -> GenError {
@@ -634,11 +694,18 @@ async fn history(
     timeout: Duration,
     estimate_from: Option<Instant>,
 ) -> GenResult<Value> {
+    let looked = parking_lot::Mutex::new(Instant::now());
     util::poll(every, timeout, || async {
         let h: Value = util::send_json(cx, cx.http.get(cx.url(&format!("/history/{id}")))).await?;
         let Some(entry) = h.get(id) else {
             if let Some(t) = estimate_from {
                 util::estimate(cx, t, Duration::from_secs(40), "Generating");
+                if looked.lock().elapsed() >= LOOK_EVERY {
+                    *looked.lock() = Instant::now();
+                    if whereabouts(cx, id).await == Whereabouts::Gone {
+                        return Err(gone());
+                    }
+                }
             }
             return Ok(None);
         };
@@ -740,6 +807,25 @@ mod tests {
         assert!(err.to_string().contains("KSampler failed: CUDA out of memory"), "{err}");
         // A closed socket hands over to polling.
         assert!(!watch(&cx, futures::stream::iter(vec![]), "p", &graph).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_cleared_prompt_is_gone() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let cx = Ctx::new(ID, reqwest::Client::new(), server.uri());
+        let queue = json!({"queue_running": [[0, "run", {}]], "queue_pending": [[1, "wait", {}]]});
+        Mock::given(method("GET")).and(path("/queue")).respond_with(ResponseTemplate::new(200).set_body_json(queue)).mount(&server).await;
+        Mock::given(method("GET")).and(path("/history/done")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"done": {}}))).mount(&server).await;
+        Mock::given(method("GET")).and(path("/history/lost")).respond_with(ResponseTemplate::new(200).set_body_json(json!({}))).mount(&server).await;
+        assert_eq!(whereabouts(&cx, "run").await, Whereabouts::Queued);
+        assert_eq!(whereabouts(&cx, "wait").await, Whereabouts::Queued);
+        assert_eq!(whereabouts(&cx, "done").await, Whereabouts::Done);
+        assert_eq!(whereabouts(&cx, "lost").await, Whereabouts::Gone);
+        // An unreachable server proves nothing.
+        let off = Ctx::new(ID, reqwest::Client::new(), "http://127.0.0.1:9");
+        assert_eq!(whereabouts(&off, "lost").await, Whereabouts::Queued);
     }
 
     #[test]

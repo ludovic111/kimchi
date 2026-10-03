@@ -32,8 +32,32 @@ const CODEX_PLACES: &[&str] = &[
 /// Built-in tools Claude Code must never use in a kimchi session.
 const CLAUDE_DENIED: &str = "Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Glob,Grep,WebFetch,WebSearch,Task,Agent";
 
+/// Codex features that would give it tools besides kimchi's. Set through `-c features.<name>=false`
+/// rather than `--disable <name>`: `--disable` refuses names a given Codex doesn't know, `-c` doesn't.
+const CODEX_DISABLED: &[&str] = &["apps", "browser_use", "browser_use_external", "in_app_browser", "computer_use", "image_generation", "multi_agent", "plugins"];
+
+/// The file names a command `name` can have here: `claude`, or on Windows `claude.exe`,
+/// `claude.cmd` (npm's shims)… in `PATHEXT` order.
+fn exe_names(name: &str) -> Vec<String> {
+    if cfg!(windows) {
+        let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        let mut names: Vec<String> = exts.split(';').map(str::trim).filter(|e| e.starts_with('.')).map(|e| format!("{name}{}", e.to_ascii_lowercase())).collect();
+        if !names.iter().any(|n| n.ends_with(".exe")) {
+            names.insert(0, format!("{name}.exe"));
+        }
+        names
+    } else {
+        vec![name.to_string()]
+    }
+}
+
 fn exe_name(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+fn find_in<'a>(dirs: impl IntoIterator<Item = &'a PathBuf>, name: &str) -> Option<PathBuf> {
+    let names = exe_names(name);
+    dirs.into_iter().flat_map(|d| names.iter().map(move |n| d.join(n))).find(|p| p.is_file())
 }
 
 fn on_path(name: &str) -> Option<PathBuf> {
@@ -48,15 +72,99 @@ fn home(path: &str) -> PathBuf {
     }
 }
 
-/// The installed CLI for `kind` (PATH first, then the usual install places: an
-/// app started from the Finder has a short PATH). `None` for the API providers.
+/// The newest `~/.nvm/versions/node/v*/bin` (by version, not by name: v9 < v10).
+fn newest_nvm() -> Option<PathBuf> {
+    let root = std::env::var_os("NVM_DIR").map(PathBuf::from).unwrap_or_else(|| home("~/.nvm")).join("versions/node");
+    let version = |p: &Path| -> Vec<u64> { p.file_name().and_then(|n| n.to_str()).unwrap_or("").trim_start_matches('v').split('.').map(|n| n.parse().unwrap_or(0)).collect() };
+    std::fs::read_dir(root).ok()?.flatten().map(|e| e.path()).filter(|p| p.join("bin").is_dir()).max_by_key(|p| version(p)).map(|p| p.join("bin"))
+}
+
+/// Where Node, npm's global scripts and their version managers put executables. A CLI
+/// installed with npm is a `#!/usr/bin/env node` script, so `node` has to be findable too.
+fn tool_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin", "~/.npm-global/bin", "~/.bun/bin", "~/.volta/bin"].iter().map(|p| home(p)).collect();
+    dirs.extend(newest_nvm());
+    dirs.extend(["~/Library/pnpm", "~/.local/share/pnpm", "~/.local/share/mise/shims", "~/.asdf/shims"].iter().map(|p| home(p)));
+    if let Some(appdata) = std::env::var_os("APPDATA").filter(|_| cfg!(windows)) {
+        dirs.push(PathBuf::from(appdata).join("npm"));
+    }
+    dirs.retain(|d| d.is_dir());
+    dirs
+}
+
+/// The PATH of the person's login shell (what a terminal has), for an app started from the
+/// Dock or Finder, which only gets `/usr/bin:/bin:/usr/sbin:/sbin`. Two seconds at most, also
+/// when the profile starts something that keeps the pipe open.
+#[cfg(unix)]
+fn login_shell_path() -> Option<String> {
+    let shell = std::env::var_os("SHELL").filter(|s| !s.is_empty()).or_else(|| cfg!(target_os = "macos").then(|| "/bin/zsh".into()))?;
+    // fish keeps PATH as a list, which "$PATH" would join with spaces.
+    let script = if Path::new(&shell).file_name().is_some_and(|n| n == "fish") { "string join : $PATH" } else { "printf %s \"$PATH\"" };
+    let mut child = std::process::Command::new(&shell).args(["-lc", script]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
+        let _ = tx.send(out);
+    });
+    let out = rx.recv_timeout(std::time::Duration::from_secs(2));
+    let _ = child.kill();
+    let _ = child.wait();
+    // Profiles that print something put it before our line.
+    let path = out.ok()?.rsplit('\n').next().unwrap_or("").trim().to_string();
+    (!path.is_empty()).then_some(path)
+}
+
+#[cfg(not(unix))]
+fn login_shell_path() -> Option<String> {
+    None
+}
+
+/// Where children look for programs: the inherited PATH first (a terminal's choice wins), then the
+/// login shell's, then the usual tool folders. Computed once.
+fn search_dirs() -> &'static [PathBuf] {
+    static DIRS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    DIRS.get_or_init(|| {
+        let inherited = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default();
+        let shell = login_shell_path().map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default();
+        let mut dirs: Vec<PathBuf> = vec![];
+        for d in inherited.into_iter().chain(shell).chain(tool_dirs()) {
+            if !d.as_os_str().is_empty() && !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+        dirs
+    })
+}
+
+/// The PATH for a child running `exe`: its own folder first (an npm install keeps the `node` it
+/// was installed with there), then [`search_dirs`].
+pub(crate) fn child_path(exe: &Path) -> std::ffi::OsString {
+    let own = exe.parent().filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf);
+    let dirs: Vec<&PathBuf> = own.iter().chain(search_dirs().iter().filter(|d| Some(*d) != own.as_ref())).collect();
+    std::env::join_paths(dirs).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// The installed CLI for `kind` (the search PATH, then the usual install places: an app
+/// started from the Finder has a short PATH). `None` for the API providers.
 pub fn cli_executable(kind: ProviderKind) -> Option<PathBuf> {
     let (name, places) = match kind {
         ProviderKind::ClaudeCode => ("claude", CLAUDE_PLACES),
         ProviderKind::Codex => ("codex", CODEX_PLACES),
         _ => return None,
     };
-    on_path(name).or_else(|| places.iter().map(|p| home(p)).find(|p| p.is_file()))
+    find_in(search_dirs(), name).or_else(|| {
+        places.iter().map(|p| home(p)).find_map(|p| {
+            let (dir, file) = (p.parent()?.to_path_buf(), p.file_name()?.to_str()?.to_string());
+            find_in([&dir], &file)
+        })
+    })
+}
+
+/// A Windows batch file (npm's `.cmd` shims): Rust refuses to pass it arguments with line breaks.
+fn is_batch(exe: &Path) -> bool {
+    cfg!(windows) && exe.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
 }
 
 /// `kimchi-mcp`: `$KIMCHI_MCP`, next to this executable, on PATH, else a
@@ -179,8 +287,9 @@ impl Drop for TempFile {
     }
 }
 
-/// The arguments for one Claude Code turn (the prompt goes on stdin).
-pub(crate) fn claude_args(config: &Path, model: &str, resume: Option<&str>) -> Vec<String> {
+/// The arguments for one Claude Code turn (the prompt goes on stdin). `batch`: the executable is
+/// a Windows `.cmd` shim, which can't take line breaks, so the system prompt is on one line.
+pub(crate) fn claude_args(config: &Path, model: &str, resume: Option<&str>, batch: bool) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         "--output-format",
@@ -204,7 +313,8 @@ pub(crate) fn claude_args(config: &Path, model: &str, resume: Option<&str>) -> V
     args.push("--mcp-config".into());
     args.push(config.to_string_lossy().into_owned());
     args.push("--append-system-prompt".into());
-    args.push(format!("{SYSTEM_PROMPT}\nkimchi's commands are the MCP tools mcp__kimchi__family_verb; you have no other tools."));
+    let system = format!("{SYSTEM_PROMPT}\nkimchi's commands are the MCP tools mcp__kimchi__family_verb; you have no other tools.");
+    args.push(if batch { system.split(['\r', '\n']).map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ") } else { system });
     if !model.is_empty() {
         args.extend(["--model".into(), model.into()]);
     }
@@ -221,7 +331,7 @@ async fn claude(run: &mut Run, exe: &Path, live: &Live, workspace: &Path, resume
         return (Outcome::default(), Err(format!("Couldn't write the MCP configuration: {e}")));
     }
     let mut cmd = Command::new(exe);
-    cmd.args(claude_args(&config.0, &run.config.model(), resume)).current_dir(workspace);
+    cmd.args(claude_args(&config.0, &run.config.model(), resume, is_batch(exe))).current_dir(workspace).env("PATH", child_path(exe));
     let input = if resume.is_some() { prompt.to_string() } else { with_context(conv, prompt) };
     run.status("Starting Claude Code…");
     run_child(run, cmd, input, "Claude Code", parse_claude).await
@@ -299,9 +409,12 @@ fn toml_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_default()
 }
 
-/// The arguments for one `codex exec` turn (the prompt goes on stdin: `-`).
-pub(crate) fn codex_args(live: &Live, model: &str, resume: Option<&str>) -> Vec<String> {
+/// The arguments for one `codex exec` turn (the prompt goes on stdin: `-`). `others`: the
+/// person's own MCP servers (when Codex runs on their home), switched off for the turn.
+pub(crate) fn codex_args(live: &Live, model: &str, resume: Option<&str>, others: &[String]) -> Vec<String> {
     let mut args: Vec<String> = vec!["exec".into(), "--json".into(), "--skip-git-repo-check".into(), "--sandbox".into(), "read-only".into()];
+    let features = CODEX_DISABLED.iter().map(|f| format!("features.{f}=false"));
+    let servers = others.iter().filter(|n| n.as_str() != "kimchi").map(|n| format!("mcp_servers.{n}.enabled=false"));
     for c in [
         "approval_policy=\"never\"".to_string(),
         "features.shell_tool=false".into(),
@@ -312,7 +425,11 @@ pub(crate) fn codex_args(live: &Live, model: &str, resume: Option<&str>) -> Vec<
         "mcp_servers.kimchi.startup_timeout_sec=30".into(),
         // Generation commands can wait for a render.
         "mcp_servers.kimchi.tool_timeout_sec=900".into(),
-    ] {
+    ]
+    .into_iter()
+    .chain(features)
+    .chain(servers)
+    {
         args.extend(["-c".into(), c]);
     }
     if !model.is_empty() {
@@ -325,31 +442,110 @@ pub(crate) fn codex_args(live: &Live, model: &str, resume: Option<&str>) -> Vec<
     args
 }
 
-/// A Codex home of kimchi's own (no user MCP servers, hooks or plugins), sharing
-/// the person's sign-in. Kept between runs so `exec resume` finds its threads.
-fn codex_home(run: &Run) -> Option<PathBuf> {
-    let original = std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| home("~/.codex"));
-    let auth = original.join("auth.json");
-    if !auth.is_file() {
-        // Signed in through the keychain: use the person's own home.
-        return None;
+fn codex_original_home() -> PathBuf {
+    std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| home("~/.codex"))
+}
+
+/// A Codex home of kimchi's own (no user MCP servers, hooks or plugins), sharing the person's
+/// sign-in through `auth.json` (a link, or a copy on Windows). Kept between runs so `exec resume`
+/// finds its threads.
+struct CodexHome {
+    dir: PathBuf,
+    /// The person's own `auth.json`.
+    auth: PathBuf,
+}
+
+impl CodexHome {
+    fn new(run: &Run) -> Option<Self> {
+        let auth = codex_original_home().join("auth.json");
+        if !auth.is_file() {
+            // Signed in through the keychain: use the person's own home.
+            return None;
+        }
+        let dir = run.session.data_dir.join("agent-codex-home");
+        std::fs::create_dir_all(&dir).ok()?;
+        let link = dir.join("auth.json");
+        let _ = std::fs::remove_file(&link);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&auth, &link).ok()?;
+        #[cfg(not(unix))]
+        std::fs::copy(&auth, &link).ok()?;
+        Some(Self { dir, auth })
     }
-    let dir = run.session.data_dir.join("agent-codex-home");
-    std::fs::create_dir_all(&dir).ok()?;
-    let link = dir.join("auth.json");
-    let _ = std::fs::remove_file(&link);
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&auth, &link).ok()?;
-    #[cfg(not(unix))]
-    std::fs::copy(&auth, &link).ok()?;
-    Some(dir)
+
+    /// When Codex refreshed its tokens during the turn, our `auth.json` is the only valid one
+    /// (refresh tokens are single use): hand it back, or the person's own Codex is signed out.
+    /// A link written through needs nothing; a copy, or a link Codex replaced, does.
+    fn sync_back(&self) {
+        let ours = self.dir.join("auth.json");
+        let Ok(meta) = std::fs::symlink_metadata(&ours) else { return };
+        if !meta.is_file() {
+            return;
+        }
+        let newer = match (meta.modified(), std::fs::metadata(&self.auth).and_then(|m| m.modified())) {
+            (Ok(a), Ok(b)) => a > b,
+            _ => false,
+        };
+        if newer && std::fs::read(&ours).ok() != std::fs::read(&self.auth).ok() {
+            let part = self.auth.with_extension("json.kimchi");
+            if std::fs::copy(&ours, &part).is_ok() && std::fs::rename(&part, &self.auth).is_err() {
+                let _ = std::fs::remove_file(&part);
+            }
+        }
+    }
+}
+
+impl Drop for CodexHome {
+    fn drop(&mut self) {
+        self.sync_back();
+    }
+}
+
+/// The MCP servers named in a Codex `config.toml` (`[mcp_servers.<name>]` tables, and keys of a
+/// plain `[mcp_servers]` table), as written: quoted names stay quoted, for `-c` paths.
+pub(crate) fn codex_mcp_servers(config: &str) -> Vec<String> {
+    let mut names: Vec<String> = vec![];
+    let mut in_table = false;
+    let mut push = |n: &str| {
+        let n = n.trim();
+        if !n.is_empty() && !names.iter().any(|x| x == n) {
+            names.push(n.to_string());
+        }
+    };
+    for line in config.lines().map(str::trim) {
+        if let Some(header) = line.strip_prefix('[').filter(|l| !l.starts_with('[')) {
+            let header = header.split(']').next().unwrap_or("").trim();
+            in_table = header == "mcp_servers";
+            if let Some(rest) = header.strip_prefix("mcp_servers.") {
+                push(&toml_first_key(rest));
+            }
+        } else if in_table && let Some((key, _)) = line.split_once('=') {
+            push(&toml_first_key(key));
+        }
+    }
+    names
+}
+
+/// The first segment of a dotted TOML key: `node_repl`, `"a.b"` of `"a.b".env`.
+fn toml_first_key(path: &str) -> String {
+    let path = path.trim();
+    match path.chars().next() {
+        Some(q @ ('"' | '\'')) => path[1..].find(q).map(|end| path[..end + 2].to_string()).unwrap_or_default(),
+        _ => path.split('.').next().unwrap_or("").trim().to_string(),
+    }
 }
 
 async fn codex(run: &mut Run, exe: &Path, live: &Live, workspace: &Path, resume: Option<&str>, prompt: &str, conv: &Conversation) -> (Outcome, Result<(), String>) {
+    let own = CodexHome::new(run);
+    // On the person's own home, their MCP servers are there too: off for this turn.
+    let others = match &own {
+        Some(_) => vec![],
+        None => std::fs::read_to_string(codex_original_home().join("config.toml")).map(|c| codex_mcp_servers(&c)).unwrap_or_default(),
+    };
     let mut cmd = Command::new(exe);
-    cmd.args(codex_args(live, &run.config.model(), resume)).current_dir(workspace);
-    if let Some(home) = codex_home(run) {
-        cmd.env("CODEX_HOME", home);
+    cmd.args(codex_args(live, &run.config.model(), resume, &others)).current_dir(workspace).env("PATH", child_path(exe));
+    if let Some(h) = &own {
+        cmd.env("CODEX_HOME", &h.dir);
     }
     let input = if resume.is_some() {
         prompt.to_string()
@@ -357,6 +553,7 @@ async fn codex(run: &mut Run, exe: &Path, live: &Live, workspace: &Path, resume:
         format!("{SYSTEM_PROMPT}\nkimchi's commands are the tools of the `kimchi` MCP server; use no other tools.\n\n{}", with_context(conv, prompt))
     };
     run.status("Starting Codex…");
+    // `own` hands the sign-in back when dropped, also when the run is cancelled.
     run_child(run, cmd, input, "Codex", parse_codex).await
 }
 
@@ -440,14 +637,20 @@ impl Outcome {
     }
 }
 
-/// Kills the child's whole process group (the CLI and its `kimchi-mcp`) when dropped,
-/// which is also what cancelling a run does.
-struct Group(Option<u32>);
+/// Kills the child's whole process tree (the CLI and its `kimchi-mcp`) when dropped, which is
+/// also what cancelling a run does. On Unix the child leads its own process group, which outlives
+/// it; on Windows `taskkill /T` walks the tree from the child, so it has to run while the child
+/// is still alive ([`Group::kill`] before waiting).
+struct Group {
+    pid: Option<u32>,
+    /// The child was waited for: on Windows its tree can't be found any more.
+    reaped: bool,
+}
 
-impl Drop for Group {
-    fn drop(&mut self) {
+impl Group {
+    fn kill(&mut self) {
         #[cfg(unix)]
-        if let Some(pid) = self.0.and_then(|p| i32::try_from(p).ok()).filter(|p| *p > 1) {
+        if let Some(pid) = self.pid.and_then(|p| i32::try_from(p).ok()).filter(|p| *p > 1) {
             unsafe extern "C" {
                 fn kill(pid: i32, sig: i32) -> i32;
             }
@@ -457,6 +660,23 @@ impl Drop for Group {
                 kill(-pid, 9);
             }
         }
+        #[cfg(windows)]
+        if let Some(pid) = self.pid.take().filter(|_| !self.reaped) {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("taskkill")
+                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .status();
+        }
+    }
+}
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        self.kill();
     }
 }
 
@@ -473,7 +693,7 @@ pub(crate) async fn run_child(run: &mut Run, mut cmd: Command, input: String, la
         Ok(c) => c,
         Err(e) => return (out, Err(format!("Couldn't start {label}: {e}"))),
     };
-    let group = Group(child.id());
+    let mut group = Group { pid: child.id(), reaped: false };
     if let Some(mut stdin) = child.stdin.take() {
         tokio::spawn(async move {
             let _ = stdin.write_all(input.as_bytes()).await;
@@ -500,6 +720,7 @@ pub(crate) async fn run_child(run: &mut Run, mut cmd: Command, input: String, la
                         parse(run, &ev, &mut out);
                         if let Some(e) = out.abort.take() {
                             out.error = Some(e);
+                            group.kill();
                             let _ = child.start_kill();
                             break;
                         }
@@ -510,6 +731,9 @@ pub(crate) async fn run_child(run: &mut Run, mut cmd: Command, input: String, la
                 Ok(None) => break,
                 Err(e) => {
                     out.error.get_or_insert_with(|| format!("Couldn't read {label}'s output: {e}"));
+                    // It may go on writing to a pipe nobody reads: stop it, or the wait never ends.
+                    group.kill();
+                    let _ = child.start_kill();
                     break;
                 }
             },
@@ -523,6 +747,7 @@ pub(crate) async fn run_child(run: &mut Run, mut cmd: Command, input: String, la
         }
     }
     let status = child.wait().await;
+    group.reaped = true;
     // Whatever the CLI left running (its MCP server) goes with it, and lets go of stderr.
     drop(group);
     let stderr = match stderr {

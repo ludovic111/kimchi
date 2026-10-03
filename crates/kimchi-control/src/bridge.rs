@@ -13,13 +13,15 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::session::{CmdResult, Session, Source};
 
 pub const VERSION: u32 = 1;
 const MAX_LINE: usize = 64 * 1024 * 1024;
+/// The `auth` line, read before the client is trusted.
+const MAX_AUTH_LINE: usize = 64 * 1024;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -162,11 +164,30 @@ fn reply(id: &Value, result: CmdResult) -> Value {
     }
 }
 
+/// One line (without its end), reading at most `max` bytes of it: a longer line is an error
+/// before it is buffered whole. `None` at the end of the stream.
+pub(crate) async fn read_line<R: AsyncBufRead + Unpin>(r: &mut R, max: usize) -> std::io::Result<Option<String>> {
+    let mut buf = Vec::new();
+    let n = (&mut *r).take(max as u64 + 1).read_until(b'\n', &mut buf).await?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+        if buf.last() == Some(&b'\r') {
+            buf.pop();
+        }
+    } else if buf.len() > max {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("a request is longer than {max} bytes")));
+    }
+    String::from_utf8(buf).map(Some).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 async fn connection(stream: TcpStream, session: &Arc<Session>, token: &str) -> std::io::Result<()> {
     let (read, mut write) = stream.into_split();
-    let mut lines = BufReader::new(read).lines();
+    let mut lines = BufReader::new(read);
     // The first line must authenticate.
-    let first = match tokio::time::timeout(AUTH_TIMEOUT, lines.next_line()).await {
+    let first = match tokio::time::timeout(AUTH_TIMEOUT, read_line(&mut lines, MAX_AUTH_LINE)).await {
         Ok(Ok(Some(l))) => l,
         _ => return Ok(()),
     };
@@ -192,10 +213,7 @@ async fn connection(stream: TcpStream, session: &Arc<Session>, token: &str) -> s
     // Agents and MCP clients get a checkpoint before their first change in this connection (and
     // again after the project changes), so everything a terminal agent did can be reverted at once.
     let mut checkpoint: Option<(kimchi_core::Id, u64)> = None;
-    while let Some(line) = lines.next_line().await? {
-        if line.len() > MAX_LINE {
-            break;
-        }
+    while let Some(line) = read_line(&mut lines, MAX_LINE).await? {
         if line.trim().is_empty() {
             continue;
         }

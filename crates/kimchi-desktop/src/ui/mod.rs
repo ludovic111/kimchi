@@ -3,6 +3,7 @@
 
 pub mod drag;
 pub mod input;
+pub mod markdown;
 pub mod scrub;
 
 use std::rc::Rc;
@@ -375,10 +376,9 @@ pub fn stop(el: impl IntoElement) -> AnyElement {
 
 /// `1:05.25` style time (minutes:seconds.hundredths).
 pub fn timecode(t: f64) -> String {
-    let t = t.max(0.0);
-    let m = (t / 60.0).floor() as u64;
-    let s = t - m as f64 * 60.0;
-    format!("{m}:{s:05.2}")
+    // Rounded once, so 59.996 s reads 1:00.00 and not 0:60.00.
+    let cs = (t.max(0.0) * 100.0).round() as u64;
+    format!("{}:{:02}.{:02}", cs / 6000, (cs % 6000) / 100, cs % 100)
 }
 
 /// `00:01:05:12` style timecode at `fps`.
@@ -388,4 +388,95 @@ pub fn smpte(t: f64, fps: f64) -> String {
     let f = total % fps.round() as u64;
     let secs = total / fps.round() as u64;
     format!("{:02}:{:02}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60, f)
+}
+
+/// Minimise, maximise and close, drawn by kimchi where the system doesn't draw them: Windows
+/// (kimchi's top bar is the title bar there) and Linux compositors that ask for client-side
+/// decorations (GNOME on Wayland). `None` on macOS and under server-side decorations.
+pub fn window_controls(window: &Window, cx: &App) -> Option<AnyElement> {
+    if cfg!(target_os = "macos") || (!cfg!(windows) && matches!(window.window_decorations(), gpui::Decorations::Server)) {
+        return None;
+    }
+    let t = cx.theme().clone();
+    let button = |id: &'static str, ic: &'static str, area: gpui::WindowControlArea, label: &'static str| {
+        let close = matches!(area, gpui::WindowControlArea::Close);
+        div()
+            .id(id)
+            .w(px(42.))
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(t.text_2)
+            .role(gpui::Role::Button)
+            .aria_label(label)
+            .when(close, |d| d.hover(|s| s.bg(t.danger).text_color(gpui::white())))
+            .when(!close, |d| d.hover(|s| s.bg(t.hover).text_color(t.text)))
+            // Windows answers these areas itself (close, maximise, snap layouts…).
+            .window_control_area(area)
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .when(!cfg!(windows), |d| {
+                d.on_click(move |_, window, _| match area {
+                    gpui::WindowControlArea::Min => window.minimize_window(),
+                    gpui::WindowControlArea::Max => window.zoom_window(),
+                    gpui::WindowControlArea::Close => window.remove_window(),
+                    gpui::WindowControlArea::Drag => {}
+                })
+            })
+            .child(icon(ic))
+    };
+    let max_label = if window.is_maximized() { "Restore" } else { "Maximize" };
+    Some(
+        div()
+            .flex()
+            .flex_none()
+            .h_full()
+            .ml(px(6.))
+            .child(button("window-min", "minus", gpui::WindowControlArea::Min, "Minimize"))
+            .child(button("window-max", if window.is_maximized() { "copy" } else { "square" }, gpui::WindowControlArea::Max, max_label))
+            .child(button("window-close", "x", gpui::WindowControlArea::Close, "Close"))
+            .into_any_element(),
+    )
+}
+
+/// "Show in Finder" on macOS, "Show in Explorer" on Windows, "Show in folder" elsewhere.
+pub fn reveal_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Show in Finder"
+    } else if cfg!(windows) {
+        "Show in Explorer"
+    } else {
+        "Show in folder"
+    }
+}
+
+/// Where the OS keeps secrets, as people know it.
+pub fn keychain_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "keychain"
+    } else if cfg!(windows) {
+        "Windows Credential Manager"
+    } else {
+        "system keyring"
+    }
+}
+
+/// Quotes a path for the person's shell when it needs it: single quotes on macOS and Linux,
+/// double quotes on Windows (`cmd` and PowerShell both take them).
+pub fn shell_quote(p: &str) -> String {
+    if !p.contains([' ', '\'', '"', '(', ')', '&', '$', ';']) {
+        return p.to_string();
+    }
+    if cfg!(windows) { format!("\"{p}\"") } else { format!("'{}'", p.replace('\'', r"'\''")) }
+}
+
+/// Where an installed kimchi-mcp usually is, for when this copy can't find its own.
+pub fn mcp_fallback() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "/Applications/kimchi.app/Contents/MacOS/kimchi-mcp"
+    } else if cfg!(windows) {
+        r"%LOCALAPPDATA%\kimchi\kimchi-mcp.exe"
+    } else {
+        "kimchi-mcp"
+    }
 }

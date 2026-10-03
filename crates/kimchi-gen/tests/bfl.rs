@@ -140,3 +140,30 @@ async fn live_smoke() {
     let out = Bfl.generate(&cx, &GenRequest::new("flux-2-pro", Task::TextToImage, "a lighthouse at dusk")).await.unwrap();
     assert_eq!(out.items.len(), 1);
 }
+
+// Not paused: the download's timeout would fire as soon as the runtime idles.
+#[tokio::test]
+async fn batches_download_samples_as_they_come() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/flux-pro-1.1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "b"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/get_result"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "Ready", "result": {"sample": format!("{}/sample.png", server.uri())}})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sample.png"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(&b"\x89PNGdata"[..], "image/png"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut req = GenRequest::new("flux-pro-1.1", Task::TextToImage, "x");
+    req.count = 2;
+    let out = Bfl.generate(&ctx(&server), &req).await.unwrap();
+    assert!(matches!(&out.items[0].source, OutputSource::Bytes { mime, .. } if mime == "image/png"));
+    assert!(matches!(&out.items[1].source, OutputSource::Url { .. }));
+}

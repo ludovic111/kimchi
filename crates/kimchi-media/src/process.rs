@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -153,6 +153,56 @@ impl Caps {
     }
 }
 
+/// A blocking `Command` for ffmpeg/ffprobe: no stdin, no console window on Windows.
+pub(crate) fn blocking(program: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    cmd.stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
+/// Decoders and filters of an ffmpeg build, for the compositor's decoders.
+#[derive(Debug, Default)]
+pub(crate) struct Features {
+    pub decoders: HashSet<String>,
+    /// How HDR is tone-mapped to SDR: `zscale` (+ `tonemap`), else `libplacebo` (only if it ran
+    /// here: it needs Vulkan), else not at all.
+    pub tonemap: Option<&'static str>,
+}
+
+impl Features {
+    /// Asks ffmpeg once per binary (blocking; cached for the life of the process).
+    pub(crate) fn get(tools: &Tools) -> Arc<Features> {
+        static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Features>>>> = OnceLock::new();
+        let cache = CACHE.get_or_init(Default::default);
+        if let Some(f) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&tools.ffmpeg) {
+            return f.clone();
+        }
+        let run = |args: &[&str]| {
+            blocking(&tools.ffmpeg).args(args).stderr(Stdio::null()).output().ok().filter(|o| o.status.success())
+        };
+        let text = |args: &[&str]| run(args).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        let decoders = parse_encoders(&text(&["-hide_banner", "-decoders"]));
+        let filters = parse_filters(&text(&["-hide_banner", "-filters"]));
+        let tonemap = if filters.contains("zscale") && filters.contains("tonemap") {
+            Some("zscale")
+        } else if filters.contains("libplacebo") {
+            let probe = ["-hide_banner", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=s=16x16:d=0.1", "-frames:v", "1"];
+            let vf = format!("libplacebo={}", crate::probe::PLACEBO);
+            run(&[&probe[..], &["-vf", &vf, "-f", "null", "-"]].concat()).map(|_| "libplacebo")
+        } else {
+            None
+        };
+        let f = Arc::new(Features { decoders, tonemap });
+        cache.lock().unwrap_or_else(|e| e.into_inner()).insert(tools.ffmpeg.clone(), f.clone());
+        f
+    }
+}
+
 fn parse_version(s: &str) -> u32 {
     // "ffmpeg version 9.0.2 ..." / "ffmpeg version n8.1.3-..." / "ffmpeg version N-1234-g..."
     s.split_whitespace()
@@ -172,6 +222,17 @@ fn parse_encoders(s: &str) -> HashSet<String> {
             let mut parts = l.split_whitespace();
             let flags = parts.next()?;
             (flags.len() == 6).then(|| parts.next().map(str::to_owned))?
+        })
+        .collect()
+}
+
+fn parse_filters(s: &str) -> HashSet<String> {
+    // " TSC zscale            V->V       Apply resizing…" (no separator line before the list).
+    s.lines()
+        .filter_map(|l| {
+            let mut parts = l.split_whitespace();
+            let (flags, name, io) = (parts.next()?, parts.next()?, parts.next()?);
+            (flags.len() == 3 && flags.chars().all(|c| "TSC.".contains(c)) && io.contains("->")).then(|| name.to_owned())
         })
         .collect()
 }
@@ -196,6 +257,8 @@ mod tests {
         assert!(enc.contains("libx264") && enc.contains("aac") && !enc.contains("="));
         let hw = parse_hwaccels("Hardware acceleration methods:\ncuda\nvaapi\n\n");
         assert_eq!(hw, HashSet::from(["cuda".to_string(), "vaapi".to_string()]));
+        let filters = parse_filters("Filters:\n  T.. = Timeline support\n  A = Audio input/output\n TSC aap  AA->A  Apply\n .SC zscale  V->V  Apply\n");
+        assert_eq!(filters, HashSet::from(["aap".to_string(), "zscale".to_string()]));
     }
 
     #[cfg(unix)]

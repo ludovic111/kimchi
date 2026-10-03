@@ -1,10 +1,11 @@
 //! Modal dialogs (tier-3 glass over the scrim): settings, export, the command
-//! palette, the keyboard shortcuts.
+//! palette, the keyboard shortcuts, what's new.
 
 pub mod export;
 pub mod palette;
 pub mod settings;
 pub mod shortcuts;
+pub mod whats_new;
 
 use gpui::{AnyElement, App, Context, Entity, MouseButton, Render, Subscription, Window, deferred, div, prelude::*, px};
 
@@ -79,6 +80,7 @@ impl Render for Dialogs {
             Some(Dialog::Export) => Some(modal("export", 520., self.export.clone(), false, cx)),
             Some(Dialog::Palette) => Some(modal("palette", 620., self.palette.clone(), true, cx)),
             Some(Dialog::Shortcuts) => Some(modal("shortcuts", 780., shortcuts::sheet(cx), false, cx)),
+            Some(Dialog::WhatsNew { since, all }) => Some(modal("whats-new", 600., whats_new::sheet(since, all, cx), false, cx)),
             None => None,
         })
     }

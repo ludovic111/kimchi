@@ -20,7 +20,15 @@ impl SecretStore for KeychainSecrets {
         if let Some(v) = self.cache.lock().get(provider) {
             return v.clone();
         }
-        let v = keyring::Entry::new(SERVICE, provider).ok().and_then(|e| e.get_password().ok());
+        let v = match keyring::Entry::new(SERVICE, provider).and_then(|e| e.get_password()) {
+            Ok(k) => Some(k),
+            Err(keyring::Error::NoEntry) => None,
+            // A locked keychain or a secret service not up yet: ask again next time.
+            Err(e) => {
+                tracing::warn!("couldn't read the {provider} key from the keychain: {e}");
+                return None;
+            }
+        };
         self.cache.lock().insert(provider.to_string(), v.clone());
         v
     }

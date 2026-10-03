@@ -35,7 +35,7 @@ pub fn dialog<V: 'static>(
     };
     let (e1, e2, e3, e4, e5) = (entity.clone(), entity.clone(), entity.clone(), entity.clone(), entity);
     deferred(
-        anchored().position(point(px(0.), px(0.))).child(
+        anchored().position(point(px(0.), px(0.))).child(crate::ui::motion::fade(
             div()
                 .id("remove-media-scrim")
                 .occlude()
@@ -86,7 +86,9 @@ pub fn dialog<V: 'static>(
                                 .child(Button::new("remove-confirm", "Remove").danger().with_icon("trash").on_click(move |_, _, cx| e5.update(cx, |v, cx| on_answer(v, true, cx)))),
                         ),
                 ),
-        ),
+            "remove-media-in",
+            crate::ui::motion::FAST,
+        )),
     )
     .with_priority(2)
     .into_any_element()

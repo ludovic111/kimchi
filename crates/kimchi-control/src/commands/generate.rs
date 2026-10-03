@@ -213,10 +213,17 @@ async fn finish(s: &Arc<Session>, a: &Args, job: Job) -> CmdResult {
     Ok(json!(job))
 }
 
-/// Waits until a job is done and its result has landed in the project.
+/// Longest `generate.wait`, in seconds (a day).
+const MAX_WAIT: f64 = 86_400.0;
+
+/// Waits until a job is done and its result has landed in the project (`timeout`: 1 s to a day).
 pub async fn wait(s: &Arc<Session>, id: &str, timeout: f64) -> CmdResult<Job> {
+    if !timeout.is_finite() {
+        return Err("timeout should be a number of seconds".into());
+    }
+    let timeout = timeout.clamp(1.0, MAX_WAIT);
     let mut rx = s.subscribe();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(timeout.max(1.0));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(timeout);
     loop {
         let job = s.harness.job(id).ok_or_else(|| format!("No job `{id}`."))?;
         if job.status.is_done() && !has_pending(s, id) {
@@ -371,25 +378,36 @@ pub async fn pick_model(s: &Arc<Session>, provider: Option<&str>, model: Option<
     Ok((found.provider.clone(), found))
 }
 
-/// Starts a job and, for timeline placement, puts its placeholder clip down.
+/// Starts a job and, for timeline placement, puts its placeholder clip down. The placement is
+/// tried first, and a job whose placeholder can't go down is cancelled: nothing runs (and
+/// bills) without a place to land.
 pub fn submit(s: &Arc<Session>, sub: Submit) -> CmdResult<Job> {
     let project_id = s.current_id().ok_or("Open a project first.")?;
     let out_dir = s.library.generated_dir(project_id);
     let tag = serde_json::to_value(JobTag { project_id, input_assets: sub.input_assets.clone() }).map_err(err)?;
+    let placeholder = |job_id: String, model_name: String| match sub.placement {
+        Placement::Library => None,
+        Placement::Timeline { track_id, start, duration } => {
+            let kind = match sub.request.task.output() {
+                OutputKind::Image => MediaKind::Image,
+                OutputKind::Video => MediaKind::Video,
+                OutputKind::Audio => MediaKind::Audio,
+            };
+            let content = ClipContent::Pending { job_id, kind, prompt: sub.request.prompt.clone(), model_name };
+            Some(Edit::AddClip { track_id, clip: Clip::new(short_label(&sub.request.prompt), start, duration.max(0.5), content) })
+        }
+    };
+    if let Some(edit) = placeholder(String::new(), String::new()) {
+        let mut p = s.project()?;
+        p.apply(&edit).map_err(|e| format!("The result can't go there: {e}"))?;
+    }
     let job = s.harness.submit(&sub.provider, sub.request.clone(), out_dir, tag).map_err(err)?;
-    if let Placement::Timeline { track_id, start, duration } = sub.placement {
-        let kind = match sub.request.task.output() {
-            OutputKind::Image => MediaKind::Image,
-            OutputKind::Video => MediaKind::Video,
-            OutputKind::Audio => MediaKind::Audio,
-        };
-        let clip = Clip::new(
-            short_label(&sub.request.prompt),
-            start,
-            duration.max(0.5),
-            ClipContent::Pending { job_id: job.id.clone(), kind, prompt: sub.request.prompt.clone(), model_name: job.model_name.clone() },
-        );
-        s.with_project(project_id, |ed| ed.apply(&Edit::AddClip { track_id, clip }, None))?.map_err(err)?;
+    if let Some(edit) = placeholder(job.id.clone(), job.model_name.clone()) {
+        let placed = s.with_project(project_id, |ed| ed.apply(&edit, None)).and_then(|r| r.map_err(err));
+        if let Err(e) = placed {
+            s.harness.cancel(&job.id);
+            return Err(format!("The generation was cancelled: its placeholder couldn't go on the timeline ({e})."));
+        }
     }
     Ok(job)
 }
@@ -419,6 +437,10 @@ pub fn spawn_job_listener(s: &Arc<Session>) {
                     if let Err(e) = land(&s2, &job).await {
                         tracing::warn!("couldn't land job {}: {e}", job.id);
                         s2.toast(ToastKind::Error, format!("Generation finished but couldn't be added: {e}"));
+                        // Never leave a placeholder (and a `generate.wait`) waiting for it.
+                        if let Ok(tag) = serde_json::from_value::<JobTag>(job.tag.clone()) {
+                            let _ = s2.with_project(tag.project_id, |ed| ed.apply(&Edit::DropPending { job_id: job.id.clone() }, None));
+                        }
                     }
                     // Wake anyone in `wait` now that the placeholder is gone.
                     s2.emit(Event::Job { job: Box::new(job) });
@@ -436,9 +458,17 @@ async fn land(s: &Arc<Session>, job: &Job) -> CmdResult<()> {
     }
     let tools = s.tools()?;
     let mut first: Option<Id> = None;
+    let mut failures = vec![];
     for (i, out) in job.outputs.iter().enumerate() {
         let path = PathBuf::from(&out.path);
-        let probe = kimchi_media::probe(&tools, &path).await.map_err(err)?;
+        // One unreadable output doesn't lose the others.
+        let probe = match kimchi_media::probe(&tools, &path).await {
+            Ok(p) => p,
+            Err(e) => {
+                failures.push(format!("{}: {e}", path.display()));
+                continue;
+            }
+        };
         let suffix = if job.outputs.len() > 1 { format!(" ({})", i + 1) } else { String::new() };
         let asset = Asset {
             id: new_id(),
@@ -469,8 +499,15 @@ async fn land(s: &Arc<Session>, job: &Job) -> CmdResult<()> {
         first.get_or_insert(asset.id);
         add_asset(s, tag.project_id, asset)?;
     }
-    if let Some(asset_id) = first {
-        s.with_project(tag.project_id, |ed| ed.apply(&Edit::ResolvePending { job_id: job.id.clone(), asset_id }, None))?.map_err(err)?;
+    match first {
+        Some(asset_id) => {
+            s.with_project(tag.project_id, |ed| ed.apply(&Edit::ResolvePending { job_id: job.id.clone(), asset_id }, None))?.map_err(err)?;
+            if !failures.is_empty() {
+                s.toast(ToastKind::Error, format!("Some results couldn't be read:\n{}", failures.join("\n")));
+            }
+            Ok(())
+        }
+        None if failures.is_empty() => Err("the model returned nothing".into()),
+        None => Err(failures.join("\n")),
     }
-    Ok(())
 }

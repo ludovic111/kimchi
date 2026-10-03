@@ -145,7 +145,16 @@ jobs:
         run: |
           version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          cat > "$RUNNER_TEMP/notes.md" <<'EOF'
+          # What changed (CHANGELOG.md's section for this version) first: the in-app updater shows
+          # these notes for the update it offers.
+          awk -v v="$version" '/^## /{p = ($2 == v); next} p' CHANGELOG.md | sed -e '/./,$!d' > "$RUNNER_TEMP/notes.md"
+          if [ ! -s "$RUNNER_TEMP/notes.md" ]; then
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
+          cat >> "$RUNNER_TEMP/notes.md" <<'EOF'
+
+          ### Download
           Download the build for your system below. kimchi updates itself from here on.
 
           - **macOS**: `kimchi_aarch64.dmg` (Apple Silicon) or `kimchi_x64.dmg` (Intel).

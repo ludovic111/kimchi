@@ -77,7 +77,10 @@ pub async fn provider_status(session: &Arc<Session>) -> Vec<ProviderStatus> {
 /// Runs `exe args` for a short check; `None` if it can't start or takes too long.
 async fn probe(exe: &Path, args: &[&str]) -> Option<(bool, String)> {
     let mut cmd = Command::new(exe);
-    cmd.args(args).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    // The same PATH as a run, so an npm script finds `node` from the Dock too.
+    cmd.args(args).env("PATH", crate::cli::child_path(exe)).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashing up on each check
     let out = tokio::time::timeout(Duration::from_secs(8), cmd.output()).await.ok()?.ok()?;
     Some((out.status.success(), String::from_utf8_lossy(&out.stdout).trim().to_string()))
 }

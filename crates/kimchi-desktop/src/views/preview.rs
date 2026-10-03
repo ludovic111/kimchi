@@ -244,6 +244,11 @@ impl PreviewView {
         let (tx, rx) = futures::channel::mpsc::channel(4);
         let audio = AudioBuffer::new();
         let audio_out = AudioOut::open(audio.clone());
+        if audio_out.is_none() {
+            // No output device: play silently instead of piling decoded sound up in memory.
+            tracing::debug!("no audio output device; playing without sound");
+            audio.close();
+        }
         let task = gpui_tokio::Tokio::spawn(cx, crate::preview::stream(session, project, from, w.max(320), h.max(180), tx, audio));
         let task = cx.spawn(async move |this, cx| {
             if let Ok(Err(e)) = task.await {

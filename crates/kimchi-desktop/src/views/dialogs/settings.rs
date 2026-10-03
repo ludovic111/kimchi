@@ -1,11 +1,13 @@
 //! Settings: models & keys per provider, the built-in agent (provider, model, key, and the
-//! permissions every agent and MCP client is held to), appearance, updates, and about / AI
-//! control (the one-line MCP install). Every change is a registry command: `generate.setKey`,
-//! `generate.setProvider`, `generate.check`, `app.setSetting`, `app.setAgentKey`,
-//! `app.checkUpdates`, `app.installUpdate`. The window is a person, so it may change the agent's
+//! permissions every agent and MCP client is held to), appearance, updates (with what's new),
+//! diagnostics (logs and crash reports), and about / AI control (the one-line MCP install).
+//! Every change is a registry command: `generate.setKey`, `generate.setProvider`,
+//! `generate.check`, `app.setSetting`, `app.setAgentKey`, `app.checkUpdates`,
+//! `app.installUpdate`, `app.restart`, `app.logs`, `app.crashReports`. The window is a person, so it may change the agent's
 //! permissions and keys; agents themselves can't.
 
 mod agent;
+mod diagnostics;
 mod models;
 
 use std::path::PathBuf;
@@ -28,6 +30,7 @@ enum Section {
     Agent,
     Appearance,
     Updates,
+    Diagnostics,
     About,
 }
 
@@ -37,7 +40,8 @@ impl Section {
             "models" | "keys" | "providers" => Section::Provider(String::new()),
             "agent" | "permissions" => Section::Agent,
             "appearance" | "theme" => Section::Appearance,
-            "updates" | "update" => Section::Updates,
+            "updates" | "update" | "whatsnew" => Section::Updates,
+            "diagnostics" | "logs" | "crashes" | "crash" => Section::Diagnostics,
             "about" | "ai" | "mcp" | "control" => Section::About,
             id => Section::Provider(id.to_string()),
         })
@@ -59,6 +63,7 @@ pub struct SettingsDialog {
 
     // Agent.
     agent: agent::AgentState,
+    diag: diagnostics::DiagState,
 
     checking_updates: bool,
     reduce_transparency: bool,
@@ -122,6 +127,7 @@ impl SettingsDialog {
             checking: false,
             check: None,
             agent,
+            diag: Default::default(),
             checking_updates: false,
             reduce_transparency: false,
             mcp: entry.mcp,
@@ -152,6 +158,9 @@ impl SettingsDialog {
         self.body_scroll.set_offset(gpui::point(px(0.), px(0.)));
         if self.section == Section::Agent {
             self.load_agent(cx);
+        }
+        if self.section == Section::Diagnostics {
+            self.load_diagnostics(cx);
         }
         cx.notify();
     }
@@ -228,6 +237,7 @@ impl SettingsDialog {
             (Section::Appearance, "Appearance", "sun"),
             (Section::Agent, "Agent", "bot"),
             (Section::Updates, "Updates", "refresh-cw"),
+            (Section::Diagnostics, "Diagnostics", "file-text"),
             (Section::About, "About & AI control", "waypoints"),
         ] {
             let selected = self.section == sec;
@@ -277,10 +287,11 @@ impl SettingsDialog {
 
     fn title(&self) -> (String, String) {
         match &self.section {
-            Section::Provider(_) => ("Models & keys".into(), "Keys are stored in your system keychain and only sent to the provider they belong to.".into()),
+            Section::Provider(_) => ("Models & keys".into(), format!("Keys are stored in your {} and only sent to the provider they belong to.", crate::ui::keychain_name())),
             Section::Agent => ("Agent".into(), "The built-in agent, and what any agent or MCP client may do in kimchi.".into()),
             Section::Appearance => ("Appearance".into(), "Light or dark, and the glass of the chrome.".into()),
             Section::Updates => ("Updates".into(), format!("kimchi {} · signed updates from GitHub Releases", kimchi_control::update::CURRENT)),
+            Section::Diagnostics => ("Diagnostics".into(), "Logs and crash reports, to understand what went wrong.".into()),
             Section::About => ("About & AI control".into(), "Drive kimchi from Claude Code, Codex, scripts and its own agent.".into()),
         }
     }
@@ -308,7 +319,7 @@ impl SettingsDialog {
             .gap(px(18.))
             .child(group(
                 "Mode",
-                Some("System follows macOS and changes with it."),
+                Some("System follows your computer's light or dark setting and changes with it."),
                 div().w(px(300.)).child(mode).into_any_element(),
                 cx,
             ))
@@ -324,7 +335,7 @@ impl SettingsDialog {
                 cx,
             ))
             .when(self.reduce_transparency, |d| {
-                d.child(note("circle-alert", "Reduce transparency is on in macOS Accessibility settings, so surfaces stay opaque whatever this says.", t.warning, cx))
+                d.child(note("circle-alert", "Reduce transparency is on in your system's accessibility settings, so surfaces stay opaque whatever this says.", t.warning, cx))
             })
             .into_any_element()
     }
@@ -370,8 +381,22 @@ impl SettingsDialog {
         let env_off = std::env::var("KIMCHI_NO_UPDATE").is_ok_and(|v| !v.is_empty() && v != "0");
         let weak = cx.entity().downgrade();
         let checked = u.checked_at.map(|at| format!("Last checked {}.", crate::views::home::ago(at))).unwrap_or_else(|| "Not checked yet in this session.".into());
+        let auto_install = s.settings.updates.auto_install;
+        let show_whats_new = s.settings.updates.show_whats_new;
         let status: AnyElement = if u.ready {
-            note("circle-check", "The update is installed. Quit and reopen kimchi to use it.", t.success, cx).into_any_element()
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .p(px(12.))
+                .rounded(px(sz::R_MD))
+                .bg(t.success.opacity(0.1))
+                .border_1()
+                .border_color(t.success.opacity(0.35))
+                .child(note("circle-check", &format!("kimchi {} is ready. Restart to use it.", u.available.clone().unwrap_or_default()), t.success, cx))
+                .child(Button::new("update-restart", "Restart now").primary().with_icon("rotate-ccw").on_click(|_, _, cx| crate::app::restart(cx)))
+                .into_any_element()
         } else if let Some(v) = u.available.clone() {
             let download = u.download_url.clone().unwrap_or_else(|| kimchi_control::update::RELEASES_URL.to_string());
             div()
@@ -385,7 +410,7 @@ impl SettingsDialog {
                 .gap(px(10.))
                 .child(div().flex().items_center().gap(px(8.)).child(icon("download").text_color(t.accent_text)).child(div().font_weight(FontWeight::SEMIBOLD).child(format!("kimchi {v} is available"))))
                 .when_some(u.notes.clone().filter(|n| !n.trim().is_empty()), |d, n| {
-                    d.child(div().id("update-notes").max_h(px(140.)).overflow_y_scroll().text_size(px(sz::SM)).text_color(t.text_2).child(n))
+                    d.child(div().id("update-notes").max_h(px(180.)).overflow_y_scroll().text_size(px(sz::SM)).text_color(t.text_2).child(crate::ui::markdown::render(&n, cx)))
                 })
                 .when_some(u.progress, |d, p| {
                     d.child(
@@ -449,10 +474,26 @@ impl SettingsDialog {
             )
             .child(status)
             .when_some(u.error.clone(), |d, e| d.child(note("circle-alert", &e, t.danger, cx)))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .p(px(12.))
+                    .rounded(px(sz::R_MD))
+                    .bg(t.bg_sunken.opacity(0.6))
+                    .border_1()
+                    .border_color(t.line)
+                    .child(icon("gift").text_color(t.accent_text))
+                    .child(div().flex_1().min_w_0().child(format!("What changed in kimchi {}", kimchi_control::update::CURRENT)))
+                    .child(Button::new("whats-new", "What's new").small().on_click(|_, _, cx| {
+                        cx.store().update(cx, |s, cx| s.open_dialog(Dialog::WhatsNew { since: None, all: false }, cx))
+                    })),
+            )
             .child(toggle_row(
                 "updates-on-start",
-                "Check for updates when kimchi starts",
-                "Asks GitHub Releases once at start. Updates are signed and verified before anything is replaced.",
+                "Check for updates automatically",
+                "Asks GitHub Releases at start and every few hours. Updates are signed and verified before anything is replaced.",
                 check_on_start,
                 true,
                 move |on, _, cx| {
@@ -460,6 +501,34 @@ impl SettingsDialog {
                 },
                 cx,
             ))
+            .child({
+                let weak = cx.entity().downgrade();
+                toggle_row(
+                    "updates-auto-install",
+                    "Download and install updates by themselves",
+                    "A found update is installed in the background and used the next time kimchi starts.",
+                    auto_install,
+                    check_on_start,
+                    move |on, _, cx| {
+                        weak.update(cx, |this, cx| this.set_setting("updates.autoInstall", json!(on), cx)).ok();
+                    },
+                    cx,
+                )
+            })
+            .child({
+                let weak = cx.entity().downgrade();
+                toggle_row(
+                    "updates-whats-new",
+                    "Show what's new after an update",
+                    "Once, the first time a new version opens.",
+                    show_whats_new,
+                    true,
+                    move |on, _, cx| {
+                        weak.update(cx, |this, cx| this.set_setting("updates.showWhatsNew", json!(on), cx)).ok();
+                    },
+                    cx,
+                )
+            })
             .child(if env_off {
                 note("info", "KIMCHI_NO_UPDATE is set in this environment, so kimchi doesn't check at start. “Check now” still works.", t.text_2, cx)
             } else {
@@ -473,10 +542,10 @@ impl SettingsDialog {
     fn about(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let mcp = self.mcp.as_ref().map(|p| p.display().to_string());
-        let mcp_path = mcp.clone().unwrap_or_else(|| "/Applications/kimchi.app/Contents/MacOS/kimchi-mcp".into());
-        let claude = format!("claude mcp add kimchi -- {} --live", quote(&mcp_path));
-        let codex = format!("codex mcp add kimchi -- {} --live", quote(&mcp_path));
-        let cli = self.cli.as_ref().map(|p| format!("{} app.commands", quote(&p.display().to_string())));
+        let mcp_path = mcp.clone().unwrap_or_else(|| crate::ui::mcp_fallback().into());
+        let claude = format!("claude mcp add kimchi -- {} --live", crate::ui::shell_quote(&mcp_path));
+        let codex = format!("codex mcp add kimchi -- {} --live", crate::ui::shell_quote(&mcp_path));
+        let cli = self.cli.as_ref().map(|p| format!("{} app.commands", crate::ui::shell_quote(&p.display().to_string())));
         let link = |id: &'static str, label: &'static str, url: &'static str| {
             Button::new(id, label).small().ghost().icon_after("arrow-up-right").on_click(move |_, _, cx| cx.open_url(url))
         };
@@ -561,6 +630,7 @@ impl Render for SettingsDialog {
             Section::Agent => self.agent_section(window, cx),
             Section::Appearance => self.appearance(cx),
             Section::Updates => self.updates(cx),
+            Section::Diagnostics => self.diagnostics_section(cx),
             Section::About => self.about(cx),
         };
         div()
@@ -683,11 +753,6 @@ fn status_dot(p: &kimchi_gen::ProviderStatus, cx: &App) -> AnyElement {
 /// A masked key: dots and the last characters (`…abcd` from the status).
 fn masked(preview: &str) -> String {
     format!("••••••••{}", preview.trim_start_matches('…'))
-}
-
-/// Quotes a path for a shell when it has spaces.
-fn quote(p: &str) -> String {
-    if p.contains(' ') { format!("'{p}'") } else { p.to_string() }
 }
 
 /// Shows a text field, or, while it isn't being edited, its content as dots.

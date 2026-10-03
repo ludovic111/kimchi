@@ -10,7 +10,29 @@ use kimchi_cli::{Backend, Invocation, kimchi_control};
 use kimchi_control::{Source, registry};
 use serde_json::{Value, json};
 
+/// `println!` that leaves quietly when stdout is closed (`kimchi-cli commands | head`) instead of
+/// panicking. Defined before `mod generate` so it can use it too.
+macro_rules! say {
+    ($($t:tt)*) => {{
+        use std::io::Write as _;
+        let mut out = std::io::stdout().lock();
+        if let Err(e) = writeln!(out, $($t)*) {
+            crate::stdout_failed(e);
+        }
+    }};
+}
+
 mod generate;
+
+/// Nobody reads our output any more: stop, quietly for a closed pipe (128 + SIGPIPE, as a shell
+/// reports it).
+fn stdout_failed(e: std::io::Error) -> ! {
+    if e.kind() != std::io::ErrorKind::BrokenPipe {
+        eprintln!("error: couldn't write the output: {e}");
+        std::process::exit(1);
+    }
+    std::process::exit(141)
+}
 
 const USAGE: &str = "kimchi-cli — kimchi from the terminal
 
@@ -86,12 +108,12 @@ async fn main() -> ExitCode {
 async fn run(args: &[String]) -> Res {
     let inv = kimchi_cli::parse_args(args).map_err(Failure::Usage)?;
     if inv.version {
-        println!("kimchi-cli {}", env!("CARGO_PKG_VERSION"));
+        say!("kimchi-cli {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let Some(command) = inv.command.clone() else {
         if inv.help {
-            println!("{USAGE}");
+            say!("{USAGE}");
             return Ok(());
         }
         return Err(Failure::Usage("Missing command".into()));
@@ -100,7 +122,7 @@ async fn run(args: &[String]) -> Res {
         return match registry::spec(&command) {
             Some(spec) => describe(spec),
             None => {
-                println!("{USAGE}");
+                say!("{USAGE}");
                 Ok(())
             }
         };
@@ -109,7 +131,7 @@ async fn run(args: &[String]) -> Res {
         "commands" => commands(&inv),
         "help" => match inv.rest.first() {
             None => {
-                println!("{USAGE}");
+                say!("{USAGE}");
                 Ok(())
             }
             Some(name) => match registry::spec(name) {
@@ -156,7 +178,7 @@ async fn run_command(inv: &Invocation, command: &str, params: serde_json::Map<St
     let spec = registry::spec(command).ok_or_else(|| Failure::Usage(kimchi_cli::unknown_command(command)))?;
     let params = Value::Object(params);
     registry::validate(spec, &params).map_err(Failure::Usage)?;
-    let mut backend = backend(inv).await?;
+    let backend = backend(inv).await?;
     let result = backend.call(command, params).await?;
     print_json(&result, inv.compact);
     Ok(())
@@ -164,7 +186,7 @@ async fn run_command(inv: &Invocation, command: &str, params: serde_json::Map<St
 
 fn print_json(v: &Value, compact: bool) {
     let text = if compact { serde_json::to_string(v) } else { serde_json::to_string_pretty(v) };
-    println!("{}", text.unwrap_or_default());
+    say!("{}", text.unwrap_or_default());
 }
 
 fn has(inv: &Invocation, flag: &str) -> bool {
@@ -187,11 +209,11 @@ fn commands(inv: &Invocation) -> Res {
     for spec in registry::commands() {
         if spec.family() != family {
             family = spec.family();
-            println!("\n{}", family.to_uppercase());
+            say!("\n{}", family.to_uppercase());
         }
         let params: Vec<String> = spec.params.iter().map(|p| if p.required { format!("--{}", p.name) } else { format!("[--{}]", p.name) }).collect();
-        println!("  {:<26} {}", spec.name, params.join(" "));
-        println!("  {:<26} {}", "", first_sentence(spec.doc));
+        say!("  {:<26} {}", spec.name, params.join(" "));
+        say!("  {:<26} {}", "", first_sentence(spec.doc));
     }
     Ok(())
 }
@@ -204,7 +226,7 @@ fn first_sentence(doc: &str) -> &str {
 }
 
 fn describe(spec: &registry::Spec) -> Res {
-    println!("{}\n  {}\n", spec.name, spec.doc);
+    say!("{}\n  {}\n", spec.name, spec.doc);
     let mut notes = vec![if spec.mutates { "Changes the project, files or the app." } else { "Read only." }.to_string()];
     if spec.perm != registry::Perm::Edit {
         notes.push(match spec.perm {
@@ -215,12 +237,12 @@ fn describe(spec: &registry::Spec) -> Res {
     if spec.needs_window {
         notes.push("Needs the running window (not with --file or --headless).".into());
     }
-    println!("  {}\n", notes.join(" "));
+    say!("  {}\n", notes.join(" "));
     if spec.params.is_empty() {
-        println!("  No parameters.");
+        say!("  No parameters.");
     }
     for p in spec.params {
-        println!("  --{:<16} {:<8} {}{}", p.name, p.kind.schema_type().unwrap_or("any"), if p.required { "" } else { "(optional) " }, p.doc);
+        say!("  --{:<16} {:<8} {}{}", p.name, p.kind.schema_type().unwrap_or("any"), if p.required { "" } else { "(optional) " }, p.doc);
     }
     Ok(())
 }
@@ -229,7 +251,9 @@ fn docs(inv: &Invocation) -> Res {
     let out = flag_value(inv, "--out")?.unwrap_or("docs/COMMANDS.md");
     let md = registry::markdown();
     if out == "-" {
-        print!("{md}");
+        if let Err(e) = std::io::stdout().lock().write_all(md.as_bytes()) {
+            stdout_failed(e);
+        }
         return Ok(());
     }
     let path = PathBuf::from(out);
@@ -247,7 +271,7 @@ async fn doctor(inv: &Invocation) -> Res {
         print_json(&report, inv.compact);
     } else {
         for check in report["checks"].as_array().into_iter().flatten() {
-            println!(
+            say!(
                 "{} {:<14} {}",
                 if check["ok"] == true { "ok " } else { "!! " },
                 check["check"].as_str().unwrap_or(""),
@@ -265,24 +289,24 @@ fn mcp_config(inv: &Invocation) -> Res {
         return Ok(());
     }
     let block = serde_json::to_string_pretty(&c["json"]).unwrap_or_default();
-    println!("Claude Code:\n  {}\n", c["claudeCode"].as_str().unwrap_or(""));
-    println!("Codex CLI:\n  {}\n", c["codex"].as_str().unwrap_or(""));
-    println!("Cursor (~/.cursor/mcp.json), Claude Desktop (claude_desktop_config.json) and most other MCP clients:\n{block}\n");
-    println!("--live drives the running kimchi window; use --file <project.json> instead to work on a file without it.");
+    say!("Claude Code:\n  {}\n", c["claudeCode"].as_str().unwrap_or(""));
+    say!("Codex CLI:\n  {}\n", c["codex"].as_str().unwrap_or(""));
+    say!("Cursor (~/.cursor/mcp.json), Claude Desktop (claude_desktop_config.json) and most other MCP clients:\n{block}\n");
+    say!("--live drives the running kimchi window; use --file <project.json> instead to work on a file without it.");
     Ok(())
 }
 
-/// JSON lines in, JSON lines out, on one backend for the whole run.
+/// JSON lines in, JSON lines out, on one backend for the whole run. Each line runs as it
+/// arrives, so another program can hold a conversation over the pipes.
 async fn batch(inv: &Invocation) -> Res {
     let mut backend: Option<Backend> = None;
-    let stdin = std::io::stdin();
     let mut failed = false;
-    let lines: Vec<String> = stdin.lock().lines().collect::<Result<_, _>>().map_err(|e| Failure::Command(e.to_string()))?;
-    for (index, line) in lines.iter().enumerate() {
+    for (index, line) in std::io::stdin().lock().lines().enumerate() {
+        let line = line.map_err(|e| Failure::Command(format!("Couldn't read stdin: {e}")))?;
         if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
         }
-        let parsed = kimchi_cli::parse_batch_line(line);
+        let parsed = kimchi_cli::parse_batch_line(&line);
         let result = match parsed {
             Err(e) => Err(e),
             Ok((name, params)) => {
@@ -292,7 +316,7 @@ async fn batch(inv: &Invocation) -> Res {
                         Err(Failure::Usage(e) | Failure::Command(e)) => return Err(Failure::Command(e)),
                     });
                 }
-                let b = backend.as_mut().expect("opened above");
+                let b = backend.as_ref().expect("opened above");
                 b.call(&name, params).await.map(|v| (name, v))
             }
         };
@@ -304,7 +328,9 @@ async fn batch(inv: &Invocation) -> Res {
             }
         };
         let mut out = std::io::stdout().lock();
-        writeln!(out, "{reply}").and_then(|()| out.flush()).map_err(|e| Failure::Command(e.to_string()))?;
+        if let Err(e) = writeln!(out, "{reply}").and_then(|()| out.flush()) {
+            stdout_failed(e);
+        }
         if failed && !inv.keep_going {
             return Err(Failure::Command(format!("Batch stopped at line {} (use --continue to keep going)", index + 1)));
         }
@@ -338,7 +364,7 @@ async fn render(inv: &Invocation) -> Res {
     let spec = registry::spec("export.start").expect("export.start is a command");
     let params = Value::Object(params);
     registry::validate(spec, &params).map_err(Failure::Usage)?;
-    let mut backend = backend(&inv).await?;
+    let backend = backend(&inv).await?;
     let status = backend.call("export.start", params).await?;
     if let Some(e) = status["error"].as_str() {
         return Err(Failure::Command(e.to_string()));

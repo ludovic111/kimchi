@@ -68,6 +68,10 @@ actions!(
         ShowShortcuts,
         OpenHelp,
         OpenSupport,
+        WhatsNew,
+        ShowDiagnostics,
+        ReportProblem,
+        RestartApp,
     ]
 );
 
@@ -76,7 +80,8 @@ actions!(
 pub enum Scope {
     /// Everywhere, even while typing in a field.
     App,
-    /// In the window, but not while a text field has focus (single keys, ⌘Z on the project…).
+    /// In the window, but not while a text field has focus or a dialog is open (single keys,
+    /// ⌘Z on the project…). Escape still closes dialogs.
     Editing,
 }
 
@@ -170,12 +175,15 @@ fn concrete(keys: &str) -> String {
 pub fn bind(cx: &mut App) {
     let mut b: Vec<KeyBinding> = vec![];
     for s in SHORTCUTS {
-        let context = match s.scope {
-            _ if s.action().name() == Quit.name() => None,
-            Scope::App => Some("Workspace"),
-            Scope::Editing => Some("Workspace && !TextInput"),
-        };
         for k in s.keys {
+            // A key without a modifier (`?`) types a character in a field, so it never works there.
+            let bare = !k.starts_with("M-") && !k.contains("ctrl-") && !k.contains("alt-") && !k.contains("cmd-");
+            let context = match s.scope {
+                _ if s.action().name() == Quit.name() => None,
+                Scope::App if !bare => Some("Workspace"),
+                _ if s.action().name() == Deselect.name() => Some("Workspace && !TextInput"),
+                Scope::App | Scope::Editing => Some("Workspace && !TextInput && !Modal"),
+            };
             b.push(KeyBinding::load(&concrete(k), s.action(), context.map(|c| gpui::KeyBindingContextPredicate::parse(c).expect("valid context").into()), false, None, &gpui::DummyKeyboardMapper).expect("valid keystroke"));
         }
     }
@@ -274,6 +282,7 @@ pub fn menus() -> Vec<Menu> {
         Menu::new("kimchi").items([
             MenuItem::action("About kimchi", About),
             MenuItem::action("Check for Updates…", CheckUpdates),
+            MenuItem::action("What's New", WhatsNew),
             MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),
@@ -335,7 +344,11 @@ pub fn menus() -> Vec<Menu> {
         ]),
         Menu::new("Help").items([
             MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
+            MenuItem::action("What's New", WhatsNew),
             MenuItem::action("Driving kimchi from AI and scripts", OpenHelp),
+            MenuItem::separator(),
+            MenuItem::action("Logs and Crash Reports", ShowDiagnostics),
+            MenuItem::action("Report a Problem…", ReportProblem),
             MenuItem::action("Support kimchi", OpenSupport),
         ]),
     ]

@@ -39,9 +39,11 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             if cp < 0 {
                 return Err("checkpoint should be an id from history.checkpoint".into());
             }
-            let ok = s.edit(cx.label(), cx.source, |ed| Ok(ed.revert_to(cp as u64)))?;
+            let ok = s.edit(cx.label(), cx.source, |ed| ed.revert_to(cp as u64).map_err(crate::session::err))?;
             if !ok {
-                return Err(format!("Checkpoint {cp} is unknown or too old (only the last 64 are kept)."));
+                return Err(format!(
+                    "Checkpoint {cp} isn't in the open project's history: it was taken on another project, or is too old (only the last 64 are kept)."
+                ));
             }
             state(s)
         }

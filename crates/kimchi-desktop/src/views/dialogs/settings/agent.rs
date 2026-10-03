@@ -311,7 +311,7 @@ impl SettingsDialog {
                             .text_size(px(sz::SM))
                             .child(icon("key-round").text_color(t.success))
                             .child(div().font_family(MONO).text_color(t.text).child(masked(&p)))
-                            .child(div().flex_1().text_color(t.text_2).child("in the keychain"))
+                            .child(div().flex_1().text_color(t.text_2).child(format!("in the {}", crate::ui::keychain_name())))
                             .child(Button::new("agent-remove-key", "Remove").small().ghost().color(t.danger).on_click(cx.listener(|this, _, _, cx| this.remove_agent_key(cx)))),
                     )
                 })

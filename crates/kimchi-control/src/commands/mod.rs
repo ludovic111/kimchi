@@ -455,7 +455,7 @@ pub static SPECS: &[Spec] = &[
     query("app.info", "Version, ffmpeg, library and data folders, whether the window and the bridge are running.", &[]),
     query("app.commands", "Describe every command with its parameters, or one command.", &[opt("command", String, "One command name.")]),
     query("app.fonts", "Font families text clips can use: the bundled ones (Manrope, IBM Plex Mono, Instrument Sans, Instrument Serif) first, then this computer's.", &[]),
-    query("app.settings", "Every setting with its value (agent permissions, updates, appearance, default models).", &[]),
+    query("app.settings", "Every setting with its value (agent permissions, updates, appearance, default models, diagnostics).", &[]),
     edit("app.setSetting", "Change one setting by dotted key, e.g. updates.checkOnStart or appearance.mode. Agent permissions stay with the person.", &[
         req("key", String, "Dotted key from app.settings."),
         req("value", Any, "New value, of the same type."),
@@ -466,18 +466,33 @@ pub static SPECS: &[Spec] = &[
     ]).perm(Perm::PersonOnly),
     query("app.checkUpdates", "Check GitHub Releases for a newer kimchi and report it.", &[]),
     edit("app.installUpdate", "Download, verify (signature) and install the update found by app.checkUpdates; kimchi restarts into it.", &[]).perm(Perm::AppControl),
+    edit("app.restart", "Quit and start kimchi again (into an installed update, when there is one).", &[]).perm(Perm::AppControl).window(),
+    query("app.whatsNew", "Release notes: what changed in this version, in another (version), or in every version since one (since). Markdown, newest first.", &[
+        opt("version", String, "One version, e.g. 0.5.0. Defaults to this one."),
+        opt("since", String, "Every release newer than this version, up to this one."),
+        opt("all", Boolean, "Every release."),
+    ]),
+    query("app.diagnostics", "What a bug report needs: version, system, ffmpeg, 3D renderer, folders, log level, the log file and recent crash reports. Contains no keys or project content.", &[]),
+    query("app.logs", "kimchi's log files and the last lines of this run's log (or of another file it lists).", &[
+        opt("lines", Integer, "How many lines (default 100, up to 2000)."),
+        opt("file", String, "A log file name from the list, e.g. kimchi.1.log (the previous run)."),
+    ]),
+    query("app.crashReports", "Crash reports, newest first: panics kimchi caught and runs that ended without quitting. With id, one report's text.", &[
+        opt("id", String, "A report's id from the list."),
+    ]),
+    edit("app.clearCrashReports", "Delete every crash report.", &[]).perm(Perm::Files),
     edit("app.quit", "Quit kimchi.", &[]).perm(Perm::AppControl).window(),
     edit("app.notify", "Show a short message in the window.", &[req("text", String, "Message."), opt("kind", String, "info (default), success or error.")]).window(),
     // ---- ui ---------------------------------------------------------------
     query("ui.state", "What the window shows: home or editor, playhead, playing, selection, zoom, open panel and dialogs, theme.", &[]),
     edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears."), opt("assetId", String, "A media item to select instead.")]).window(),
-    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette; or home.", &[
+    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home.", &[
         req("panel", String, "Panel name."),
-        opt("section", String, "For settings: models, agent, appearance, updates or about."),
+        opt("section", String, "For settings: models, agent, appearance, updates, diagnostics or about."),
     ]).window(),
     edit("ui.closeDialogs", "Close open dialogs and popovers.", &[]).window(),
     edit("ui.zoom", "Zoom the timeline.", &[opt("pixelsPerSecond", Number, "4-600."), opt("fit", Boolean, "Fit the whole project in view.")]).window(),
-    edit("ui.screenshot", "Save a PNG of the window and return its path.", &[opt("path", String, "Destination .png (default: a temporary file).")]).window(),
+    edit("ui.screenshot", "Save a PNG of the window and return its path.", &[opt("path", String, "Destination .png (default: a temporary file).")]).perm(Perm::Files).window(),
 ];
 
 /// Runs the handler for a validated command.

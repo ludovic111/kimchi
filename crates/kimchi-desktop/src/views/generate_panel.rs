@@ -29,6 +29,8 @@ const IMAGE_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "webp", "heic", "avif
 
 pub struct GeneratePanel {
     pub(crate) store: Entity<Store>,
+    /// The project the draft's timeline target belongs to.
+    project_id: Option<kimchi_core::Id>,
     pub(crate) draft: Draft,
     pub(crate) prompt: Entity<TextInput>,
     pub(crate) negative: Entity<TextInput>,
@@ -83,7 +85,7 @@ impl GeneratePanel {
                     crate::ui::input::focus(&this.prompt, window, cx);
                 }
                 StoreEvent::FocusPrompt => crate::ui::input::focus(&this.prompt, window, cx),
-                StoreEvent::EditText => {}
+                StoreEvent::EditText | StoreEvent::AskRemoveAsset(_) => {}
             }),
             cx.subscribe(&prompt, |this, _, e: &InputEvent, cx| match e {
                 InputEvent::Submit => this.submit(cx),
@@ -127,6 +129,7 @@ impl GeneratePanel {
             show_advanced: false,
             submitting: false,
             ready: None,
+            project_id: None,
             playhead,
             scroll: ScrollHandle::new(),
             _subs: subs,
@@ -183,6 +186,12 @@ impl GeneratePanel {
     // ---- state changes ---------------------------------------------------
 
     fn on_store_changed(&mut self, cx: &mut Context<Self>) {
+        let project_id = self.store.read(cx).project.as_ref().map(|p| p.id);
+        if project_id != self.project_id {
+            // "Lands after <clip>" means nothing in another project.
+            self.project_id = project_id;
+            self.draft.target = None;
+        }
         // Load (again) when the set of ready providers changes: a key added, a local server enabled.
         let ready: Vec<String> = self.store.read(cx).providers.iter().filter(|p| p.ready).map(|p| p.info.id.clone()).collect();
         // (While a load runs, wait for it: the next notification compares again.)

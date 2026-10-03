@@ -166,9 +166,13 @@ fn range_shifts_and_cuts_clips() {
     assert_eq!(plan.duration, 3.0);
     assert_eq!(plan.video.unwrap().from, 3.0);
     // `a` is still fading in at 3 s: decode from its start, fade, then drop the first 3 s.
-    // `b` starts inside the window; `late` is outside and ignored.
-    assert_eq!(&plan.inputs[10..], ["-t", "4.0", "-i", "v.mp4", "-ss", "1.0", "-t", "2.0", "-i", "v.mp4"]);
+    // `b` starts inside the window; `late` is outside and ignored. Both read the same seconds of
+    // v.mp4: one input, split and cut for each.
+    assert_eq!(&plan.inputs[10..], ["-t", "4.0", "-i", "v.mp4"]);
     let g = &plan.graph;
+    assert!(g.contains("[1:a:0]asplit=2[s1_0][s1_1]"), "{g}");
+    assert!(g.contains("[s1_0]atrim=start=0.0:end=4.0,asetpts=PTS-STARTPTS,aformat="), "{g}");
+    assert!(g.contains("[s1_1]atrim=start=1.0:end=3.0,asetpts=PTS-STARTPTS,aformat="), "{g}");
     assert!(g.contains("afade=t=in:st=0.0:d=3.5"), "{g}");
     assert!(g.contains("atrim=start=3.0:end=4.0,asetpts=PTS-STARTPTS"), "{g}");
     assert!(g.contains("adelay=delays=48000S:all=1"), "{g}");
@@ -263,4 +267,55 @@ fn hardware_encodes_the_compositor_pipe_and_uploads_vaapi_frames() {
     let cpu = build_with_hardware(&p, &st, &caps(), &hw).unwrap();
     assert!(!cpu.hardware);
     assert_eq!(cpu.encoder.as_deref(), Some("libx264"));
+}
+
+#[test]
+fn many_clips_from_one_file_share_inputs() {
+    let v = asset(MediaKind::Video, "-interview.mp4", true);
+    let other = asset(MediaKind::Audio, "music.wav", true);
+    // 300 one-second clips cut from all over one long recording, and a far-off second file.
+    let mut v = v;
+    v.meta.duration = Some(3600.0);
+    let clips: Vec<Clip> = (0..300).map(|n| Clip { in_point: ((n * 7919) % 3500) as f64, ..media(&v, n as f64, 1.0) }).collect();
+    let p = project(vec![(TrackKind::Video, clips), (TrackKind::Audio, vec![media(&other, 0.0, 2.0)])], vec![v, other]);
+    let plan = plan(&p, ExportFormat::Mp4);
+    let files = input_files(&plan);
+    assert!(files.len() <= MAX_INPUTS + 1, "{} inputs", files.len());
+    assert_eq!(files.iter().filter(|f| **f == "music.wav").count(), 1);
+    // A path that looks like an option is still read as a file.
+    let safe = Path::new(".").join("-interview.mp4");
+    assert!(files.contains(&safe.to_str().unwrap()), "{files:?}");
+    assert_eq!(plan.sources.len(), 2);
+    let g = &plan.graph;
+    assert_eq!(g.matches("adelay=").count(), 299, "every clip but the first is delayed to its start");
+    assert!(g.contains("amix=inputs=301:"), "{g}");
+    // Every split output is used once.
+    for (i, chain) in g.split(";\n").enumerate().filter(|(_, c)| c.contains("asplit=")) {
+        let n: usize = chain.split("asplit=").nth(1).unwrap().split('[').next().unwrap().parse().unwrap();
+        let input = chain[1..].split(':').next().unwrap();
+        for k in 0..n {
+            assert_eq!(g.matches(&format!("[s{input}_{k}]")).count(), 2, "chain {i}: {chain}");
+        }
+    }
+    // A short, sparse timeline keeps one seeked input per clip.
+    let few = Project { tracks: vec![Track { clips: p.tracks[0].clips[..3].to_vec(), ..Track::new(TrackKind::Video, "t") }], ..p.clone() };
+    assert_eq!(input_files(&plan_of(&few)).len(), 4);
+}
+
+fn plan_of(p: &Project) -> Plan {
+    plan(p, ExportFormat::Mp4)
+}
+
+#[test]
+fn ntsc_rates_are_exact_fractions() {
+    let text = Clip::new("t", 0.0, 1.0, ClipContent::Text { style: TextStyle::default() });
+    let mut p = project(vec![(TrackKind::Video, vec![text])], vec![]);
+    p.settings.fps = 29.97;
+    let plan = plan(&p, ExportFormat::Mp4);
+    assert!(plan.inputs.windows(2).any(|w| w == ["-r", "30000/1001"]), "{:?}", plan.inputs);
+    assert_eq!(plan.video.unwrap().fps, 30000.0 / 1001.0);
+    assert_eq!(crate::rate(23.976), "24000/1001");
+    assert_eq!(crate::rate(59.94), "60000/1001");
+    assert_eq!(crate::rate(25.0), "25");
+    assert_eq!(crate::snap_fps(24.0), 24.0);
 }

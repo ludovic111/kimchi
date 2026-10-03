@@ -74,11 +74,18 @@ pub struct MediaPanel {
 }
 
 impl MediaPanel {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
         let search = cx.new(|cx| TextInput::new(cx).placeholder("Search media"));
         let subs = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&store, window, |this, store, e: &crate::store::StoreEvent, window, cx| {
+                if let crate::store::StoreEvent::AskRemoveAsset(id) = e
+                    && let Some(a) = store.read(cx).project.as_ref().and_then(|p| p.assets.iter().find(|a| a.id == *id)).cloned()
+                {
+                    this.ask_removal(&a, window, cx);
+                }
+            }),
             cx.subscribe(&search, |_, input, e: &InputEvent, cx| match e {
                 InputEvent::Changed(_) => cx.notify(),
                 InputEvent::Cancel => input.update(cx, |i, cx| i.set_text("", cx)),
@@ -137,7 +144,7 @@ impl MediaPanel {
         let path = a.path.clone();
         let doomed = a.clone();
         entries.push(MenuEntry::Separator);
-        entries.push(MenuItem::new("Reveal in Finder", move |_, cx| cx.reveal_path(std::path::Path::new(&path))).icon("folder-search").entry());
+        entries.push(MenuItem::new(crate::ui::reveal_label(), move |_, cx| cx.reveal_path(std::path::Path::new(&path))).icon("folder-search").entry());
         entries.push(MenuEntry::Separator);
         entries.push(MenuItem::new("Remove from project…", move |window, cx| this.update(cx, |p, cx| p.ask_removal(&doomed, window, cx))).icon("trash").danger().entry());
         self.store.update(cx, |s, cx| {
@@ -184,8 +191,16 @@ impl MediaPanel {
                 .bg(t.clip_audio)
                 .child(icon("audio-lines").size(px(if badges { 22. } else { 14. })).text_color(t.success))
                 .into_any_element(),
-            // The thumbnail is still being made.
-            None => div().size_full().flex().items_center().justify_center().bg(t.bg_sunken).child(icon("loader-circle").text_color(t.text_3)).into_any_element(),
+            // The thumbnail is still being made; after a minute it isn't coming (a codec ffmpeg
+            // can't read): the kind's icon instead of a loader forever.
+            None => div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(t.bg_sunken)
+                .child(icon(if crate::views::inspector::preview_pending(a) { "loader-circle" } else if a.kind == MediaKind::Image { "image" } else { "film" }).text_color(t.text_3))
+                .into_any_element(),
         };
         let kind_icon = match a.kind {
             MediaKind::Video => "film",

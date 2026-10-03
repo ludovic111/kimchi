@@ -562,3 +562,143 @@ async fn reversed_clips_and_transitions_render_and_export() {
     assert!(played[9] < played[8] && played[8] < played[7], "the first clip dips from 0.6 s: {played:?}");
     assert!(played[11] > 50 && played[14] > 250, "then the white clip comes in by 1.4 s: {played:?}");
 }
+
+/// `jpeg` with an EXIF APP1 segment saying `orientation` (what phones write).
+fn with_orientation(jpeg: &[u8], orientation: u8) -> Vec<u8> {
+    // TIFF header (big-endian), one IFD entry: 0x0112 SHORT 1 = orientation.
+    let tiff = [b"MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0".as_slice(), &[orientation, 0, 0, 0, 0, 0, 0]].concat();
+    let body = [b"Exif\0\0".as_slice(), &tiff].concat();
+    let len = (body.len() + 2) as u16;
+    [&jpeg[..2], &[0xff, 0xe1], &len.to_be_bytes(), &body, &jpeg[2..]].concat()
+}
+
+#[tokio::test]
+async fn portrait_photos_stay_upright() {
+    use kimchi_media::render::Renderer;
+    let Some(tools) = tools() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    // Stored 80×40: red left half, blue right half. Orientation 6 = turn 90° clockwise, so
+    // upright it is 40×80, red on top.
+    let plain = dir.path().join("plain.jpg");
+    ff(&tools, &["-f", "lavfi", "-i", "color=c=red:s=40x40,pad=80:40:0:0:blue", "-frames:v", "1", "-q:v", "2", plain.to_str().unwrap()]);
+    let photo = dir.path().join("-photo.jpg");
+    std::fs::write(&photo, with_orientation(&std::fs::read(&plain).unwrap(), 6)).unwrap();
+    let p = probe(&tools, &photo).await.unwrap();
+    assert_eq!((p.kind, p.meta.width, p.meta.height), (MediaKind::Image, Some(40), Some(80)));
+
+    // Drawn on an 80×80 canvas (contain): a 40×80 picture in the middle, red on top.
+    let mut project = Project::new("photo", ProjectSettings { width: 80, height: 80, fps: 10.0, background: "#00ff00".into(), sample_rate: 48_000 });
+    let mut a = asset(MediaKind::Image, &photo, p.meta.clone());
+    // Imported before orientation was read: sideways metadata is corrected when drawing.
+    a.meta.width = Some(80);
+    a.meta.height = Some(40);
+    project.tracks = vec![Track { clips: vec![Clip::new("photo", 0.0, 1.0, ClipContent::Media { asset_id: a.id })], ..Track::new(TrackKind::Video, "V") }];
+    project.assets = vec![a];
+    let frame = Renderer::new(&tools, &project, 80, 80, 10.0).still(0.0).unwrap();
+    let px = |x, y| { let c = frame.pixel(x, y).unwrap(); [c.red(), c.green(), c.blue()] };
+    assert!(close(px(40, 10), [255, 0, 0]) && close(px(40, 70), [0, 0, 255]), "{:?} {:?}", px(40, 10), px(40, 70));
+    assert!(close(px(5, 40), [0, 255, 0]) && close(px(75, 40), [0, 255, 0]), "background beside it, not a squashed picture");
+    let thumb = dir.path().join("thumb.jpg");
+    thumbnail(&tools, &photo, MediaKind::Image, &thumb, 100).await.unwrap();
+    assert_eq!(shape(&tools, &thumb).await.1, Some(40));
+}
+
+#[tokio::test]
+async fn pictures_that_end_before_their_sound_hold_their_last_frame() {
+    use kimchi_media::render::Renderer;
+    let Some(tools) = tools() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    // 1 s of grey picture, 3 s of sound.
+    let path = dir.path().join("short-picture.mp4");
+    ff(&tools, &["-f", "lavfi", "-i", "color=c=gray:s=64x64:r=10:d=1", "-f", "lavfi", "-i", "sine=f=440:d=3", "-pix_fmt", "yuv420p", path.to_str().unwrap()]);
+    let a = asset(MediaKind::Video, &path, probe(&tools, &path).await.unwrap().meta);
+    assert!(a.meta.duration.unwrap() > 2.9);
+    let forward = Clip { in_point: 2.0, ..Clip::new("tail", 0.0, 1.0, ClipContent::Media { asset_id: a.id }) };
+    let backward = Clip { reverse: true, ..Clip::new("rev", 1.0, 3.0, ClipContent::Media { asset_id: a.id }) };
+    let mut p = Project::new("tail", ProjectSettings { width: 64, height: 64, fps: 10.0, background: "#000000".into(), sample_rate: 48_000 });
+    p.tracks = vec![Track { clips: vec![forward, backward], ..Track::new(TrackKind::Video, "V") }];
+    p.assets = vec![a];
+    let mut r = Renderer::for_export(&tools, &p, 64, 64, 10.0);
+    for n in 0..40 {
+        let f = r.frame(n as f64 / 10.0).unwrap();
+        assert!(grey(&f) > 90, "frame {n} shows the held picture, not the background: {}", grey(&f));
+    }
+    assert!(grey(&Renderer::new(&tools, &p, 64, 64, 10.0).still(0.5).unwrap()) > 90);
+    let st = ExportSettings { path: dir.path().join("tail.mp4").to_string_lossy().into(), format: ExportFormat::Mp4, quality: Quality::Draft, width: None, height: None, fps: None, range: None, encoder: Default::default() };
+    export(&tools, &p, &st, |_| {}, CancellationToken::new()).await.unwrap();
+}
+
+#[tokio::test]
+async fn transparent_webm_and_hdr_render() {
+    use kimchi_media::render::Renderer;
+    let Some(tools) = tools() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let webm = dir.path().join("alpha.webm");
+    ff(&tools, &["-f", "lavfi", "-i", "color=c=red:s=64x64:r=10:d=1,format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='if(lt(X,32),255,0)'",
+        "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0", "-deadline", "realtime", webm.to_str().unwrap()]);
+    let hdr = dir.path().join("hlg.mp4");
+    ff(&tools, &["-f", "lavfi", "-i", "color=c=white:s=64x64:r=10:d=1", "-c:v", "libx265", "-x265-params", "log-level=error", "-pix_fmt", "yuv420p10le",
+        "-color_trc", "arib-std-b67", "-color_primaries", "bt2020", "-colorspace", "bt2020nc", hdr.to_str().unwrap()]);
+    let (w, h) = (asset(MediaKind::Video, &webm, probe(&tools, &webm).await.unwrap().meta), asset(MediaKind::Video, &hdr, probe(&tools, &hdr).await.unwrap().meta));
+    let mut p = Project::new("alpha", ProjectSettings { width: 64, height: 64, fps: 10.0, background: "#0000ff".into(), sample_rate: 48_000 });
+    p.tracks = vec![Track { clips: vec![Clip::new("a", 0.0, 1.0, ClipContent::Media { asset_id: w.id })], ..Track::new(TrackKind::Video, "V") }];
+    p.assets = vec![w, h.clone()];
+    for frame in [Renderer::for_export(&tools, &p, 64, 64, 10.0).frame(0.5).unwrap(), Renderer::new(&tools, &p, 64, 64, 10.0).still(0.5).unwrap()] {
+        let (l, r) = (frame.pixel(10, 32).unwrap(), frame.pixel(54, 32).unwrap());
+        assert!(l.red() > 200 && l.blue() < 60, "opaque half: {l:?}");
+        assert!(r.blue() > 200 && r.red() < 60, "transparent half shows the background: {r:?}");
+    }
+    // HDR decodes (tone-mapped where the build can).
+    p.tracks[0].clips = vec![Clip::new("hdr", 0.0, 1.0, ClipContent::Media { asset_id: h.id })];
+    let frame = Renderer::for_export(&tools, &p, 64, 64, 10.0).frame(0.5).unwrap();
+    assert!(grey(&frame) > 150, "{}", grey(&frame));
+}
+
+#[tokio::test]
+async fn hundreds_of_cuts_from_one_recording_export() {
+    let Some(tools) = tools() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let rec = dir.path().join("recording.wav");
+    ff(&tools, &["-f", "lavfi", "-i", "sine=f=440:d=310:r=8000", rec.to_str().unwrap()]);
+    let a = asset(MediaKind::Audio, &rec, probe(&tools, &rec).await.unwrap().meta);
+    // 150 cuts of 0.1 s, out of source order and far apart: more reads than inputs allowed.
+    let clips: Vec<Clip> = (0..150)
+        .map(|n| Clip { in_point: ((n * 37) % 150) as f64 * 2.0, ..Clip::new("cut", n as f64 * 0.1, 0.1, ClipContent::Media { asset_id: a.id }) })
+        .collect();
+    let mut p = Project::new("cuts", ProjectSettings { width: 64, height: 64, fps: 10.0, ..Default::default() });
+    p.tracks = vec![Track { clips, ..Track::new(TrackKind::Audio, "A") }];
+    p.assets = vec![a];
+    let st = ExportSettings { path: dir.path().join("cuts.wav").to_string_lossy().into(), format: ExportFormat::Wav, quality: Quality::Draft, width: None, height: None, fps: None, range: None, encoder: Default::default() };
+    export(&tools, &p, &st, |_| {}, CancellationToken::new()).await.unwrap();
+    let (duration, ..) = shape(&tools, Path::new(&st.path)).await;
+    assert!((duration - 15.0).abs() < 0.05, "{duration}");
+    let samples = kimchi_media::speech_samples(&tools, &p, None).await.unwrap();
+    assert_eq!(samples.len(), 15 * 16_000);
+    // The tone plays throughout: every 0.1 s cut has sound.
+    // (`sine` is at 1/8 of full scale.)
+    let silent: Vec<usize> = samples.chunks(1_600).enumerate().filter(|(_, cut)| !cut[200..1400].iter().any(|s| s.abs() > 0.08)).map(|(i, _)| i).collect();
+    assert!(silent.is_empty(), "silent cuts: {silent:?}");
+    let plan = kimchi_media::export::build(&p, &st, &kimchi_media::Caps::new(7, ["pcm_s24le"])).unwrap();
+    assert_eq!(plan.inputs.iter().filter(|a| *a == "-i").count(), 64);
+}
+
+#[tokio::test]
+async fn shared_inputs_cut_the_same_sound_as_seeking() {
+    let Some(tools) = tools() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    // A sweep in AAC: any timing difference changes the samples.
+    let rec = dir.path().join("sweep.m4a");
+    ff(&tools, &["-f", "lavfi", "-i", "aevalsrc=0.5*sin(2*PI*(200+100*t)*t):d=4:s=48000", "-c:a", "aac", rec.to_str().unwrap()]);
+    let a = asset(MediaKind::Audio, &rec, probe(&tools, &rec).await.unwrap().meta);
+    let cut = |at: f64, from: f64| Clip { in_point: from, ..Clip::new("cut", at, 1.0, ClipContent::Media { asset_id: a.id }) };
+    let mut p = Project::new("cuts", ProjectSettings { width: 64, height: 64, fps: 10.0, ..Default::default() });
+    p.assets = vec![a.clone()];
+    // Alone, the second cut gets an input seeked to 1.5 s; with the first, they share one input.
+    p.tracks = vec![Track { clips: vec![cut(1.0, 1.5)], ..Track::new(TrackKind::Audio, "A") }];
+    let alone = kimchi_media::speech_samples(&tools, &p, None).await.unwrap();
+    p.tracks[0].clips.insert(0, cut(0.0, 1.0));
+    let shared = kimchi_media::speech_samples(&tools, &p, None).await.unwrap();
+    let (x, y) = (&alone[16_000 + 800..32_000 - 800], &shared[16_000 + 800..32_000 - 800]);
+    let diff = x.iter().zip(y).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(diff < 0.05, "max difference {diff}");
+}
