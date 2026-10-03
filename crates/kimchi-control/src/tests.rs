@@ -790,6 +790,7 @@ async fn studio_commands() {
         ok(&s, Source::Agent, "history.undo", json!({})).await;
         assert!(s.project().unwrap().clip(clip.parse().unwrap()).unwrap().rendered.is_some(), "undo brings the render back");
     }
+}
 
 /// A cut from a script: clip.delete hands back the clips as they were, and clip.paste takes them.
 #[tokio::test(flavor = "multi_thread")]

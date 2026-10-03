@@ -141,7 +141,7 @@ pub struct ExportStatus {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UiState {
-    /// `home` or `editor`.
+    /// `home`, `editor` or `studio`.
     pub screen: String,
     pub playhead: f64,
     pub playing: bool,
@@ -155,6 +155,9 @@ pub struct UiState {
     pub open: Vec<String>,
     /// `dark` or `light`.
     pub theme: String,
+    /// The Studio, while a motion clip is open in it (what `ui.studio` answers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub studio: Option<serde_json::Value>,
     /// Playback starts over at the end.
     #[serde(rename = "loop")]
     pub looping: bool,

@@ -255,7 +255,8 @@ impl Renderer {
         match scene {
             Scene::Flat(s) => {
                 let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
-                let (sx, quality, frame) = (self.sx, self.quality, 1.0 / self.fps);
+                // One output frame lasts `speed` frames of scene time (motion blur spans it).
+                let (sx, quality, frame) = (self.sx, self.quality, clip.speed.abs().max(1e-6) / self.fps);
                 let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(&clip)) };
                 let shown = match comp.and_then(|c| s.composition(c)) {
                     Some(c) => kimchi_core::Scene2d { background: c.background.clone(), layers: c.layers.clone(), compositions: s.compositions.clone(), ..s.clone() },
@@ -274,6 +275,27 @@ impl Renderer {
             }
         }
         Ok(canvas)
+    }
+
+    /// The Studio's "Rendered" view of a path-traced 3D scene: a picture that gets better with
+    /// every [`space::trace::Progressive::add`], from the editor's `view` (or through the scene's
+    /// camera). `None` for 2D scenes and scenes the standard engine draws.
+    pub fn refining_view(&mut self, clip_id: Id, t: f64, view: Option<&space::viewport::ViewCamera>) -> MediaResult<Option<space::trace::Progressive>> {
+        let clip = self.project.clip(clip_id).cloned().ok_or_else(|| crate::MediaError::Unsupported(format!("no clip {clip_id}")))?;
+        let ClipContent::Motion { scene: Scene::Space(s), .. } = &clip.content else { return Ok(None) };
+        if !s.render.path_traced() {
+            return Ok(None);
+        }
+        let shown = match view {
+            Some(v) => v.apply(s),
+            None => s.clone(),
+        };
+        let (width, height) = (self.width, self.height);
+        let mut used = HashSet::new();
+        let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
+        // Only building the frame holds the 3D renderer; the samples are traced without it.
+        let p = lock(space::shared()).progressive(&shown, t, width, height, &mut pics);
+        Ok(Some(p))
     }
 
     /// The frame at `t`, wherever the previous one was (scrubbing). Videos are decoded at `t`.
@@ -425,7 +447,7 @@ impl Renderer {
                     match &scene {
                         Scene::Flat(s) => {
                             let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
-                            let (sx, quality, frame) = (self.sx, self.quality, 1.0 / self.fps);
+                            let (sx, quality, frame) = (self.sx, self.quality, clip.speed.abs().max(1e-6) / self.fps);
                             let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(clip)) };
                             let mut pics = ScenePictures { r: self, clip: clip.id, streaming, used };
                             let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame, eval };

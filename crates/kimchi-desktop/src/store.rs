@@ -188,6 +188,8 @@ pub enum StoreEvent {
     EditText,
     /// Ask before removing this media file (Delete with media selected): its clips go too.
     AskRemoveAsset(kimchi_core::Id),
+    /// Open this motion clip in the Studio.
+    OpenStudio(kimchi_core::Id),
 }
 
 pub struct Store {
@@ -226,6 +228,8 @@ pub struct Store {
     pub toasts: Vec<Toast>,
     pub dropping: bool,
     pub clipboard: Clipboard,
+    /// What the Studio shows while it is open (its `ui.studio` state), for `ui.state`.
+    pub studio: Option<Value>,
     next_toast: u64,
     _pump: Task<()>,
 }
@@ -298,6 +302,7 @@ impl Store {
             toasts: vec![],
             dropping: false,
             clipboard: Clipboard::default(),
+            studio: None,
             next_toast: 1,
             _pump: pump,
         };
@@ -450,7 +455,12 @@ impl Store {
             open.push(d.name().to_string());
         }
         self.session.set_ui_state(UiState {
-            screen: if self.project.is_some() { "editor".into() } else { "home".into() },
+            screen: match (&self.project, &self.studio) {
+                (Some(_), Some(_)) => "studio".into(),
+                (Some(_), None) => "editor".into(),
+                (None, _) => "home".into(),
+            },
+            studio: self.studio.clone(),
             playhead: pb.playhead,
             playing: pb.playing,
             selection: self.selection.clone(),
@@ -683,6 +693,25 @@ impl Store {
     pub fn close_menu(&mut self, cx: &mut Context<Self>) {
         if self.menu.take().is_some() {
             cx.notify();
+        }
+    }
+
+    /// Opens a motion clip in the Studio (it takes the editor's centre).
+    pub fn open_studio(&mut self, clip: Id, cx: &mut Context<Self>) {
+        if !matches!(self.clip(clip).map(|c| &c.content), Some(kimchi_core::ClipContent::Motion { .. })) {
+            self.flash("Only motion clips open in the Studio: add one from the Motion tab.", cx);
+            return;
+        }
+        self.menu = None;
+        cx.emit(StoreEvent::OpenStudio(clip));
+        cx.notify();
+    }
+
+    /// The Studio's state changed (or it closed: `None`).
+    pub fn set_studio_state(&mut self, state: Option<Value>, cx: &mut Context<Self>) {
+        if self.studio != state {
+            self.studio = state;
+            self.sync_ui(cx);
         }
     }
 

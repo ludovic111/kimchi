@@ -397,7 +397,7 @@ pub fn check_items<F: Family>(items: &[Stacked<F>], owner: &str, refs: &mut Vec<
 
 /// For keyframe names like `effects.blur.radius`: the item and parameter, when `name` is in
 /// this family.
-pub fn split_name<'a, F: Family>(name: &'a str) -> Option<(&'a str, &'a str)> {
+pub fn split_name<F: Family>(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix(F::FIELD)?.strip_prefix('.')?;
     rest.split_once('.')
 }

@@ -104,6 +104,8 @@ pub struct ClipView<'a> {
     /// Made or changed by the agent (or MCP / CLI) a moment ago.
     pub agent: bool,
     pub peaks: Option<Peaks>,
+    /// Motion clips: drawn live, rendered ahead, out of date, or rendering.
+    pub render: Option<crate::views::studio::render_state::RenderState>,
 }
 
 impl ClipView<'_> {
@@ -323,6 +325,45 @@ impl ClipView<'_> {
                 .absolute()
                 .inset_0(),
             );
+        }
+
+        // Motion clips: whether they are drawn live or play rendered frames.
+        if let Some(st) = &self.render
+            && wf >= 60.
+        {
+            use crate::views::studio::render_state::RenderState;
+            let (dot, label) = match st {
+                RenderState::Live => (gpui::white().opacity(0.6), "Live"),
+                RenderState::Rendered(_) => (t.success, "Rendered"),
+                RenderState::Outdated => (t.warning, "Out of date"),
+                RenderState::Rendering(..) => (t.accent, "Rendering"),
+            };
+            let right = ((x + w).min(self.scroll_x + self.view_w) - x0) as f32;
+            el = el.child(
+                div()
+                    .absolute()
+                    .bottom(px(4.))
+                    .left(px((right - 84.).max(4.)))
+                    .w(px(80.))
+                    .flex()
+                    .justify_end()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .px(px(5.))
+                            .rounded(px(4.))
+                            .bg(gpui::black().opacity(0.55))
+                            .text_size(px(9.5))
+                            .text_color(gpui::white().opacity(0.9))
+                            .child(div().size(px(6.)).rounded_full().bg(dot))
+                            .child(label),
+                    ),
+            );
+            if let RenderState::Rendering(p, _) = st {
+                el = el.child(div().absolute().left(px(off)).bottom_0().h(px(3.)).w(px(*p as f32 * wf)).bg(t.accent));
+            }
         }
 
         // Generated media wears the accent along its top.

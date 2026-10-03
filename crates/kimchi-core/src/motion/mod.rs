@@ -44,6 +44,8 @@ pub type Expressions = BTreeMap<String, String>;
 // ---------------------------------------------------------------------------------------------
 // Scene
 
+// One scene per motion clip: boxing the bigger 3D variant would only add noise.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Scene {
     Flat(Scene2d),
