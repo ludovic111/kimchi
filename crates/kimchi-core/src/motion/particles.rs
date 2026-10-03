@@ -488,6 +488,15 @@ mod tests {
     }
 
     #[test]
+    fn a_3d_particle_objects_colour_is_the_particles() {
+        let mut o: crate::motion::Object3d = serde_json::from_value(serde_json::json!({"id": "p", "type": "particles", "color": "#ffffff"})).unwrap();
+        o.set("color", &KeyValue::from("#ff0000")).unwrap();
+        let crate::motion::Shape3d::Particles(p) = &o.shape else { panic!("particles") };
+        assert_eq!(p.color, "#ff0000");
+        assert_eq!(o.get("color"), Some(KeyValue::from("#ff0000")));
+    }
+
+    #[test]
     fn trails_stay_behind_a_moving_emitter() {
         let p: ParticleSystem = serde_json::from_value(serde_json::json!({"rate": 20, "lifetime": 3, "speed": 0, "spread": 0, "fadeIn": 0})).unwrap();
         let moving = |t: f64| [t * 100.0, 0.0, 0.0];

@@ -1051,9 +1051,12 @@ impl Object3d {
             "z" => "position.z",
             other => other,
         };
+        // Particles have their own colour and size: those names are theirs, not the material's.
+        let particles_first = matches!(self.shape, Shape3d::Particles(_)) && self.shape.props().contains(&alias);
         if self.position.set_named(alias, "position", v)?
             || self.rotation.set_named(alias, "rotation", v)?
             || self.scale.set_named(alias, "scale", v)?
+            || (particles_first && self.shape.set(alias, v)?)
             || self.material.set(alias, v)?
             || self.shape.set(alias, v)?
             || stack::set_in(&mut self.modifiers, alias, v)?
@@ -1081,6 +1084,7 @@ impl Object3d {
             .get_named(alias, "position")
             .or_else(|| self.rotation.get_named(alias, "rotation"))
             .or_else(|| self.scale.get_named(alias, "scale"))
+            .or_else(|| if matches!(self.shape, Shape3d::Particles(_)) { self.shape.get(alias) } else { None })
             .or_else(|| self.material.get(alias))
             .or_else(|| self.shape.get(alias))
             .or_else(|| stack::get_in(&self.modifiers, alias))

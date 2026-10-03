@@ -391,13 +391,32 @@ fn coverage(f: &Frame3d, depth: &[f32], ids: &HashSet<String>) -> Vec<bool> {
         for t in super::cpu::triangles(f, i, &f.viewproj, w, h) {
             super::cpu::raster(&t, w, 0, h, |k, z, _, _| {
                 let d = f.camera.distance(z);
-                if depth.get(k).is_none_or(|&s| d <= s * 1.002 + 1e-3) {
+                // Generous: surfaces seen edge-on get depths from the two rasterisers that differ
+                // by more than a hair, which would punch speckles into the outline.
+                if depth.get(k).is_none_or(|&s| d <= s * 1.015 + 0.01) {
                     mask[k] = true;
                 }
             });
         }
     }
-    mask
+    close_holes(&mask, w, h)
+}
+
+/// Fills pinholes in a mask (a pixel surrounded by at least six covered neighbours is covered).
+fn close_holes(mask: &[bool], w: usize, h: usize) -> Vec<bool> {
+    let mut out = mask.to_vec();
+    for y in 1..h.saturating_sub(1) {
+        for x in 1..w.saturating_sub(1) {
+            if mask[y * w + x] {
+                continue;
+            }
+            let around = (-1i64..=1).flat_map(|dy| (-1i64..=1).map(move |dx| (dx, dy))).filter(|&(dx, dy)| (dx, dy) != (0, 0) && mask[(y as i64 + dy) as usize * w + (x as i64 + dx) as usize]).count();
+            if around >= 6 {
+                out[y * w + x] = true;
+            }
+        }
+    }
+    out
 }
 
 /// An orange line around the visible silhouettes of the selected objects.
