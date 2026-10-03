@@ -1060,36 +1060,6 @@ fn shapes_3d(v: &Values, c: &Ctx) -> Value {
     scene
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_template_builds_with_its_defaults() {
-        for t in TEMPLATES {
-            for (w, h) in [(1920.0, 1080.0), (1080.0, 1920.0)] {
-                let scene = t.build(&Map::new(), Ctx { width: w, height: h, duration: t.duration }).unwrap_or_else(|e| panic!("{}: {e}", t.id));
-                assert_eq!(scene.is_3d(), t.kind == "3d", "{}", t.id);
-            }
-            // Very short clips still make valid scenes.
-            t.build(&Map::new(), Ctx { width: 1280.0, height: 720.0, duration: 0.5 }).unwrap_or_else(|e| panic!("{} short: {e}", t.id));
-        }
-    }
-
-    #[test]
-    fn values_are_checked() {
-        let t = find("lowerThird").unwrap();
-        let bad = |v: Value| t.values(v.as_object().unwrap()).unwrap_err();
-        assert!(bad(json!({"titel": "x"})).contains("Did you mean `title`"));
-        assert!(bad(json!({"accent": "orange"})).contains("colour"));
-        assert!(bad(json!({"side": "middle"})).contains("left, right"));
-        let ok = t.values(json!({"title": "Grace Hopper", "plate": null}).as_object().unwrap()).unwrap();
-        assert_eq!(ok["subtitle"], "Mathematician");
-        let scene = t.build(json!({"title": "Grace Hopper", "plate": null}).as_object().unwrap(), Ctx { width: 1920.0, height: 1080.0, duration: 5.0 }).unwrap();
-        assert!(!scene.ids().contains(&"plate".to_string()));
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // Templates for the 0.7 engines: effects, particles, text animators, repeaters, path tracing,
 // extrusions, modifiers.
@@ -1324,4 +1294,34 @@ fn morph_blob(v: &Values, c: &Ctx) -> Value {
         scene["background"] = json!(bg);
     }
     scene
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_template_builds_with_its_defaults() {
+        for t in TEMPLATES {
+            for (w, h) in [(1920.0, 1080.0), (1080.0, 1920.0)] {
+                let scene = t.build(&Map::new(), Ctx { width: w, height: h, duration: t.duration }).unwrap_or_else(|e| panic!("{}: {e}", t.id));
+                assert_eq!(scene.is_3d(), t.kind == "3d", "{}", t.id);
+            }
+            // Very short clips still make valid scenes.
+            t.build(&Map::new(), Ctx { width: 1280.0, height: 720.0, duration: 0.5 }).unwrap_or_else(|e| panic!("{} short: {e}", t.id));
+        }
+    }
+
+    #[test]
+    fn values_are_checked() {
+        let t = find("lowerThird").unwrap();
+        let bad = |v: Value| t.values(v.as_object().unwrap()).unwrap_err();
+        assert!(bad(json!({"titel": "x"})).contains("Did you mean `title`"));
+        assert!(bad(json!({"accent": "orange"})).contains("colour"));
+        assert!(bad(json!({"side": "middle"})).contains("left, right"));
+        let ok = t.values(json!({"title": "Grace Hopper", "plate": null}).as_object().unwrap()).unwrap();
+        assert_eq!(ok["subtitle"], "Mathematician");
+        let scene = t.build(json!({"title": "Grace Hopper", "plate": null}).as_object().unwrap(), Ctx { width: 1920.0, height: 1080.0, duration: 5.0 }).unwrap();
+        assert!(!scene.ids().contains(&"plate".to_string()));
+    }
 }

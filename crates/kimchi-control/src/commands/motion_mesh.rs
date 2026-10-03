@@ -10,7 +10,7 @@ use kimchi_core::mesh::{PolyMesh, apply_modifiers, shape_mesh};
 use kimchi_core::motion::{self, Object3d, Scene, Scene3d, Shape3d};
 use kimchi_core::{Id, Project};
 use kimchi_media::render::space::{editable_poly, viewport};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::motion::{motion_clip, set_scene};
 use crate::registry::{Args, Ctx};
@@ -191,15 +191,14 @@ fn invert(m: &[[f64; 4]; 4]) -> Option<[[f64; 4]; 4]> {
         (a(r1, c1) * a(r2, c2) - a(r1, c2) * a(r2, c1)) / det
     };
     let mut out = [[0.0; 4]; 4];
-    for r in 0..3 {
-        for c in 0..3 {
-            out[c][r] = inv(r, c);
+    for (c, col) in out.iter_mut().take(3).enumerate() {
+        for (r, v) in col.iter_mut().take(3).enumerate() {
+            *v = inv(r, c);
         }
     }
     let t = [m[3][0], m[3][1], m[3][2]];
-    for r in 0..3 {
-        out[3][r] = -(0..3).map(|c| out[c][r] * t[c]).sum::<f64>();
-    }
+    let moved: [f64; 3] = std::array::from_fn(|r| -(0..3).map(|c| out[c][r] * t[c]).sum::<f64>());
+    out[3][..3].copy_from_slice(&moved);
     out[3][3] = 1.0;
     Some(out)
 }
@@ -216,6 +215,5 @@ mod tests {
         let p = [0.3, -0.7, 1.1];
         let q = apply(&i, apply(&m, p));
         assert!(p.iter().zip(q).all(|(a, b)| (a - b).abs() < 1e-9), "{q:?}");
-        let _ = Value::Null;
     }
 }
