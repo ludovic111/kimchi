@@ -188,11 +188,15 @@ pub enum StoreEvent {
     EditText,
     /// Ask before removing this media file (Delete with media selected): its clips go too.
     AskRemoveAsset(kimchi_core::Id),
+    /// Open this motion clip in the Studio.
+    OpenStudio(kimchi_core::Id),
 }
 
 pub struct Store {
     pub session: Arc<Session>,
     pub playback: Entity<Playback>,
+    /// The built-in agent's conversation and runs (the Agent panel draws it; `agent.*` drives it).
+    pub agent: Arc<kimchi_agent::Host>,
 
     pub project: Option<Arc<Project>>,
     pub can_undo: bool,
@@ -200,6 +204,8 @@ pub struct Store {
     pub library: Vec<ProjectSummary>,
     pub jobs: Vec<Job>,
     pub exports: Vec<ExportStatus>,
+    /// Motion clips being rendered ahead (`motion.render`).
+    pub renders: Vec<kimchi_control::renders::RenderStatus>,
     pub providers: Vec<ProviderStatus>,
     pub models: Vec<ModelInfo>,
     pub models_loading: bool,
@@ -222,6 +228,8 @@ pub struct Store {
     pub toasts: Vec<Toast>,
     pub dropping: bool,
     pub clipboard: Clipboard,
+    /// What the Studio shows while it is open (its `ui.studio` state), for `ui.state`.
+    pub studio: Option<Value>,
     next_toast: u64,
     _pump: Task<()>,
 }
@@ -243,7 +251,7 @@ impl StoreExt for App {
 }
 
 impl Store {
-    pub fn new(session: Arc<Session>, playback: Entity<Playback>, cx: &mut Context<Self>) -> Self {
+    pub fn new(session: Arc<Session>, playback: Entity<Playback>, agent: Arc<kimchi_agent::Host>, cx: &mut Context<Self>) -> Self {
         let mut rx = session.subscribe();
         let pump = cx.spawn(async move |this, cx| {
             loop {
@@ -267,12 +275,14 @@ impl Store {
         let mut store = Self {
             session: session.clone(),
             playback,
+            agent,
             project: None,
             can_undo: false,
             can_redo: false,
             library: vec![],
             jobs: session.harness.jobs(),
             exports: session.exports(),
+            renders: session.renders(),
             providers: vec![],
             models: vec![],
             models_loading: false,
@@ -292,6 +302,7 @@ impl Store {
             toasts: vec![],
             dropping: false,
             clipboard: Clipboard::default(),
+            studio: None,
             next_toast: 1,
             _pump: pump,
         };
@@ -374,6 +385,10 @@ impl Store {
                 Some(e) => *e = export,
                 None => self.exports.push(export),
             },
+            Event::Render { render } => match self.renders.iter_mut().find(|e| e.id == render.id) {
+                Some(e) => *e = render,
+                None => self.renders.push(render),
+            },
             Event::Toast { kind, text } => self.toast(kind, text, cx),
             Event::Command { record } => {
                 if record.source != Source::Window {
@@ -399,6 +414,7 @@ impl Store {
         self.refresh_project();
         self.jobs = self.session.harness.jobs();
         self.exports = self.session.exports();
+        self.renders = self.session.renders();
         self.settings = self.session.settings();
         self.refresh_providers(cx);
         self.library = self.session.library.list();
@@ -439,7 +455,12 @@ impl Store {
             open.push(d.name().to_string());
         }
         self.session.set_ui_state(UiState {
-            screen: if self.project.is_some() { "editor".into() } else { "home".into() },
+            screen: match (&self.project, &self.studio) {
+                (Some(_), Some(_)) => "studio".into(),
+                (Some(_), None) => "editor".into(),
+                (None, _) => "home".into(),
+            },
+            studio: self.studio.clone(),
             playhead: pb.playhead,
             playing: pb.playing,
             selection: self.selection.clone(),
@@ -448,6 +469,12 @@ impl Store {
             left_tab: self.left_tab.as_str().into(),
             open,
             theme: if crate::theme::ActiveTheme::theme(cx).is_dark() { "dark".into() } else { "light".into() },
+            looping: pb.looping,
+            shuttle: pb.shuttle,
+            snapping: self.snapping,
+            ripple: self.ripple,
+            // The editor keeps its panel sizes up to date itself.
+            layout: self.session.ui_state().layout,
         });
     }
 
@@ -626,6 +653,32 @@ impl Store {
         cx.notify();
     }
 
+    /// The Agent panel, docked on the right.
+    pub fn set_agent_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.agent_open = open;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    /// The generation jobs popover.
+    pub fn set_jobs_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.jobs_open = open;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    pub fn set_snapping(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.snapping = on;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    pub fn set_ripple(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.ripple = on;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
     pub fn set_left_tab(&mut self, tab: LeftTab, cx: &mut Context<Self>) {
         self.left_tab = tab;
         self.sync_ui(cx);
@@ -640,6 +693,25 @@ impl Store {
     pub fn close_menu(&mut self, cx: &mut Context<Self>) {
         if self.menu.take().is_some() {
             cx.notify();
+        }
+    }
+
+    /// Opens a motion clip in the Studio (it takes the editor's centre).
+    pub fn open_studio(&mut self, clip: Id, cx: &mut Context<Self>) {
+        if !matches!(self.clip(clip).map(|c| &c.content), Some(kimchi_core::ClipContent::Motion { .. })) {
+            self.flash("Only motion clips open in the Studio: add one from the Motion tab.", cx);
+            return;
+        }
+        self.menu = None;
+        cx.emit(StoreEvent::OpenStudio(clip));
+        cx.notify();
+    }
+
+    /// The Studio's state changed (or it closed: `None`).
+    pub fn set_studio_state(&mut self, state: Option<Value>, cx: &mut Context<Self>) {
+        if self.studio != state {
+            self.studio = state;
+            self.sync_ui(cx);
         }
     }
 

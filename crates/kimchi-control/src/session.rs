@@ -141,7 +141,7 @@ pub struct ExportStatus {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UiState {
-    /// `home` or `editor`.
+    /// `home`, `editor` or `studio`.
     pub screen: String,
     pub playhead: f64,
     pub playing: bool,
@@ -149,12 +149,39 @@ pub struct UiState {
     pub selected_asset: Option<Id>,
     /// Timeline zoom in pixels per second.
     pub zoom: f64,
-    /// `media`, `generate`, `text` or `motion`.
+    /// `media`, `generate`, `text`, `motion` or `captions`.
     pub left_tab: String,
     /// Open side panels (`agent`, `jobs`…) and dialogs (`settings`, `export`, `palette`).
     pub open: Vec<String>,
     /// `dark` or `light`.
     pub theme: String,
+    /// The Studio, while a motion clip is open in it (what `ui.studio` answers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub studio: Option<serde_json::Value>,
+    /// Playback starts over at the end.
+    #[serde(rename = "loop")]
+    pub looping: bool,
+    /// Shuttle speed (J/L): 0 when not shuttling, else -8 to 8 (negative plays backwards).
+    pub shuttle: f64,
+    /// Dragged clips and the playhead stick to cuts, markers and the playhead.
+    pub snapping: bool,
+    /// Deleting in the window closes the gap.
+    pub ripple: bool,
+    /// Panel sizes in the editor, in pixels.
+    pub layout: UiLayout,
+}
+
+/// The editor's panel sizes (`ui.setLayout`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UiLayout {
+    /// The left panel (media, generate, text, motion, captions).
+    pub left: f32,
+    /// The inspector, on the right.
+    pub inspector: f32,
+    pub timeline: f32,
+    /// The Agent panel, when open.
+    pub agent: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,10 +193,19 @@ pub enum Event {
     ProjectSwitched { project_id: Option<Id> },
     Job { job: Box<Job> },
     Export { export: ExportStatus },
+    /// A motion clip being rendered ahead (`motion.render`).
+    Render { render: crate::renders::RenderStatus },
     Toast { kind: ToastKind, text: String },
     Command { record: CommandRecord },
     SettingsChanged,
     Update { status: crate::update::UpdateStatus },
+}
+
+/// The built-in agent, installed by the app (`kimchi-agent` depends on this crate, so the
+/// `agent.*` commands reach it through this trait). Ids and names are already validated.
+pub trait AgentHost: Send + Sync {
+    /// Carries out one `agent.*` command for `source`.
+    fn call(self: Arc<Self>, session: Arc<Session>, source: Source, command: &'static str, args: crate::registry::Args) -> futures::future::BoxFuture<'static, CmdResult>;
 }
 
 /// A command only the window can carry out (`ui.*`, playback, selection).
@@ -211,10 +247,12 @@ pub struct Session {
     doc: Mutex<Option<OpenDoc>>,
     tools: RwLock<Option<Tools>>,
     exports: Mutex<Vec<ExportEntry>>,
+    pub(crate) renders: Mutex<Vec<crate::renders::RenderEntry>>,
     settings: RwLock<Settings>,
     events: broadcast::Sender<Event>,
     ui: Mutex<Option<mpsc::UnboundedSender<UiCall>>>,
     ui_state: RwLock<UiState>,
+    agent: RwLock<Option<Arc<dyn AgentHost>>>,
     seq: AtomicU64,
     runtime: tokio::runtime::Handle,
     pub(crate) update: Mutex<crate::update::UpdateState>,
@@ -252,10 +290,12 @@ impl Session {
             doc: Mutex::new(None),
             tools: RwLock::new(Tools::locate().ok()),
             exports: Mutex::new(vec![]),
+            renders: Mutex::new(vec![]),
             settings: RwLock::new(settings),
             events,
             ui: Mutex::new(None),
             ui_state: RwLock::new(UiState::default()),
+            agent: RwLock::new(None),
             seq: AtomicU64::new(1),
             runtime: tokio::runtime::Handle::current(),
             update: Mutex::new(Default::default()),
@@ -374,6 +414,17 @@ impl Session {
 
     pub fn ui_state(&self) -> UiState {
         self.ui_state.read().clone()
+    }
+
+    // ---- the built-in agent ---------------------------------------------
+
+    /// Called by the app once: `agent.*` commands go to `host`.
+    pub fn set_agent_host(&self, host: Arc<dyn AgentHost>) {
+        *self.agent.write() = Some(host);
+    }
+
+    pub fn agent_host(&self) -> Option<Arc<dyn AgentHost>> {
+        self.agent.read().clone()
     }
 
     // ---- the open project -----------------------------------------------

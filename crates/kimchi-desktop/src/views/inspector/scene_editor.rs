@@ -103,7 +103,7 @@ fn props(scene: &Scene, id: &str) -> Vec<Prop> {
                 LayerKind::Polygon { .. } => v.extend([("radius", "Radius", SIZE), ("sides", "Sides", Kind::Number(1.0, 0, 3.0, 64.0))]),
                 LayerKind::Star { .. } => v.extend([("radius", "Radius", SIZE), ("innerRadius", "Inner", SIZE), ("points", "Points", Kind::Number(1.0, 0, 2.0, 64.0))]),
                 LayerKind::Image { .. } => v.extend([("width", "Width", SIZE), ("radius", "Corners", SIZE)]),
-                LayerKind::Path { .. } | LayerKind::Group { .. } => {}
+                _ => {}
             }
             if !matches!(layer.kind, LayerKind::Text(_) | LayerKind::Image { .. } | LayerKind::Group { .. }) {
                 if layer.fill.as_ref().is_none_or(|f| f.color().is_some()) {

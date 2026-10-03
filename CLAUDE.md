@@ -66,9 +66,11 @@ Rules that keep it working:
 kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
 
-- [x] **Command registry**: 122 `family.verb` commands (project, media, track, clip, transition,
-      captions, motion, timeline, history, generate, export, handoff, app, ui), one undo history for every client,
-      batches as one step, `project.overview`, names or ids everywhere.
+- [x] **Command registry**: 164 `family.verb` commands (project, media, track, clip, transition,
+      captions, motion, timeline, history, generate, export, handoff, app, agent, ui), one undo history for every client,
+      batches as one step, `project.overview`, names or ids everywhere. Everything the window does has a command:
+      `agent.*` drives the Agent panel's conversation (`kimchi_agent::Host`), `ui.action` runs any shortcut or
+      menu item by name, `ui.setTimeline` / `ui.setLayout` / `ui.reveal` cover the window's own options.
 - [x] **CLI**: `kimchi-cli <command>` on the running app or `--file project.json`; `batch`, `doctor`,
       `mcp-config`, `docs`.
 - [x] **MCP**: `kimchi-mcp --live | --file | --headless`, tools generated from the registry; docs in
@@ -136,18 +138,39 @@ the verified NSIS installer on restart or quit (`update::apply_on_quit`), `app.r
 - [ ] macOS: look at What's new, Diagnostics and the toasts; check a SIGTERM (log out) leaves no "didn't quit
       properly" notice.
 
+## Blender-like 3D, After Effects-like 2D, the Studio, render ahead (0.7.0, released 2026-10-04)
+
+The motion model is `kimchi-core/src/motion/` (mod.rs: Scene, validation, `ItemMut`; space.rs 3D; flat.rs 2D;
+stack.rs: typed stacks with parameter tables — modifiers, constraints, patterns, effects, operators, masks,
+animators — that drive validation, `motion.stackTypes`, the Studio's forms and keyframe names
+`<field>.<id>.<param>`; particles.rs stateless particles; curve.rs; eval.rs keyframes → expressions → constraints,
+`Scene3d::evaluate_at`). `kimchi-core/src/expr/` is the expression language (its `GUIDE` is spliced into
+`motion_guide.md` at `EXPRESSIONS_GUIDE`); `kimchi-core/src/mesh/` the polygon meshes, primitives, modifiers, CSG and
+edit ops (`ops::EDIT_OPS`). Rendering: `render/flat.rs` + `effects2d.rs`, `masks.rs`, `shapeops.rs`, `textfx.rs`,
+`particles2d.rs`; `render/space/` (env, pattern, post, shapes, particles, models, viewport) and the path tracer
+(`trace.rs`, `bvh.rs`, `denoise.rs`); `render/cache.rs` renders motion clips ahead (FFV1 with alpha, `Clip.rendered`,
+valid while `cache::key` matches). Commands: `commands/motion_edit.rs`, `motion_mesh.rs`, `renders.rs` (background
+renders, `Event::Render`). Window: `views/studio/` (`ui.studio`).
+
+- [ ] The Studio by hand with a mouse: orbit, gizmo drags, outliner drag-reorder, dope-sheet and graph drags were
+      only exercised by UI tests (vscreen can't drag); feel on a real GPU (llvmpipe/CPU here).
+- [ ] 3D on Metal (Apple Silicon) and DirectX 12: the new shaders (spot/area lights, environment mips, shadow array)
+      were checked on llvmpipe/Vulkan only.
+- [ ] Path tracer: CPU only (about 30 s for 960×540 at 64 samples on 4 cores); a GPU path tracer would be the next step.
+      Point lights cast no shadows in the standard engine (no cube maps); area lights are a representative point there.
+- [ ] Not done: sculpting, rigging/armatures, physics, 2D puppet/mesh warp, 3D layers in 2D, extruding a picture's
+      outline, audio-driven expressions.
+
 ## Next session
 
-kimchi 0.5.0 is released (2026-10-03): keyframes, motion graphics and 3D, transitions, colour,
-reverse and freeze frames, local captions, GPU export; notarized macOS for Apple Silicon and Intel,
-Windows and Linux. The lsuite page (New in 0.5, new captures) and STANDARD.md's kimchi column
-(122 commands) are up to date.
+kimchi 0.7.0 (2026-10-04): Blender-like 3D (modelling, modifiers, path tracer), After Effects-like 2D,
+expressions, the Studio, motion clips rendered ahead, `agent.*` / `ui.action` parity; 164 commands.
 
 - [ ] A pass with real mouse input in the running app: clicks, drags and typing are covered by GPUI
       UI tests and the app was driven through `kimchi-cli`, but nobody has used the window by hand yet.
 - [ ] Windows builds were produced by CI but never launched. Linux: launched on Xvfb (2026-10-02),
       which found the missing `gpui` x11/wayland features; not yet on a real Linux desktop.
-- [ ] Codex as an agent provider: run one real turn once Codex is installed.
+- [x] Codex as an agent provider: real turns run (2026-10-03, Codex 0.160), with deletes allowed by kimchi's own permissions.
 - [ ] Each release: update `../lsuite/kimchi/index.html` (what changed, and screenshots saved as
       WebP in `../lsuite/assets/img/kimchi/`, dark and `-light`). On Linux take them with `vscreen`
       (`vscreen size 2000x1250`, `KIMCHI_WINDOW_SIZE=2000x1250`, `vscreen shot`); the steps are in

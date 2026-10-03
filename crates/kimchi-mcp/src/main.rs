@@ -325,6 +325,9 @@ impl Server {
                     .iter()
                     .find(|s| s.tool_name() == name || s.name == name)
                     .ok_or_else(|| (-32602, format!("Unknown tool `{name}`")))?;
+                if for_builtin_agent() && spec.family() == "agent" {
+                    return Err((-32602, format!("Unknown tool `{name}`: the built-in agent doesn't drive itself")));
+                }
                 let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
                 Ok(match self.backend.call(spec.name, arguments).await {
                     Ok(result) => {
@@ -412,11 +415,18 @@ const RESOURCES: [(&str, &str, &str, &str); 5] = [
     ("kimchi://app", "Application", "Version, ffmpeg, folders, and whether the window and the bridge are running.", "app.info"),
 ];
 
+/// Started by the app's built-in agent (Claude Code or Codex as the panel's model): it gets no
+/// `agent_*` tools, which would drive the agent itself.
+fn for_builtin_agent() -> bool {
+    std::env::var_os("KIMCHI_MCP_BUILTIN_AGENT").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
 /// One tool per command an agent can run (person-only commands are left out: they are always refused).
 fn tools() -> Vec<Value> {
+    let builtin = for_builtin_agent();
     registry::commands()
         .iter()
-        .filter(|s| s.perm != Perm::PersonOnly)
+        .filter(|s| s.perm != Perm::PersonOnly && !(builtin && s.family() == "agent"))
         .map(|spec| {
             let mut description = spec.doc.to_string();
             if spec.perm != Perm::Edit {
@@ -438,7 +448,7 @@ fn tools() -> Vec<Value> {
                     "readOnlyHint": !spec.mutates,
                     "destructiveHint": destructive,
                     "idempotentHint": !spec.mutates,
-                    "openWorldHint": matches!(spec.family(), "generate" | "handoff") || spec.name == "app.checkUpdates",
+                    "openWorldHint": matches!(spec.family(), "generate" | "handoff") || matches!(spec.name, "app.checkUpdates" | "agent.send"),
                 },
             })
         })

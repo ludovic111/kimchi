@@ -122,16 +122,10 @@ impl Timeline {
             .child(Button::icon("duplicate", "copy", tip("Duplicate", &Duplicate)).small().disabled(!has_sel).on_click(|_, w, cx| w.dispatch_action(Box::new(Duplicate), cx)))
             .child(sep())
             .child(Button::icon("snap", "magnet", tip(if snapping { "Snapping: on" } else { "Snapping: off" }, &ToggleSnap)).small().selected(snapping).on_click(|_, _, cx| {
-                cx.store().update(cx, |s, cx| {
-                    s.snapping = !s.snapping;
-                    cx.notify();
-                })
+                cx.store().update(cx, |s, cx| s.set_snapping(!s.snapping, cx))
             }))
             .child(Button::icon("ripple", "wrap-text", if ripple { "Ripple delete: on (deleting closes the gap)" } else { "Ripple delete: off" }).small().selected(ripple).on_click(|_, _, cx| {
-                cx.store().update(cx, |s, cx| {
-                    s.ripple = !s.ripple;
-                    cx.notify();
-                })
+                cx.store().update(cx, |s, cx| s.set_ripple(!s.ripple, cx))
             }))
             .child(sep())
             .child(Button::icon("marker", "map-pin", tip("Add a marker", &AddMarker)).small().on_click(|_, w, cx| w.dispatch_action(Box::new(AddMarker), cx)))

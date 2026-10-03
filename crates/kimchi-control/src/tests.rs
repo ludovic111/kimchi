@@ -66,6 +66,24 @@ async fn clients_share_one_undo_history() {
     assert_eq!(s.project().unwrap().clips().count(), 0);
 }
 
+/// What models send in place of JSON (Codex writes arrays of JSON text) is read as meant; arrays
+/// say what their items are.
+#[tokio::test(flavor = "multi_thread")]
+async fn json_written_as_text_is_understood() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Mcp, "project.create", json!({})).await;
+    let b = ok(&s, Source::Mcp, "project.batch", json!({ "commands": ["{\"command\": \"clip.addText\", \"params\": {\"text\": \"A\", \"start\": 0}}"] })).await;
+    assert_eq!(b["results"].as_array().unwrap().len(), 1, "{b}");
+    ok(&s, Source::Mcp, "clip.addText", json!({ "text": "B", "start": "4", "style": "{\"fontSize\": 40}" })).await;
+    assert_eq!(ok(&s, Source::Mcp, "clip.get", json!({ "clipId": "B" })).await["start"], 4.0);
+    ok(&s, Source::Mcp, "clip.delete", json!({ "clipIds": "B" })).await;
+    let e = registry::call(&s, Source::Mcp, "project.renderFrame", json!({ "times": ["soon"] })).await.unwrap_err();
+    assert!(e.contains("`times[0]` should be a number"), "{e}");
+    let schema = registry::input_schema(registry::spec("clip.delete").unwrap());
+    assert_eq!(schema["properties"]["clipIds"]["items"], json!({ "type": "string" }));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn names_work_like_ids_and_mistakes_are_explained() {
     let dir = tempfile::tempdir().unwrap();
@@ -476,6 +494,9 @@ async fn effects_transitions_and_freeze_frames() {
         let clips = ok(&s, Source::Agent, "clip.list", json!({ "trackId": "Video 1" })).await;
         let starts: Vec<f64> = clips.as_array().unwrap().iter().map(|c| c["start"].as_f64().unwrap()).collect();
         assert_eq!(starts, vec![0.0, 1.0, 3.0, 5.0]);
+        // The still in the media list says what it is.
+        let media = ok(&s, Source::Agent, "media.list", json!({})).await;
+        assert!(media.as_array().unwrap().iter().any(|m| m["name"].as_str().is_some_and(|n| n.ends_with("· frame at 1.00 s"))), "{media}");
         ok(&s, Source::Agent, "history.undo", json!({})).await;
         assert_eq!(ok(&s, Source::Agent, "clip.list", json!({ "trackId": "Video 1" })).await.as_array().unwrap().len(), 2);
     }
@@ -664,4 +685,174 @@ async fn paths_and_lines_are_bounded() {
     let mut r: &[u8] = b"short\r\nwaaaaaaaay too long\n";
     assert_eq!(crate::bridge::read_line(&mut r, 8).await.unwrap().as_deref(), Some("short"));
     assert!(crate::bridge::read_line(&mut r, 8).await.is_err());
+}
+
+/// The Studio's commands: stacks, expressions, materials, compositions, moving and copying,
+/// keyframe shifts, views and renders ahead.
+#[tokio::test(flavor = "multi_thread")]
+async fn studio_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({ "name": "Studio", "width": 640, "height": 360 })).await;
+
+    // 2D: an effect stack, an expression, a composition, precompose, reorder, duplicate.
+    let added = ok(&s, Source::Agent, "motion.add", json!({ "start": 0, "duration": 2, "scene": { "layers": [
+        { "id": "a", "type": "rect", "width": 100, "height": 100, "fill": "#ff5a36", "keyframes": { "x": [[0, 0], [1, 100]] } },
+        { "id": "b", "type": "ellipse", "fill": "#ffffff" }
+    ] } })).await;
+    let clip = added["clips"][0]["id"].as_str().unwrap().to_string();
+    let r = ok(&s, Source::Agent, "motion.setStackItem", json!({ "clipId": clip, "id": "a", "field": "effects", "item": { "type": "glow", "radius": 30 } })).await;
+    assert_eq!(r["itemId"], "glow");
+    ok(&s, Source::Agent, "motion.setStackItem", json!({ "clipId": clip, "id": "a", "field": "effects", "item": { "type": "blur" }, "index": 0 })).await;
+    let a = ok(&s, Source::Agent, "motion.get", json!({ "clipId": clip, "id": "a" })).await;
+    assert_eq!(a["effects"][0]["type"], "blur");
+    ok(&s, Source::Agent, "motion.setKeyframes", json!({ "clipId": clip, "id": "a", "property": "effects.glow.radius", "keyframes": [[0, 0], [1, 40]] })).await;
+    ok(&s, Source::Agent, "motion.moveStackItem", json!({ "clipId": clip, "id": "a", "field": "effects", "itemId": "blur", "index": 1 })).await;
+    ok(&s, Source::Agent, "motion.removeStackItem", json!({ "clipId": clip, "id": "a", "field": "effects", "itemId": "glow" })).await;
+    let a = ok(&s, Source::Agent, "motion.get", json!({ "clipId": clip, "id": "a" })).await;
+    assert_eq!(a["effects"].as_array().unwrap().len(), 1);
+    assert!(a["keyframes"].get("effects.glow.radius").is_none(), "its keyframes went with it");
+    let e = registry::call(&s, Source::Agent, "motion.setStackItem", json!({ "clipId": clip, "id": "a", "field": "effects", "item": { "type": "blurr" } })).await.unwrap_err();
+    assert!(e.contains("Did you mean `blur`"), "{e}");
+    let e = registry::call(&s, Source::Agent, "motion.setStackItem", json!({ "clipId": clip, "id": "a", "field": "efects", "item": { "type": "blur" } })).await.unwrap_err();
+    assert!(e.contains("Did you mean `effects`"), "{e}");
+    ok(&s, Source::Agent, "motion.setExpression", json!({ "clipId": clip, "id": "b", "property": "rotation", "expression": "time * 90" })).await;
+    let e = registry::call(&s, Source::Agent, "motion.setExpression", json!({ "clipId": clip, "id": "b", "property": "rotation", "expression": "wigle(1, 2)" })).await.unwrap_err();
+    assert!(e.contains("wiggle"), "{e}");
+    ok(&s, Source::Agent, "motion.precompose", json!({ "clipId": clip, "ids": ["a"], "compositionId": "card" })).await;
+    let scene = ok(&s, Source::Agent, "motion.get", json!({ "clipId": clip })).await;
+    assert_eq!(scene["scene"]["layers"][0]["type"], "comp");
+    assert_eq!(scene["scene"]["compositions"][0]["layers"][0]["id"], "a");
+    ok(&s, Source::Agent, "motion.setComposition", json!({ "clipId": clip, "composition": { "id": "card", "duration": 1.5 } })).await;
+    let scene = ok(&s, Source::Agent, "motion.get", json!({ "clipId": clip })).await;
+    assert_eq!(scene["scene"]["compositions"][0]["layers"][0]["id"], "a", "layers kept");
+    assert!(registry::call(&s, Source::Agent, "motion.removeComposition", json!({ "clipId": clip, "compositionId": "card" })).await.is_err(), "still shown");
+    ok(&s, Source::Agent, "motion.moveLayer", json!({ "clipId": clip, "id": "b", "index": 0 })).await;
+    let d = ok(&s, Source::Agent, "motion.duplicateLayer", json!({ "clipId": clip, "id": "b" })).await;
+    assert_eq!(d["id"], "b2");
+    let scene = ok(&s, Source::Agent, "motion.get", json!({ "clipId": clip })).await;
+    let ids: Vec<&str> = scene["scene"]["layers"].as_array().unwrap().iter().map(|l| l["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["b", "b2", "card"]);
+    ok(&s, Source::Agent, "motion.shiftKeyframes", json!({ "clipId": clip, "id": "a", "by": 0.5 })).await;
+    let a = ok(&s, Source::Agent, "motion.get", json!({ "clipId": clip, "id": "a" })).await;
+    assert_eq!(a["keyframes"]["x"][0][0].as_f64().or(a["keyframes"]["x"][0]["time"].as_f64()), Some(0.5));
+
+    // 3D: modifiers, constraints, shared materials, cameras.
+    let three = ok(&s, Source::Agent, "motion.add", json!({ "start": 3, "scene": { "type": "3d", "objects": [
+        { "id": "cube", "type": "box" }, { "id": "ball", "type": "sphere", "position": [2, 0, 0] }
+    ] } })).await;
+    let c3 = three["clips"][0]["id"].as_str().unwrap().to_string();
+    ok(&s, Source::Agent, "motion.setStackItem", json!({ "clipId": c3, "id": "cube", "field": "modifiers", "item": { "type": "array", "count": 4 } })).await;
+    ok(&s, Source::Agent, "motion.setStackItem", json!({ "clipId": c3, "id": "camera", "field": "constraints", "item": { "type": "lookAt", "target": "ball" } })).await;
+    let e = registry::call(&s, Source::Agent, "motion.setStackItem", json!({ "clipId": c3, "id": "cube", "field": "modifiers", "item": { "type": "boolean", "object": "nope" } })).await.unwrap_err();
+    assert!(e.contains("nope"), "{e}");
+    ok(&s, Source::Agent, "motion.setMaterial", json!({ "clipId": c3, "material": { "id": "gold", "color": "#e8b04a", "metallic": 1 } })).await;
+    ok(&s, Source::Agent, "motion.updateLayer", json!({ "clipId": c3, "id": "ball", "props": { "material": "gold" } })).await;
+    assert_eq!(ok(&s, Source::Agent, "motion.get", json!({ "clipId": c3, "id": "ball" })).await["material"], "gold");
+    ok(&s, Source::Agent, "motion.removeMaterial", json!({ "clipId": c3, "materialId": "gold" })).await;
+    assert_eq!(ok(&s, Source::Agent, "motion.get", json!({ "clipId": c3, "id": "ball" })).await["material"]["color"], "#e8b04a", "kept as its own");
+    ok(&s, Source::Agent, "motion.setLayer", json!({ "clipId": c3, "layer": { "type": "camera", "id": "close", "position": [0, 0, 3] } })).await;
+    ok(&s, Source::Agent, "motion.updateLayer", json!({ "clipId": c3, "id": "scene", "props": { "activeCamera": "close" } })).await;
+    ok(&s, Source::Agent, "motion.moveLayer", json!({ "clipId": c3, "id": "ball", "parent": "cube" })).await;
+    let cube = ok(&s, Source::Agent, "motion.get", json!({ "clipId": c3, "id": "cube" })).await;
+    assert_eq!(cube["children"][0]["id"], "ball");
+    let types = ok(&s, Source::Agent, "motion.stackTypes", json!({ "family": "modifiers" })).await;
+    assert!(types["modifiers"]["types"].as_array().unwrap().iter().any(|t| t["type"] == "subdivision"));
+
+    // Modelling: a box becomes a mesh, its top is extruded, the array is baked in.
+    let r = ok(&s, Source::Agent, "motion.convertToMesh", json!({ "clipId": c3, "id": "cube" })).await;
+    assert_eq!(r["result"]["faces"], 6);
+    let r = ok(&s, Source::Agent, "motion.editMesh", json!({ "clipId": c3, "id": "cube", "op": "extrude", "select": { "facing": [0, 1, 0] }, "params": { "distance": 0.5 } })).await;
+    assert_eq!(r["result"]["faces"], 10, "{r}");
+    assert!(!r["result"]["selection"]["faces"].as_array().unwrap().is_empty());
+    let e = registry::call(&s, Source::Agent, "motion.editMesh", json!({ "clipId": c3, "id": "cube", "op": "extrud" })).await.unwrap_err();
+    assert!(e.contains("extrude"), "{e}");
+    let e = registry::call(&s, Source::Agent, "motion.editMesh", json!({ "clipId": c3, "id": "ball", "op": "extrude" })).await.unwrap_err();
+    assert!(e.contains("convertToMesh"), "{e}");
+    let r = ok(&s, Source::Agent, "motion.applyModifier", json!({ "clipId": c3, "id": "cube" })).await;
+    assert_eq!(r["result"]["faces"], 40, "four copies: {r}");
+    assert!(ok(&s, Source::Agent, "motion.get", json!({ "clipId": c3, "id": "cube" })).await.get("modifiers").is_none());
+    // A model keeps its file's colours as a mesh.
+    let obj = dir.path().join("red.obj");
+    std::fs::write(dir.path().join("red.mtl"), "newmtl red\nKd 1 0 0\n").unwrap();
+    std::fs::write(&obj, "mtllib red.mtl\nusemtl red\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n").unwrap();
+    ok(&s, Source::Agent, "motion.setLayer", json!({ "clipId": c3, "layer": { "id": "toy", "type": "model", "src": obj.to_str().unwrap() } })).await;
+    ok(&s, Source::Agent, "motion.convertToMesh", json!({ "clipId": c3, "id": "toy" })).await;
+    let toy = ok(&s, Source::Agent, "motion.get", json!({ "clipId": c3, "id": "toy" })).await;
+    assert_eq!((toy["type"].as_str(), toy["material"]["color"].as_str()), (Some("mesh"), Some("#ff0000")), "{toy}");
+
+    // Looking and rendering ahead (needs ffmpeg).
+    if s.tools().is_ok() {
+        let v = ok(&s, Source::Agent, "motion.view", json!({ "clipId": c3, "axis": "top", "width": 320 })).await;
+        assert!(std::path::Path::new(v["path"].as_str().unwrap()).is_file());
+        let r = ok(&s, Source::Agent, "motion.render", json!({ "clipIds": [clip], "wait": true })).await;
+        assert_eq!(r["renders"][0]["done"], true);
+        let st = ok(&s, Source::Agent, "motion.renderStatus", json!({})).await;
+        let state = st["clips"].as_array().unwrap().iter().find(|c| c["clipId"] == clip.as_str()).unwrap()["state"].clone();
+        assert_eq!(state, "rendered");
+        ok(&s, Source::Agent, "motion.updateLayer", json!({ "clipId": clip, "id": "b", "props": { "x": 10 } })).await;
+        let st = ok(&s, Source::Agent, "motion.renderStatus", json!({})).await;
+        let state = st["clips"].as_array().unwrap().iter().find(|c| c["clipId"] == clip.as_str()).unwrap()["state"].clone();
+        assert_eq!(state, "outdated");
+        ok(&s, Source::Agent, "motion.unrender", json!({ "clipIds": [clip] })).await;
+        ok(&s, Source::Agent, "history.undo", json!({})).await;
+        assert!(s.project().unwrap().clip(clip.parse().unwrap()).unwrap().rendered.is_some(), "undo brings the render back");
+    }
+}
+
+/// A cut from a script: clip.delete hands back the clips as they were, and clip.paste takes them.
+#[tokio::test(flavor = "multi_thread")]
+async fn deleted_clips_can_be_pasted_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Cli, "project.create", json!({})).await;
+    ok(&s, Source::Cli, "clip.addText", json!({ "text": "Cut me", "start": 1, "duration": 2 })).await;
+    let cut = ok(&s, Source::Cli, "clip.delete", json!({ "clipIds": ["Cut me"] })).await;
+    let removed = cut["removed"].as_array().unwrap();
+    assert_eq!(removed.len(), 1);
+    assert!(removed[0]["trackId"].is_string(), "{cut}");
+    assert_eq!(s.project().unwrap().clips().count(), 0);
+    let pasted = ok(&s, Source::Cli, "clip.paste", json!({ "clips": removed, "time": 5 })).await;
+    assert_eq!(pasted["clips"].as_array().unwrap().len(), 1, "{pasted}");
+    let p = s.project().unwrap();
+    let (_, c) = p.clips().next().unwrap();
+    assert_eq!((c.start, c.duration), (5.0, 2.0));
+}
+
+/// What `ui.action` runs as the window is held to the permission of what it does.
+#[tokio::test(flavor = "multi_thread")]
+async fn window_actions_are_named_and_checked() {
+    use futures::StreamExt;
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    // A stand-in window that answers every call with what it was asked.
+    let mut calls = s.attach_ui();
+    tokio::spawn(async move {
+        while let Some(c) = calls.next().await {
+            let _ = c.reply.send(Ok(json!({ "command": c.command, "params": c.params })));
+        }
+    });
+    let spec = registry::spec("ui.action").unwrap();
+    for (name, _) in crate::commands::ui::ACTIONS {
+        assert!(spec.params[0].doc.contains(name), "{name} is missing from ui.action's documentation");
+    }
+    let v = ok(&s, Source::Mcp, "ui.action", json!({ "action": "pasteclips" })).await;
+    assert_eq!(v["params"]["action"], "PasteClips", "names are matched without case");
+    let e = registry::call(&s, Source::Cli, "ui.action", json!({ "action": "PasteClip" })).await.unwrap_err();
+    assert!(e.contains("Did you mean PasteClips"), "{e}");
+    // Settings are off for agents by default: the theme toggle is refused, the person's CLI isn't.
+    let e = registry::call(&s, Source::Agent, "ui.action", json!({ "action": "ToggleTheme" })).await.unwrap_err();
+    assert!(e.contains("\"settings\" permission"), "{e}");
+    ok(&s, Source::Cli, "ui.action", json!({ "action": "ToggleTheme" })).await;
+    let e = registry::call(&s, Source::Mcp, "ui.action", json!({ "action": "Quit" })).await.unwrap_err();
+    assert!(e.contains("app control"), "{e}");
+
+    let e = registry::call(&s, Source::Cli, "timeline.play", json!({ "speed": 0 })).await.unwrap_err();
+    assert!(e.contains("-8 to 8"), "{e}");
+    ok(&s, Source::Cli, "timeline.play", json!({ "speed": -2 })).await;
+    let e = registry::call(&s, Source::Cli, "ui.reveal", json!({ "path": dir.path().join("nope") })).await.unwrap_err();
+    assert!(e.contains("doesn't exist"), "{e}");
+    // The built-in agent lives in the app: without it, agent.* says so.
+    let e = registry::call(&s, Source::Cli, "agent.runs", json!({})).await.unwrap_err();
+    assert!(e.contains("built-in agent runs"), "{e}");
 }

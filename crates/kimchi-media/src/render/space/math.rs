@@ -32,6 +32,17 @@ impl V3 {
     pub(crate) fn min(self, o: V3) -> V3 {
         V3(self.0.min(o.0), self.1.min(o.1), self.2.min(o.2))
     }
+    pub(crate) fn of(a: [f32; 3]) -> V3 {
+        V3(a[0], a[1], a[2])
+    }
+    pub(crate) fn finite(self) -> bool {
+        self.0.is_finite() && self.1.is_finite() && self.2.is_finite()
+    }
+    /// Any unit vector at right angles to this one.
+    pub(crate) fn perpendicular(self) -> V3 {
+        let a = if self.0.abs() < 0.9 { V3(1.0, 0.0, 0.0) } else { V3(0.0, 1.0, 0.0) };
+        self.cross(a).norm()
+    }
 }
 
 impl Add for V3 {
@@ -184,6 +195,62 @@ impl M4 {
         ])
     }
 
+    /// A matrix whose columns are the given axes and origin.
+    pub(crate) fn from_axes(x: V3, y: V3, z: V3, origin: V3) -> M4 {
+        M4([[x.0, x.1, x.2, 0.0], [y.0, y.1, y.2, 0.0], [z.0, z.1, z.2, 0.0], [origin.0, origin.1, origin.2, 1.0]])
+    }
+
+    /// Where the origin goes.
+    pub(crate) fn origin(&self) -> V3 {
+        V3(self.0[3][0], self.0[3][1], self.0[3][2])
+    }
+
+    /// The general inverse (None when the matrix squashes space flat).
+    pub(crate) fn inverse(&self) -> Option<M4> {
+        // Row-major copy, Gauss-Jordan in f64 for precision.
+        let mut a = [[0.0f64; 8]; 4];
+        for (r, row) in a.iter_mut().enumerate() {
+            for (v, col) in row.iter_mut().zip(&self.0) {
+                *v = col[r] as f64;
+            }
+            row[4 + r] = 1.0;
+        }
+        for col in 0..4 {
+            let pivot = (col..4).max_by(|&x, &y| a[x][col].abs().total_cmp(&a[y][col].abs()))?;
+            if a[pivot][col].abs() < 1e-12 {
+                return None;
+            }
+            a.swap(col, pivot);
+            let k = 1.0 / a[col][col];
+            for v in a[col].iter_mut() {
+                *v *= k;
+            }
+            let pivot_row = a[col];
+            for (r, row) in a.iter_mut().enumerate() {
+                if r != col {
+                    let f = row[col];
+                    if f != 0.0 {
+                        for (v, p) in row.iter_mut().zip(pivot_row) {
+                            *v -= f * p;
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = [[0.0f32; 4]; 4];
+        for (c, col) in out.iter_mut().enumerate() {
+            for (r, v) in col.iter_mut().enumerate() {
+                *v = a[r][4 + c] as f32;
+            }
+        }
+        Some(M4(out))
+    }
+
+    /// In f64, column-major like this one.
+    pub(crate) fn to_f64(self) -> [[f64; 4]; 4] {
+        self.0.map(|c| c.map(|v| v as f64))
+    }
+
     pub(crate) fn flat(&self) -> [f32; 16] {
         let mut out = [0.0; 16];
         for c in 0..4 {
@@ -232,5 +299,10 @@ mod tests {
         // Normal matrix of a non-uniform scale keeps normals perpendicular.
         let s = M4::scale(V3(2.0, 1.0, 1.0));
         assert!(close(s.normal_matrix().dir(V3(1.0, 1.0, 0.0)).norm(), V3(0.5, 1.0, 0.0).norm()));
+        // Inverses undo.
+        let m = M4::trs(V3(1.0, -2.0, 3.0), V3(10.0, 20.0, 30.0), V3(2.0, 0.5, 1.5));
+        let inv = m.inverse().unwrap();
+        assert!(close(inv.point3(m.point3(V3(0.3, 0.7, -1.1))), V3(0.3, 0.7, -1.1)));
+        assert!(M4::scale(V3(1.0, 0.0, 1.0)).inverse().is_none());
     }
 }

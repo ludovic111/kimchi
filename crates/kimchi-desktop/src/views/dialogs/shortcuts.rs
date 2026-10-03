@@ -21,6 +21,10 @@ const MOUSE: &[(&str, &str)] = &[
     ("Rename a track", "Double-click its name"),
     ("Reset a panel's size", "Double-click its divider"),
     ("More actions", "Right-click anything"),
+    ("Studio: orbit the 3D view", "Middle-drag, or ⌥-drag"),
+    ("Studio: pan the view", "Shift + middle-drag, or Space-drag"),
+    ("Studio: zoom", "Scroll"),
+    ("Studio: open a motion clip", "Double-click it"),
 ];
 
 /// A shortcut's keys: the main one, an alias if there is one, and the pair for "previous / next" rows.
@@ -54,6 +58,28 @@ fn row(label: &str, keys: Vec<String>, cx: &App) -> AnyElement {
 
 fn mouse_label(how: &str) -> String {
     if cfg!(target_os = "macos") { how.to_string() } else { how.replace("⌘", "Ctrl").replace("⌥", "Alt") }
+}
+
+/// The Studio's keys, in three columns under the editor's.
+fn studio(cx: &App) -> AnyElement {
+    let t = cx.theme();
+    let rows: Vec<(usize, &Shortcut)> = SHORTCUTS.iter().enumerate().filter(|(_, s)| s.group == "Studio").collect();
+    let third = rows.len().div_ceil(3).max(1);
+    let col = |part: &[(usize, &Shortcut)], cx: &App| div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).children(part.iter().map(|(i, s)| row(s.label, keys_of(*i), cx)).collect::<Vec<_>>());
+    let modelling = div().flex().flex_col().gap(px(2.)).mt(px(14.)).child(div().mb(px(4.)).child(caps("Studio: modelling", cx))).child(
+        div().grid().grid_cols(3).gap_x(px(28.)).children(SHORTCUTS.iter().enumerate().filter(|(_, s)| s.group == "Studio: modelling").map(|(i, s)| row(s.label, keys_of(i), cx)).collect::<Vec<_>>()),
+    );
+    div()
+        .mb(px(12.))
+        .pt(px(14.))
+        .border_t_1()
+        .border_color(t.line)
+        .flex()
+        .flex_col()
+        .child(div().mb(px(4.)).child(caps("Studio (motion clips)", cx)))
+        .child(div().flex().gap(px(28.)).children(rows.chunks(third).map(|part| col(part, cx)).collect::<Vec<_>>()))
+        .child(modelling)
+        .into_any_element()
 }
 
 pub fn sheet(cx: &App) -> AnyElement {
@@ -97,10 +123,16 @@ pub fn sheet(cx: &App) -> AnyElement {
                 .pt(px(16.))
                 .pb(px(6.))
                 .flex()
-                .gap(px(28.))
-                .child(column(&["Playback", "Timeline"], cx))
-                .child(column(&["Editing"], cx))
-                .child(div().flex_1().min_w_0().flex().flex_col().child(group("Panels", cx)).child(group("Project", cx)).child(mouse)),
+                .flex_col()
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(28.))
+                        .child(column(&["Playback", "Timeline"], cx))
+                        .child(column(&["Editing"], cx))
+                        .child(div().flex_1().min_w_0().flex().flex_col().child(group("Panels", cx)).child(group("Project", cx)).child(mouse)),
+                )
+                .child(studio(cx)),
         )
         .into_any_element()
 }

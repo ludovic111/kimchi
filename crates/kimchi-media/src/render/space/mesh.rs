@@ -18,19 +18,19 @@ pub(crate) struct Mesh {
 }
 
 impl Mesh {
-    fn push(&mut self, p: V3, n: V3, uv: [f32; 2]) -> u32 {
+    pub(crate) fn push(&mut self, p: V3, n: V3, uv: [f32; 2]) -> u32 {
         self.pos.push(p.arr());
         self.normal.push(n.norm().arr());
         self.uv.push(uv);
         (self.pos.len() - 1) as u32
     }
 
-    fn tri(&mut self, a: u32, b: u32, c: u32) {
+    pub(crate) fn tri(&mut self, a: u32, b: u32, c: u32) {
         self.index.extend([a, b, c]);
     }
 
     /// A rows×cols grid of vertices made by `f(u, v)` (0..1 each), two triangles per cell.
-    fn grid(&mut self, rows: usize, cols: usize, f: impl Fn(f32, f32) -> (V3, V3)) {
+    pub(crate) fn grid(&mut self, rows: usize, cols: usize, f: impl Fn(f32, f32) -> (V3, V3)) {
         let base = self.pos.len() as u32;
         for r in 0..=rows {
             for c in 0..=cols {
@@ -84,16 +84,18 @@ pub(crate) fn shape(s: &Shape3d) -> Option<Arc<Mesh>> {
     }
     let mesh = match s {
         Shape3d::Box { size, bevel } => rounded_box(V3::from(size.0) * 0.5, *bevel as f32),
-        Shape3d::Sphere { radius } => sphere(*radius as f32),
-        Shape3d::Cylinder { radius, height } => cylinder(*radius as f32, *radius as f32, *height as f32),
-        Shape3d::Cone { radius, height } => cylinder(*radius as f32, 0.0, *height as f32),
+        Shape3d::Sphere { radius, segments: 0.0 } => sphere(*radius as f32),
+        Shape3d::Cylinder { radius, height, segments: 0.0 } => cylinder(*radius as f32, *radius as f32, *height as f32),
+        Shape3d::Cone { radius, height, segments: 0.0 } => cylinder(*radius as f32, 0.0, *height as f32),
         Shape3d::Torus { radius, tube } => torus(*radius as f32, *tube as f32),
         Shape3d::Plane { width, height } => plane(*width as f32, *height as f32),
-        Shape3d::Text { text, font_family, font_weight, size, depth, align, letter_spacing } => {
-            text_mesh(text, font_family, *font_weight, *size as f32, *depth as f32, *align, *letter_spacing)
+        Shape3d::Text { text, font_family, font_weight, size, depth, align, letter_spacing, bevel } => {
+            text_mesh(text, font_family, *font_weight, *size as f32, *depth as f32, *align, *letter_spacing, *bevel)
         }
         Shape3d::Image { .. } => plane(1.0, 1.0),
-        Shape3d::Model { .. } | Shape3d::Group {} => return None,
+        Shape3d::Model { .. } | Shape3d::Group {} | Shape3d::Particles(_) => return None,
+        // Everything else is modelled in kimchi-core as polygons.
+        other => from_tris(&kimchi_core::mesh::shape_mesh(other)?.triangulate()),
     };
     let mesh = Arc::new(mesh);
     let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -102,6 +104,11 @@ pub(crate) fn shape(s: &Shape3d) -> Option<Arc<Mesh>> {
     }
     map.insert(key, mesh.clone());
     Some(mesh)
+}
+
+/// A mesh from kimchi-core's triangles.
+pub(crate) fn from_tris(t: &kimchi_core::mesh::TriMesh) -> Mesh {
+    Mesh { pos: t.positions.clone(), normal: t.normals.clone(), uv: t.uvs.clone(), index: t.indices.clone() }
 }
 
 /// A box with rounded edges (`bevel` is the radius, clamped to half the smallest side).
@@ -226,7 +233,8 @@ fn plane(w: f32, h: f32) -> Mesh {
 }
 
 /// Letters extruded `depth` along z, `size` units high (em), centred on the origin.
-fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align: kimchi_core::TextAlign, spacing: f64) -> Mesh {
+#[allow(clippy::too_many_arguments)]
+fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align: kimchi_core::TextAlign, spacing: f64, bevel: f64) -> Mesh {
     use lyon_tessellation::path::Path as LPath;
     use lyon_tessellation::path::iterator::PathIterator;
     use lyon_tessellation::{BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers};
@@ -250,8 +258,28 @@ fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align
     let mut b = LPath::builder();
     let pt = |x: f32, y: f32| lyon_tessellation::math::point(x * k, -y * k);
     let mut open = false;
+    // The same outlines as SVG path data (y down, world units), for rounded edges.
+    let mut d = String::new();
+    let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
     for g in &layout.glyphs {
         let crate::text::Ink::Outline { path, .. } = &g.ink else { continue };
+        if bevel > 0.0 {
+            use std::fmt::Write;
+            for seg in path.segments() {
+                let mut at = |p: tiny_skia::Point| {
+                    lo = [lo[0].min(p.x), lo[1].min(p.y)];
+                    hi = [hi[0].max(p.x), hi[1].max(p.y)];
+                    format!("{} {}", p.x * k, p.y * k)
+                };
+                let _ = match seg {
+                    tiny_skia::PathSegment::MoveTo(p) => write!(d, "M{} ", at(p)),
+                    tiny_skia::PathSegment::LineTo(p) => write!(d, "L{} ", at(p)),
+                    tiny_skia::PathSegment::QuadTo(c, p) => write!(d, "Q{} {} ", at(c), at(p)),
+                    tiny_skia::PathSegment::CubicTo(c1, c2, p) => write!(d, "C{} {} {} ", at(c1), at(c2), at(p)),
+                    tiny_skia::PathSegment::Close => write!(d, "Z "),
+                };
+            }
+        }
         for seg in path.segments() {
             match seg {
                 tiny_skia::PathSegment::MoveTo(p) => {
@@ -283,6 +311,23 @@ fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align
         b.end(true);
     }
     let path = b.build();
+    // Rounded edges: kimchi-core's extruder (it fits the outline centred to its larger side, so
+    // move it back where the letters are).
+    if bevel > 0.0 && depth > 0.0 && lo[0] <= hi[0] {
+        let extent = ((hi[0] - lo[0]).max(hi[1] - lo[1]) * k) as f64;
+        let bevel = bevel.min(depth as f64 / 2.0);
+        if let Some(poly) = kimchi_core::mesh::shape_mesh(&Shape3d::Extrude { d, size: extent, depth: depth as f64, bevel }) {
+            let mut m = from_tris(&poly.triangulate());
+            let centre = [(lo[0] + hi[0]) / 2.0 * k, -(lo[1] + hi[1]) / 2.0 * k];
+            for p in &mut m.pos {
+                p[0] += centre[0];
+                p[1] += centre[1];
+            }
+            let (w, h) = ((layout.width as f32 * k).max(1e-3), (layout.height as f32 * k).max(1e-3));
+            m.uv = m.pos.iter().map(|p| [p[0] / w + 0.5, 0.5 - p[1] / h]).collect();
+            return m;
+        }
+    }
     let tolerance = (size * 0.002).max(1e-4);
     let mut m = Mesh::default();
     let hd = depth.max(0.0) / 2.0;
@@ -305,7 +350,10 @@ fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align
                 m.push(V3(v[0], v[1], z), V3(0.0, 0.0, nz), [v[0] / w + 0.5, 0.5 - v[1] / h]);
             }
             for t in buffers.indices.as_chunks::<3>().0.iter() {
-                if nz > 0.0 {
+                // Counter-clockwise seen from the side the cap faces (lyon's winding is y down).
+                let [a, b, c] = t.map(|i| buffers.vertices[i as usize]);
+                let ccw = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) > 0.0;
+                if ccw == (nz > 0.0) {
                     m.tri(base + t[0], base + t[1], base + t[2]);
                 } else {
                     m.tri(base + t[0], base + t[2], base + t[1]);
@@ -331,20 +379,31 @@ fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align
             _ => {}
         }
     }
-    for c in contours {
-        let mut pts = c;
-        pts.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
-        if pts.len() > 1 && (pts[0][0] - pts[pts.len() - 1][0]).abs() < 1e-6 && (pts[0][1] - pts[pts.len() - 1][1]).abs() < 1e-6 {
-            pts.pop();
-        }
+    let contours: Vec<Vec<[f32; 2]>> = contours
+        .into_iter()
+        .map(|mut pts| {
+            pts.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
+            if pts.len() > 1 && (pts[0][0] - pts[pts.len() - 1][0]).abs() < 1e-6 && (pts[0][1] - pts[pts.len() - 1][1]).abs() < 1e-6 {
+                pts.pop();
+            }
+            pts
+        })
+        .filter(|pts| pts.len() >= 3)
+        .collect();
+    for pts in &contours {
         let n = pts.len();
-        if n < 3 {
-            continue;
-        }
+        // Walls face away from the letter: fonts wind outlines either way round, so look at
+        // which side of the outline is filled (non-zero winding, like the caps).
+        let out = {
+            let (a, b) = (pts[0], pts[1]);
+            let right = V3(b[1] - a[1], -(b[0] - a[0]), 0.0).norm();
+            let probe = [(a[0] + b[0]) / 2.0 + right.0 * size * 1e-3, (a[1] + b[1]) / 2.0 + right.1 * size * 1e-3];
+            if winding(&contours, probe) != 0 { -1.0 } else { 1.0 }
+        };
         let edge_n: Vec<V3> = (0..n)
             .map(|i| {
                 let (a, b) = (pts[i], pts[(i + 1) % n]);
-                V3(b[1] - a[1], -(b[0] - a[0]), 0.0).norm()
+                V3(b[1] - a[1], -(b[0] - a[0]), 0.0).norm() * out
             })
             .collect();
         for i in 0..n {
@@ -358,11 +417,35 @@ fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align
             let v1 = m.push(V3(b[0], b[1], hd), nb, [1.0, 0.0]);
             let v2 = m.push(V3(a[0], a[1], -hd), na, [0.0, 1.0]);
             let v3 = m.push(V3(b[0], b[1], -hd), nb, [1.0, 1.0]);
-            m.tri(v0, v2, v1);
-            m.tri(v1, v2, v3);
+            if out > 0.0 {
+                m.tri(v0, v2, v1);
+                m.tri(v1, v2, v3);
+            } else {
+                m.tri(v0, v1, v2);
+                m.tri(v1, v3, v2);
+            }
         }
     }
     m
+}
+
+/// How many times the outlines wind around `p` (counter-clockwise positive).
+fn winding(contours: &[Vec<[f32; 2]>], p: [f32; 2]) -> i32 {
+    let mut w = 0;
+    for c in contours {
+        for i in 0..c.len() {
+            let (a, b) = (c[i], c[(i + 1) % c.len()]);
+            let side = (b[0] - a[0]) * (p[1] - a[1]) - (p[0] - a[0]) * (b[1] - a[1]);
+            if a[1] <= p[1] {
+                if b[1] > p[1] && side > 0.0 {
+                    w += 1;
+                }
+            } else if b[1] <= p[1] && side < 0.0 {
+                w -= 1;
+            }
+        }
+    }
+    w
 }
 
 /// One drawable piece of a model: its mesh (already placed in the model) and its own material.
@@ -376,13 +459,31 @@ pub(crate) struct Part {
     pub texture: Option<Arc<super::Texture>>,
 }
 
-/// A glTF/GLB file as parts, centred and scaled so its largest side is 2 units.
+/// A model file (glTF/GLB, OBJ or STL, by extension) as parts, centred and scaled so its
+/// largest side is 2 units.
 pub(crate) fn model(path: &Path) -> Result<Arc<Vec<Part>>, String> {
     static CACHE: OnceLock<Mutex<HashMap<std::path::PathBuf, Arc<Vec<Part>>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     if let Some(m) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
         return Ok(m.clone());
     }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let parts = match ext.as_str() {
+        "obj" => super::models::obj(path)?,
+        "stl" => super::models::stl(path)?,
+        _ => gltf_parts(path)?,
+    };
+    let parts = Arc::new(fit(parts));
+    let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if map.len() > 32 {
+        map.clear();
+    }
+    map.insert(path.to_path_buf(), parts.clone());
+    Ok(parts)
+}
+
+/// A glTF/GLB file as parts, as the file places them.
+fn gltf_parts(path: &Path) -> Result<Vec<Part>, String> {
     let (doc, buffers, images) = gltf::import(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut parts = vec![];
     let scene = doc.default_scene().or_else(|| doc.scenes().next()).ok_or("the model has no scene")?;
@@ -453,7 +554,11 @@ pub(crate) fn model(path: &Path) -> Result<Arc<Vec<Part>>, String> {
     if parts.is_empty() {
         return Err(format!("{} has no triangles to draw", path.display()));
     }
-    // Centre and fit into 2 units.
+    Ok(parts)
+}
+
+/// Parts centred together and scaled so the largest side is 2 units.
+pub(crate) fn fit(mut parts: Vec<Part>) -> Vec<Part> {
     let (mut lo, mut hi) = (V3(f32::MAX, f32::MAX, f32::MAX), V3(f32::MIN, f32::MIN, f32::MIN));
     for p in &parts {
         let (a, b) = p.mesh.bounds();
@@ -470,9 +575,7 @@ pub(crate) fn model(path: &Path) -> Result<Arc<Vec<Part>>, String> {
         }
         p.mesh = Arc::new(m);
     }
-    let parts = Arc::new(parts);
-    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_path_buf(), parts.clone());
-    Ok(parts)
+    parts
 }
 
 fn to_rgba(img: &gltf::image::Data) -> Option<Vec<u8>> {
@@ -504,9 +607,9 @@ mod tests {
         for s in [
             Shape3d::Box { size: Vec3([2.0, 1.0, 1.0]), bevel: 0.0 },
             Shape3d::Box { size: Vec3([2.0, 1.0, 1.0]), bevel: 0.1 },
-            Shape3d::Sphere { radius: 0.5 },
-            Shape3d::Cylinder { radius: 0.5, height: 1.0 },
-            Shape3d::Cone { radius: 0.5, height: 1.0 },
+            Shape3d::Sphere { radius: 0.5, segments: 0.0 },
+            Shape3d::Cylinder { radius: 0.5, height: 1.0, segments: 0.0 },
+            Shape3d::Cone { radius: 0.5, height: 1.0, segments: 0.0 },
             Shape3d::Torus { radius: 0.5, tube: 0.2 },
             Shape3d::Plane { width: 1.0, height: 1.0 },
         ] {
@@ -519,11 +622,47 @@ mod tests {
 
     #[test]
     fn text_is_extruded_and_centred() {
-        let m = text_mesh("Hi", "Manrope", 800.0, 1.0, 0.3, kimchi_core::TextAlign::Center, 0.0);
+        let m = text_mesh("Hi", "Manrope", 800.0, 1.0, 0.3, kimchi_core::TextAlign::Center, 0.0, 0.0);
         closed_enough(&m);
         let (lo, hi) = m.bounds();
         assert!((hi.2 - 0.15).abs() < 1e-4 && (lo.2 + 0.15).abs() < 1e-4);
         assert!((lo.0 + hi.0).abs() < 0.2, "roughly centred: {lo:?} {hi:?}");
         assert!(hi.1 - lo.1 > 0.5 && hi.1 - lo.1 < 1.2, "about one unit tall: {lo:?} {hi:?}");
+    }
+
+    #[test]
+    fn text_bevels_round_its_edges_in_place() {
+        let flat = text_mesh("Bo", "Manrope", 700.0, 1.0, 0.3, kimchi_core::TextAlign::Center, 0.0, 0.0);
+        let round = text_mesh("Bo", "Manrope", 700.0, 1.0, 0.3, kimchi_core::TextAlign::Center, 0.0, 0.05);
+        closed_enough(&round);
+        let (a, b) = (flat.bounds(), round.bounds());
+        for (p, q) in [(a.0, b.0), (a.1, b.1)] {
+            assert!((p - q).len() < 0.02, "same place and size: {a:?} vs {b:?}");
+        }
+        let slanted = |m: &Mesh| m.normal.iter().filter(|n| n[2].abs() > 0.2 && n[2].abs() < 0.9).count();
+        assert_eq!(slanted(&flat), 0, "square edges without a bevel");
+        assert!(slanted(&round) > 50, "rounded edges with one: {}", slanted(&round));
+    }
+
+    #[test]
+    fn text_faces_wind_outwards() {
+        // Booleans and solidify read the winding: every triangle turns counter-clockwise seen
+        // from outside, the way its normals point, letters with holes too.
+        for text in ["KIM", "O", "Bo8"] {
+            let m = text_mesh(text, "Manrope", 700.0, 1.0, 0.3, kimchi_core::TextAlign::Center, 0.0, 0.0);
+            let mut volume = 0.0f64;
+            for t in m.index.as_chunks::<3>().0.iter() {
+                let v = |a: [f32; 3]| V3(a[0], a[1], a[2]);
+                let p = t.map(|i| v(m.pos[i as usize]));
+                let n = (p[1] - p[0]).cross(p[2] - p[0]);
+                if n.len() < 1e-9 {
+                    continue;
+                }
+                let stored = v(m.normal[t[0] as usize]) + v(m.normal[t[1] as usize]) + v(m.normal[t[2] as usize]);
+                assert!(n.dot(stored) > 0.0, "{text}: a triangle winds against its normals at {:?}", p[0]);
+                volume += p[0].dot(p[1].cross(p[2])) as f64 / 6.0;
+            }
+            assert!(volume > 0.0, "{text}: inside out ({volume})");
+        }
     }
 }

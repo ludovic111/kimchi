@@ -117,8 +117,18 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "clip.delete" => {
             let p = s.project()?;
             let ids = resolve::clips(&p, &a.strings("clipIds"))?;
+            // The clips as they were, with their track: clip.paste puts them back (a cut).
+            let removed: Vec<Value> = ids
+                .iter()
+                .filter_map(|id| {
+                    let (ti, ci) = p.locate_clip(*id)?;
+                    let mut v = json!(p.tracks[ti].clips[ci]);
+                    v["trackId"] = json!(p.tracks[ti].id);
+                    Some(v)
+                })
+                .collect();
             s.apply(cx.label(), cx.source, &Edit::DeleteClips { clip_ids: ids.clone(), ripple: a.bool_or("ripple", false) }, None)?;
-            Ok(json!({ "deleted": ids }))
+            Ok(json!({ "deleted": ids, "removed": removed }))
         }
         "clip.duplicate" => {
             let p = s.project()?;
@@ -361,7 +371,11 @@ async fn freeze_frame(s: &Arc<Session>, cx: &Ctx, a: &Args) -> CmdResult {
     let still = match clip.content {
         // A still keeps its own picture: the hold is a copy of the clip.
         ClipContent::Media { asset_id } if p.asset(asset_id).is_some_and(|x| x.kind == kimchi_core::MediaKind::Image) => asset_id,
-        _ => crate::commands::media::import(s, cx, &[png]).await?.first().ok_or("the frame couldn't be read")?.id,
+        // Named for the person (the cached frame's file is named by ids).
+        _ => {
+            let name = format!("{} · frame at {:.2} s", clip.name, time);
+            crate::commands::media::import_named(s, cx, &[png], Some(&name)).await?.first().ok_or("the frame couldn't be read")?.id
+        }
     };
     let mut held = Clip::new(format!("{} (hold)", clip.name), time, hold, ClipContent::Media { asset_id: still });
     // Text, solids and scenes were drawn already placed on the canvas; media keep the clip's place.

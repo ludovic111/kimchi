@@ -20,12 +20,22 @@
 //! Timing matches the old ffmpeg graph: a clip shows from half a frame before its start to half a
 //! frame before its end, and fades are linear in opacity.
 
+pub mod cache;
+pub(crate) mod effects2d;
 pub(crate) mod flat;
 pub mod grade;
+pub(crate) mod masks;
 pub(crate) mod mix;
+pub(crate) mod noise;
 pub(crate) mod paint;
+pub(crate) mod particles2d;
+pub(crate) mod shapeops;
 pub(crate) mod source;
 pub mod space;
+pub(crate) mod textfx;
+
+pub use flat::{hit_test, layer_bounds, layer_transform};
+pub use space::Quality;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -62,6 +72,10 @@ pub struct Renderer {
     early: HashMap<Id, f64>,
     /// Each still picture's graded copy, by clip, with what it was made from.
     graded: HashMap<Id, (usize, String, Arc<Pixmap>)>,
+    /// Quick settings for the preview, the scenes' own render settings for exports.
+    quality: Quality,
+    /// Whether each rendered motion clip's file still matches its scene.
+    current: HashMap<Id, bool>,
 }
 
 /// What one track shows at an instant.
@@ -115,9 +129,18 @@ impl Renderer {
         Self::with_project(tools, playable(tools, project), width, height, fps, false)
     }
 
-    /// Render original media and report failures instead of omitting clips.
+    /// Render original media and report failures instead of omitting clips; motion clips at
+    /// their final quality.
     pub fn for_export(tools: &Tools, project: &Project, width: u32, height: u32, fps: f64) -> Self {
-        Self::with_project(tools, project.clone(), width, height, fps, true)
+        let mut r = Self::with_project(tools, project.clone(), width, height, fps, true);
+        r.quality = Quality::Final;
+        r
+    }
+
+    /// Draw motion clips at this quality (the preview's default is [`Quality::Preview`]).
+    pub fn with_quality(mut self, quality: Quality) -> Self {
+        self.quality = quality;
+        self
     }
 
     fn with_project(tools: &Tools, project: Project, width: u32, height: u32, fps: f64, strict: bool) -> Self {
@@ -143,6 +166,8 @@ impl Renderer {
             grabbed: HashMap::new(),
             early,
             graded: HashMap::new(),
+            quality: Quality::Preview,
+            current: HashMap::new(),
         }
     }
 
@@ -182,6 +207,102 @@ impl Renderer {
             }
         }
         Ok(canvas)
+    }
+
+    /// A motion clip's scene alone at scene time `t`, transparent around it, at this renderer's
+    /// quality (what a render to the timeline stores).
+    pub fn scene_frame(&mut self, clip_id: Id, t: f64) -> MediaResult<Pixmap> {
+        let shading = if self.quality == Quality::Final { space::viewport::Shading::Rendered } else { space::viewport::Shading::Material };
+        let opts = space::viewport::ViewOptions { through_camera: true, shading, ..Default::default() };
+        self.scene_view(clip_id, t, None, &opts, None)
+    }
+
+    /// The frame a rendered motion clip's file has for timeline time `t` (scene time `st`), when
+    /// the file is still right and covers it.
+    fn rendered_frame(&mut self, clip: &Clip, t: f64, st: f64, streaming: bool, used: &mut HashSet<StreamKey>) -> Option<Arc<Pixmap>> {
+        let r = clip.rendered.as_ref()?;
+        let project = self.project.clone();
+        let ok = *self.current.entry(clip.id).or_insert_with(|| cache::is_current(&project, clip));
+        if !ok || !r.covers(st) {
+            return None;
+        }
+        let path = PathBuf::from(&r.file);
+        let file_t = (st - r.from).max(0.0);
+        let key = StreamKey(clip.id, Some("@rendered".into()));
+        used.insert(key.clone());
+        if !streaming {
+            return source::grab(&self.tools, &path, Some(file_t), self.width, self.height).ok().map(Arc::new);
+        }
+        let local = t - clip.start;
+        if !self.streams.get(&key).is_some_and(|s| s.serves(local)) {
+            let s = VideoStream::start(&self.tools, &path, file_t, clip.speed, self.fps, self.width, self.height, local).ok()?;
+            self.streams.insert(key.clone(), s);
+        }
+        self.streams.get_mut(&key)?.at(local).ok()?
+    }
+
+    /// A motion clip's scene on its own at scene time `t`, for the Studio: a 3D scene from the
+    /// editor's `view` (or through its camera, with `opts.through_camera`), with the view's
+    /// overlays; a 2D scene on its canvas (or one of its compositions, `comp`).
+    pub fn scene_view(&mut self, clip_id: Id, t: f64, view: Option<&space::viewport::ViewCamera>, opts: &space::viewport::ViewOptions, comp: Option<&str>) -> MediaResult<Pixmap> {
+        let clip = self.project.clip(clip_id).cloned().ok_or_else(|| crate::MediaError::Unsupported(format!("no clip {clip_id}")))?;
+        let ClipContent::Motion { scene, .. } = &clip.content else {
+            return Err(crate::MediaError::Unsupported("not a motion clip".into()));
+        };
+        let (w, h) = (self.width as f32, self.height as f32);
+        let mut canvas = Pixmap::new(self.width, self.height).expect("non-empty canvas");
+        let mut used = HashSet::new();
+        match scene {
+            Scene::Flat(s) => {
+                let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
+                // One output frame lasts `speed` frames of scene time (motion blur spans it).
+                let (sx, quality, frame) = (self.sx, self.quality, clip.speed.abs().max(1e-6) / self.fps);
+                let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(&clip)) };
+                // A composition is shown the way a comp layer shows it, at time `t`, centred and
+                // at the scene's scale (where the Studio puts its layers): on its own canvas, with
+                // its background inside that frame only and its layers cut at its edges.
+                let shown = match comp.and_then(|c| s.composition(c)) {
+                    Some(c) => {
+                        let viewer = serde_json::from_value(serde_json::json!({"id": "\u{1}composition", "type": "comp", "comp": c.id, "time": t}))
+                            .map_err(|e| crate::MediaError::Unsupported(format!("composition view: {e}")))?;
+                        kimchi_core::Scene2d { background: None, layers: vec![viewer], keyframes: Default::default(), ..s.clone() }
+                    }
+                    None => s.clone(),
+                };
+                let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
+                let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame, eval };
+                flat::draw(&mut canvas, &shown, t, base, &mut fx);
+            }
+            Scene::Space(s) => {
+                let (width, height) = (self.width, self.height);
+                let frame = clip.speed.abs().max(1e-6) / self.fps;
+                let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
+                let img = space::viewport::render_view(&mut lock(space::shared()), s, t, frame, width, height, &mut pics, view, opts)?;
+                draw_picture(&mut canvas, &img, Transform::identity(), 1.0);
+            }
+        }
+        Ok(canvas)
+    }
+
+    /// The Studio's "Rendered" view of a path-traced 3D scene: a picture that gets better with
+    /// every [`space::trace::Progressive::add`], from the editor's `view` (or through the scene's
+    /// camera). `None` for 2D scenes and scenes the standard engine draws.
+    pub fn refining_view(&mut self, clip_id: Id, t: f64, view: Option<&space::viewport::ViewCamera>) -> MediaResult<Option<space::trace::Progressive>> {
+        let clip = self.project.clip(clip_id).cloned().ok_or_else(|| crate::MediaError::Unsupported(format!("no clip {clip_id}")))?;
+        let ClipContent::Motion { scene: Scene::Space(s), .. } = &clip.content else { return Ok(None) };
+        if !s.render.path_traced() {
+            return Ok(None);
+        }
+        let shown = match view {
+            Some(v) => v.apply(s),
+            None => s.clone(),
+        };
+        let (width, height) = (self.width, self.height);
+        let mut used = HashSet::new();
+        let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
+        // Only building the frame holds the 3D renderer; the samples are traced without it.
+        let p = lock(space::shared()).progressive(&shown, t, width, height, &mut pics);
+        Ok(Some(p))
     }
 
     /// The frame at `t`, wherever the previous one was (scrubbing). Videos are decoded at `t`.
@@ -320,24 +441,31 @@ impl Renderer {
             ClipContent::Motion { scene, .. } => {
                 let st = clip.scene_time(t);
                 let scene = scene.clone();
+                let rendered = self.rendered_frame(clip, t, st, streaming, used);
                 // Scene pixels map to the canvas through the clip's placement, around the canvas centre.
                 let ts = center.pre_scale(pl.scale_x as f32, pl.scale_y as f32).pre_translate(-w / 2.0, -h / 2.0);
                 let plain = ts.is_identity() && alpha >= 1.0 && blur <= 0.0 && !fx.is_active();
                 let mut own = if plain { None } else { Some(Pixmap::new(self.width, self.height).expect("non-empty")) };
-                {
+                if let Some(pic) = rendered {
+                    let target = own.as_mut().unwrap_or(canvas);
+                    draw_picture(target, &pic, Transform::from_scale(w / pic.width() as f32, h / pic.height() as f32), 1.0);
+                } else {
                     let target = own.as_mut().unwrap_or(canvas);
                     match &scene {
                         Scene::Flat(s) => {
                             let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
-                            let sx = self.sx;
+                            let (sx, quality, frame) = (self.sx, self.quality, clip.speed.abs().max(1e-6) / self.fps);
+                            let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(clip)) };
                             let mut pics = ScenePictures { r: self, clip: clip.id, streaming, used };
-                            let mut fx = flat::Flat { pictures: &mut pics, scale: sx };
+                            let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame, eval };
                             flat::draw(target, s, st, base, &mut fx);
                         }
                         Scene::Space(s) => {
-                            let (width, height) = (self.width, self.height);
+                            let (width, height, quality) = (self.width, self.height, self.quality);
+                            // Scene seconds one output frame lasts (for motion blur).
+                            let frame = clip.scene_time(t + 1.0 / self.fps) - st;
                             let mut pics = ScenePictures { r: self, clip: clip.id, streaming, used };
-                            let img = lock(space::shared()).render(s, st, width, height, &mut pics)?;
+                            let img = lock(space::shared()).render_frame(s, st, frame, width, height, &mut pics, quality)?;
                             draw_picture(target, &img, Transform::identity(), 1.0);
                         }
                     }
@@ -623,6 +751,11 @@ fn fitted(fit: Fit, sw: Option<u32>, sh: Option<u32>, w: f32, h: f32) -> (f32, f
             (iw * s, ih * s)
         }
     }
+}
+
+/// How many scene seconds a motion clip shows (what expressions call `duration`).
+fn scene_length(c: &Clip) -> f64 {
+    (c.scene_time(c.end()) - c.scene_time(c.start)).abs()
 }
 
 /// Opacity from the clip's fades at `t` (linear, like ffmpeg's `fade`).

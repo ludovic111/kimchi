@@ -25,7 +25,7 @@ Render what the timeline shows at a time (or a labelled contact sheet of several
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `time` | number |  | Timeline seconds (default: the playhead). |
-| `times` | array |  | Several times in seconds: one image with a frame per time, labelled (up to 16). |
+| `times` | array of numbers |  | Several times in seconds: one image with a frame per time, labelled (up to 16). |
 | `width` | integer |  | Width of each frame in pixels (default 960, or 480 in a sheet). |
 
 ### `project.create`
@@ -105,7 +105,7 @@ Run several commands as one undo step. With atomic (the default) a failing comma
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `commands` | array | required | Array of {"command": "clip.update", "params": {…}}. |
+| `commands` | array of objects | required | Array of {"command": "clip.update", "params": {…}}. |
 | `atomic` | boolean |  | Roll everything back if one command fails (default true). |
 | `label` | string |  | Name of the undo step (default "batch"). |
 
@@ -129,7 +129,7 @@ Import media files (video, image, audio) into the open project. Thumbnails, film
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `paths` | array | required | Absolute paths of the files to import. |
+| `paths` | array of strings | required | Absolute paths of the files to import. |
 | `place` | boolean |  | Also put each file on the timeline (default false). |
 | `trackId` | string |  | Track id or name. Defaults to the first free compatible track (a new one if none is free). |
 | `start` | number |  | Timeline position in seconds. Defaults to the playhead. |
@@ -266,7 +266,7 @@ Move several clips at once, as one undo step. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `moves` | array | required | Array of {clipId, start, trackId?}. |
+| `moves` | array of objects | required | Array of {clipId, start, trackId?}. |
 | `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
 
 ### `clip.trim`
@@ -287,15 +287,15 @@ Split clips at a time. Without clipIds, every clip under that time on unlocked t
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `time` | number |  | Timeline time in seconds. Defaults to the playhead. |
-| `clipIds` | array |  | Clips to split (ids or names). |
+| `clipIds` | array of strings |  | Clips to split (ids or names). |
 
 ### `clip.delete`
 
-Delete clips. With ripple, later clips on the same track move left to close the gap. _(changes things)_
+Delete clips. With ripple, later clips on the same track move left to close the gap. Returns the clips as they were (removed), which clip.paste takes back: a cut. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `clipIds` | array | required | Clips to delete (ids or names). |
+| `clipIds` | array of strings | required | Clips to delete (ids or names). |
 | `ripple` | boolean |  | Close the gap (default false). |
 
 ### `clip.duplicate`
@@ -304,7 +304,7 @@ Copy clips to the end of their track. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `clipIds` | array | required | Clips to duplicate (ids or names). |
+| `clipIds` | array of strings | required | Clips to duplicate (ids or names). |
 
 ### `clip.paste`
 
@@ -312,8 +312,8 @@ Paste copies of clips: the earliest copy starts at time and the others keep thei
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `clipIds` | array |  | Clips in the project to copy (ids or names). |
-| `clips` | array |  | Clip objects as returned by clip.get (with trackId), e.g. clips deleted since (a cut). |
+| `clipIds` | array of strings |  | Clips in the project to copy (ids or names). |
+| `clips` | array of objects |  | Clip objects as returned by clip.get (with trackId), e.g. clips deleted since (a cut). |
 | `time` | number |  | Where the earliest copy starts, in seconds. Defaults to the playhead. |
 | `trackId` | string |  | Put every copy on this track instead of each clip's own. |
 
@@ -380,7 +380,7 @@ Give clips a ready-made animation written as ordinary keyframes: entrances (fade
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `clipIds` | array | required | Clips to animate (ids or names). |
+| `clipIds` | array of strings | required | Clips to animate (ids or names). |
 | `preset` | string | required | Preset name. |
 | `length` | number |  | Seconds the move takes (default 0.6; one cycle for repeating ones). |
 
@@ -390,7 +390,7 @@ Colour and picture effects on clips: a ready-made look, corrections (brightness,
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `clipIds` | array | required | Clips to change (ids or names). |
+| `clipIds` | array of strings | required | Clips to change (ids or names). |
 | `look` | string |  | Start from a look (clip.looks): none, punchy, warm, cool, mono, faded, vintage, noir, teal, dreamy. The other fields given go on top. |
 | `brightness` | number |  | -1 to 1 (0 = unchanged). |
 | `contrast` | number |  | -1 (flat grey) to 1 (twice the contrast). |
@@ -435,7 +435,7 @@ Put a transition at the start of clips. On a cut (the clip before ends where thi
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `clipIds` | array |  | The incoming clips (ids or names): each gets a transition at its start. |
+| `clipIds` | array of strings |  | The incoming clips (ids or names): each gets a transition at its start. |
 | `trackId` | string |  | Instead of clipIds: every cut on this track. |
 | `kind` | string |  | dissolve (default), dipToBlack, dipToWhite, wipeLeft, wipeRight, wipeUp, wipeDown, slideLeft, slideRight, slideUp, slideDown, pushLeft, pushRight, pushUp, pushDown, zoom, iris or blur. |
 | `duration` | number |  | Seconds (default 0.8). On a cut it can't be longer than the shorter clip; otherwise than half the clip. |
@@ -448,7 +448,7 @@ Remove the transitions at the start of clips (or every one on a track). One undo
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `clipIds` | array |  | Clips whose transition goes (ids or names). |
+| `clipIds` | array of strings |  | Clips whose transition goes (ids or names). |
 | `trackId` | string |  | Instead of clipIds: every transition on this track. |
 
 ## captions
@@ -534,7 +534,7 @@ How to make motion graphics and 3D with kimchi: the scene formats (2D layers, 3D
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `topic` | string |  | 2d, 3d, keyframes, templates or all (default). |
+| `topic` | string |  | 2d, 3d, keyframes, templates, expressions, modelling, particles, rendering or all (default). |
 
 ### `motion.templates`
 
@@ -666,6 +666,238 @@ Re-make a template clip with new values (the others keep theirs). Edits made to 
 | `values` | object | required | Values to change. |
 | `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
 
+### `motion.stackTypes`
+
+The building blocks a scene's things can stack, with every parameter, its range and default: 3D modifiers (subdivision, mirror, array, bevel, boolean, twist…), constraints (lookAt, followPath…) and material patterns; 2D effects (blur, glow, colour, distortions…), shape operators (repeater, zig zag…), masks and text animators. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `family` | string |  | modifiers, constraints, pattern, effects, operators, masks, animators or editOps (mesh operations; default: all). |
+
+### `motion.setStackItem`
+
+Add a modifier or constraint (3D object, light, camera), or an effect, operator, mask or text animator (2D layer), or replace the one with the same id. Items run in order; animate a parameter with motion.setKeyframes property "<field>.<itemId>.<param>". One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The layer, object, light or camera. |
+| `field` | string | required | modifiers, constraints, effects, operators, masks or animators. |
+| `item` | object | required | {"type": "blur", "radius": 12} (see motion.stackTypes); with an id it replaces that item. |
+| `index` | integer |  | Position in the stack for a new item (default: last). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.removeStackItem`
+
+Remove a modifier, constraint, effect, operator, mask or text animator. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The layer, object, light or camera. |
+| `field` | string | required | modifiers, constraints, effects, operators, masks or animators. |
+| `itemId` | string | required | The item's id. |
+
+### `motion.moveStackItem`
+
+Change where a modifier, constraint, effect, operator, mask or animator runs in its stack. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The layer, object, light or camera. |
+| `field` | string | required | modifiers, constraints, effects, operators, masks or animators. |
+| `itemId` | string | required | The item's id. |
+| `index` | integer | required | New position (0 = first). |
+
+### `motion.setExpression`
+
+Drive a property with a formula evaluated every frame (After Effects expressions, Blender drivers): "time * 90", "wiggle(2, 30)", "value + sin(time * 4) * 20", "prop('ball', 'x') + 100", "loopOut('pingpong')". motion.guide topic expressions lists the language. Empty removes it. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A layer, object, light or camera id. |
+| `property` | string | required | The property, e.g. rotation, x, opacity, rotation.y, effects.blur.radius. |
+| `expression` | string |  | The formula; empty or omitted removes it. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.setMaterial`
+
+Add or replace a shared material in a 3D scene (objects use it with "material": "<id>"). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `material` | object | required | {"id": "gold", "color": "#e8b04a", "metallic": 1, "roughness": 0.25} (fields as an object's material: color, metallic, roughness, emissive, emissiveIntensity, opacity, transmission, ior, clearcoat, texture, pattern, textureScale, flat, unlit). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.removeMaterial`
+
+Remove a shared material; objects that used it keep a copy of it as their own. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `materialId` | string | required | The material's id. |
+
+### `motion.setComposition`
+
+Add or change a composition of a 2D scene (After Effects' precomp: layers with their own time and canvas, shown by comp layers). Without layers, the composition's layers stay as they are. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `composition` | object | required | {"id": "card", "width": 800, "height": 400, "duration": 3, "background": null, "layers": [...]}. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.removeComposition`
+
+Remove a composition (no comp layer may still show it). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `compositionId` | string | required | The composition's id. |
+
+### `motion.precompose`
+
+Move layers of a 2D scene into a new composition and put one comp layer showing it where they were (After Effects' Pre-compose). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `ids` | array | required | The layers (siblings in the same list). |
+| `compositionId` | string | required | The new composition's id (also the comp layer's). |
+
+### `motion.moveLayer`
+
+Reorder a layer (2D: later draws on top) or object (3D), or move it into a group, composition (2D) or another object (3D, it then moves with it). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The layer or object. |
+| `parent` | string |  | A group or composition (2D) or object (3D) to move it into; "" = the top level. Omit to stay in the same list. |
+| `index` | integer |  | Position in its list (0 = first, drawn first in 2D). Default: last. |
+
+### `motion.renameLayer`
+
+Give a layer, object, light, camera, composition or shared material of a motion clip a new id; everything that refers to it follows (parents, mattes and masks, modifier and constraint targets, expressions' prop("id", …), the active camera, comp layers, objects using the material). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | Its id now. |
+| `newId` | string | required | The new id (unique in the scene). |
+
+### `motion.duplicateLayer`
+
+Copy a layer, object or light (with its children) next to itself under a new id. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | What to copy. |
+| `newId` | string |  | The copy's id (default: the id with a number). |
+
+### `motion.convertToMesh`
+
+Turn a 3D object's shape (box, sphere, cylinder, extruded text or path, lathe, curve…) into an editable mesh, optionally with its modifiers applied. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The object. |
+| `applyModifiers` | boolean |  | Bake the modifier stack into the mesh (default false: modifiers stay). |
+
+### `motion.applyModifier`
+
+Bake a modifier (or the whole stack) into an object's mesh, like Blender's Apply; the object becomes a mesh. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The object. |
+| `modifierId` | string |  | One modifier (applied with the ones before it); omit for all. |
+
+### `motion.editMesh`
+
+Model a mesh object like Blender's edit mode: extrude, inset, bevel, subdivide, loop cut, delete, merge, fill, bridge, flip, move/rotate/scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap. Selections are vertex and/or face indices (motion.get shows them) or helpers. Returns the new selection. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A mesh object (motion.convertToMesh makes one from any shape). |
+| `op` | string | required | The operation: extrude, extrudeIndividual, inset, bevel, subdivide, loopCut, delete, dissolve, merge, fill, bridge, flip, recalcNormals, translate (or move), rotate, scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap. |
+| `vertices` | array |  | Selected vertex indices. |
+| `faces` | array |  | Selected face indices. |
+| `select` | object |  | Instead of indices: {"all": true}, {"facing": [0, 1, 0], "angle": 30}, {"inside": [[x0,y0,z0],[x1,y1,z1]]}, {"edgeLoop": [v0, v1]}, {"edgeRing": [v0, v1]}; add "linked": true to grow to everything connected. |
+| `params` | object |  | The operation's values, e.g. {"distance": 0.5} (extrude), {"thickness": 0.1, "depth": 0} (inset), {"width": 0.05, "segments": 2} (bevel), {"cuts": 1} (subdivide, loopCut), {"what": "faces"} (delete), {"offset": [0, 1, 0]} (translate), {"angle": [0, 45, 0], "pivot": [0,0,0]} (rotate), {"factor": [1,2,1]} (scale), {"axis": "x"} (mirror), {"angle": 360, "steps": 12, "axis": [0,1,0]} (spin), {"method": "box"} (unwrap). motion.stackTypes {"family": "editOps"} lists every operation's values. |
+
+### `motion.view`
+
+Render a motion clip's scene alone, the way the Studio shows it, to a PNG: a 3D scene from any angle (an axis, or a free view) with the floor grid and selection, or through its camera; a 2D scene or one of its compositions. For looking at a 3D scene from another side. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `time` | number |  | Timeline seconds (default: the playhead). |
+| `axis` | string |  | front, back, left, right, top or bottom: look along that axis at the scene. |
+| `view` | object |  | A free view: {"position": [x,y,z], "target": [x,y,z], "fov": 40, "ortho": false, "orthoSize": 6}. |
+| `throughCamera` | boolean |  | Through the scene's active camera (default true without axis or view). |
+| `shading` | string |  | solid, material (default) or rendered (the final engine). |
+| `grid` | boolean |  | Floor grid (default true off-camera). |
+| `selected` | array |  | Ids drawn with a selection outline. |
+| `composition` | string |  | 2D: show this composition instead of the scene. |
+| `width` | integer |  | Picture width (default 960). |
+
+### `motion.shiftKeyframes`
+
+Move keyframes of a layer, object, light or camera in time (the dope sheet's drag): all of them, one property's, or those at some times. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A layer, object, light or camera id, "camera" or "scene". |
+| `by` | number | required | Seconds to move them (negative = earlier). |
+| `property` | string |  | Only this property (default: every one). |
+| `times` | array |  | Only the keyframes at these timeline times (seconds). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.render`
+
+Render motion clips ahead at full quality (the 3D engine and samples the scene asks for, motion blur…) into a file the timeline then plays: smooth playback and fast exports for heavy scenes. A clip that isn't rendered is drawn live (quick in the preview, full quality in the export). Editing the scene afterwards makes the render out of date: the clip is drawn live again until it is rendered again. Returns render ids; follow them with motion.renderStatus, or pass wait. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array | required | Motion clips (ids or names). |
+| `wait` | boolean |  | Wait until the job finishes and return it (always true with --file). |
+
+### `motion.renderStatus`
+
+Renders running and finished, with progress; and each motion clip's state: live, rendered or outdated. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `renderId` | string |  | One render. |
+
+### `motion.cancelRender`
+
+Stop a render; the clip stays as it was. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `renderId` | string | required | Render id from motion.render or motion.renderStatus. |
+
+### `motion.unrender`
+
+Go back to drawing motion clips live (forget their rendered frames). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array | required | Motion clips (ids or names). |
+
 ## timeline
 
 ### `timeline.seek`
@@ -679,6 +911,10 @@ Move the playhead. _(changes things · needs the window)_
 ### `timeline.play`
 
 Start playback from the playhead. _(changes things · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `speed` | number |  | 1 (default) plays with sound; 2 to 8 faster, -1 to -8 backwards, without sound (like L and J). |
 
 ### `timeline.pause`
 
@@ -796,7 +1032,7 @@ Generate an image or a video. By default a placeholder clip appears on the timel
 | `task` | string |  | text_to_image, image_to_image, text_to_video or image_to_video. Defaults from video and the images given. |
 | `video` | boolean |  | Make a video rather than an image (when task is omitted). |
 | `negativePrompt` | string |  | What to avoid, for models that take it. |
-| `images` | array |  | Input images: [{role: reference\|start_frame\|end_frame, path?, assetId?, clipId?, time?}]. A clip gives the frame it shows at time. |
+| `images` | array of objects |  | Input images: [{role: reference\|start_frame\|end_frame, path?, assetId?, clipId?, time?}]. A clip gives the frame it shows at time. |
 | `aspectRatio` | string |  | "16:9", "9:16", "1:1"… Defaults to the project's. |
 | `duration` | number |  | Video length in seconds (the model picks the closest it supports). |
 | `resolution` | string |  | "720p", "1080p"… when the model offers several. |
@@ -1074,6 +1310,70 @@ Show a short message in the window. _(changes things · needs the window)_
 | `text` | string | required | Message. |
 | `kind` | string |  | info (default), success or error. |
 
+## agent
+
+### `agent.providers`
+
+The models that can run the built-in agent (Claude Code, Codex, the Anthropic and OpenAI APIs, Ollama), whether each is ready on this computer and why not, and which one is chosen. _(read only · needs the window)_
+
+### `agent.setProvider`
+
+Choose what runs the built-in agent (Settings › Agent). _(changes things · person only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `provider` | string | required | claude-code, codex, anthropic, openai or ollama. |
+| `model` | string |  | Model id for the API providers and Ollama; empty for the provider's default. |
+| `baseUrl` | string |  | Server address for Ollama or an OpenAI-compatible server; empty for the default. |
+
+### `agent.send`
+
+Ask the built-in agent (the Agent panel) to do something, in words. It continues the panel's conversation, runs commands like any client (permissions apply) and shows them as cards. Returns the run at once, or once it ends with wait. One run at a time. Uses the person's model account, so agents need the generate permission. _(changes things · permission: generate · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `prompt` | string | required | The request, e.g. "Add a title saying Hello at 0 s and fade it in". |
+| `wait` | boolean |  | Wait until the run ends and return it with its reply and commands (default false). |
+| `timeout` | number |  | With wait: stop waiting after this many seconds (default 900); the run goes on. |
+
+### `agent.status`
+
+One agent run (the running or latest one by default): the request, whether it is still working and on what, the reply, every command it ran with its outcome, changes, time and tokens. _(read only · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `run` | integer |  | Run id from agent.runs. |
+| `wait` | boolean |  | Wait until the run ends. |
+| `timeout` | number |  | With wait: stop waiting after this many seconds (default 900). |
+
+### `agent.runs`
+
+The agent's runs on the open project, oldest first: request, provider, outcome, changes and whether agent.revert can undo them. _(read only · needs the window)_
+
+### `agent.conversation`
+
+The Agent panel's conversation as it shows it: requests, replies, one card per command (the agent's, and those of MCP clients and the CLI) and how each run ended. _(read only · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `since` | integer |  | Only entries from this index on (each answer gives the next index). |
+
+### `agent.stop`
+
+Stop the agent's run. Edits it finished stay (agent.revert removes them). _(changes things · needs the window)_
+
+### `agent.revert`
+
+Revert an agent run: the project goes back to how it was before the run's first change, as one undo step (history.undo brings the run back). _(changes things · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `run` | integer |  | Run id (default: the latest run that changed something and isn't reverted). |
+
+### `agent.newConversation`
+
+Start a new conversation in the Agent panel: the agent forgets the thread. Earlier runs can still be reverted. _(changes things · needs the window)_
+
 ## ui
 
 ### `ui.state`
@@ -1086,17 +1386,19 @@ Select clips (or one media item) in the window. _(changes things · needs the wi
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `clipIds` | array |  | Clips to select (ids or names); empty clears. |
+| `clipIds` | array of strings |  | Clips to select (ids or names); empty clears. |
 | `assetId` | string |  | A media item to select instead. |
 
 ### `ui.showPanel`
 
-Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. _(changes things · needs the window)_
+Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it. _(changes things · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `panel` | string | required | Panel name. |
 | `section` | string |  | For settings: models, agent, appearance, updates, diagnostics or about. |
+| `open` | boolean |  | false closes the panel or dialog instead (agent, jobs or a dialog; default true). |
+| `all` | boolean |  | For whatsNew: the notes of every release, not only this one's. |
 
 ### `ui.closeDialogs`
 
@@ -1111,6 +1413,45 @@ Zoom the timeline. _(changes things · needs the window)_
 | `pixelsPerSecond` | number |  | 4-600. |
 | `fit` | boolean |  | Fit the whole project in view. |
 
+### `ui.setTimeline`
+
+Timeline and playback options in the window: snapping, ripple delete and loop. Only the given ones change; returns all three. _(changes things · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `snapping` | boolean |  | Dragged clips, edges and the playhead stick to cuts, markers and the playhead (N). |
+| `ripple` | boolean |  | Deleting in the window closes the gap, as clip.delete ripple does. |
+| `loop` | boolean |  | Playback starts over at the end. |
+
+### `ui.setLayout`
+
+Resize the editor's panels, in pixels (each within its limits), or put them back as they start. Returns the sizes. _(changes things · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `left` | number |  | Width of the left panel (280-520). |
+| `inspector` | number |  | Width of the inspector, on the right (260-440). |
+| `timeline` | number |  | Height of the timeline (180-620). |
+| `agent` | number |  | Width of the Agent panel (300-560). |
+| `reset` | boolean |  | Back to the starting sizes first. |
+
+### `ui.action`
+
+Do what a keyboard shortcut or menu item of the window does, by its action name. It acts on the window's selection, playhead and clipboard as the key would, a moment after the answer. Agents need the permission of what it does (NewProject: projects, ToggleTheme: settings, Quit: app control…). _(changes things · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `action` | string | required | PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide. |
+
+### `ui.reveal`
+
+Show a file in the file manager (Finder, Explorer…): a path, or a media item's file. _(changes things · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string |  | A file or folder (an export, a log folder…). |
+| `assetId` | string |  | A media item (id or unique name) instead. |
+
 ### `ui.screenshot`
 
 Save a PNG of the window and return its path. _(changes things · permission: files · needs the window)_
@@ -1118,3 +1459,25 @@ Save a PNG of the window and return its path. _(changes things · permission: fi
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `path` | string |  | Destination .png (default: a temporary file). |
+
+### `ui.studio`
+
+Open, drive or close the Studio, the window's editor for motion clips (a Blender-like 3D editor, an After Effects-like 2D one). Every parameter is optional and applied in order; the answer is the Studio's state (also in ui.state). Edits to the scene itself are motion.* commands. _(changes things · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string |  | Open this motion clip (id or name). |
+| `close` | boolean |  | Back to the edit. |
+| `select` | array |  | Select these ids (layers, objects, lights, cameras; "scene"; "material:<id>", "comp:<id>"); empty clears. |
+| `mode` | string |  | object or edit (3D mesh editing of the selected mesh object). |
+| `selectMode` | string |  | Edit mode: vertex, edge or face. |
+| `editSelection` | object |  | Edit mode: {"vertices": [...], "faces": [...]} indices of the mesh. |
+| `tool` | string |  | 3D: select, move, rotate, scale. 2D: select, anchor, pen, rect, ellipse, star, polygon, text. |
+| `shading` | string |  | 3D: solid, material or rendered. |
+| `view` | any |  | 3D: front, back, left, right, top, bottom, camera (through the active camera), persp or ortho; or a view {"position": [x,y,z], "target": [x,y,z], "fov": 40, "ortho": false, "orthoSize": 6}. |
+| `frame` | boolean |  | Frame the selection in the view (all when nothing is selected). |
+| `grid` | boolean |  | 3D: floor grid and axes. |
+| `helpers` | boolean |  | 3D: draw lights and cameras. |
+| `composition` | string |  | 2D: show and edit this composition ("" = the scene). |
+| `showGraph` | boolean |  | The timeline area shows the graph editor (true) or the dope sheet. |
+| `graphProperty` | string |  | The property the graph editor shows, e.g. position.x (of the selected item). |

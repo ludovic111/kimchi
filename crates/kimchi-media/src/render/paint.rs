@@ -1,5 +1,5 @@
 //! Drawing helpers shared by the compositor and the 2D motion renderer: colours, fills,
-//! shape outlines, path length and trimming, blur, shadow and glow.
+//! shape outlines, path length and trimming, blur and tinted silhouettes.
 
 use kimchi_core::motion::{Fill, Gradient};
 use kimchi_core::path::Seg;
@@ -91,6 +91,11 @@ pub(crate) fn blend(b: kimchi_core::motion::Blend) -> BlendMode {
         ColorBurn => BlendMode::ColorBurn,
         SoftLight => BlendMode::SoftLight,
         HardLight => BlendMode::HardLight,
+        Exclusion => BlendMode::Exclusion,
+        Hue => BlendMode::Hue,
+        Saturation => BlendMode::Saturation,
+        Color => BlendMode::Color,
+        Luminosity => BlendMode::Luminosity,
     }
 }
 
@@ -329,21 +334,6 @@ pub(crate) fn tinted(layer: &Pixmap, tint: Color, opacity: f32) -> Pixmap {
         }
     }
     out
-}
-
-/// Draws `layer` onto `canvas` with a soft shadow (colour, blur, offset in canvas pixels) under it.
-pub(crate) fn shadow_under(canvas: &mut Pixmap, layer: &Pixmap, tint: Color, radius: f32, dx: f32, dy: f32) {
-    let mut s = tinted(layer, tint, 1.0);
-    blur(&mut s, radius);
-    canvas.draw_pixmap(0, 0, s.as_ref(), &PixmapPaint::default(), Transform::from_translate(dx, dy), None);
-}
-
-/// A blurred, coloured copy of `layer`, added (light) under it.
-pub(crate) fn glow_under(canvas: &mut Pixmap, layer: &Pixmap, tint: Color, radius: f32, strength: f32) {
-    let mut g = tinted(layer, tint, strength);
-    blur(&mut g, radius);
-    let paint = PixmapPaint { blend_mode: BlendMode::Plus, ..PixmapPaint::default() };
-    canvas.draw_pixmap(0, 0, g.as_ref(), &paint, Transform::identity(), None);
 }
 
 /// Fills `path` with `fill` (non-zero rule).

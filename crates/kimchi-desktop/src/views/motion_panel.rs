@@ -109,7 +109,14 @@ pub(crate) fn new_scene(three: bool, cx: &mut gpui::App) {
                 ]
             })
         };
-        s.run_then("motion.add", json!({ "scene": scene, "start": at, "duration": 4 }), cx, |s, v, cx| s.set_selection(crate::app::created(&v), cx));
+        s.run_then("motion.add", json!({ "scene": scene, "start": at, "duration": 4 }), cx, |s, v, cx| {
+            let made = crate::app::created(&v);
+            s.set_selection(made.clone(), cx);
+            // Straight into the Studio to make it.
+            if let Some(id) = made.first() {
+                s.open_studio(*id, cx);
+            }
+        });
     });
 }
 
@@ -190,8 +197,8 @@ impl Render for MotionPanel {
                     .gap(px(6.))
                     .px(px(10.))
                     .pb(px(12.))
-                    .child(div().flex_1().child(Button::new("new-2d", "New 2D scene").small().with_icon("shapes").full_width().tooltip("An empty motion graphics clip at the playhead: add text and shapes in the inspector").on_click(|_, _, cx| new_scene(false, cx))))
-                    .child(div().flex_1().child(Button::new("new-3d", "New 3D scene").small().with_icon("box").full_width().tooltip("A 3D scene at the playhead with a camera, lights and a floor: add objects in the inspector").on_click(|_, _, cx| new_scene(true, cx)))),
+                    .child(div().flex_1().child(Button::new("new-2d", "New 2D scene").small().with_icon("shapes").full_width().tooltip("A motion graphics clip at the playhead, opened in the Studio").on_click(|_, _, cx| new_scene(false, cx))))
+                    .child(div().flex_1().child(Button::new("new-3d", "New 3D scene").small().with_icon("box").full_width().tooltip("A 3D scene at the playhead with a camera and a floor, opened in the Studio").on_click(|_, _, cx| new_scene(true, cx)))),
             )
             .child(div().px(px(14.)).pb(px(6.)).child(caps("Motion graphics", cx)))
             .child(grid("2d"))
@@ -227,11 +234,7 @@ impl Render for MotionPanel {
                             .child("Describe a shot to the agent: kinetic type, an animated chart, a 3D logo or a product turntable. It writes the scene, then checks its frames."),
                     )
                     .child(Button::new("motion-agent", "Ask the agent").small().with_icon("message-square").on_click(|_, _, cx| {
-                        cx.store().update(cx, |s, cx| {
-                            s.agent_open = true;
-                            s.sync_ui(cx);
-                            cx.notify();
-                        })
+                        cx.store().update(cx, |s, cx| s.set_agent_open(true, cx))
                     })),
             )
     }

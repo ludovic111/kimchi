@@ -183,6 +183,35 @@ tab lists each such session ("From a terminal") with **Revert this session**, wh
 project back as it was in one step (`history.revertTo`; one undo brings the session back). The
 command records the panel shows also name the clips each command created.
 
+## The built-in agent from a script
+
+The Agent panel's conversation is one, whoever drives it: the panel, `kimchi-cli` or an MCP
+client. `agent.send` asks the agent in words (with the model chosen in Settings › Agent, or with
+`agent.setProvider`), `agent.status` follows a run (what it is doing, its reply, every command it
+ran), `agent.stop` stops it, `agent.revert` puts the project back as it was before the run (one
+undo step), and `agent.newConversation` starts afresh. A request sent from a terminal shows in the
+panel like one typed there. One run at a time; these commands need the running app.
+
+```sh
+kimchi-cli agent.send --prompt "Add a title saying Hello at 0 s and fade it in" --wait
+kimchi-cli agent.status                     # the latest run, with its commands
+kimchi-cli agent.revert                     # undo the whole run
+```
+
+## The window's shortcuts by name
+
+Every keyboard shortcut and menu item of the window can also be run by name with `ui.action`
+(`PlayPause`, `CopyClips`, `PasteClips`, `TrimStart`, `NextEdit`, `ToggleSnap`…): it acts on the
+window's selection, playhead and clipboard as the key would. The window's own options have
+commands too: `ui.setTimeline` (snapping, ripple delete, loop), `ui.setLayout` (panel sizes),
+`ui.showPanel` (open, or close with `open` false), `timeline.play --speed` (the J/L shuttle) and
+`ui.reveal` (show a file in the file manager). `ui.state` reports all of it.
+
+```sh
+kimchi-cli ui.select --clipIds Title && kimchi-cli ui.action --action CopyClips
+kimchi-cli timeline.seek --time 12 && kimchi-cli ui.action --action PasteClips
+```
+
 ## Permissions
 
 Settings › Agent › Permissions decide what an agent may do: the built-in agent, every MCP client
@@ -195,9 +224,13 @@ not checked.
 | Agents | `agent.permissions.enabled` | on | the master switch: off refuses every agent and MCP request |
 | Files | `agent.permissions.files` | on | `media.import`, `export.start`, `project.saveAs`, `handoff.toRyolune`, `handoff.fromRyolune` |
 | Projects | `agent.permissions.projects` | on | `project.create`, `project.open`, `project.close`, `project.duplicate`, `project.delete` |
-| Generate | `agent.permissions.generate` | on | `generate.submit`, `generate.animateFrame`, `generate.extendClip`, `generate.bridge`, `generate.restyleFrame`, `generate.regenerate` (they spend the provider's credits) |
+| Generate | `agent.permissions.generate` | on | `generate.submit`, `generate.animateFrame`, `generate.extendClip`, `generate.bridge`, `generate.restyleFrame`, `generate.regenerate` (they spend the provider's credits), and `agent.send` (it uses the person's model account) |
 | Settings | `agent.permissions.settings` | off | `app.setSetting`, `generate.setProvider` |
-| App control | `agent.permissions.appControl` | off | `app.quit`, `app.installUpdate` |
+| App control | `agent.permissions.appControl` | off | `app.quit`, `app.restart`, `app.installUpdate` |
+
+`ui.action` runs a shortcut as the window would, so an agent needs the permission of what the
+shortcut does: `NewProject` and `CloseProject` need projects, `Import` and `Export` files,
+`ToggleTheme` settings, `Quit` and `RestartApp` app control.
 
 `kimchi-cli help <command>` and the [command reference](COMMANDS.md) name the permission each
 command needs. A refused command says which switch is off.
@@ -339,7 +372,8 @@ kimchi-cli handoff.fromRyolune --start 0
 
 A few things deliberately stay with the person: API keys (`generate.setKey` and
 `app.setAgentKey` are refused for agents), the agent's own settings and permissions (`app.setSetting` refuses `agent.*` keys from
-an agent), and the choice of which model runs the built-in agent. Agents never see keys:
+an agent), and the choice of which model runs the built-in agent (`agent.setProvider`). The built-in
+agent doesn't see the `agent.*` commands: it can't drive itself. Agents never see keys:
 `generate.providers` reports only where a key comes from and its last four characters.
 
 ## Environment
@@ -359,7 +393,7 @@ an agent), and the choice of which model runs the built-in agent. Agents never s
 
 ## Limits
 
-Playback, selection, panels, notifications and screenshots need the running window
-(`--file` and `--headless` refuse them with a hint). In file and headless mode the undo history
+Playback, selection, panels, notifications, screenshots and the built-in agent (`agent.*`) need
+the running window (`--file` and `--headless` refuse them with a hint). In file and headless mode the undo history
 lasts as long as the process. One request at a time per MCP server; a long `wait` holds the next
 call until the job finishes, so prefer `generate.jobs` and `generate.wait` for long generations.

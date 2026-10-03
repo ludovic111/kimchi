@@ -9,7 +9,7 @@ use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::actions::{self as act, tip};
 use crate::ui::{Button, GlassExt, drag, icon, motion};
-use crate::views::{agent_panel::AgentPanel, inspector::Inspector, jobs::JobsPopover, left_panel::LeftPanel, preview::PreviewView, timeline::Timeline};
+use crate::views::{agent_panel::AgentPanel, inspector::Inspector, jobs::JobsPopover, left_panel::LeftPanel, preview::PreviewView, studio::Studio, timeline::Timeline};
 
 pub const TOPBAR_H: f32 = 52.;
 // Panel sizes to start with (and to go back to on a double-click on a divider).
@@ -33,6 +33,8 @@ pub struct Editor {
     pub inspector: Entity<Inspector>,
     pub timeline: Entity<Timeline>,
     pub agent: Entity<AgentPanel>,
+    /// The motion clips' editor; it takes the centre while open.
+    pub studio: Entity<Studio>,
     jobs: Entity<JobsPopover>,
     rename: Option<(Entity<TextInput>, Subscription)>,
     left_w: f32,
@@ -41,13 +43,25 @@ pub struct Editor {
     agent_w: f32,
     resizing: Option<(Splitter, Pixels, f32)>,
     _sub: Subscription,
+    _studio_subs: Vec<Subscription>,
 }
 
 impl Editor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
         let sub = cx.observe(&store, |_, _, cx| cx.notify());
-        Self {
+        let studio = cx.new(|cx| Studio::new(window, cx));
+        let open = cx.subscribe_in(&store, window, |this: &mut Self, _, e: &crate::store::StoreEvent, window, cx| {
+            if let crate::store::StoreEvent::OpenStudio(clip) = e {
+                let clip = *clip;
+                this.studio.update(cx, |s, cx| s.open(clip, window, cx));
+                cx.notify();
+            }
+        });
+        let watch = cx.observe(&studio, |_, _, cx| cx.notify());
+        let this = Self {
+            studio,
+            _studio_subs: vec![open, watch],
             left: cx.new(|cx| LeftPanel::new(window, cx)),
             preview: cx.new(|cx| PreviewView::new(window, cx)),
             inspector: cx.new(|cx| Inspector::new(window, cx)),
@@ -62,7 +76,40 @@ impl Editor {
             agent_w: AGENT_W,
             resizing: None,
             _sub: sub,
+        };
+        this.publish_layout(cx);
+        this
+    }
+
+    /// Tells `ui.state` the panel sizes.
+    fn publish_layout(&self, cx: &App) {
+        let layout = kimchi_control::session::UiLayout { left: self.left_w, inspector: self.right_w, timeline: self.timeline_h, agent: self.agent_w };
+        self.store.read(cx).session.update_ui_state(|s| s.layout = layout);
+    }
+
+    /// `ui.setLayout`: sizes in pixels, each within what the editor allows.
+    pub fn set_layout(&mut self, params: &serde_json::Value, cx: &mut Context<Self>) -> kimchi_control::session::UiLayout {
+        if params["reset"].as_bool() == Some(true) {
+            for which in [Splitter::Left, Splitter::Right, Splitter::Timeline, Splitter::Agent] {
+                self.reset_size(which, cx);
+            }
         }
+        let get = |k: &str| params[k].as_f64().map(|v| v as f32);
+        if let Some(v) = get("left") {
+            self.left_w = v.clamp(280., 520.);
+        }
+        if let Some(v) = get("inspector") {
+            self.right_w = v.clamp(260., 440.);
+        }
+        if let Some(v) = get("timeline") {
+            self.timeline_h = v.clamp(180., 620.);
+        }
+        if let Some(v) = get("agent") {
+            self.agent_w = v.clamp(300., 560.);
+        }
+        self.publish_layout(cx);
+        cx.notify();
+        kimchi_control::session::UiLayout { left: self.left_w, inspector: self.right_w, timeline: self.timeline_h, agent: self.agent_w }
     }
 
     /// Width the timeline's tracks have (for zoom to fit).
@@ -99,6 +146,7 @@ impl Editor {
 
     fn resize_end(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.resizing = None;
+        self.publish_layout(cx);
         cx.notify();
     }
 
@@ -143,6 +191,7 @@ impl Editor {
             Splitter::Timeline => self.timeline_h = TIMELINE_H,
             Splitter::Agent => self.agent_w = AGENT_W,
         }
+        self.publish_layout(cx);
         cx.notify();
     }
 
@@ -294,11 +343,7 @@ impl Editor {
                                     .selected(jobs_open)
                                     .color(if active > 0 { t.accent_text } else { t.text_2 })
                                     .on_click(|_, _, cx| {
-                                        cx.store().update(cx, |s, cx| {
-                                            s.jobs_open = !s.jobs_open;
-                                            s.sync_ui(cx);
-                                            cx.notify();
-                                        })
+                                        cx.store().update(cx, |s, cx| s.set_jobs_open(!s.jobs_open, cx))
                                     }),
                             )
                             .when(jobs_open, |d| d.child(self.jobs.clone())),
@@ -307,11 +352,7 @@ impl Editor {
                         Button::icon("agent", "bot", tip("Agent", &act::ToggleAgent))
                             .selected(agent_open)
                             .on_click(|_, _, cx| {
-                                cx.store().update(cx, |s, cx| {
-                                    s.agent_open = !s.agent_open;
-                                    s.sync_ui(cx);
-                                    cx.notify();
-                                })
+                                cx.store().update(cx, |s, cx| s.set_agent_open(!s.agent_open, cx))
                             }),
                     )
                     .child(Button::icon("palette", "command", tip("Command palette", &act::Palette)).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Palette, cx))))
@@ -337,6 +378,7 @@ impl Render for Editor {
         let t = cx.theme().clone();
         let agent_open = self.store.read(cx).agent_open;
         let resizing = self.resizing.is_some();
+        let studio_open = self.studio.read(cx).is_open();
         let top = self.top_bar(window, cx);
         div()
             .key_context("Editor")
@@ -349,7 +391,8 @@ impl Render for Editor {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(
+                    .when(studio_open, |d| d.child(div().flex_1().min_w_0().h_full().child(self.studio.clone())))
+                    .when(!studio_open, |d| d.child(
                         div()
                             .flex_1()
                             .min_w_0()
@@ -369,7 +412,7 @@ impl Render for Editor {
                             )
                             .child(self.splitter(Splitter::Timeline, cx))
                             .child(div().h(px(self.timeline_h)).flex_none().w_full().bg(t.bg_raised).child(self.timeline.clone())),
-                    )
+                    ))
                     .when(agent_open, |d| {
                         d.child(self.splitter(Splitter::Agent, cx)).child(motion::enter(
                             div().relative().w(px(self.agent_w)).flex_none().h_full().child(self.agent.clone().cached(full())),

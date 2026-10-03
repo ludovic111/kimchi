@@ -1,6 +1,7 @@
 //! Every command's spec and handler. Specs are listed here in one table so the
 //! docs, the CLI help and the MCP tools are generated in a stable order.
 
+pub mod agent;
 pub mod app;
 pub mod captions;
 pub mod clip;
@@ -10,6 +11,8 @@ pub mod handoff;
 pub mod history;
 pub mod media;
 pub mod motion;
+pub mod motion_edit;
+pub mod motion_mesh;
 pub mod project;
 pub mod timeline;
 pub mod track;
@@ -50,7 +53,7 @@ pub static SPECS: &[Spec] = &[
     query("project.get", "The complete open project as JSON (the project file format).", &[]),
     query("project.renderFrame", "Render what the timeline shows at a time (or a labelled contact sheet of several times) to a PNG and return its path, to look at a result: animations, motion graphics, 3D, the whole cut.", &[
         opt("time", Number, "Timeline seconds (default: the playhead)."),
-        opt("times", Array, "Several times in seconds: one image with a frame per time, labelled (up to 16)."),
+        opt("times", Array, "Several times in seconds: one image with a frame per time, labelled (up to 16).").of(Number),
         opt("width", Integer, "Width of each frame in pixels (default 960, or 480 in a sheet)."),
     ]),
     edit("project.create", "Create a project in the library and open it, replacing the open one.", &[
@@ -77,7 +80,7 @@ pub static SPECS: &[Spec] = &[
     ]),
     edit("project.saveAs", "Write a copy of the open project to a .json file (the project file format).", &[req("path", String, "Destination .json file.")]).perm(Perm::Files),
     edit("project.batch", "Run several commands as one undo step. With atomic (the default) a failing command rolls back the ones before it.", &[
-        req("commands", Array, "Array of {\"command\": \"clip.update\", \"params\": {…}}."),
+        req("commands", Array, "Array of {\"command\": \"clip.update\", \"params\": {…}}.").of(Object),
         opt("atomic", Boolean, "Roll everything back if one command fails (default true)."),
         opt("label", String, "Name of the undo step (default \"batch\")."),
     ]),
@@ -85,7 +88,7 @@ pub static SPECS: &[Spec] = &[
     query("media.list", "List the open project's media (imported and generated) with kind, length, size, previews and generation details.", &[]),
     query("media.get", "One media item in full, including how it was generated (prompt, model, seed, inputs).", &[ASSET_ID]),
     edit("media.import", "Import media files (video, image, audio) into the open project. Thumbnails, filmstrips, waveforms and proxies are made in the background. With place, each file is also put on the timeline, one after the other.", &[
-        req("paths", Array, "Absolute paths of the files to import."),
+        req("paths", Array, "Absolute paths of the files to import.").of(String),
         opt("place", Boolean, "Also put each file on the timeline (default false)."),
         OPT_TRACK,
         START,
@@ -133,7 +136,7 @@ pub static SPECS: &[Spec] = &[
         opt("trackId", String, "Destination track."),
         crate::registry::COALESCE,
     ]),
-    edit("clip.moveMany", "Move several clips at once, as one undo step.", &[req("moves", Array, "Array of {clipId, start, trackId?}."), crate::registry::COALESCE]),
+    edit("clip.moveMany", "Move several clips at once, as one undo step.", &[req("moves", Array, "Array of {clipId, start, trackId?}.").of(Object), crate::registry::COALESCE]),
     edit("clip.trim", "Move one edge of a clip to a timeline time, like dragging it. Bounded by the neighbours and the source length.", &[
         CLIP_ID,
         req("edge", String, "\"start\" or \"end\"."),
@@ -142,16 +145,16 @@ pub static SPECS: &[Spec] = &[
     ]),
     edit("clip.split", "Split clips at a time. Without clipIds, every clip under that time on unlocked tracks (or the selection in the window).", &[
         opt("time", Number, "Timeline time in seconds. Defaults to the playhead."),
-        opt("clipIds", Array, "Clips to split (ids or names)."),
+        opt("clipIds", Array, "Clips to split (ids or names).").of(String),
     ]),
-    edit("clip.delete", "Delete clips. With ripple, later clips on the same track move left to close the gap.", &[
-        req("clipIds", Array, "Clips to delete (ids or names)."),
+    edit("clip.delete", "Delete clips. With ripple, later clips on the same track move left to close the gap. Returns the clips as they were (removed), which clip.paste takes back: a cut.", &[
+        req("clipIds", Array, "Clips to delete (ids or names).").of(String),
         opt("ripple", Boolean, "Close the gap (default false)."),
     ]),
-    edit("clip.duplicate", "Copy clips to the end of their track.", &[req("clipIds", Array, "Clips to duplicate (ids or names).")]),
+    edit("clip.duplicate", "Copy clips to the end of their track.", &[req("clipIds", Array, "Clips to duplicate (ids or names).").of(String)]),
     edit("clip.paste", "Paste copies of clips: the earliest copy starts at time and the others keep their spacing and tracks. Whatever they land on is overwritten. One undo step.", &[
-        opt("clipIds", Array, "Clips in the project to copy (ids or names)."),
-        opt("clips", Array, "Clip objects as returned by clip.get (with trackId), e.g. clips deleted since (a cut)."),
+        opt("clipIds", Array, "Clips in the project to copy (ids or names).").of(String),
+        opt("clips", Array, "Clip objects as returned by clip.get (with trackId), e.g. clips deleted since (a cut).").of(Object),
         opt("time", Number, "Where the earliest copy starts, in seconds. Defaults to the playhead."),
         opt("trackId", String, "Put every copy on this track instead of each clip's own."),
     ]),
@@ -193,12 +196,12 @@ pub static SPECS: &[Spec] = &[
         opt("time", Number, "Timeline seconds; omit to remove the property's whole animation."),
     ]),
     edit("clip.animate", "Give clips a ready-made animation written as ordinary keyframes: entrances (fadeIn, riseIn, slideInLeft, popIn, zoomIn, spinIn, dropIn, blurIn…), exits (fadeOut, slideOutRight, popOut…) or over the whole clip (kenBurns, panLeft, pulse, float, wiggle, shake, spin). motion.presets lists them all. One undo step.", &[
-        req("clipIds", Array, "Clips to animate (ids or names)."),
+        req("clipIds", Array, "Clips to animate (ids or names).").of(String),
         req("preset", String, "Preset name."),
         opt("length", Number, "Seconds the move takes (default 0.6; one cycle for repeating ones)."),
     ]),
     edit("clip.setEffects", "Colour and picture effects on clips: a ready-made look, corrections (brightness, contrast, saturation, temperature, tint), vignette, sharpen, a chroma key (green or blue screen) and a .cube LUT. Drawn in the preview and the export. Only the given fields change; animate the numeric ones with clip.setKeyframes. One undo step.", &[
-        req("clipIds", Array, "Clips to change (ids or names)."),
+        req("clipIds", Array, "Clips to change (ids or names).").of(String),
         opt("look", String, "Start from a look (clip.looks): none, punchy, warm, cool, mono, faded, vintage, noir, teal, dreamy. The other fields given go on top."),
         opt("brightness", Number, "-1 to 1 (0 = unchanged)."),
         opt("contrast", Number, "-1 (flat grey) to 1 (twice the contrast)."),
@@ -223,7 +226,7 @@ pub static SPECS: &[Spec] = &[
     query("transition.kinds", "The transitions kimchi draws, with what each looks like.", &[]),
     query("transition.list", "Every transition in the project: the clip it leads into, the clip it leaves (on a cut), kind, length and where it plays.", &[]),
     edit("transition.set", "Put a transition at the start of clips. On a cut (the clip before ends where this one starts) it is centred on the cut and both clips play on past it with their media beyond the cut (or hold their edge frame), so nothing moves on the timeline; with no clip right before, the clip transitions in over what is below it. The sound crossfades over the same span. Changes the kind or length of transitions already there. One undo step.", &[
-        opt("clipIds", Array, "The incoming clips (ids or names): each gets a transition at its start."),
+        opt("clipIds", Array, "The incoming clips (ids or names): each gets a transition at its start.").of(String),
         opt("trackId", String, "Instead of clipIds: every cut on this track."),
         opt("kind", String, "dissolve (default), dipToBlack, dipToWhite, wipeLeft, wipeRight, wipeUp, wipeDown, slideLeft, slideRight, slideUp, slideDown, pushLeft, pushRight, pushUp, pushDown, zoom, iris or blur."),
         opt("duration", Number, "Seconds (default 0.8). On a cut it can't be longer than the shorter clip; otherwise than half the clip."),
@@ -231,7 +234,7 @@ pub static SPECS: &[Spec] = &[
         crate::registry::COALESCE,
     ]),
     edit("transition.remove", "Remove the transitions at the start of clips (or every one on a track). One undo step.", &[
-        opt("clipIds", Array, "Clips whose transition goes (ids or names)."),
+        opt("clipIds", Array, "Clips whose transition goes (ids or names).").of(String),
         opt("trackId", String, "Instead of clipIds: every transition on this track."),
     ]),
     // ---- captions ---------------------------------------------------------
@@ -270,7 +273,7 @@ pub static SPECS: &[Spec] = &[
     edit("captions.clear", "Remove every caption. One undo step.", &[]),
     // ---- motion -----------------------------------------------------------
     query("motion.guide", "How to make motion graphics and 3D with kimchi: the scene formats (2D layers, 3D objects, camera, lights), every property, keyframes and easings, text reveals, masks, effects, templates and presets, with examples. Read it before writing a scene.", &[
-        opt("topic", String, "2d, 3d, keyframes, templates or all (default)."),
+        opt("topic", String, "2d, 3d, keyframes, templates, expressions, modelling, particles, rendering or all (default)."),
     ]),
     query("motion.templates", "Motion templates (lower third, title card, kinetic type, counter, bar chart, logo reveal, callout, quote, subscribe, aurora, wipe, 3D title, 3D logo spin, turntable, floating shapes) with the values each takes.", &[]),
     query("motion.presets", "The ready-made clip animations clip.animate applies.", &[]),
@@ -331,9 +334,121 @@ pub static SPECS: &[Spec] = &[
         req("values", Object, "Values to change."),
         crate::registry::COALESCE,
     ]),
+    query("motion.stackTypes", "The building blocks a scene's things can stack, with every parameter, its range and default: 3D modifiers (subdivision, mirror, array, bevel, boolean, twist…), constraints (lookAt, followPath…) and material patterns; 2D effects (blur, glow, colour, distortions…), shape operators (repeater, zig zag…), masks and text animators.", &[
+        opt("family", String, "modifiers, constraints, pattern, effects, operators, masks, animators or editOps (mesh operations; default: all)."),
+    ]),
+    edit("motion.setStackItem", "Add a modifier or constraint (3D object, light, camera), or an effect, operator, mask or text animator (2D layer), or replace the one with the same id. Items run in order; animate a parameter with motion.setKeyframes property \"<field>.<itemId>.<param>\". One undo step.", &[
+        CLIP_ID,
+        req("id", String, "The layer, object, light or camera."),
+        req("field", String, "modifiers, constraints, effects, operators, masks or animators."),
+        req("item", Object, "{\"type\": \"blur\", \"radius\": 12} (see motion.stackTypes); with an id it replaces that item."),
+        opt("index", Integer, "Position in the stack for a new item (default: last)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.removeStackItem", "Remove a modifier, constraint, effect, operator, mask or text animator. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "The layer, object, light or camera."),
+        req("field", String, "modifiers, constraints, effects, operators, masks or animators."),
+        req("itemId", String, "The item's id."),
+    ]),
+    edit("motion.moveStackItem", "Change where a modifier, constraint, effect, operator, mask or animator runs in its stack. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "The layer, object, light or camera."),
+        req("field", String, "modifiers, constraints, effects, operators, masks or animators."),
+        req("itemId", String, "The item's id."),
+        req("index", Integer, "New position (0 = first)."),
+    ]),
+    edit("motion.setExpression", "Drive a property with a formula evaluated every frame (After Effects expressions, Blender drivers): \"time * 90\", \"wiggle(2, 30)\", \"value + sin(time * 4) * 20\", \"prop('ball', 'x') + 100\", \"loopOut('pingpong')\". motion.guide topic expressions lists the language. Empty removes it. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "A layer, object, light or camera id."),
+        req("property", String, "The property, e.g. rotation, x, opacity, rotation.y, effects.blur.radius."),
+        opt("expression", String, "The formula; empty or omitted removes it."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.setMaterial", "Add or replace a shared material in a 3D scene (objects use it with \"material\": \"<id>\"). One undo step.", &[
+        CLIP_ID,
+        req("material", Object, "{\"id\": \"gold\", \"color\": \"#e8b04a\", \"metallic\": 1, \"roughness\": 0.25} (fields as an object's material: color, metallic, roughness, emissive, emissiveIntensity, opacity, transmission, ior, clearcoat, texture, pattern, textureScale, flat, unlit)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.removeMaterial", "Remove a shared material; objects that used it keep a copy of it as their own. One undo step.", &[CLIP_ID, req("materialId", String, "The material's id.")]),
+    edit("motion.setComposition", "Add or change a composition of a 2D scene (After Effects' precomp: layers with their own time and canvas, shown by comp layers). Without layers, the composition's layers stay as they are. One undo step.", &[
+        CLIP_ID,
+        req("composition", Object, "{\"id\": \"card\", \"width\": 800, \"height\": 400, \"duration\": 3, \"background\": null, \"layers\": [...]}."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.removeComposition", "Remove a composition (no comp layer may still show it). One undo step.", &[CLIP_ID, req("compositionId", String, "The composition's id.")]),
+    edit("motion.precompose", "Move layers of a 2D scene into a new composition and put one comp layer showing it where they were (After Effects' Pre-compose). One undo step.", &[
+        CLIP_ID,
+        req("ids", Array, "The layers (siblings in the same list)."),
+        req("compositionId", String, "The new composition's id (also the comp layer's)."),
+    ]),
+    edit("motion.moveLayer", "Reorder a layer (2D: later draws on top) or object (3D), or move it into a group, composition (2D) or another object (3D, it then moves with it). One undo step.", &[
+        CLIP_ID,
+        req("id", String, "The layer or object."),
+        opt("parent", String, "A group or composition (2D) or object (3D) to move it into; \"\" = the top level. Omit to stay in the same list."),
+        opt("index", Integer, "Position in its list (0 = first, drawn first in 2D). Default: last."),
+    ]),
+    edit("motion.renameLayer", "Give a layer, object, light, camera, composition or shared material of a motion clip a new id; everything that refers to it follows (parents, mattes and masks, modifier and constraint targets, expressions' prop(\"id\", …), the active camera, comp layers, objects using the material). One undo step.", &[
+        CLIP_ID,
+        req("id", String, "Its id now."),
+        req("newId", String, "The new id (unique in the scene)."),
+    ]),
+    edit("motion.duplicateLayer", "Copy a layer, object or light (with its children) next to itself under a new id. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "What to copy."),
+        opt("newId", String, "The copy's id (default: the id with a number)."),
+    ]),
+    edit("motion.convertToMesh", "Turn a 3D object's shape (box, sphere, cylinder, extruded text or path, lathe, curve…) into an editable mesh, optionally with its modifiers applied. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "The object."),
+        opt("applyModifiers", Boolean, "Bake the modifier stack into the mesh (default false: modifiers stay)."),
+    ]),
+    edit("motion.applyModifier", "Bake a modifier (or the whole stack) into an object's mesh, like Blender's Apply; the object becomes a mesh. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "The object."),
+        opt("modifierId", String, "One modifier (applied with the ones before it); omit for all."),
+    ]),
+    edit("motion.editMesh", "Model a mesh object like Blender's edit mode: extrude, inset, bevel, subdivide, loop cut, delete, merge, fill, bridge, flip, move/rotate/scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap. Selections are vertex and/or face indices (motion.get shows them) or helpers. Returns the new selection. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "A mesh object (motion.convertToMesh makes one from any shape)."),
+        req("op", String, "The operation: extrude, extrudeIndividual, inset, bevel, subdivide, loopCut, delete, dissolve, merge, fill, bridge, flip, recalcNormals, translate (or move), rotate, scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap."),
+        opt("vertices", Array, "Selected vertex indices."),
+        opt("faces", Array, "Selected face indices."),
+        opt("select", Object, "Instead of indices: {\"all\": true}, {\"facing\": [0, 1, 0], \"angle\": 30}, {\"inside\": [[x0,y0,z0],[x1,y1,z1]]}, {\"edgeLoop\": [v0, v1]}, {\"edgeRing\": [v0, v1]}; add \"linked\": true to grow to everything connected."),
+        opt("params", Object, "The operation's values, e.g. {\"distance\": 0.5} (extrude), {\"thickness\": 0.1, \"depth\": 0} (inset), {\"width\": 0.05, \"segments\": 2} (bevel), {\"cuts\": 1} (subdivide, loopCut), {\"what\": \"faces\"} (delete), {\"offset\": [0, 1, 0]} (translate), {\"angle\": [0, 45, 0], \"pivot\": [0,0,0]} (rotate), {\"factor\": [1,2,1]} (scale), {\"axis\": \"x\"} (mirror), {\"angle\": 360, \"steps\": 12, \"axis\": [0,1,0]} (spin), {\"method\": \"box\"} (unwrap). motion.stackTypes {\"family\": \"editOps\"} lists every operation's values."),
+    ]),
+    query("motion.view", "Render a motion clip's scene alone, the way the Studio shows it, to a PNG: a 3D scene from any angle (an axis, or a free view) with the floor grid and selection, or through its camera; a 2D scene or one of its compositions. For looking at a 3D scene from another side.", &[
+        CLIP_ID,
+        opt("time", Number, "Timeline seconds (default: the playhead)."),
+        opt("axis", String, "front, back, left, right, top or bottom: look along that axis at the scene."),
+        opt("view", Object, "A free view: {\"position\": [x,y,z], \"target\": [x,y,z], \"fov\": 40, \"ortho\": false, \"orthoSize\": 6}."),
+        opt("throughCamera", Boolean, "Through the scene's active camera (default true without axis or view)."),
+        opt("shading", String, "solid, material (default) or rendered (the final engine)."),
+        opt("grid", Boolean, "Floor grid (default true off-camera)."),
+        opt("selected", Array, "Ids drawn with a selection outline."),
+        opt("composition", String, "2D: show this composition instead of the scene."),
+        opt("width", Integer, "Picture width (default 960)."),
+    ]),
+    edit("motion.shiftKeyframes", "Move keyframes of a layer, object, light or camera in time (the dope sheet's drag): all of them, one property's, or those at some times. One undo step.", &[
+        CLIP_ID,
+        req("id", String, "A layer, object, light or camera id, \"camera\" or \"scene\"."),
+        req("by", Number, "Seconds to move them (negative = earlier)."),
+        opt("property", String, "Only this property (default: every one)."),
+        opt("times", Array, "Only the keyframes at these timeline times (seconds)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.render", "Render motion clips ahead at full quality (the 3D engine and samples the scene asks for, motion blur…) into a file the timeline then plays: smooth playback and fast exports for heavy scenes. A clip that isn't rendered is drawn live (quick in the preview, full quality in the export). Editing the scene afterwards makes the render out of date: the clip is drawn live again until it is rendered again. Returns render ids; follow them with motion.renderStatus, or pass wait.", &[
+        req("clipIds", Array, "Motion clips (ids or names)."),
+        WAIT,
+    ]),
+    query("motion.renderStatus", "Renders running and finished, with progress; and each motion clip's state: live, rendered or outdated.", &[opt("renderId", String, "One render.")]),
+    edit("motion.cancelRender", "Stop a render; the clip stays as it was.", &[req("renderId", String, "Render id from motion.render or motion.renderStatus.")]),
+    edit("motion.unrender", "Go back to drawing motion clips live (forget their rendered frames). One undo step.", &[req("clipIds", Array, "Motion clips (ids or names).")]),
     // ---- timeline ---------------------------------------------------------
     edit("timeline.seek", "Move the playhead.", &[req("time", Number, "Timeline time in seconds.")]).window(),
-    edit("timeline.play", "Start playback from the playhead.", &[]).window(),
+    edit("timeline.play", "Start playback from the playhead.", &[
+        opt("speed", Number, "1 (default) plays with sound; 2 to 8 faster, -1 to -8 backwards, without sound (like L and J)."),
+    ]).window(),
     edit("timeline.pause", "Stop playback.", &[]).window(),
     edit("timeline.closeGap", "Close the empty space at a time on a track by pulling the later clips left.", &[TRACK_ID, req("time", Number, "A time inside the gap, in seconds.")]),
     query("timeline.markers", "List markers by time.", &[]),
@@ -367,7 +482,7 @@ pub static SPECS: &[Spec] = &[
         opt("task", String, "text_to_image, image_to_image, text_to_video or image_to_video. Defaults from video and the images given."),
         opt("video", Boolean, "Make a video rather than an image (when task is omitted)."),
         opt("negativePrompt", String, "What to avoid, for models that take it."),
-        opt("images", Array, "Input images: [{role: reference|start_frame|end_frame, path?, assetId?, clipId?, time?}]. A clip gives the frame it shows at time."),
+        opt("images", Array, "Input images: [{role: reference|start_frame|end_frame, path?, assetId?, clipId?, time?}]. A clip gives the frame it shows at time.").of(Object),
         opt("aspectRatio", String, "\"16:9\", \"9:16\", \"1:1\"… Defaults to the project's."),
         DURATION,
         opt("resolution", String, "\"720p\", \"1080p\"… when the model offers several."),
@@ -483,35 +598,102 @@ pub static SPECS: &[Spec] = &[
     edit("app.clearCrashReports", "Delete every crash report.", &[]).perm(Perm::Files),
     edit("app.quit", "Quit kimchi.", &[]).perm(Perm::AppControl).window(),
     edit("app.notify", "Show a short message in the window.", &[req("text", String, "Message."), opt("kind", String, "info (default), success or error.")]).window(),
+    // ---- agent ------------------------------------------------------------
+    query("agent.providers", "The models that can run the built-in agent (Claude Code, Codex, the Anthropic and OpenAI APIs, Ollama), whether each is ready on this computer and why not, and which one is chosen.", &[]).window(),
+    edit("agent.setProvider", "Choose what runs the built-in agent (Settings › Agent).", &[
+        req("provider", String, "claude-code, codex, anthropic, openai or ollama."),
+        opt("model", String, "Model id for the API providers and Ollama; empty for the provider's default."),
+        opt("baseUrl", String, "Server address for Ollama or an OpenAI-compatible server; empty for the default."),
+    ]).perm(Perm::PersonOnly),
+    edit("agent.send", "Ask the built-in agent (the Agent panel) to do something, in words. It continues the panel's conversation, runs commands like any client (permissions apply) and shows them as cards. Returns the run at once, or once it ends with wait. One run at a time. Uses the person's model account, so agents need the generate permission.", &[
+        req("prompt", String, "The request, e.g. \"Add a title saying Hello at 0 s and fade it in\"."),
+        opt("wait", Boolean, "Wait until the run ends and return it with its reply and commands (default false)."),
+        opt("timeout", Number, "With wait: stop waiting after this many seconds (default 900); the run goes on."),
+    ]).perm(Perm::Generate).window(),
+    query("agent.status", "One agent run (the running or latest one by default): the request, whether it is still working and on what, the reply, every command it ran with its outcome, changes, time and tokens.", &[
+        opt("run", Integer, "Run id from agent.runs."),
+        opt("wait", Boolean, "Wait until the run ends."),
+        opt("timeout", Number, "With wait: stop waiting after this many seconds (default 900)."),
+    ]).window(),
+    query("agent.runs", "The agent's runs on the open project, oldest first: request, provider, outcome, changes and whether agent.revert can undo them.", &[]).window(),
+    query("agent.conversation", "The Agent panel's conversation as it shows it: requests, replies, one card per command (the agent's, and those of MCP clients and the CLI) and how each run ended.", &[
+        opt("since", Integer, "Only entries from this index on (each answer gives the next index)."),
+    ]).window(),
+    edit("agent.stop", "Stop the agent's run. Edits it finished stay (agent.revert removes them).", &[]).window(),
+    edit("agent.revert", "Revert an agent run: the project goes back to how it was before the run's first change, as one undo step (history.undo brings the run back).", &[
+        opt("run", Integer, "Run id (default: the latest run that changed something and isn't reverted)."),
+    ]).window(),
+    edit("agent.newConversation", "Start a new conversation in the Agent panel: the agent forgets the thread. Earlier runs can still be reverted.", &[]).window(),
     // ---- ui ---------------------------------------------------------------
     query("ui.state", "What the window shows: home or editor, playhead, playing, selection, zoom, open panel and dialogs, theme.", &[]),
-    edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears."), opt("assetId", String, "A media item to select instead.")]).window(),
-    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home.", &[
+    edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears.").of(String), opt("assetId", String, "A media item to select instead.")]).window(),
+    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it.", &[
         req("panel", String, "Panel name."),
         opt("section", String, "For settings: models, agent, appearance, updates, diagnostics or about."),
+        opt("open", Boolean, "false closes the panel or dialog instead (agent, jobs or a dialog; default true)."),
+        opt("all", Boolean, "For whatsNew: the notes of every release, not only this one's."),
     ]).window(),
     edit("ui.closeDialogs", "Close open dialogs and popovers.", &[]).window(),
     edit("ui.zoom", "Zoom the timeline.", &[opt("pixelsPerSecond", Number, "4-600."), opt("fit", Boolean, "Fit the whole project in view.")]).window(),
+    edit("ui.setTimeline", "Timeline and playback options in the window: snapping, ripple delete and loop. Only the given ones change; returns all three.", &[
+        opt("snapping", Boolean, "Dragged clips, edges and the playhead stick to cuts, markers and the playhead (N)."),
+        opt("ripple", Boolean, "Deleting in the window closes the gap, as clip.delete ripple does."),
+        opt("loop", Boolean, "Playback starts over at the end."),
+    ]).window(),
+    edit("ui.setLayout", "Resize the editor's panels, in pixels (each within its limits), or put them back as they start. Returns the sizes.", &[
+        opt("left", Number, "Width of the left panel (280-520)."),
+        opt("inspector", Number, "Width of the inspector, on the right (260-440)."),
+        opt("timeline", Number, "Height of the timeline (180-620)."),
+        opt("agent", Number, "Width of the Agent panel (300-560)."),
+        opt("reset", Boolean, "Back to the starting sizes first."),
+    ]).window(),
+    edit("ui.action", "Do what a keyboard shortcut or menu item of the window does, by its action name. It acts on the window's selection, playhead and clipboard as the key would, a moment after the answer. Agents need the permission of what it does (NewProject: projects, ToggleTheme: settings, Quit: app control…).", &[
+        req("action", String, "PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide."),
+    ]).window(),
+    edit("ui.reveal", "Show a file in the file manager (Finder, Explorer…): a path, or a media item's file.", &[
+        opt("path", String, "A file or folder (an export, a log folder…)."),
+        opt("assetId", String, "A media item (id or unique name) instead."),
+    ]).window(),
     edit("ui.screenshot", "Save a PNG of the window and return its path.", &[opt("path", String, "Destination .png (default: a temporary file).")]).perm(Perm::Files).window(),
+    edit("ui.studio", "Open, drive or close the Studio, the window's editor for motion clips (a Blender-like 3D editor, an After Effects-like 2D one). Every parameter is optional and applied in order; the answer is the Studio's state (also in ui.state). Edits to the scene itself are motion.* commands.", &[
+        opt("clipId", String, "Open this motion clip (id or name)."),
+        opt("close", Boolean, "Back to the edit."),
+        opt("select", Array, "Select these ids (layers, objects, lights, cameras; \"scene\"; \"material:<id>\", \"comp:<id>\"); empty clears."),
+        opt("mode", String, "object or edit (3D mesh editing of the selected mesh object)."),
+        opt("selectMode", String, "Edit mode: vertex, edge or face."),
+        opt("editSelection", Object, "Edit mode: {\"vertices\": [...], \"faces\": [...]} indices of the mesh."),
+        opt("tool", String, "3D: select, move, rotate, scale. 2D: select, anchor, pen, rect, ellipse, star, polygon, text."),
+        opt("shading", String, "3D: solid, material or rendered."),
+        opt("view", Any, "3D: front, back, left, right, top, bottom, camera (through the active camera), persp or ortho; or a view {\"position\": [x,y,z], \"target\": [x,y,z], \"fov\": 40, \"ortho\": false, \"orthoSize\": 6}."),
+        opt("frame", Boolean, "Frame the selection in the view (all when nothing is selected)."),
+        opt("grid", Boolean, "3D: floor grid and axes."),
+        opt("helpers", Boolean, "3D: draw lights and cameras."),
+        opt("composition", String, "2D: show and edit this composition (\"\" = the scene)."),
+        opt("showGraph", Boolean, "The timeline area shows the graph editor (true) or the dope sheet."),
+        opt("graphProperty", String, "The property the graph editor shows, e.g. position.x (of the selected item)."),
+    ]).window(),
 ];
 
 /// Runs the handler for a validated command.
 pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
+    // Each family's handler is boxed: their futures are large (big matches), and on the
+    // stack of a 2 MB thread (tests, tokio workers in debug builds) they overflow it.
     match cx.spec.family() {
-        "project" => project::run(s, cx, a).await,
-        "media" => media::run(s, cx, a).await,
-        "track" => track::run(s, cx, a).await,
-        "motion" => motion::run(s, cx, a).await,
-        "clip" => clip::run(s, cx, a).await,
-        "transition" => transition::run(s, cx, a).await,
-        "captions" => captions::run(s, cx, a).await,
-        "timeline" => timeline::run(s, cx, a).await,
-        "history" => history::run(s, cx, a).await,
-        "generate" => generate::run(s, cx, a).await,
-        "export" => export::run(s, cx, a).await,
-        "handoff" => handoff::run(s, cx, a).await,
-        "app" => app::run(s, cx, a).await,
-        "ui" => ui::run(s, cx, a).await,
+        "project" => Box::pin(project::run(s, cx, a)).await,
+        "media" => Box::pin(media::run(s, cx, a)).await,
+        "track" => Box::pin(track::run(s, cx, a)).await,
+        "motion" => Box::pin(motion::run(s, cx, a)).await,
+        "clip" => Box::pin(clip::run(s, cx, a)).await,
+        "transition" => Box::pin(transition::run(s, cx, a)).await,
+        "captions" => Box::pin(captions::run(s, cx, a)).await,
+        "timeline" => Box::pin(timeline::run(s, cx, a)).await,
+        "history" => Box::pin(history::run(s, cx, a)).await,
+        "generate" => Box::pin(generate::run(s, cx, a)).await,
+        "export" => Box::pin(export::run(s, cx, a)).await,
+        "handoff" => Box::pin(handoff::run(s, cx, a)).await,
+        "app" => Box::pin(app::run(s, cx, a)).await,
+        "agent" => Box::pin(agent::run(s, cx, a)).await,
+        "ui" => Box::pin(ui::run(s, cx, a)).await,
         _ => Err(unhandled(cx)),
     }
 }

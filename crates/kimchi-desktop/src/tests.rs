@@ -13,23 +13,23 @@ use serde_json::{Value, json};
 use crate::app::Workspace;
 use crate::store::{Dialog, StoreExt};
 
-struct Fixture {
-    rt: tokio::runtime::Runtime,
+pub(crate) struct Fixture {
+    pub rt: tokio::runtime::Runtime,
     _dir: tempfile::TempDir,
-    session: Arc<Session>,
+    pub session: Arc<Session>,
 }
 
 impl Fixture {
-    fn call(&self, name: &str, params: Value) -> Value {
+    pub fn call(&self, name: &str, params: Value) -> Value {
         self.rt.block_on(kimchi_control::call(&self.session, Source::Cli, name, params)).unwrap_or_else(|e| panic!("{name}: {e}"))
     }
 
-    fn project(&self) -> Project {
+    pub fn project(&self) -> Project {
         self.session.read(|ed| ed.project().clone()).unwrap()
     }
 
     /// Lets the window and Tokio work until `done` holds (or 3 s pass).
-    fn settle(&self, cx: &mut VisualTestContext, done: impl Fn(&Project) -> bool) -> Project {
+    pub fn settle(&self, cx: &mut VisualTestContext, done: impl Fn(&Project) -> bool) -> Project {
         let start = Instant::now();
         loop {
             cx.run_until_parked();
@@ -50,7 +50,7 @@ const M: &str = "ctrl";
 
 /// Lets the window catch up until its store satisfies `done` (or 3 s pass): the store hears
 /// about changes through the session's events, a moment after the session has them.
-fn store_settles(cx: &mut VisualTestContext, done: impl Fn(&crate::store::Store) -> bool) {
+pub(crate) fn store_settles(cx: &mut VisualTestContext, done: impl Fn(&crate::store::Store) -> bool) {
     let start = Instant::now();
     while !cx.update(|_, cx| done(cx.store().read(cx))) && start.elapsed() < Duration::from_secs(3) {
         cx.run_until_parked();
@@ -62,7 +62,7 @@ fn texts(p: &Project) -> usize {
     p.clips().filter(|(_, c)| matches!(c.content, ClipContent::Text { .. })).count()
 }
 
-fn setup(cx: &mut TestAppContext) -> (Fixture, gpui::Entity<Workspace>, &mut VisualTestContext) {
+pub(crate) fn setup(cx: &mut TestAppContext) -> (Fixture, gpui::Entity<Workspace>, &mut VisualTestContext) {
     cx.executor().allow_parking();
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -161,6 +161,11 @@ fn people_edit_motion_scenes_in_the_inspector(cx: &mut TestAppContext) {
     let p = f.settle(cx, |p| motion(p).is_some());
     let clip = motion(&p).expect("a motion clip");
     store_settles(cx, |s| s.selection == vec![clip.id]);
+    // It opens in the Studio; back to the edit for the inspector.
+    store_settles(cx, |s| s.studio.is_some());
+    let studio = cx.update(|_, cx| view.read(cx).editor().read(cx).studio.clone());
+    cx.update(|_, cx| studio.update(cx, |s, cx| s.close(cx)));
+    cx.run_until_parked();
     // Pick its text layer, then type in the words field.
     let inspector = cx.update(|_, cx| view.read(cx).editor().read(cx).inspector.clone());
     cx.update(|_, cx| inspector.update(cx, |i, cx| i.pick(clip.id, "text1", cx)));
@@ -338,4 +343,66 @@ fn the_captions_tab_lists_captions_and_goes_to_them(cx: &mut TestAppContext) {
     assert_eq!(cx.update(|_, cx| cx.store().read(cx).selection.clone()), vec![second]);
     assert!((playhead(cx) - 2.5).abs() < 0.01);
     let _ = view;
+}
+
+/// Runs a command as a script would (from Tokio, through the window when it needs it).
+fn remote(f: &Fixture, cx: &mut VisualTestContext, name: &str, params: Value) -> Value {
+    let (s, name_owned) = (f.session.clone(), name.to_string());
+    let task = f.rt.spawn(async move { kimchi_control::call(&s, Source::Cli, &name_owned, params).await });
+    let start = Instant::now();
+    while !task.is_finished() && start.elapsed() < Duration::from_secs(3) {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    cx.run_until_parked();
+    f.rt.block_on(task).unwrap().unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+/// What a script can do in the window: options, shortcuts by name (on the window's own clipboard),
+/// panels and their sizes; and the Agent panel draws the agent's conversation, scripts' cards included.
+#[gpui::test]
+fn scripts_reach_what_the_window_does(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    f.call("clip.addText", json!({ "text": "A", "start": 5, "duration": 1 }));
+    f.settle(cx, |p| p.clips().count() == 2);
+    let v = remote(&f, cx, "ui.setTimeline", json!({ "snapping": false, "ripple": true, "loop": true }));
+    assert_eq!(v, json!({ "snapping": false, "ripple": true, "loop": true }));
+    assert!(cx.update(|_, cx| {
+        let s = cx.store().read(cx);
+        !s.snapping && s.ripple && s.playback.read(cx).looping
+    }));
+    let state = f.call("ui.state", json!({}));
+    assert_eq!((&state["snapping"], &state["ripple"], &state["loop"]), (&json!(false), &json!(true), &json!(true)), "{state}");
+
+    // Select all, copy, move the playhead, paste: as the keys do.
+    remote(&f, cx, "ui.action", json!({ "action": "SelectAll" }));
+    store_settles(cx, |s| s.selection.len() == 2);
+    remote(&f, cx, "ui.action", json!({ "action": "CopyClips" }));
+    remote(&f, cx, "timeline.seek", json!({ "time": 10 }));
+    remote(&f, cx, "ui.action", json!({ "action": "PasteClips" }));
+    let p = f.settle(cx, |p| p.clips().count() == 4);
+    assert_eq!(p.clips().count(), 4, "two copies pasted");
+    assert!(p.clips().any(|(_, c)| (c.start - 10.0).abs() < 1e-6));
+
+    remote(&f, cx, "ui.showPanel", json!({ "panel": "agent" }));
+    assert!(cx.update(|_, cx| cx.store().read(cx).agent_open));
+    remote(&f, cx, "ui.showPanel", json!({ "panel": "agent", "open": false }));
+    assert!(!cx.update(|_, cx| cx.store().read(cx).agent_open));
+    let l = remote(&f, cx, "ui.setLayout", json!({ "left": 9999, "timeline": 250 }));
+    assert_eq!((l["left"].as_f64(), l["timeline"].as_f64()), (Some(520.0), Some(250.0)), "kept within limits");
+    assert_eq!(f.call("ui.state", json!({}))["layout"]["timeline"], 250.0);
+
+    f.call("timeline.addMarker", json!({ "time": 1, "label": "Here" }));
+    let panel = cx.update(|_, cx| view.read(cx).editor().read(cx).agent.clone());
+    let has_card = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            panel.read(cx).snap.entries.iter().any(|e| matches!(e, kimchi_agent::Entry::Command { record, run: None, .. } if record.command == "timeline.addMarker"))
+        })
+    };
+    let start = Instant::now();
+    while !has_card(cx) && start.elapsed() < Duration::from_secs(3) {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(has_card(cx), "the script's command is a card in the Agent panel");
 }

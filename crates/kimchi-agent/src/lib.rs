@@ -18,6 +18,7 @@
 
 mod api;
 mod cli;
+mod host;
 mod http;
 mod status;
 mod tools;
@@ -39,6 +40,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 pub use cli::{cli_executable, mcp_executable};
+pub use host::{Entry, Host, RunInfo, RunState, Snapshot};
 pub use status::{ProviderStatus, provider_status};
 pub use tools::{SYSTEM_PROMPT, TOOL_OUTPUT_LIMIT, ToolDef, tool_defs};
 
