@@ -772,6 +772,14 @@ async fn studio_commands() {
     let r = ok(&s, Source::Agent, "motion.applyModifier", json!({ "clipId": c3, "id": "cube" })).await;
     assert_eq!(r["result"]["faces"], 40, "four copies: {r}");
     assert!(ok(&s, Source::Agent, "motion.get", json!({ "clipId": c3, "id": "cube" })).await.get("modifiers").is_none());
+    // A model keeps its file's colours as a mesh.
+    let obj = dir.path().join("red.obj");
+    std::fs::write(dir.path().join("red.mtl"), "newmtl red\nKd 1 0 0\n").unwrap();
+    std::fs::write(&obj, "mtllib red.mtl\nusemtl red\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n").unwrap();
+    ok(&s, Source::Agent, "motion.setLayer", json!({ "clipId": c3, "layer": { "id": "toy", "type": "model", "src": obj.to_str().unwrap() } })).await;
+    ok(&s, Source::Agent, "motion.convertToMesh", json!({ "clipId": c3, "id": "toy" })).await;
+    let toy = ok(&s, Source::Agent, "motion.get", json!({ "clipId": c3, "id": "toy" })).await;
+    assert_eq!((toy["type"].as_str(), toy["material"]["color"].as_str()), (Some("mesh"), Some("#ff0000")), "{toy}");
 
     // Looking and rendering ahead (needs ffmpeg).
     if s.tools().is_ok() {

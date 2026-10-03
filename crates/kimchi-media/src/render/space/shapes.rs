@@ -58,6 +58,16 @@ pub(crate) fn base_poly(shape: &Shape3d) -> Option<PolyMesh> {
     Some(poly_of(&m, 30.0))
 }
 
+/// How a model file's first part looks (what the model shows once merged, with modifiers or as
+/// an editable mesh): its colour (`#rrggbb`), metallic and roughness. Pictures it carries aren't
+/// included.
+pub fn model_look(path: &std::path::Path) -> Option<(String, f64, f64)> {
+    let parts = mesh::model(path).ok()?;
+    let p = parts.first()?;
+    let c = p.color.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+    Some((format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]), p.metallic as f64, p.roughness as f64))
+}
+
 /// A shape as polygons to edit (`motion.convertToMesh`): core's primitives, the renderer's text
 /// welded into polygons, or a model file's parts (`model` gives its path) merged.
 pub fn editable_poly(shape: &Shape3d, model: Option<&std::path::Path>) -> Option<PolyMesh> {

@@ -262,7 +262,7 @@ autoSmooth (degrees)}` (see Modelling), `particles` (see Particles), `plane`
 `{text, fontFamily, fontWeight, size (letter height), depth, align, letterSpacing, bevel}`
 (extruded, centred), `model` `{src: a .glb/.gltf/.obj/.stl file path or media item}` (centred,
 scaled to 2 units, keeps
-its own materials; `color` tints it), `image` `{asset, width}` (a picture card in its own colours),
+its own materials; a `material` with a `color` tints it), `image` `{asset, width}` (a picture card in its own colours),
 `group` (only children).
 
 **Material**: `{color, metallic 0–1, roughness 0–1 (0 mirror, 1 matte), emissive (a colour that

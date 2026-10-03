@@ -28,7 +28,7 @@ mod tests;
 pub mod trace;
 pub mod viewport;
 
-pub use shapes::editable_poly;
+pub use shapes::{editable_poly, model_look};
 
 use std::collections::HashMap;
 use std::path::PathBuf;

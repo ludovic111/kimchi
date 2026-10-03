@@ -9,7 +9,7 @@ use kimchi_core::mesh::ops::{self, EditOp, Select, Selection};
 use kimchi_core::mesh::{PolyMesh, apply_modifiers, shape_mesh};
 use kimchi_core::motion::{self, Object3d, Scene, Scene3d, Shape3d};
 use kimchi_core::{Id, Project};
-use kimchi_media::render::space::{editable_poly, viewport};
+use kimchi_media::render::space::{editable_poly, model_look, viewport};
 use serde_json::json;
 
 use super::motion::{motion_clip, set_scene};
@@ -34,6 +34,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             }
             let faces = poly.faces.len();
             let o = motion::find_object_mut(&mut sp.objects, &id).expect("found above");
+            keep_model_look(&p, &obj, o);
             o.shape = poly.to_shape();
             if bake {
                 o.modifiers.clear();
@@ -54,6 +55,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             let poly = apply_modifiers(base(&p, &obj)?, &obj.modifiers[..n], t, &others(sp, t, &id));
             let applied: Vec<String> = obj.modifiers[..n].iter().map(|m| m.id.clone()).collect();
             let o = motion::find_object_mut(&mut sp.objects, &id).expect("found above");
+            keep_model_look(&p, &obj, o);
             o.shape = poly.to_shape();
             o.modifiers.drain(..n);
             for m in &applied {
@@ -100,6 +102,22 @@ fn base(p: &Project, o: &Object3d) -> CmdResult<PolyMesh> {
         Shape3d::Curve { .. } => format!("\"{}\" is a curve without a radius; give it a radius first.", o.id),
         other => format!("\"{}\": a {} can't be turned into a mesh.", o.id, other.name()),
     })
+}
+
+/// A model drawn with its file's own colours becomes a mesh drawn with its material: that
+/// material takes the model's look (its first part's, as with modifiers), tinted as before.
+fn keep_model_look(p: &Project, before: &Object3d, o: &mut Object3d) {
+    let Shape3d::Model { src } = &before.shape else { return };
+    let Some((color, metallic, roughness)) = model_path(p, src).and_then(|path| model_look(&path)) else { return };
+    let rgb = |h: &str| -> [f64; 3] { std::array::from_fn(|k| u8::from_str_radix(h.get(1 + 2 * k..3 + 2 * k).unwrap_or("ff"), 16).unwrap_or(255) as f64 / 255.0) };
+    // The renderer tints a model by any colour other than the default.
+    let tint = if o.material.color != "#d9d9d9" { rgb(&o.material.color) } else { [1.0; 3] };
+    let c = rgb(&color);
+    let out: [u8; 3] = std::array::from_fn(|k| (c[k] * tint[k] * 255.0).round().clamp(0.0, 255.0) as u8);
+    o.material.from = None;
+    o.material.color = format!("#{:02x}{:02x}{:02x}", out[0], out[1], out[2]);
+    o.material.metallic = metallic;
+    o.material.roughness = roughness;
 }
 
 fn model_path(p: &Project, src: &str) -> Option<PathBuf> {
