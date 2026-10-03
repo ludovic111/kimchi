@@ -1207,17 +1207,19 @@ fn product_shot(v: &Values, c: &Ctx) -> Value {
             {"id": "pedestal", "type": "cylinder", "radius": 1.3, "height": 0.6, "position": [0, -0.3, 0], "material": "marble",
              "modifiers": [{"id": "bevel", "type": "bevel", "width": 0.04, "segments": 3}]},
             {"id": "bottle", "type": "lathe", "segments": 64, "position": [0, 0, 0], "material": "glass",
-             "profile": [[0.0, 0.0], [0.42, 0.0], [0.46, 0.06], [0.46, 1.1], [0.36, 1.35], [0.16, 1.55], [0.15, 1.85], [0.0, 1.85]],
+             // A hollow shell (up the outside, back down the inside), like real glass.
+             "profile": [[0.0, 0.0], [0.42, 0.0], [0.46, 0.06], [0.46, 1.1], [0.36, 1.35], [0.16, 1.55], [0.15, 1.85], [0.12, 1.85],
+                         [0.13, 1.55], [0.33, 1.35], [0.42, 1.1], [0.42, 0.08], [0.0, 0.08]],
              "children": [
-                {"id": "liquid", "type": "lathe", "segments": 64, "profile": [[0.0, 0.04], [0.41, 0.04], [0.41, 0.95], [0.0, 0.95]],
-                 "material": {"color": v.s("liquid"), "transmission": 0.85, "ior": 1.33, "roughness": 0.1}},
+                {"id": "liquid", "type": "lathe", "segments": 64, "profile": [[0.0, 0.08], [0.415, 0.08], [0.415, 0.95], [0.0, 0.95]],
+                 "material": {"color": v.s("liquid"), "transmission": 0.6, "ior": 1.33, "roughness": 0.2}},
                 {"id": "cap", "type": "cylinder", "radius": 0.18, "height": 0.28, "position": [0, 1.95, 0],
                  "material": {"color": v.s("cap"), "metallic": 1, "roughness": 0.25}}
              ]},
             {"id": "floor", "type": "plane", "width": 40, "height": 40, "position": [0, -0.6, 0], "rotation": [-90, 0, 0],
              "material": {"color": v.opt("background").unwrap_or_else(|| "#e9e4dc".into()), "roughness": 0.85}}
         ],
-        "render": {"engine": v.s("engine"), "samples": 48, "bounces": 6, "toneMapping": "filmic", "ambientOcclusion": 0.4}
+        "render": {"engine": v.s("engine"), "samples": 64, "bounces": 6, "toneMapping": "filmic", "ambientOcclusion": 0.4}
     });
     if let Some(bg) = v.opt("background") {
         scene["background"] = json!(bg);

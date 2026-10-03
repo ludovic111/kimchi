@@ -1122,7 +1122,10 @@ impl World {
             let bsdf = Bsdf::new(mat, base, entering, wo);
 
             if out.aov.is_none() {
-                if bsdf.mirror_like() && depth < 3 {
+                // Mirrors are guided by what they reflect (one path, so the guide is steady).
+                // Glass sends each sample either through or back at random, so what lies behind
+                // it would give a noisy guide that stops the filter: glass guides on itself.
+                if bsdf.mirror_like() && bsdf.glass < 0.5 && depth < 3 {
                     aov_tint = mul(aov_tint, bsdf.albedo());
                 } else {
                     out.aov = Some((mul(aov_tint, bsdf.albedo()), n, aov_dist));
