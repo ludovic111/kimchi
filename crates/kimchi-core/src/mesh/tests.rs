@@ -184,6 +184,21 @@ fn extrude_shape_is_upright() {
 }
 
 #[test]
+fn bevelled_fronts_stay_flat() {
+    // A logo with rounded edges: its front's normals point straight out, right up to the bevel
+    // (they used to lean with the bevel's first strip, shading the whole face in a gradient).
+    let m = shape_mesh(&Shape3d::Extrude { d: "M0 0 L100 0 L100 100 L0 100 Z".into(), size: 2.0, depth: 0.4, bevel: 0.05 }).unwrap();
+    let t = m.triangulate();
+    let front = t.positions.iter().zip(&t.normals).filter(|(p, _)| (p[2] - 0.2).abs() < 1e-4 && p[0].abs() < 0.96 && p[1].abs() < 0.96);
+    let mut seen = 0;
+    for (p, n) in front {
+        seen += 1;
+        assert!(n[2] > 0.998, "front corner at {p:?} leans: {n:?}");
+    }
+    assert!(seen >= 4, "front corners found: {seen}");
+}
+
+#[test]
 fn mesh_shapes_round_trip() {
     let m = cube(1.0);
     let shape = m.to_shape();

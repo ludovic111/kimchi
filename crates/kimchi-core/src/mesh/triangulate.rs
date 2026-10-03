@@ -249,6 +249,9 @@ pub(crate) fn to_tris(mesh: &PolyMesh) -> TriMesh {
     let nv = mesh.positions.len();
     let valid = |f: &Vec<u32>| f.len() >= 3 && f.iter().all(|&v| (v as usize) < nv && finite(mesh.positions[v as usize]));
     // Face normals (None for faces that can't be drawn) and each corner's angle (its weight).
+    // Corners weigh by their angle and their face's area, so a big flat face (a logo's front, a
+    // tabletop) keeps its own normal next to the narrow strips of a bevel instead of being
+    // tilted across its whole width.
     let mut normals: Vec<Option<V3>> = Vec::with_capacity(mesh.faces.len());
     let mut angles: Vec<Vec<f64>> = Vec::with_capacity(mesh.faces.len());
     for f in &mesh.faces {
@@ -258,14 +261,17 @@ pub(crate) fn to_tris(mesh: &PolyMesh) -> TriMesh {
             continue;
         }
         let pts: Vec<V3> = f.iter().map(|&v| mesh.positions[v as usize]).collect();
-        normals.push(try_norm(newell(pts.iter().copied())));
+        let nw = newell(pts.iter().copied());
+        let area = len(nw) / 2.0;
+        normals.push(try_norm(nw));
         let n = pts.len();
         angles.push(
             (0..n)
                 .map(|k| {
                     let (a, b) = (norm(sub(pts[(k + n - 1) % n], pts[k])), norm(sub(pts[(k + 1) % n], pts[k])));
                     let c = dot(a, b).clamp(-1.0, 1.0).acos();
-                    if c.is_finite() { c.max(1e-6) } else { 1e-6 }
+                    let w = if c.is_finite() { c.max(1e-6) } else { 1e-6 };
+                    if area.is_finite() && area > 0.0 { w * area } else { w * 1e-12 }
                 })
                 .collect(),
         );
