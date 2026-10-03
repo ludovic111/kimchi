@@ -1,0 +1,23 @@
+[package]
+name = "kimchi-captions"
+description = "Captions for kimchi: SRT and WebVTT, and speech to text with Whisper, run locally"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Whisper, in pure Rust on the CPU: nothing to install, the model is downloaded once.
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

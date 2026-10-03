@@ -49,6 +49,8 @@ pub struct ExportDialog {
     encoder: &'static str,
     /// `export.encoders`: what each format is encoded with here; `None` until it answers.
     encoders: Option<Value>,
+    /// Captions: "burn", "file", "both" or "none".
+    captions: &'static str,
     size: Size,
     /// `None`: the project's frame rate.
     fps: Option<u32>,
@@ -91,6 +93,7 @@ impl ExportDialog {
             quality: "standard",
             encoder: "auto",
             encoders: None,
+            captions: "burn",
             size: Size::Project,
             fps: None,
             range: Range::Whole,
@@ -202,6 +205,9 @@ impl ExportDialog {
         let (id, _, ext, _) = FORMATS[self.format];
         let (w, h) = self.dims(cx);
         let mut params = json!({ "format": id, "quality": self.quality });
+        if !project.captions().is_empty() {
+            params["captions"] = json!(self.captions);
+        }
         if self.has_encoder_choice() {
             params["encoder"] = json!(self.encoder);
         }
@@ -392,6 +398,21 @@ impl ExportDialog {
             },
             cx,
         );
+        let has_captions = self.store.read(cx).project.as_ref().is_some_and(|p| !p.captions().is_empty());
+        let w6 = cx.entity().downgrade();
+        let captions = segmented(
+            "export-captions",
+            vec![("burn", "In the picture".into()), ("file", ".srt file".into()), ("both", "Both".into()), ("none", "Off".into())],
+            self.captions,
+            move |v, _, cx| {
+                w6.update(cx, |this, cx| {
+                    this.captions = v;
+                    cx.notify();
+                })
+                .ok();
+            },
+            cx,
+        );
         // What the choice means on this computer.
         let (note, warn) = match self.encoder_for(self.encoder) {
             None => ("Checking this computer's encoders…".to_string(), false),
@@ -441,6 +462,7 @@ impl ExportDialog {
                         .child(note),
                 )
             })
+            .when(has_captions && !audio, |d| d.child(row("Captions", captions.into_any_element())))
             .into_any_element()
     }
 
@@ -612,7 +634,7 @@ impl Render for ExportDialog {
 }
 
 /// Where the save panel opens: ~/Movies, else home.
-fn default_dir() -> PathBuf {
+pub fn default_dir() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
     let movies = home.join("Movies");
     if Path::new(&movies).is_dir() { movies } else { home }

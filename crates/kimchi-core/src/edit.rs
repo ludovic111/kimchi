@@ -79,6 +79,9 @@ pub struct TrackPatch {
     pub muted: Option<bool>,
     pub hidden: Option<bool>,
     pub locked: Option<bool>,
+    /// Makes it (or stops it being) a captions track (video tracks only).
+    #[serde(default)]
+    pub captions: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -200,6 +203,12 @@ impl Project {
                 }
                 if let Some(v) = patch.locked {
                     t.locked = v;
+                }
+                if let Some(v) = patch.captions {
+                    if v && t.kind != TrackKind::Video {
+                        return Err(EditError::Invalid("captions go on a video track".into()));
+                    }
+                    t.captions = v;
                 }
             }
             Edit::MoveTrack { track_id, index } => {

@@ -27,6 +27,7 @@ pub enum LeftTab {
     Generate,
     Text,
     Motion,
+    Captions,
 }
 
 impl LeftTab {
@@ -36,6 +37,7 @@ impl LeftTab {
             LeftTab::Generate => "generate",
             LeftTab::Text => "text",
             LeftTab::Motion => "motion",
+            LeftTab::Captions => "captions",
         }
     }
 }

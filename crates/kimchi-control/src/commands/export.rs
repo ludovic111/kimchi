@@ -57,8 +57,26 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 },
                 encoder: encoder(a.opt_str("encoder").unwrap_or("auto"))?,
             };
-            let project = s.project()?;
+            let mut project = s.project()?;
+            // Captions: in the picture, in a file next to it, both or neither.
+            let captions = a.opt_str("captions").unwrap_or("burn");
+            let (burn, file) = match captions {
+                "burn" => (true, false),
+                "file" | "srt" | "sidecar" => (false, true),
+                "both" => (true, true),
+                "none" => (false, false),
+                other => return Err(format!("captions is burn, file, both or none, not \"{other}\"")),
+            };
+            if !burn {
+                for t in project.tracks.iter_mut().filter(|t| t.captions) {
+                    t.hidden = true;
+                }
+            }
+            let sidecar = if file && !settings.format.is_audio_only() { crate::commands::captions::sidecar(&project, std::path::Path::new(&settings.path))? } else { None };
             let id = start(s, project, settings)?;
+            if let Some(path) = &sidecar {
+                tracing::info!("captions written to {}", path.display());
+            }
             if a.bool_or("wait", false) || s.headless {
                 return Ok(json!(wait(s, &id).await?));
             }

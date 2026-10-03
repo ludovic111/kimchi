@@ -30,7 +30,10 @@ rewritten from the ground up in Rust.
 - Split, trim, ripple delete, duplicate, copy / cut / paste, cross-track moves, snapping, markers
 - Rubber-band selection, ⌥-drag to copy, files dropped straight onto a track
 - The shortcuts editors expect: J / K / L shuttle, ↑ / ↓ to the previous / next cut, Q / W trim to the playhead; press ? for all of them
-- Per-clip transform (position, scale, rotation, opacity, blur, fit), speed, fades, volume
+- Per-clip transform (position, scale, rotation, opacity, blur, fit), speed (pitch kept), reverse, freeze frames, fades, volume
+- **Transitions** on cuts: dissolve, dip to black / white, wipes, slides, pushes, zoom, iris, blur; centred on the cut with the clips' media past it, the sound crossfading. Click the + on a cut, drag the badge's edges for the length
+- **Colour**: looks (punchy, warm, cool, mono, faded, vintage, noir, teal & orange, dreamy), brightness, contrast, saturation, warmth, tint, vignette, sharpen (all keyframable), green-screen chroma key, `.cube` LUTs
+- **Captions**: transcribe the cut on your computer (Whisper, nothing sent anywhere; the model downloads once), import and export SRT / WebVTT, edit them as titles, style them all at once; burned in or as an `.srt` beside the export
 - Live preview compositor, on-canvas move/scale handles
 - Snapshot undo/redo for every edit, autosave
 - Export to MP4 (H.264), HEVC, ProRes, WebM, GIF or audio-only
@@ -118,7 +121,8 @@ kimchi hands cuts to [ryolune](https://lsuite.xyz/ryolune) to score them and tak
 ```
 crates/
   kimchi-core      project model, edits, undo history (shared by every client), keyframes, motion scenes, templates
-  kimchi-media     ffmpeg probing, decoding and encoding; the compositor: text, 2D motion, 3D (GPU and CPU)
+  kimchi-media     ffmpeg probing, decoding and encoding; the compositor: text, 2D motion, 3D (GPU and CPU), colour, transitions
+  kimchi-captions  SRT / WebVTT, and speech to text with Whisper (candle, on the CPU)
   kimchi-gen       the generation harness: Provider trait, 15 providers, keys, job queue
   kimchi-control   the command registry, session, permissions, loopback bridge, lsuite discovery, updater
   kimchi-agent     the built-in agent (Claude Code, Codex, Anthropic, OpenAI, Ollama)

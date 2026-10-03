@@ -176,7 +176,7 @@ Delete a track and every clip on it. One undo step. _(changes things)_
 
 ### `track.update`
 
-Rename, mute, hide or lock a track. One undo step. _(changes things)_
+Rename, mute, hide or lock a track, or make it the captions track. One undo step. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -185,6 +185,7 @@ Rename, mute, hide or lock a track. One undo step. _(changes things)_
 | `muted` | boolean |  | Silence the track. |
 | `hidden` | boolean |  | Hide the track's pictures. |
 | `locked` | boolean |  | Protect the track from edits. |
+| `captions` | boolean |  | Make it the captions track (video tracks): its titles are the captions. |
 
 ### `track.move`
 
@@ -449,6 +450,81 @@ Remove the transitions at the start of clips (or every one on a track). One undo
 | --- | --- | --- | --- |
 | `clipIds` | array |  | Clips whose transition goes (ids or names). |
 | `trackId` | string |  | Instead of clipIds: every transition on this track. |
+
+## captions
+
+### `captions.list`
+
+The captions, by time: clip, start, end and words. Captions are titles on the captions track; edit one like any title (clip.update style.content, clip.trim, clip.delete). _(read only)_
+
+### `captions.models`
+
+The speech models captions.transcribe can use, their download size and whether they are on this computer. _(read only)_
+
+### `captions.status`
+
+The transcription running now, if any: stage (downloading the model, mixing, listening) and progress. _(read only)_
+
+### `captions.transcribe`
+
+Caption the cut by listening to it: the mixed sound (or one clip's) is transcribed by Whisper on this computer, split into readable captions (two lines at most) and put on the captions track as titles (the track is made if needed), replacing the captions in that span. One undo step. The model is downloaded the first time (150 MB to 1 GB); then the base model takes about a tenth of the sound's length. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string |  | Only this clip's sound (default: the whole mix). |
+| `from` | number |  | Start of the span in seconds (default 0). |
+| `to` | number |  | End of the span in seconds (default: the end of the cut). |
+| `language` | string |  | Language spoken: en, fr, es, de, ja… (default: detected). |
+| `model` | string |  | tiny, base (default) or small (captions.models). |
+| `maxChars` | integer |  | Longest caption line in characters (default 42). |
+| `replace` | boolean |  | Remove the captions already in the span (default true). |
+
+### `captions.cancel`
+
+Stop the running transcription. _(changes things)_
+
+### `captions.import`
+
+Read an SRT or WebVTT file onto the captions track. One undo step. _(changes things · permission: files)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | The .srt or .vtt file. |
+| `offset` | number |  | Seconds added to every time (default 0). |
+| `replace` | boolean |  | Remove the captions in the file's span first (default false). |
+
+### `captions.export`
+
+Write the captions to an SRT or WebVTT file. _(changes things · permission: files)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | Destination .srt or .vtt. |
+| `format` | string |  | srt or vtt (default: from the extension). |
+
+### `captions.add`
+
+Add one caption on the captions track, styled like the others. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `text` | string | required | The words; \n starts a second line. |
+| `start` | number |  | Timeline position in seconds. Defaults to the playhead. |
+| `duration` | number |  | Seconds (default 2.5). |
+
+### `captions.setStyle`
+
+Restyle every caption at once: text style fields (see clip.addText) and/or their height. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `style` | object |  | Text style fields to change, e.g. {"fontSize": 60, "background": null}. |
+| `y` | number |  | Vertical offset of the captions' centre from the canvas centre, project pixels (positive is down). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `captions.clear`
+
+Remove every caption. One undo step. _(changes things)_
 
 ## motion
 
@@ -853,6 +929,7 @@ Render the open project to a file: every frame drawn as in the preview (titles, 
 | `from` | number |  | Start of the range in seconds (default 0). |
 | `to` | number |  | End of the range in seconds (default: the end). |
 | `encoder` | string |  | auto (default: the GPU or media engine when there is one, redone on the CPU if it fails), hardware (GPU only; WebM may be AV1) or software (CPU only: slower, smallest files). |
+| `captions` | string |  | burn (default: in the picture), file (an .srt next to the video instead), both, or none. |
 | `wait` | boolean |  | Wait until the job finishes and return it (always true with --file). |
 
 ### `export.status`
@@ -975,7 +1052,7 @@ Select clips (or one media item) in the window. _(changes things · needs the wi
 
 ### `ui.showPanel`
 
-Open a panel or dialog: media, generate, text, motion (left panel), agent, jobs, settings, export, palette; or home. _(changes things · needs the window)_
+Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette; or home. _(changes things · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |

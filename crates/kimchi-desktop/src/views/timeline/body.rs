@@ -914,7 +914,7 @@ impl TimelineBody {
                         .rounded_r(px(sz::R_SM))
                         .cursor_grab()
                         .hover(|s| s.bg(t.hover))
-                        .child(icon(if track.kind == TrackKind::Video { "film" } else { "audio-lines" }).text_color(t.text_3))
+                        .child(icon(if track.captions { "captions" } else if track.kind == TrackKind::Video { "film" } else { "audio-lines" }).text_color(if track.captions { t.accent_text } else { t.text_3 }))
                         .child(name_el)
                         .child(crate::ui::stop(
                             div()

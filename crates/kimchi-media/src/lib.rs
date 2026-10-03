@@ -4,6 +4,7 @@ pub mod accel;
 pub mod export;
 pub mod preview;
 pub mod render;
+mod speech;
 pub mod text;
 mod probe;
 mod process;
@@ -17,6 +18,7 @@ use tokio::io::AsyncReadExt;
 pub use accel::{EncoderChoice, Hardware};
 pub use probe::{Probe, probe};
 pub use process::Caps;
+pub use speech::speech_samples;
 pub use tiny_skia;
 
 #[derive(Debug, Error)]

@@ -6,9 +6,12 @@ and every action goes through one command registry. See README.md.
 
 ```
 crates/kimchi-core      project model, edits, undo history (labels, sources, batches, checkpoints),
-                        keyframes/easings (anim.rs), motion scenes 2D+3D (motion.rs), presets, templates
+                        keyframes/easings (anim.rs), motion scenes 2D+3D (motion.rs), presets, templates,
+                        clip effects and looks (effects.rs), transitions (transition.rs)
 crates/kimchi-media     ffmpeg probe/decode/encode; the compositor (render/: clips, flat.rs 2D motion,
-                        space/ 3D on wgpu or the CPU rasteriser), export, preview, text rendering
+                        space/ 3D on wgpu or the CPU rasteriser, grade.rs colour/key/LUT, mix.rs
+                        transitions, source.rs decoders incl. reverse), export, preview, speech mix
+crates/kimchi-captions  SRT / WebVTT, caption splitting, Whisper speech to text (candle, CPU)
 crates/kimchi-gen       generation providers and job queue
 crates/kimchi-control   registry (commands/mod.rs lists every spec), session, permissions, bridge,
                         lsuite discovery, hand-offs with ryolune, updater
@@ -57,8 +60,8 @@ Rules that keep it working:
 kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
 
-- [x] **Command registry**: 105 `family.verb` commands (project, media, track, clip, motion,
-      timeline, history, generate, export, handoff, app, ui), one undo history for every client,
+- [x] **Command registry**: 122 `family.verb` commands (project, media, track, clip, transition,
+      captions, motion, timeline, history, generate, export, handoff, app, ui), one undo history for every client,
       batches as one step, `project.overview`, names or ids everywhere.
 - [x] **CLI**: `kimchi-cli <command>` on the running app or `--file project.json`; `batch`, `doctor`,
       `mcp-config`, `docs`.
@@ -92,6 +95,25 @@ objects, lights). The compositor replaced the ffmpeg overlay graph. Linux: `gpui
 - [ ] Speed: 1080p export of heavy 3D on the CPU is ~3 frames/s in release (fine on a GPU); big blurs
       ~5 frames/s at 1080p. The preview (≤ 1280 px) keeps up.
 - [ ] Not done: dragging motion layers on the canvas (only clips), audio waveform for volume keyframes.
+
+## Transitions, colour, speed and captions (2026-10-03, not released yet)
+
+Built on `t3code/verify-prs` (motion + shortcuts + export fixes). Transitions live on the incoming
+clip (`Clip.transition`), centred on a cut with both clips playing past it (no overlap on the track,
+spans never overlap: `transition::effective_length`), sound crossfades in the export graph
+(`export::with_crossfades`). Effects are `Clip.effects` (keyframable numbers), graded on the media
+picture or on the layer. `Clip.reverse` plays the source range backwards (chunked reverse decoder,
+`areverse`). Captions are titles on a track with `captions: true`; Whisper models download to
+`<data>/models/whisper-{tiny,base,small}` from Hugging Face. Window: inspector Colour / Transition in
+/ Timing extras, timeline transition badges (drag edges, right-click kinds) and + on cuts, the
+Captions tab (⌘5), a Captions row in the export dialog.
+
+- [ ] Look at all of it on the Mac (Linux screenshots come back blank): inspector sections, badges,
+      the Captions tab, transitions and colour in the preview.
+- [ ] Whisper runs on the CPU (base: ~5 s for 11 s of speech on the 4-core Linux box, release); Metal
+      through candle would be faster on Apple Silicon.
+- [ ] Not done: an eyedropper for the chroma key colour, word-level caption timing (captions are
+      timed per segment, tightened to the speech's energy), a reversed waveform on reversed clips.
 
 ## Next session
 

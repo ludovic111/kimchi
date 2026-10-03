@@ -98,7 +98,7 @@ fn masked(a: &Pixmap, b: &Pixmap, k: impl Fn(f32, f32) -> f32 + Sync) -> Pixmap 
     let (w, h) = (a.width() as usize, a.height() as usize);
     out.data_mut().par_chunks_mut(w * 4).zip(b.data().par_chunks(w * 4)).enumerate().for_each(|(y, (row, brow))| {
         let fy = (y as f32 + 0.5) / h as f32;
-        for (x, (o, bp)) in row.chunks_exact_mut(4).zip(brow.chunks_exact(4)).enumerate() {
+        for (x, (o, bp)) in row.as_chunks_mut::<4>().0.iter_mut().zip(brow.as_chunks::<4>().0).enumerate() {
             let m = k((x as f32 + 0.5) / w as f32, fy).clamp(0.0, 1.0);
             if m <= 0.0 {
                 continue;

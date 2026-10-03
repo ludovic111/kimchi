@@ -354,7 +354,7 @@ async fn freeze_frame(s: &Arc<Session>, cx: &Ctx, a: &Args) -> CmdResult {
     let time = a.opt_f64("time").unwrap_or_else(|| s.ui_state().playhead);
     let time = p.settings.snap_to_frame(time).clamp(clip.start, (clip.end() - frame).max(clip.start));
     let hold = a.opt_f64("duration").unwrap_or(2.0);
-    if !(hold > 0.0) {
+    if hold.is_nan() || hold <= 0.0 {
         return Err("duration should be more than 0 seconds".into());
     }
     let png = crate::commands::media::clip_frame(s, id, Some(time)).await?;

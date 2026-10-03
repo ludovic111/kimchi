@@ -9,6 +9,7 @@ license.workspace = true
 kimchi-core.workspace = true
 kimchi-gen.workspace = true
 kimchi-media.workspace = true
+kimchi-captions.workspace = true
 
 base64.workspace = true
 chrono.workspace = true

@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod agent_panel;
+pub mod captions_panel;
 pub mod dialogs;
 pub mod editor;
 pub mod generate;

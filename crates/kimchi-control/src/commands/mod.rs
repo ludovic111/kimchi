@@ -2,6 +2,7 @@
 //! docs, the CLI help and the MCP tools are generated in a stable order.
 
 pub mod app;
+pub mod captions;
 pub mod clip;
 pub mod export;
 pub mod generate;
@@ -98,12 +99,13 @@ pub static SPECS: &[Spec] = &[
         opt("index", Integer, "Position from the top (0 = top)."),
     ]),
     edit("track.remove", "Delete a track and every clip on it. One undo step.", &[TRACK_ID]),
-    edit("track.update", "Rename, mute, hide or lock a track. One undo step.", &[
+    edit("track.update", "Rename, mute, hide or lock a track, or make it the captions track. One undo step.", &[
         TRACK_ID,
         opt("name", String, "New name."),
         opt("muted", Boolean, "Silence the track."),
         opt("hidden", Boolean, "Hide the track's pictures."),
         opt("locked", Boolean, "Protect the track from edits."),
+        opt("captions", Boolean, "Make it the captions track (video tracks): its titles are the captions."),
     ]),
     edit("track.move", "Move a track to another position (0 = top).", &[TRACK_ID, req("index", Integer, "Zero-based target position from the top.")]),
     // ---- clip -------------------------------------------------------------
@@ -232,6 +234,40 @@ pub static SPECS: &[Spec] = &[
         opt("clipIds", Array, "Clips whose transition goes (ids or names)."),
         opt("trackId", String, "Instead of clipIds: every transition on this track."),
     ]),
+    // ---- captions ---------------------------------------------------------
+    query("captions.list", "The captions, by time: clip, start, end and words. Captions are titles on the captions track; edit one like any title (clip.update style.content, clip.trim, clip.delete).", &[]),
+    query("captions.models", "The speech models captions.transcribe can use, their download size and whether they are on this computer.", &[]),
+    query("captions.status", "The transcription running now, if any: stage (downloading the model, mixing, listening) and progress.", &[]),
+    edit("captions.transcribe", "Caption the cut by listening to it: the mixed sound (or one clip's) is transcribed by Whisper on this computer, split into readable captions (two lines at most) and put on the captions track as titles (the track is made if needed), replacing the captions in that span. One undo step. The model is downloaded the first time (150 MB to 1 GB); then the base model takes about a tenth of the sound's length.", &[
+        opt("clipId", String, "Only this clip's sound (default: the whole mix)."),
+        opt("from", Number, "Start of the span in seconds (default 0)."),
+        opt("to", Number, "End of the span in seconds (default: the end of the cut)."),
+        opt("language", String, "Language spoken: en, fr, es, de, ja… (default: detected)."),
+        opt("model", String, "tiny, base (default) or small (captions.models)."),
+        opt("maxChars", Integer, "Longest caption line in characters (default 42)."),
+        opt("replace", Boolean, "Remove the captions already in the span (default true)."),
+    ]),
+    edit("captions.cancel", "Stop the running transcription.", &[]),
+    edit("captions.import", "Read an SRT or WebVTT file onto the captions track. One undo step.", &[
+        req("path", String, "The .srt or .vtt file."),
+        opt("offset", Number, "Seconds added to every time (default 0)."),
+        opt("replace", Boolean, "Remove the captions in the file's span first (default false)."),
+    ]).perm(Perm::Files),
+    edit("captions.export", "Write the captions to an SRT or WebVTT file.", &[
+        req("path", String, "Destination .srt or .vtt."),
+        opt("format", String, "srt or vtt (default: from the extension)."),
+    ]).perm(Perm::Files),
+    edit("captions.add", "Add one caption on the captions track, styled like the others.", &[
+        req("text", String, "The words; \\n starts a second line."),
+        START,
+        opt("duration", Number, "Seconds (default 2.5)."),
+    ]),
+    edit("captions.setStyle", "Restyle every caption at once: text style fields (see clip.addText) and/or their height. One undo step.", &[
+        opt("style", Object, "Text style fields to change, e.g. {\"fontSize\": 60, \"background\": null}."),
+        opt("y", Number, "Vertical offset of the captions' centre from the canvas centre, project pixels (positive is down)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("captions.clear", "Remove every caption. One undo step.", &[]),
     // ---- motion -----------------------------------------------------------
     query("motion.guide", "How to make motion graphics and 3D with kimchi: the scene formats (2D layers, 3D objects, camera, lights), every property, keyframes and easings, text reveals, masks, effects, templates and presets, with examples. Read it before writing a scene.", &[
         opt("topic", String, "2d, 3d, keyframes, templates or all (default)."),
@@ -398,6 +434,7 @@ pub static SPECS: &[Spec] = &[
         opt("from", Number, "Start of the range in seconds (default 0)."),
         opt("to", Number, "End of the range in seconds (default: the end)."),
         opt("encoder", String, "auto (default: the GPU or media engine when there is one, redone on the CPU if it fails), hardware (GPU only; WebM may be AV1) or software (CPU only: slower, smallest files)."),
+        opt("captions", String, "burn (default: in the picture), file (an .srt next to the video instead), both, or none."),
         WAIT,
     ]).perm(Perm::Files),
     query("export.status", "Exports with their progress, or one export.", &[opt("exportId", String, "One export.")]),
@@ -434,7 +471,7 @@ pub static SPECS: &[Spec] = &[
     // ---- ui ---------------------------------------------------------------
     query("ui.state", "What the window shows: home or editor, playhead, playing, selection, zoom, open panel and dialogs, theme.", &[]),
     edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears."), opt("assetId", String, "A media item to select instead.")]).window(),
-    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion (left panel), agent, jobs, settings, export, palette; or home.", &[
+    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette; or home.", &[
         req("panel", String, "Panel name."),
         opt("section", String, "For settings: models, agent, appearance, updates or about."),
     ]).window(),
@@ -452,6 +489,7 @@ pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "motion" => motion::run(s, cx, a).await,
         "clip" => clip::run(s, cx, a).await,
         "transition" => transition::run(s, cx, a).await,
+        "captions" => captions::run(s, cx, a).await,
         "timeline" => timeline::run(s, cx, a).await,
         "history" => history::run(s, cx, a).await,
         "generate" => generate::run(s, cx, a).await,

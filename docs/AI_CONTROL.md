@@ -275,12 +275,40 @@ kimchi-cli project.renderFrame --times '[10.2, 10.8, 11.5]'
 3D draws on the GPU when there is one (Metal on Macs, Apple Silicon included; Vulkan or DirectX 12
 elsewhere) and on the CPU otherwise; `app.info` says which (`renderer3d`). `KIMCHI_GPU=0` forces the CPU.
 
+## Colour, transitions, speed and captions
+
+- **Colour**: `clip.setEffects {clipIds, look?, brightness, contrast, saturation, temperature, tint,
+  vignette, sharpen, chromaKey, lut, lutStrength, reset}`; only the fields given change. Corrections run
+  -1 to 1 (vignette and sharpen 0 to 1) and take keyframes like any clip property (`clip.setKeyframes
+  {property: "saturation"}`). `clip.looks` lists the looks. `chromaKey` takes `true`, the screen's colour
+  or `{color, similarity, softness, spill}`; `lut` the path of a 3D `.cube` file.
+- **Transitions**: a clip's transition is how it comes in at its start. `transition.set {clipIds | trackId,
+  kind, duration, easing}` (`trackId` puts one on every cut of a track); on a cut it is centred on the cut
+  and both clips play on past it, so nothing moves; the sound crossfades. `transition.kinds`,
+  `transition.list` (where each plays, and whether the clips made it shorter), `transition.remove`.
+- **Speed and time**: `clip.update {speed}` (0.1–16, the sound keeps its pitch), `clip.update {reverse: true}`
+  plays the same part of the media backwards, `clip.freezeFrame {clipId, time, duration}` holds a frame and
+  pushes the rest of the track later.
+- **Captions** are titles on the captions track. `captions.transcribe` listens to the mix (or `clipId`'s
+  sound) with Whisper on this computer and captions it (`language`, `model`: tiny / base / small;
+  the model downloads once, `captions.status` follows it). `captions.import` / `captions.export` read and
+  write SRT or WebVTT, `captions.add`, `captions.setStyle` (all at once), `captions.list`, `captions.clear`.
+  Edit one caption like any title (`clip.update {style: {content}}`, `clip.trim`).
+
+```sh
+kimchi-cli clip.setEffects --clipIds '["Interview"]' --look warm --contrast 0.2
+kimchi-cli transition.set --trackId "Video 1" --kind dissolve --duration 0.6
+kimchi-cli captions.transcribe --language en
+kimchi-cli export.start --path ~/Movies/cut.mp4 --captions both --wait
+```
+
 ## Export
 
 `export.start` renders the open project: the compositor draws every frame (exactly as in the
 preview) and ffmpeg encodes them with the mixed sound. Formats are `mp4` (default), `hevc`, `prores`, `webm`, `gif`, `audio` (AAC) and `wav`; qualities
 `draft`, `standard` (default) and `high` (`export.formats` lists them with their extensions).
-`width`, `height` and `fps` override the project's; `from` and `to` export a range.
+`width`, `height` and `fps` override the project's; `from` and `to` export a range. With captions,
+`captions` is `burn` (default, in the picture), `file` (an `.srt` beside the video instead), `both` or `none`.
 
 ```sh
 kimchi-cli export.start --path ~/Movies/cut.mp4 --quality high --wait

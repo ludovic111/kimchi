@@ -65,6 +65,7 @@ pub struct Renderer {
 }
 
 /// What one track shows at an instant.
+#[allow(clippy::large_enum_variant)] // a few per frame; boxing would only add noise
 enum Layer {
     Clip(Clip),
     /// A transition: the clip ending at the cut (if any), the incoming clip, the eased progress.
@@ -286,12 +287,19 @@ impl Renderer {
                         let key = StreamKey(clip.id, None);
                         used.insert(key.clone());
                         let local = t - clip.start;
-                        if streaming {
-                            self.stream_frame(clip, key, local)?
-                        } else {
-                            self.grabbed.get(&key).cloned()
+                        let pic = if streaming { self.stream_frame(clip, key, local)? } else { self.grabbed.get(&key).cloned() };
+                        match pic {
+                            Some(p) => p,
+                            // An export says why: decoding the frame on its own gives ffmpeg's reason.
+                            None if self.strict => {
+                                let len = asset.duration().unwrap_or(f64::INFINITY);
+                                let (dw, dh) = (dw.max(2), dh.max(2));
+                                return Err(source::grab(&self.tools, Path::new(&asset.path), Some(clip.source_time(t).clamp(0.0, len)), dw, dh)
+                                    .err()
+                                    .unwrap_or_else(|| crate::MediaError::Unsupported(format!("no picture from {}", asset.path))));
+                            }
+                            None => return Err(crate::MediaError::Unsupported("no frame".into())),
                         }
-                        .ok_or_else(|| crate::MediaError::Unsupported("no frame".into()))?
                     }
                     _ => return Ok(()),
                 };

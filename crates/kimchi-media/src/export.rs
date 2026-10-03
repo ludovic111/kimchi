@@ -93,7 +93,12 @@ pub(crate) enum Sink {
     Encode,
     /// Raw interleaved f32le stereo PCM at [`PREVIEW_SAMPLE_RATE`] on stdout, sound only (the preview).
     Samples,
+    /// Raw f32le mono PCM at [`SPEECH_SAMPLE_RATE`] on stdout, sound only (speech recognition).
+    Speech,
 }
+
+/// Sample rate of [`Sink::Speech`] (what Whisper listens to).
+pub const SPEECH_SAMPLE_RATE: u32 = 16_000;
 
 /// Renders `project`. `progress` receives 0.0–1.0.
 pub async fn export(
@@ -381,6 +386,10 @@ fn compile_with_hardware(project: &Project, settings: &ExportSettings, caps: &Ca
             audio: ["-c:a", "pcm_f32le", "-f", "f32le", "-ac", "2"].map(s).to_vec(),
             ..Codecs::new("rgba")
         },
+        Sink::Speech => Codecs {
+            audio: ["-c:a", "pcm_f32le", "-f", "f32le", "-ac", "1"].map(s).to_vec(),
+            ..Codecs::new("rgba")
+        },
     };
     let total = to - from;
     let picture = !format.is_audio_only() && sink == Sink::Encode;
@@ -388,7 +397,9 @@ fn compile_with_hardware(project: &Project, settings: &ExportSettings, caps: &Ca
         project,
         from,
         to,
-        sample_rate: if format == ExportFormat::Webm || sink == Sink::Samples {
+        sample_rate: if sink == Sink::Speech {
+            SPEECH_SAMPLE_RATE
+        } else if format == ExportFormat::Webm || sink == Sink::Samples {
             PREVIEW_SAMPLE_RATE
         } else {
             ps.sample_rate.max(8_000)

@@ -39,7 +39,7 @@ pub(crate) fn apply(p: &mut Pixmap, e: &Effects, scale: f32) {
     let vignette = e.vignette as f32;
     p.data_mut().par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         let ny = (y as f32 + 0.5) / h as f32 * 2.0 - 1.0;
-        for (x, px) in row.chunks_exact_mut(4).enumerate() {
+        for (x, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let a = px[3];
             if a == 0 {
                 continue;
@@ -104,8 +104,8 @@ impl Tone {
         if self.identity {
             return;
         }
-        for c in 0..3 {
-            rgb[c] = ((rgb[c] * self.gains[c] + self.lift) - 0.5) * self.contrast + 0.5;
+        for (v, g) in rgb.iter_mut().zip(self.gains) {
+            *v = ((*v * g + self.lift) - 0.5) * self.contrast + 0.5;
         }
         let y = luma(*rgb);
         for v in rgb.iter_mut() {

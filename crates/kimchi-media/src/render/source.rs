@@ -124,7 +124,8 @@ pub(crate) fn grab(tools: &Tools, path: &Path, time: Option<f64>, w: u32, h: u32
         if let Some(t) = time.filter(|t| *t > 0.05) {
             return grab_last(tools, path, t, w, h);
         }
-        return Err(MediaError::Ffmpeg(format!("no picture from {} ({status})", path.display())));
+        let why = crate::process::summarize(&errors, status);
+        return Err(MediaError::Ffmpeg(format!("no picture from {}: {why}", path.display())));
     }
     out.truncate(len);
     pixmap(out, w, h).ok_or_else(|| MediaError::Unsupported("bad frame size".into()))
@@ -276,6 +277,7 @@ impl VideoStream {
                     args.push(format!("{setpts},fps={fps},{}", scale(w, h)));
                     args.extend(["-f".into(), "rawvideo".into(), "-".into()]);
                     let Ok(mut child) = command(&tools, &args) else { break };
+                    let _errors = read_stderr(&mut child);
                     let mut stdout = child.stdout.take().expect("piped");
                     *super::lock(&held) = Some(Proc(child));
                     let mut chunk = Vec::with_capacity(n as usize);

@@ -317,3 +317,25 @@ fn the_colour_sliders_grade_the_clip_in_one_step(cx: &mut TestAppContext) {
     let graded: Vec<&Value> = steps["undo"].as_array().unwrap().iter().filter(|s| s["label"] == "clip.setEffects").collect();
     assert_eq!(graded.len(), 1, "the drag is one step: {steps}");
 }
+
+/// A person opens the Captions tab (⌘5 / ctrl-5), imports a file through the command the panel
+/// runs, and double-clicks a caption: it is selected and the playhead goes there.
+#[gpui::test]
+fn the_captions_tab_lists_captions_and_goes_to_them(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    cx.simulate_keystrokes(&format!("{M}-5"));
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| cx.store().read(cx).left_tab), crate::store::LeftTab::Captions);
+    let srt = f._dir.path().join("subs.srt");
+    std::fs::write(&srt, "1\n00:00:01,000 --> 00:00:02,000\nOne\n\n2\n00:00:02,500 --> 00:00:03,500\nTwo\n").unwrap();
+    f.call("captions.import", json!({ "path": srt }));
+    let p = f.settle(cx, |p| p.captions().len() == 2);
+    let second = p.captions()[1].1.id;
+    store_settles(cx, |s| s.project.as_ref().is_some_and(|p| p.captions().len() == 2));
+    // The panel draws a row per caption; clicking the second one goes there.
+    cx.update(|_, cx| crate::views::captions_panel::go_to_for_test(second, 2.5, cx));
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| cx.store().read(cx).selection.clone()), vec![second]);
+    assert!((playhead(cx) - 2.5).abs() < 0.01);
+    let _ = view;
+}

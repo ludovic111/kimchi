@@ -197,13 +197,16 @@ pub struct Track {
     pub hidden: bool,
     #[serde(default)]
     pub locked: bool,
+    /// A video track whose titles are the captions (exported as subtitles too).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub captions: bool,
     /// Sorted by `start`, never overlapping.
     pub clips: Vec<Clip>,
 }
 
 impl Track {
     pub fn new(kind: TrackKind, name: impl Into<String>) -> Self {
-        Self { id: new_id(), kind, name: name.into(), muted: false, hidden: false, locked: false, clips: vec![] }
+        Self { id: new_id(), kind, name: name.into(), muted: false, hidden: false, locked: false, captions: false, clips: vec![] }
     }
 
     pub fn end(&self) -> f64 {
@@ -655,6 +658,28 @@ impl Project {
 
     pub fn clips(&self) -> impl Iterator<Item = (&Track, &Clip)> {
         self.tracks.iter().flat_map(|t| t.clips.iter().map(move |c| (t, c)))
+    }
+
+    /// The captions track (the top-most one if there are several).
+    pub fn caption_track(&self) -> Option<&Track> {
+        self.tracks.iter().find(|t| t.captions)
+    }
+
+    /// Every caption, by time: (track, clip, words).
+    pub fn captions(&self) -> Vec<(&Track, &Clip, &str)> {
+        let mut out: Vec<(&Track, &Clip, &str)> = self
+            .tracks
+            .iter()
+            .filter(|t| t.captions)
+            .flat_map(|t| {
+                t.clips.iter().filter_map(move |c| match &c.content {
+                    ClipContent::Text { style } => Some((t, c, style.content.as_str())),
+                    _ => None,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.1.start.total_cmp(&b.1.start));
+        out
     }
 
     /// Next free name like "Video 3" for a new track of `kind`.

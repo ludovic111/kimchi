@@ -18,7 +18,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             let ids = targets(&p, &a, true)?;
             let kind = a.opt_str("kind").map(TransitionKind::parse).transpose()?;
             let duration = a.opt_f64("duration");
-            if duration.is_some_and(|d| !(d > 0.0)) {
+            if duration.is_some_and(|d| d.is_nan() || d <= 0.0) {
                 return Err("duration should be more than 0 seconds".into());
             }
             let easing = a.opt_str("easing").map(Easing::parse).transpose()?;

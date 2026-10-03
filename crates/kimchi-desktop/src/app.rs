@@ -145,6 +145,7 @@ impl Workspace {
                     "generate" => s.set_left_tab(LeftTab::Generate, cx),
                     "text" => s.set_left_tab(LeftTab::Text, cx),
                     "motion" => s.set_left_tab(LeftTab::Motion, cx),
+                    "captions" => s.set_left_tab(LeftTab::Captions, cx),
                     "agent" => {
                         s.agent_open = true;
                         cx.notify();
@@ -607,6 +608,10 @@ impl Workspace {
         self.show_tab(LeftTab::Text, cx);
     }
 
+    fn show_captions(&mut self, _: &ShowCaptions, _: &mut Window, cx: &mut Context<Self>) {
+        self.show_tab(LeftTab::Captions, cx);
+    }
+
     fn show_shortcuts(&mut self, _: &ShowShortcuts, _: &mut Window, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| if s.dialog == Some(Dialog::Shortcuts) { s.close_dialog(cx) } else { s.open_dialog(Dialog::Shortcuts, cx) });
     }
@@ -848,6 +853,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_generate))
             .on_action(cx.listener(Self::show_text))
             .on_action(cx.listener(Self::show_motion))
+            .on_action(cx.listener(Self::show_captions))
             .on_action(cx.listener(Self::show_shortcuts))
             .on_action(cx.listener(Self::import))
             .on_action(cx.listener(Self::export))

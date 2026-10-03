@@ -480,3 +480,63 @@ async fn effects_transitions_and_freeze_frames() {
         assert_eq!(ok(&s, Source::Agent, "clip.list", json!({ "trackId": "Video 1" })).await.as_array().unwrap().len(), 2);
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn captions_import_style_and_export() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({ "name": "Subs", "width": 640, "height": 360 })).await;
+    let srt = dir.path().join("in.srt");
+    std::fs::write(&srt, "1\n00:00:01,000 --> 00:00:02,500\nHello\n\n2\n00:00:03,000 --> 00:00:04,000\nSecond line\nof two\n").unwrap();
+    let r = ok(&s, Source::Agent, "captions.import", json!({ "path": srt })).await;
+    assert_eq!(r["captions"], 2);
+    let tracks = ok(&s, Source::Agent, "track.list", json!({})).await;
+    assert_eq!(tracks[0]["name"], "Captions", "a captions track on top: {tracks}");
+    let list = ok(&s, Source::Agent, "captions.list", json!({})).await;
+    assert_eq!((list[1]["text"].as_str(), list[1]["start"].as_f64()), (Some("Second line\nof two"), Some(3.0)));
+    // One more, styled like the others; then all restyled at once.
+    ok(&s, Source::Agent, "captions.add", json!({ "text": "Third", "start": 5 })).await;
+    ok(&s, Source::Agent, "captions.setStyle", json!({ "style": { "fontSize": 30, "color": "#ffcc00" }, "y": 100 })).await;
+    let p = s.project().unwrap();
+    assert!(p.captions().iter().all(|(_, c, _)| c.transform.y == 100.0 && matches!(&c.content, kimchi_core::ClipContent::Text { style } if style.font_size == 30.0 && style.color == "#ffcc00")));
+    // Out as WebVTT, and next to an export instead of in the picture.
+    let vtt = dir.path().join("out.vtt");
+    ok(&s, Source::Agent, "captions.export", json!({ "path": vtt })).await;
+    let text = std::fs::read_to_string(&vtt).unwrap();
+    assert!(text.starts_with("WEBVTT") && text.contains("00:00:05.000 --> 00:00:07.500\nThird"), "{text}");
+    if s.tools().is_ok() {
+        let mp4 = dir.path().join("cut.mp4");
+        ok(&s, Source::Agent, "export.start", json!({ "path": mp4, "quality": "draft", "captions": "file", "wait": true })).await;
+        assert!(dir.path().join("cut.srt").is_file());
+    }
+    // Clearing is one step.
+    ok(&s, Source::Agent, "captions.clear", json!({})).await;
+    assert!(ok(&s, Source::Agent, "captions.list", json!({})).await.as_array().unwrap().is_empty());
+    ok(&s, Source::Agent, "history.undo", json!({})).await;
+    assert_eq!(ok(&s, Source::Agent, "captions.list", json!({})).await.as_array().unwrap().len(), 3);
+    let models = ok(&s, Source::Agent, "captions.models", json!({})).await;
+    assert_eq!(models.as_array().unwrap().len(), 3);
+    assert_eq!(ok(&s, Source::Agent, "captions.status", json!({})).await["running"], false);
+}
+
+/// The real model on real speech: `KIMCHI_SPEECH_WAV=jfk.wav KIMCHI_WHISPER_DIR=/models cargo test
+/// -p kimchi-control captions_from_speech -- --ignored`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn captions_from_speech() {
+    let (Ok(wav), Ok(models)) = (std::env::var("KIMCHI_SPEECH_WAV"), std::env::var("KIMCHI_WHISPER_DIR")) else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    // Reuse the downloaded models.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&models, dir.path().join("data/models")).unwrap();
+    ok(&s, Source::Window, "project.create", json!({ "name": "Speech" })).await;
+    ok(&s, Source::Agent, "media.import", json!({ "paths": [wav], "place": true, "start": 2 })).await;
+    let r = ok(&s, Source::Agent, "captions.transcribe", json!({})).await;
+    eprintln!("{r:#}");
+    assert_eq!(r["language"], "en");
+    let list = ok(&s, Source::Agent, "captions.list", json!({})).await;
+    let text = list.as_array().unwrap().iter().map(|c| c["text"].as_str().unwrap().replace('\n', " ")).collect::<Vec<_>>().join(" ").to_lowercase();
+    assert!(text.contains("ask not what your country can do for you"), "{text}");
+    assert!(list[0]["start"].as_f64().unwrap() >= 2.0, "timed on the timeline: {list}");
+}
