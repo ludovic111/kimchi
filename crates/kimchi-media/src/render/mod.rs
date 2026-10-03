@@ -258,8 +258,15 @@ impl Renderer {
                 // One output frame lasts `speed` frames of scene time (motion blur spans it).
                 let (sx, quality, frame) = (self.sx, self.quality, clip.speed.abs().max(1e-6) / self.fps);
                 let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(&clip)) };
+                // A composition is shown the way a comp layer shows it, at time `t`, centred and
+                // at the scene's scale (where the Studio puts its layers): on its own canvas, with
+                // its background inside that frame only and its layers cut at its edges.
                 let shown = match comp.and_then(|c| s.composition(c)) {
-                    Some(c) => kimchi_core::Scene2d { background: c.background.clone(), layers: c.layers.clone(), compositions: s.compositions.clone(), ..s.clone() },
+                    Some(c) => {
+                        let viewer = serde_json::from_value(serde_json::json!({"id": "\u{1}composition", "type": "comp", "comp": c.id, "time": t}))
+                            .map_err(|e| crate::MediaError::Unsupported(format!("composition view: {e}")))?;
+                        kimchi_core::Scene2d { background: None, layers: vec![viewer], keyframes: Default::default(), ..s.clone() }
+                    }
                     None => s.clone(),
                 };
                 let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };

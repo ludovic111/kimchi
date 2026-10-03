@@ -56,6 +56,32 @@ fn every_template_draws_through_the_compositor() {
 }
 
 #[test]
+fn a_composition_is_viewed_on_its_own_canvas() {
+    // An 800×200 composition with a background, seen alone (the Studio's composition view,
+    // motion.view composition): its background fills its frame only, centred like its layers.
+    let Some(tools) = tools() else { return };
+    let scene = kimchi_core::Scene::from_json(&serde_json::json!({"type": "2d", "background": "#0000ff",
+        "compositions": [{"id": "card", "width": 800, "height": 200, "background": "#ff0000", "layers": [
+            {"id": "dot", "type": "ellipse", "width": 100, "height": 100, "fill": "#00ff00", "keyframes": {"x": [[0, -300], [1, 300]]}}]}],
+        "layers": [{"id": "c", "type": "comp", "comp": "card"}]}))
+    .unwrap();
+    let clip = Clip::new("m", 0.0, 2.0, ClipContent::Motion { scene, template: None });
+    let id = clip.id;
+    let p = project_with(clip, 1280, 720);
+    let mut r = Renderer::new(&tools, &p, 640, 360, 30.0);
+    let pic = r.scene_view(id, 1.0, None, &Default::default(), Some("card")).unwrap();
+    dump("composition-view", &pic);
+    let at = |x: u32, y: u32| {
+        let c = pic.pixel(x, y).unwrap().demultiply();
+        (c.red(), c.green(), c.blue(), c.alpha())
+    };
+    assert_eq!(at(320, 40).3, 0, "nothing above the composition's frame");
+    assert_eq!(at(140, 180), (255, 0, 0, 255), "its background inside");
+    assert_eq!(at(470, 180).1, 255, "the dot at the composition's time");
+    assert_eq!(at(630, 180).3, 0, "nothing beside the frame");
+}
+
+#[test]
 fn keyframed_clips_move_and_fade() {
     let Some(tools) = tools() else { return };
     let mut clip = Clip::new("s", 0.0, 2.0, ClipContent::Solid { color: "#ffffff".into() });
