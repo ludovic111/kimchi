@@ -121,7 +121,7 @@ Captions tab (⌘5), a Captions row in the export dialog.
 - [ ] Not done: an eyedropper for the chroma key colour, word-level caption timing (captions are
       timed per segment, tightened to the speech's energy), a reversed waveform on reversed clips.
 
-## Stability pass, logs, what's new, updates everywhere (2026-10-03, 0.6.0, not released yet)
+## Stability pass, logs, what's new, updates everywhere (0.6.0, released 2026-10-03)
 
 A bug hunt over every crate (data loss in failed edits and batches, duplicates sharing media, panics on odd
 input, providers giving up on one network blip, Codex reaching the person's own MCP servers), media
