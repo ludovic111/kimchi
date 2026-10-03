@@ -334,7 +334,7 @@ pub static SPECS: &[Spec] = &[
         crate::registry::COALESCE,
     ]),
     query("motion.stackTypes", "The building blocks a scene's things can stack, with every parameter, its range and default: 3D modifiers (subdivision, mirror, array, bevel, boolean, twist…), constraints (lookAt, followPath…) and material patterns; 2D effects (blur, glow, colour, distortions…), shape operators (repeater, zig zag…), masks and text animators.", &[
-        opt("family", String, "modifiers, constraints, pattern, effects, operators, masks or animators (default: all)."),
+        opt("family", String, "modifiers, constraints, pattern, effects, operators, masks, animators or editOps (mesh operations; default: all)."),
     ]),
     edit("motion.setStackItem", "Add a modifier or constraint (3D object, light, camera), or an effect, operator, mask or text animator (2D layer), or replace the one with the same id. Items run in order; animate a parameter with motion.setKeyframes property \"<field>.<itemId>.<param>\". One undo step.", &[
         CLIP_ID,
@@ -405,11 +405,11 @@ pub static SPECS: &[Spec] = &[
     edit("motion.editMesh", "Model a mesh object like Blender's edit mode: extrude, inset, bevel, subdivide, loop cut, delete, merge, fill, bridge, flip, move/rotate/scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap. Selections are vertex and/or face indices (motion.get shows them) or helpers. Returns the new selection. One undo step.", &[
         CLIP_ID,
         req("id", String, "A mesh object (motion.convertToMesh makes one from any shape)."),
-        req("op", String, "The operation: extrude, extrudeIndividual, inset, bevel, subdivide, loopCut, delete, dissolve, merge, fill, bridge, flip, recalcNormals, move, rotate, scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap."),
+        req("op", String, "The operation: extrude, extrudeIndividual, inset, bevel, subdivide, loopCut, delete, dissolve, merge, fill, bridge, flip, recalcNormals, translate (or move), rotate, scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap."),
         opt("vertices", Array, "Selected vertex indices."),
         opt("faces", Array, "Selected face indices."),
-        opt("select", Object, "Instead of indices: {\"all\": true}, {\"facing\": [0, 1, 0], \"angle\": 30}, {\"inside\": [[x0,y0,z0],[x1,y1,z1]]}, {\"loop\": [v0, v1]}, {\"ring\": [v0, v1]}."),
-        opt("params", Object, "The operation's values, e.g. {\"distance\": 0.5} (extrude), {\"amount\": 0.1, \"depth\": 0} (inset), {\"width\": 0.05, \"segments\": 2} (bevel), {\"cuts\": 1} (subdivide, loopCut), {\"offset\": [0, 1, 0]} (move), {\"angle\": 45, \"axis\": \"y\", \"pivot\": [0,0,0]} (rotate, spin), {\"factor\": [1,2,1]} (scale), {\"axis\": \"x\"} (mirror), {\"method\": \"box\"} (unwrap)."),
+        opt("select", Object, "Instead of indices: {\"all\": true}, {\"facing\": [0, 1, 0], \"angle\": 30}, {\"inside\": [[x0,y0,z0],[x1,y1,z1]]}, {\"edgeLoop\": [v0, v1]}, {\"edgeRing\": [v0, v1]}; add \"linked\": true to grow to everything connected."),
+        opt("params", Object, "The operation's values, e.g. {\"distance\": 0.5} (extrude), {\"thickness\": 0.1, \"depth\": 0} (inset), {\"width\": 0.05, \"segments\": 2} (bevel), {\"cuts\": 1} (subdivide, loopCut), {\"what\": \"faces\"} (delete), {\"offset\": [0, 1, 0]} (translate), {\"angle\": [0, 45, 0], \"pivot\": [0,0,0]} (rotate), {\"factor\": [1,2,1]} (scale), {\"axis\": \"x\"} (mirror), {\"angle\": 360, \"steps\": 12, \"axis\": [0,1,0]} (spin), {\"method\": \"box\"} (unwrap). motion.stackTypes {\"family\": \"editOps\"} lists every operation's values."),
     ]),
     query("motion.view", "Render a motion clip's scene alone, the way the Studio shows it, to a PNG: a 3D scene from any angle (an axis, or a free view) with the floor grid and selection, or through its camera; a 2D scene or one of its compositions. For looking at a 3D scene from another side.", &[
         CLIP_ID,

@@ -738,6 +738,20 @@ async fn studio_commands() {
     let types = ok(&s, Source::Agent, "motion.stackTypes", json!({ "family": "modifiers" })).await;
     assert!(types["modifiers"]["types"].as_array().unwrap().iter().any(|t| t["type"] == "subdivision"));
 
+    // Modelling: a box becomes a mesh, its top is extruded, the array is baked in.
+    let r = ok(&s, Source::Agent, "motion.convertToMesh", json!({ "clipId": c3, "id": "cube" })).await;
+    assert_eq!(r["result"]["faces"], 6);
+    let r = ok(&s, Source::Agent, "motion.editMesh", json!({ "clipId": c3, "id": "cube", "op": "extrude", "select": { "facing": [0, 1, 0] }, "params": { "distance": 0.5 } })).await;
+    assert_eq!(r["result"]["faces"], 10, "{r}");
+    assert!(!r["result"]["selection"]["faces"].as_array().unwrap().is_empty());
+    let e = registry::call(&s, Source::Agent, "motion.editMesh", json!({ "clipId": c3, "id": "cube", "op": "extrud" })).await.unwrap_err();
+    assert!(e.contains("extrude"), "{e}");
+    let e = registry::call(&s, Source::Agent, "motion.editMesh", json!({ "clipId": c3, "id": "ball", "op": "extrude" })).await.unwrap_err();
+    assert!(e.contains("convertToMesh"), "{e}");
+    let r = ok(&s, Source::Agent, "motion.applyModifier", json!({ "clipId": c3, "id": "cube" })).await;
+    assert_eq!(r["result"]["faces"], 40, "four copies: {r}");
+    assert!(ok(&s, Source::Agent, "motion.get", json!({ "clipId": c3, "id": "cube" })).await.get("modifiers").is_none());
+
     // Looking and rendering ahead (needs ffmpeg).
     if s.tools().is_ok() {
         let v = ok(&s, Source::Agent, "motion.view", json!({ "clipId": c3, "axis": "top", "width": 320 })).await;

@@ -11,7 +11,9 @@
 //! `KIMCHI_GPU=0` forces the CPU renderer; `KIMCHI_GPU=any` accepts a software GPU adapter
 //! (llvmpipe), to run the GPU renderer on machines without one.
 
+mod bvh;
 pub(crate) mod cpu;
+mod denoise;
 pub(crate) mod env;
 pub(crate) mod gpu;
 pub(crate) mod math;
@@ -23,7 +25,10 @@ pub(crate) mod post;
 pub(crate) mod shapes;
 #[cfg(test)]
 mod tests;
+pub mod trace;
 pub mod viewport;
+
+pub use shapes::editable_poly;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -396,6 +401,9 @@ impl Space {
     /// `scene` at scene time `t`, `width`×`height`, premultiplied.
     pub(crate) fn render(&mut self, scene: &Scene3d, t: f64, width: u32, height: u32, pics: &mut dyn Pictures, quality: Quality) -> MediaResult<Pixmap> {
         let frame = self.frame(scene, t, width, height, pics, quality);
+        if quality == Quality::Final && scene.render.path_traced() {
+            return Ok(trace::render(&frame, &trace::Settings::of(&scene.render)));
+        }
         Ok(self.draw(&frame, false).0)
     }
 

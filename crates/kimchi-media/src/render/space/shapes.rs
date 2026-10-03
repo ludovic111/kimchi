@@ -58,6 +58,16 @@ pub(crate) fn base_poly(shape: &Shape3d) -> Option<PolyMesh> {
     Some(poly_of(&m, 30.0))
 }
 
+/// A shape as polygons to edit (`motion.convertToMesh`): core's primitives, the renderer's text
+/// welded into polygons, or a model file's parts (`model` gives its path) merged.
+pub fn editable_poly(shape: &Shape3d, model: Option<&std::path::Path>) -> Option<PolyMesh> {
+    if let Shape3d::Model { .. } = shape {
+        let parts = mesh::model(model?).ok()?;
+        return Some(poly_of(&merged(&parts), 30.0));
+    }
+    base_poly(shape)
+}
+
 /// Triangles welded into a polygon mesh (one face per triangle; corners at the same place share a
 /// vertex), for modifiers and edit mode.
 pub(crate) fn poly_of(m: &Mesh, smooth_angle: f64) -> PolyMesh {
