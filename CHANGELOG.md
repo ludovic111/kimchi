@@ -32,6 +32,7 @@ updates, and the release workflow puts the section in the update's notes.
 - Ruler labels and times no longer repeat or read "1:60"; zoom to fit matches the Fit button.
 - Playing without a sound device no longer fills memory; a file without a preview stops showing a loader.
 - Reversed clips and clips past the end of their video show a picture instead of nothing.
+- Sound cut from AAC recordings starts exactly where it should, whichever ffmpeg kimchi uses.
 - Logging out or shutting down is a proper quit.
 - Many smaller fixes: unbounded times, huge timeouts and tiny animation lengths can't hang or break a project, project files are written safely, and the CLI sends paths relative to where it runs.
 

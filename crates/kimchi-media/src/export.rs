@@ -622,6 +622,8 @@ struct Sound {
 
 /// Reads closer than this (seconds of source) share an input.
 const SHARE_GAP: f64 = 1.0;
+/// Decoded before a sound's start, then trimmed off by timestamp (see `wire`).
+const PREROLL: f64 = 0.25;
 /// Most media inputs one graph opens. Each is an open file and a few hundred characters of
 /// command line (Windows stops at 32 767; macOS apps get 256 files by default), so beyond this
 /// the closest reads of a file share inputs even when far apart.
@@ -676,24 +678,25 @@ impl Graph<'_> {
         // Inputs in the order the clips came (stable input numbers for a timeline).
         runs.sort_by_key(|r| r.3.iter().copied().min());
         for (file, from, to, mut members) in runs {
+            // Seek a little early and cut by timestamp: input seeking alone isn't sample-exact
+            // in every ffmpeg (9.0 starts AAC ~15 ms off and short), the timestamps are.
+            let seek = (from - PREROLL).max(0.0);
             let mut opts = vec![];
-            if from > 1e-6 {
-                opts.extend([s("-ss"), num(from)]);
+            if seek > 1e-6 {
+                opts.extend([s("-ss"), num(seek)]);
             }
-            opts.extend([s("-t"), num(to - from)]);
+            opts.extend([s("-t"), num(to - seek)]);
             let i = self.input(opts, &file);
+            let trim = |snd: &Sound| format!("atrim=start={}:end={},asetpts=PTS-STARTPTS,{}[{}]", num(snd.from - seek), num(snd.from - seek + snd.len), snd.filters, snd.label);
             if let [only] = members[..] {
-                let snd = &self.sounds[only];
-                self.chains.push(format!("[{i}:a:0]{}[{}]", snd.filters, snd.label));
+                self.chains.push(format!("[{i}:a:0]{}", trim(&self.sounds[only])));
                 continue;
             }
             members.sort_unstable();
             let outs: String = (0..members.len()).map(|k| format!("[s{i}_{k}]")).collect();
             self.chains.push(format!("[{i}:a:0]asplit={}{outs}", members.len()));
             for (k, m) in members.into_iter().enumerate() {
-                let snd = &self.sounds[m];
-                let (a, b) = (snd.from - from, snd.from - from + snd.len);
-                self.chains.push(format!("[s{i}_{k}]atrim=start={}:end={},asetpts=PTS-STARTPTS,{}[{}]", num(a), num(b), snd.filters, snd.label));
+                self.chains.push(format!("[s{i}_{k}]{}", trim(&self.sounds[m])));
             }
         }
     }
@@ -719,7 +722,9 @@ impl Graph<'_> {
         let seek = clip.in_point.max(0.0) + from.max(0.0) * clip.speed;
         let file = asset.path.clone();
         let sr = self.sample_rate;
-        let mut f = vec![format!("aformat=sample_fmts=fltp:sample_rates={sr}:channel_layouts=stereo")];
+        // An explicit resampler: the one ffmpeg inserts for `aformat` alone starts a cut's sound
+        // differently depending on where its input was seeked.
+        let mut f = vec![format!("aresample={sr},aformat=sample_fmts=fltp:sample_rates={sr}:channel_layouts=stereo")];
         if clip.reverse {
             f.push(s("areverse"));
         }

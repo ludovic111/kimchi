@@ -78,7 +78,7 @@ fn pictures_come_from_the_compositor_through_a_pipe() {
     assert_eq!(plan.duration, 4.0);
     let g = &plan.graph;
     assert!(g.starts_with("[0:v]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p[vout]"), "{g}");
-    assert!(g.contains("[1:a:0]aformat="), "{g}");
+    assert!(g.contains("[1:a:0]atrim=start=0.0:end=4.0,asetpts=PTS-STARTPTS,aresample=48000,aformat="), "{g}");
     let out = plan.output.join(" ");
     assert!(out.contains("-c:v libx264") && out.contains("-colorspace bt709"), "{out}");
     // The picture comes on stdin, so ffmpeg must read it.
@@ -98,10 +98,11 @@ fn speed_trims_source_and_chains_atempo() {
     clip.in_point = 1.0;
     let p = project(vec![(TrackKind::Video, vec![clip])], vec![v]);
     let plan = plan(&p, ExportFormat::Mp4);
-    // 1 s on the timeline at 3x = 3 s of source starting at the in point (input 1, after the picture).
-    assert_eq!(&plan.inputs[10..], ["-ss", "1.0", "-t", "3.0", "-i", "v.mp4"]);
+    // 1 s on the timeline at 3x = 3 s of source starting at the in point (input 1, after the
+    // picture): read from a quarter second before, then cut by timestamp.
+    assert_eq!(&plan.inputs[10..], ["-ss", "0.75", "-t", "3.25", "-i", "v.mp4"]);
     let g = &plan.graph;
-    assert!(g.contains("[1:a:0]aformat="), "{g}");
+    assert!(g.contains("[1:a:0]atrim=start=0.25:end=3.25,asetpts=PTS-STARTPTS,aresample=48000,aformat="), "{g}");
     assert!(g.contains("atempo=2.0,atempo=1.5,asetpts=N/48000/TB"), "{g}");
     assert!(g.contains("adelay=delays=96000S:all=1[a"), "{g}");
     assert!(
@@ -171,8 +172,8 @@ fn range_shifts_and_cuts_clips() {
     assert_eq!(&plan.inputs[10..], ["-t", "4.0", "-i", "v.mp4"]);
     let g = &plan.graph;
     assert!(g.contains("[1:a:0]asplit=2[s1_0][s1_1]"), "{g}");
-    assert!(g.contains("[s1_0]atrim=start=0.0:end=4.0,asetpts=PTS-STARTPTS,aformat="), "{g}");
-    assert!(g.contains("[s1_1]atrim=start=1.0:end=3.0,asetpts=PTS-STARTPTS,aformat="), "{g}");
+    assert!(g.contains("[s1_0]atrim=start=0.0:end=4.0,asetpts=PTS-STARTPTS,aresample=48000,aformat="), "{g}");
+    assert!(g.contains("[s1_1]atrim=start=1.0:end=3.0,asetpts=PTS-STARTPTS,aresample=48000,aformat="), "{g}");
     assert!(g.contains("afade=t=in:st=0.0:d=3.5"), "{g}");
     assert!(g.contains("atrim=start=3.0:end=4.0,asetpts=PTS-STARTPTS"), "{g}");
     assert!(g.contains("adelay=delays=48000S:all=1"), "{g}");

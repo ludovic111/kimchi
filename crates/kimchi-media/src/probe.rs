@@ -104,7 +104,10 @@ pub async fn probe(tools: &Tools, path: &Path) -> MediaResult<Probe> {
     let mut meta = describe(&info, kind);
     // Stills: the EXIF orientation, which ffprobe's sizes ignore (see [`Source`]).
     let orientation = match kind {
-        MediaKind::Image => process::output(&tools.ffprobe, &orientation_args(path)).await.map(|o| parse_orientation(&o)).unwrap_or(0),
+        MediaKind::Image => match exif_orientation(path) {
+            Some(o) => o,
+            None => process::output(&tools.ffprobe, &orientation_args(path)).await.map(|o| parse_orientation(&o)).unwrap_or(0),
+        },
         _ => 0,
     };
     let source = Source::of(&info, orientation);
@@ -129,6 +132,54 @@ fn orientation_args(path: &Path) -> Vec<OsString> {
         .collect();
     args.push(input_path(path));
     args
+}
+
+/// A JPEG's EXIF orientation (1–8), read from the file itself: ffprobe 8 and later stopped
+/// reporting the `Orientation` tag (only a display matrix), and builds differ. `None` for other
+/// files or a JPEG without one.
+pub(crate) fn exif_orientation(path: &Path) -> Option<u8> {
+    use std::io::Read;
+    let mut head = Vec::with_capacity(1 << 16);
+    std::fs::File::open(path).ok()?.take(256 << 10).read_to_end(&mut head).ok()?;
+    jpeg_orientation(&head)
+}
+
+fn jpeg_orientation(b: &[u8]) -> Option<u8> {
+    if !b.starts_with(&[0xff, 0xd8]) {
+        return None;
+    }
+    let mut i = 2;
+    // Segments until the picture data: `FF xx` then a big-endian length that counts itself.
+    while i + 4 <= b.len() && b[i] == 0xff {
+        let marker = b[i + 1];
+        if marker == 0xda || marker == 0xd9 {
+            break;
+        }
+        let len = u16::from_be_bytes([b[i + 2], b[i + 3]]) as usize;
+        let seg = b.get(i + 4..i + 2 + len)?;
+        if marker == 0xe1
+            && let Some(tiff) = seg.strip_prefix(b"Exif\0\0")
+            && let Some(o) = tiff_orientation(tiff)
+        {
+            return Some(o);
+        }
+        i += 2 + len;
+    }
+    None
+}
+
+/// Tag 0x0112 in a TIFF header's first IFD.
+fn tiff_orientation(t: &[u8]) -> Option<u8> {
+    let le = match t.get(..2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    let u16_at = |o: usize| t.get(o..o + 2).map(|x| if le { u16::from_le_bytes([x[0], x[1]]) } else { u16::from_be_bytes([x[0], x[1]]) });
+    let u32_at = |o: usize| t.get(o..o + 4).map(|x| if le { u32::from_le_bytes([x[0], x[1], x[2], x[3]]) } else { u32::from_be_bytes([x[0], x[1], x[2], x[3]]) });
+    let ifd = u32_at(4)? as usize;
+    let n = u16_at(ifd)? as usize;
+    (0..n.min(256)).map(|k| ifd + 2 + k * 12).find(|&e| u16_at(e) == Some(0x0112)).and_then(|e| u16_at(e + 8)).map(|o| o as u8).filter(|o| (1..=8).contains(o))
 }
 
 /// `{"frames":[{"tags":{"Orientation":"    6"}}]}` → 6; 0 without one.
@@ -301,7 +352,7 @@ pub(crate) fn source(tools: &Tools, path: &Path) -> Option<Arc<Source>> {
     let found = run(streams_args(path)).and_then(|out| serde_json::from_slice::<FfProbe>(&out).ok()).map(|info| {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         let orientation = match classify(&info, &ext, None) {
-            Some(MediaKind::Image) => run(orientation_args(path)).map(|o| parse_orientation(&o)).unwrap_or(0),
+            Some(MediaKind::Image) => exif_orientation(path).or_else(|| run(orientation_args(path)).map(|o| parse_orientation(&o))).unwrap_or(0),
             _ => 0,
         };
         Arc::new(Source::of(&info, orientation))
@@ -481,6 +532,15 @@ mod tests {
         assert_eq!(s.picture(&Features::default(), 32, 18), "scale=32:18:flags=bicubic,setsar=1,format=rgba");
 
         assert_eq!(parse_orientation(br#"{"frames":[{"tags":{"Orientation":"    6"}}]}"#), 6);
+        // EXIF read from the file: big- and little-endian TIFF, after another APP segment.
+        let exif = |tiff: &[u8]| {
+            let body = [b"Exif\0\0".as_slice(), tiff].concat();
+            [&[0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xe1][..], &((body.len() + 2) as u16).to_be_bytes(), &body, &[0xff, 0xda, 0, 2]].concat()
+        };
+        assert_eq!(jpeg_orientation(&exif(b"MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0")), Some(6));
+        assert_eq!(jpeg_orientation(&exif(b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x08\0\0\0\0\0\0\0")), Some(8));
+        assert_eq!(jpeg_orientation(&exif(b"MM\0*\0\0\0\x08\0\0")), None);
+        assert_eq!(jpeg_orientation(b"\x89PNG"), None);
         assert_eq!(parse_orientation(br#"{"frames":[{}]}"#), 0);
         assert_eq!(input_path(Path::new("a:b.mp4")), Path::new(".").join("a:b.mp4").into_os_string());
         assert_eq!(input_path(Path::new("/x/-a.mp4")), OsString::from("/x/-a.mp4"));
