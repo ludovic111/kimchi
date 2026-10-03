@@ -1027,7 +1027,7 @@ impl Object3d {
     }
 
     /// The object with its keyframes applied at scene time `t` (children included). Expressions
-    /// and constraints need the whole scene: see [`Scene::evaluate`].
+    /// and constraints need the whole scene: see [`Scene3d::evaluate_at`].
     pub fn at(&self, t: f64) -> Object3d {
         let mut o = self.clone();
         for (name, keys) in &self.keyframes {
