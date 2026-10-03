@@ -183,13 +183,16 @@ impl Params {
             }
             Kind::Marble => {
                 let n = fbm(u * period, v * period, period as u32, 5, self.seed);
-                // Veins: a sine across u, pushed around by the noise.
-                let t = (u * period + self.turbulence * (n - 0.5)) * std::f32::consts::PI;
+                // Veins: a sine across u, pushed around by the noise; whole waves across the
+                // tile, so it wraps without a seam (half waves left one down a sphere's front).
+                let waves = (s / 2.0).round().max(1.0);
+                let t = (u * waves + self.turbulence * (n - 0.5) * 0.5) * std::f32::consts::TAU;
                 let k = (0.5 + 0.5 * t.sin()).powf(0.6);
                 (1.0 - k, k)
             }
             Kind::Wood => {
-                let n = fbm(u * period, v * period * 0.25, period as u32, 3, self.seed);
+                // The grain stretched along v, still wrapping at the tile's edges.
+                let n = fbm2(u * period, v * (period * 0.25).round().max(1.0), period as u32, (period * 0.25).round().max(1.0) as u32, 3, self.seed);
                 let rings = self.rings.max(0.0).round().max(1.0);
                 let g = v * rings + self.turbulence * (n - 0.5) * 0.8 + 0.12 * (u * std::f32::consts::TAU).sin();
                 let f = g - g.floor();
@@ -259,14 +262,14 @@ fn hash(x: u32, y: u32, seed: u32, salt: u32) -> f32 {
     (h & 0x00ff_ffff) as f32 / 0x0100_0000 as f32
 }
 
-/// Smooth value noise 0–1 repeating every `period` units.
-fn value_noise(x: f32, y: f32, period: u32, seed: u32, octave: u32) -> f32 {
-    let p = period.max(1) as i64;
+/// Smooth value noise 0–1 repeating every `px` units across and `py` down.
+fn value_noise(x: f32, y: f32, px: u32, py: u32, seed: u32, octave: u32) -> f32 {
+    let (pu, pv) = (px.max(1) as i64, py.max(1) as i64);
     let (x0, y0) = (x.floor(), y.floor());
     let (fx, fy) = (x - x0, y - y0);
     let q = |t: f32| t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
     let (sx, sy) = (q(fx), q(fy));
-    let at = |i: i64, j: i64| hash(i.rem_euclid(p) as u32, j.rem_euclid(p) as u32, seed, octave);
+    let at = |i: i64, j: i64| hash(i.rem_euclid(pu) as u32, j.rem_euclid(pv) as u32, seed, octave);
     let (i, j) = (x0 as i64, y0 as i64);
     let a = at(i, j) + (at(i + 1, j) - at(i, j)) * sx;
     let b = at(i, j + 1) + (at(i + 1, j + 1) - at(i, j + 1)) * sx;
@@ -276,9 +279,14 @@ fn value_noise(x: f32, y: f32, period: u32, seed: u32, octave: u32) -> f32 {
 /// Layers of finer noise (each twice the frequency, half the strength), 0–1, repeating every
 /// `period` units.
 fn fbm(x: f32, y: f32, period: u32, octaves: u32, seed: u32) -> f32 {
+    fbm2(x, y, period, period, octaves, seed)
+}
+
+/// [`fbm`] repeating every `px` units across and `py` down.
+fn fbm2(x: f32, y: f32, px: u32, py: u32, octaves: u32, seed: u32) -> f32 {
     let (mut sum, mut amp, mut total, mut f) = (0.0, 1.0, 0.0, 1u32);
     for o in 0..octaves.max(1) {
-        sum += value_noise(x * f as f32, y * f as f32, period * f, seed, o) * amp;
+        sum += value_noise(x * f as f32, y * f as f32, px * f, py * f, seed, o) * amp;
         total += amp;
         amp *= 0.5;
         f *= 2;
@@ -334,6 +342,26 @@ mod tests {
             let blues = b.color.rgba.as_chunks::<4>().0.iter().filter(|c| c[2] > 128 && c[0] < 128).count();
             assert!(reds > 0 && blues > 0, "{}: {reds} red, {blues} blue texels", spec.name);
             assert_eq!(b.height.is_some(), spec.name != "gradient", "{} has heights", spec.name);
+        }
+    }
+
+    #[test]
+    fn noisy_patterns_wrap_without_a_seam() {
+        // Odd scales too: the last column runs into the first, the last row into the first, as
+        // smoothly as neighbouring columns and rows do (a sphere's u seam faces the camera).
+        for kind in ["noise", "marble", "wood", "voronoi"] {
+            for scale in [3, 4, 5] {
+                let p = pattern(serde_json::json!({"type": kind, "color": "#ffffff", "color2": "#000000", "scale": scale}));
+                let t = bake(&p, 128).unwrap().color;
+                let n = t.width;
+                let step = |a: (u32, u32), b: (u32, u32)| (texel(&t, a.0, a.1)[0] as f64 - texel(&t, b.0, b.1)[0] as f64).abs();
+                let across = |x0: u32, x1: u32| (0..n).map(|y| step((x0, y), (x1, y))).sum::<f64>() / n as f64;
+                let down = |y0: u32, y1: u32| (0..n).map(|x| step((x, y0), (x, y1))).sum::<f64>() / n as f64;
+                let inside_u = (1..n - 1).map(|x| across(x, x + 1)).fold(0.0, f64::max);
+                let inside_v = (1..n - 1).map(|y| down(y, y + 1)).fold(0.0, f64::max);
+                assert!(across(n - 1, 0) <= inside_u * 1.5 + 2.0, "{kind} {scale}: seam across u ({} vs {inside_u})", across(n - 1, 0));
+                assert!(down(n - 1, 0) <= inside_v * 1.5 + 2.0, "{kind} {scale}: seam across v ({} vs {inside_v})", down(n - 1, 0));
+            }
         }
     }
 
