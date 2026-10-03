@@ -164,7 +164,8 @@ pub(super) fn sphere(radius: f64, segments: usize) -> PolyMesh {
     let (fs, fr) = (seg as f64, rings as f64);
     for k in 0..seg {
         let k1 = (k + 1) % seg;
-        let (u0, u1, um) = (k as f64 / fs, (k + 1) as f64 / fs, (k as f64 + 0.5) / fs);
+        let (u0, u1) = seam_behind(k as f64 / fs, (k + 1) as f64 / fs);
+        let um = (u0 + u1) / 2.0;
         b.face(vec![top, rows[0][k], rows[0][k1]], vec![[um, 0.0], [u0, 1.0 / fr], [u1, 1.0 / fr]]);
         for j in 0..rows.len() - 1 {
             let (v0, v1) = ((j + 1) as f64 / fr, (j + 2) as f64 / fr);
@@ -257,13 +258,20 @@ pub(super) fn icosphere(radius: f64, detail: f64) -> PolyMesh {
 
 /// Spherical texture coordinates for one face's corners (unit directions), mended across the
 /// seam behind (−z) and at the poles.
+/// Texture u across one strip of a shape turned around y whose angle 0 faces +z: shifted by half
+/// a turn, so a picture's middle faces the front and its seam is behind (it used to run down
+/// the front of every sphere, cylinder and torus). A strip never straddles the seam.
+fn seam_behind(u0: f64, u1: f64) -> (f64, f64) {
+    if u0 >= 0.5 - 1e-9 { (u0 - 0.5, u1 - 0.5) } else { (u0 + 0.5, u1 + 0.5) }
+}
+
 pub(crate) fn sphere_uvs(dirs: &[V3]) -> Vec<[f64; 2]> {
     let mut uv: Vec<[f64; 2]> = dirs
         .iter()
         .map(|d| {
             let d = norm(*d);
-            let u = d[0].atan2(d[2]) / TAU;
-            let u = if u < 0.0 { u + 1.0 } else { u };
+            // 0.5 faces +z (the camera's usual side); the seam is behind, at −z.
+            let u = d[0].atan2(d[2]) / TAU + 0.5;
             [u, d[1].clamp(-1.0, 1.0).acos() / PI]
         })
         .collect();
@@ -316,7 +324,7 @@ pub(super) fn cylinder(bottom: f64, top: f64, height: f64, segments: usize) -> P
     let at = |r: &Vec<u32>, k: usize| r[if r.len() == 1 { 0 } else { k % seg }];
     let fs = seg as f64;
     for k in 0..seg {
-        let (u0, u1) = (k as f64 / fs, (k + 1) as f64 / fs);
+        let (u0, u1) = seam_behind(k as f64 / fs, (k + 1) as f64 / fs);
         let um = (u0 + u1) / 2.0;
         match (topr.len() == 1, botr.len() == 1) {
             (true, true) => {}
@@ -372,7 +380,7 @@ pub(super) fn capsule(radius: f64, height: f64) -> PolyMesh {
         let (v0, v1) = (v_of(rows[j].0), v_of(rows[j + 1].0));
         for k in 0..seg {
             let k1 = (k + 1) % seg;
-            let (u0, u1) = (k as f64 / seg as f64, (k + 1) as f64 / seg as f64);
+            let (u0, u1) = seam_behind(k as f64 / seg as f64, (k + 1) as f64 / seg as f64);
             b.face(vec![ids[j][k], ids[j + 1][k], ids[j + 1][k1], ids[j][k1]], vec![[u0, v0], [u0, v1], [u1, v1], [u1, v0]]);
         }
     }
@@ -399,7 +407,7 @@ pub(super) fn torus(radius: f64, tube: f64) -> PolyMesh {
     for i in 0..around {
         for j in 0..sides {
             let (i1, j1) = ((i + 1) % around, (j + 1) % sides);
-            let (u0, u1) = (i as f64 / around as f64, (i + 1) as f64 / around as f64);
+            let (u0, u1) = seam_behind(i as f64 / around as f64, (i + 1) as f64 / around as f64);
             let (v0, v1) = (j as f64 / sides as f64, (j + 1) as f64 / sides as f64);
             b.face(vec![ids[i][j], ids[i1][j], ids[i1][j1], ids[i][j1]], vec![[u0, v0], [u1, v0], [u1, v1], [u0, v1]]);
         }

@@ -184,6 +184,44 @@ fn extrude_shape_is_upright() {
 }
 
 #[test]
+fn texture_seams_are_behind() {
+    // A picture wrapped round a sphere, cylinder, capsule, torus or icosphere shows its middle
+    // at the front (+z, where the camera usually is) and its seam at the back.
+    let shapes = [
+        Shape3d::Sphere { radius: 1.0, segments: 32.0 },
+        Shape3d::Cylinder { radius: 1.0, height: 1.0, segments: 7.0 },
+        Shape3d::Capsule { radius: 0.5, height: 2.0 },
+        Shape3d::Torus { radius: 1.0, tube: 0.2 },
+        Shape3d::Icosphere { radius: 1.0, detail: 2.0 },
+    ];
+    for s in shapes {
+        let m = shape_mesh(&s).unwrap();
+        let uvs = m.uvs.as_ref().unwrap();
+        let (mut front, mut best) = (None, f64::NEG_INFINITY);
+        for (fi, f) in m.faces.iter().enumerate() {
+            // Flat caps have a picture of their own.
+            if f.len() > 4 && f.iter().all(|&v| (m.positions[v as usize][1] - m.positions[f[0] as usize][1]).abs() < 1e-9) {
+                continue;
+            }
+            let us: Vec<f64> = uvs[fi].iter().map(|c| c[0]).collect();
+            let spread = us.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - us.iter().cloned().fold(f64::INFINITY, f64::min);
+            assert!(spread < 0.5, "{s:?}: face {fi} stretches across the picture");
+            for (k, &v) in f.iter().enumerate() {
+                let p = m.positions[v as usize];
+                // The point furthest to the front, nearest the middle.
+                let score = p[2] * 10.0 - p[0].abs() - p[1].abs() * 0.1;
+                if score > best {
+                    best = score;
+                    front = Some(uvs[fi][k][0]);
+                }
+            }
+        }
+        let u = front.unwrap();
+        assert!((u - 0.5).abs() < 0.1, "{s:?}: u at the front is {u}");
+    }
+}
+
+#[test]
 fn bevelled_fronts_stay_flat() {
     // A logo with rounded edges: its front's normals point straight out, right up to the bevel
     // (they used to lean with the bevel's first strip, shading the whole face in a gradient).
