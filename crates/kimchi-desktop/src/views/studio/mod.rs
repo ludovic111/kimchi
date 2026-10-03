@@ -694,17 +694,33 @@ impl Studio {
     fn frame_all(&mut self, s: &kimchi_core::motion::Scene3d, cx: &App) {
         let t = self.scene_time(cx);
         let w = model::worlds(s, t);
-        let mut lo = [f64::INFINITY; 3];
-        let mut hi = [f64::NEG_INFINITY; 3];
-        for o in &s.objects {
-            if let Some((a, b)) = model::world_bounds(s, &w, t, &o.id) {
-                for i in 0..3 {
-                    lo[i] = lo[i].min(a[i]);
-                    hi[i] = hi[i].max(b[i]);
+        // The subject, not the stage: floors and backdrops (planes, grids) and hidden things
+        // (guide curves) only count when there is nothing else.
+        use kimchi_core::motion::Shape3d;
+        let union = |stage: bool| {
+            let mut lo = [f64::INFINITY; 3];
+            let mut hi = [f64::NEG_INFINITY; 3];
+            for o in &s.objects {
+                let backdrop = o.hidden || matches!(o.shape, Shape3d::Plane { .. } | Shape3d::Grid { .. });
+                if backdrop && !stage {
+                    continue;
+                }
+                if let Some((a, b)) = model::world_bounds(s, &w, t, &o.id) {
+                    for i in 0..3 {
+                        lo[i] = lo[i].min(a[i]);
+                        hi[i] = hi[i].max(b[i]);
+                    }
                 }
             }
-        }
-        if lo[0] <= hi[0] {
+            (lo[0] <= hi[0]).then_some((lo, hi))
+        };
+        if let Some((lo, hi)) = union(false).or_else(|| union(true)) {
+            // Look from where the scene's camera looks, so the first view is a familiar one.
+            let cam = s.camera_at(t);
+            let dir = math::norm(math::sub(cam.position.0, cam.target.0));
+            if math::len(dir) > 1e-6 {
+                self.view.position = math::add(self.view.target, dir);
+            }
             self.frame_box(lo, hi);
         }
     }
