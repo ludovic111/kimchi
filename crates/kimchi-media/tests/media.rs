@@ -245,6 +245,7 @@ fn settings(fx: &Fixtures, name: &str, format: ExportFormat) -> ExportSettings {
         height: None,
         fps: None,
         range: None,
+        encoder: Default::default(),
     }
 }
 
@@ -344,7 +345,7 @@ async fn exports_a_sparse_timeline_and_cancels_midway() {
     match res {
         Err(MediaError::Cancelled) => assert!(seen.into_inner()),
         // A fast machine may finish before the first progress report.
-        Ok(()) => assert!(Path::new(&st.path).exists()),
+        Ok(_) => assert!(Path::new(&st.path).exists()),
         Err(e) => panic!("{e}"),
     }
     assert!(!fx.root.join(".midway.webm.part").exists());
@@ -410,4 +411,97 @@ async fn exports_originals_and_rejects_missing_or_broken_pictures() {
     std::fs::write(&broken, b"broken").unwrap();
     p.assets[0].path = broken.to_string_lossy().into();
     assert!(export(&tools, &p, &missing, |_| {}, CancellationToken::new()).await.is_err());
+}
+
+/// The same ffmpeg under another path, so hardware assumed for it stays out of the other tests.
+#[cfg(unix)]
+fn private_tools(tools: &Tools, dir: &Path) -> Tools {
+    let (ffmpeg, ffprobe) = (dir.join("ffmpeg-alias"), dir.join("ffprobe-alias"));
+    std::os::unix::fs::symlink(&tools.ffmpeg, &ffmpeg).unwrap();
+    std::os::unix::fs::symlink(&tools.ffprobe, &ffprobe).unwrap();
+    Tools { ffmpeg, ffprobe }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn falls_back_to_the_cpu_when_the_hardware_encoder_fails() {
+    use kimchi_media::accel::{CANDIDATES, Verified};
+    use kimchi_media::{EncoderChoice, Hardware};
+    let Some(tools) = tools() else { return };
+    let fx = fixtures(&tools);
+    let project = sample_project(&tools, &fx).await;
+    let tools = private_tools(&tools, &fx.root);
+    // An NVIDIA encoder that "passed" detection: on a machine without one, the export fails on it.
+    let nvenc = *CANDIDATES.iter().find(|c| c.name == "h264_nvenc").unwrap();
+    Hardware::assume(&tools, Hardware { encoders: vec![Verified { encoder: nvenc, constant_quality: true }], vaapi_device: None })
+        .await;
+
+    let st = settings(&fx, "fallback.mp4", ExportFormat::Mp4);
+    assert_eq!(kimchi_media::export::planned_encoder(&tools, &project, &st).await.unwrap().as_deref(), Some("h264_nvenc"));
+    let done = export(&tools, &project, &st, |_| {}, CancellationToken::new()).await.unwrap();
+    // Either this machine really has NVENC, or the export was redone on the CPU.
+    assert_ne!(done.hardware, done.fell_back, "{done:?}");
+    if done.fell_back {
+        assert_eq!(done.encoder.as_deref(), Some("libx264"));
+    }
+    let (duration, w, _, audio) = shape(&tools, Path::new(&st.path)).await;
+    assert!((duration - 2.5).abs() < 0.1 && w == Some(W) && audio);
+    assert!(!fx.root.join(".fallback.mp4.part").exists());
+
+    // Asked for the CPU: the GPU isn't touched.
+    let mut st = settings(&fx, "cpu.mp4", ExportFormat::Mp4);
+    st.encoder = EncoderChoice::Software;
+    let done = export(&tools, &project, &st, |_| {}, CancellationToken::new()).await.unwrap();
+    assert_eq!((done.encoder.as_deref(), done.hardware, done.fell_back), (Some("libx264"), false, false));
+
+    // Asked for hardware where there is none for the format: a clear error, nothing written.
+    let mut st = settings(&fx, "gpu.webm", ExportFormat::Webm);
+    st.encoder = EncoderChoice::Hardware;
+    match export(&tools, &project, &st, |_| {}, CancellationToken::new()).await {
+        Err(MediaError::Unsupported(msg)) => assert!(msg.contains("no hardware VP9/AV1 encoder"), "{msg}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(!Path::new(&st.path).exists());
+}
+
+#[tokio::test]
+async fn detects_hardware_encoders() {
+    let Some(tools) = tools() else { return };
+    let started = std::time::Instant::now();
+    let (hw, formats) = kimchi_media::export::encoders(&tools).await.unwrap();
+    eprintln!("hardware here: {hw:?} in {:?}", started.elapsed());
+    assert!(started.elapsed().as_secs() < 30);
+    let mp4 = formats.iter().find(|f| f.format == ExportFormat::Mp4).unwrap();
+    assert!(mp4.software.is_some() && mp4.auto.is_some());
+    assert_eq!(mp4.hardware.is_some(), hw.best(kimchi_media::accel::Codec::H264).is_some());
+    assert_eq!(mp4.auto, mp4.hardware.clone().or(mp4.software.clone()));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retries_failed_hardware_decoding_without_driver_libraries() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(real) = tools() else { return };
+    let fx = fixtures(&real);
+    let wrapper = fx.root.join("ffmpeg-wrapper");
+    let attempts = fx.root.join("decode-attempts");
+    // A driver loader can abort ffmpeg before its own automatic software fallback runs.
+    // Force that failure, while forwarding software runs to the real bundled ffmpeg.
+    let quote = |p: &Path| format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"));
+    std::fs::write(&wrapper, format!("#!/bin/sh\nfor arg in \"$@\"; do\n if [ \"$arg\" = '-hwaccel' ]; then\n  echo attempted >> {}\n  echo 'missing driver library' >&2\n  exit 1\n fi\ndone\nexec {} \"$@\"\n", quote(&attempts), quote(&real.ffmpeg))).unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let tools = Tools { ffmpeg: wrapper, ffprobe: real.ffprobe.clone() };
+    kimchi_media::Hardware::assume(&tools, kimchi_media::Hardware::none()).await;
+    // VP9 is heavy even at a small resolution. This exercises filmstrip's software retry.
+    filmstrip(&tools, &fx.webm, 2.0, &fx.root.join("retry-strip.jpg"), 48).await.unwrap();
+    proxy(&tools, &fx.webm, &fx.root.join("retry-proxy.mp4")).await.unwrap();
+    let a = asset(MediaKind::Video, &fx.webm, probe(&tools, &fx.webm).await.unwrap().meta);
+    let mut p = Project::new("decode", ProjectSettings { width: W, height: H, fps: FPS, ..Default::default() });
+    p.tracks = vec![Track { clips: vec![Clip::new("VP9", 0.0, 2.0, ClipContent::Media { asset_id: a.id })], ..Track::new(TrackKind::Video, "Video") }];
+    p.assets = vec![a];
+    let caps = kimchi_media::Caps::new(9, ["libx264"]).with_hwaccels(["cuda", "videotoolbox"]);
+    let mut r = kimchi_media::render::Renderer::for_export(&tools, &p, W, H, FPS).with_hardware_decoding(caps);
+    let frame = r.frame(0.0).unwrap();
+    assert!(frame.pixels().iter().any(|px| px.red() > 40));
+    assert!(std::fs::read_to_string(attempts).unwrap().lines().count() >= 2, "filmstrip and compositor must try hardware then recover");
 }

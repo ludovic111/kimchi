@@ -51,6 +51,7 @@ fn settings(format: ExportFormat) -> ExportSettings {
         height: None,
         fps: None,
         range: None,
+        encoder: Default::default(),
     }
 }
 
@@ -242,4 +243,24 @@ fn numbers_and_colors() {
     assert_eq!(color("#abc"), "0xaabbcc");
     assert_eq!(color("#11223344"), "0x11223344");
     assert_eq!(color("nope"), "black");
+}
+
+#[test]
+fn hardware_encodes_the_compositor_pipe_and_uploads_vaapi_frames() {
+    use crate::accel::{CANDIDATES, Verified};
+    let p = project(vec![(TrackKind::Video, vec![Clip::new("solid", 0.0, 1.0, ClipContent::Solid { color: "#ff0000".into() })])], vec![]);
+    let v = Verified { encoder: *CANDIDATES.iter().find(|c| c.name == "h264_vaapi").unwrap(), constant_quality: false };
+    let hw = Hardware { encoders: vec![v], vaapi_device: Some("/dev/dri/renderD128".into()) };
+    let plan = build_with_hardware(&p, &settings(ExportFormat::Mp4), &caps(), &hw).unwrap();
+    assert!(plan.hardware);
+    assert_eq!(plan.encoder.as_deref(), Some("h264_vaapi"));
+    assert!(plan.video.is_some());
+    assert_eq!(input_files(&plan), ["pipe:0"]);
+    assert!(plan.graph.contains("format=nv12,hwupload[vout]"), "{}", plan.graph);
+    assert!(plan.inputs.iter().any(|a| a == "-init_hw_device"));
+    let mut st = settings(ExportFormat::Mp4);
+    st.encoder = EncoderChoice::Software;
+    let cpu = build_with_hardware(&p, &st, &caps(), &hw).unwrap();
+    assert!(!cpu.hardware);
+    assert_eq!(cpu.encoder.as_deref(), Some("libx264"));
 }

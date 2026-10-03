@@ -347,8 +347,9 @@ pub static SPECS: &[Spec] = &[
     edit("generate.cancel", "Cancel a running or queued job; its placeholder goes away.", &[req("jobId", String, "Job id from generate.jobs.")]),
     edit("generate.clearFinished", "Remove finished, failed and cancelled jobs from the list.", &[]),
     // ---- export -----------------------------------------------------------
-    query("export.formats", "Export formats and qualities.", &[]),
-    edit("export.start", "Render the open project to a file: every frame drawn as in the preview (titles, animation, motion graphics, 3D), encoded with the mixed sound. Returns an export id; follow it with export.status, or pass wait.", &[
+    query("export.formats", "Export formats, qualities and encoder choices.", &[]),
+    query("export.encoders", "The video encoders this computer uses per format: hardware ones (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API, Media Foundation) that passed a test encode, and the CPU ones.", &[]),
+    edit("export.start", "Render the open project to a file: every frame drawn as in the preview (titles, animation, motion graphics, 3D), encoded on the GPU or CPU with the mixed sound. Returns an export id; follow it with export.status, or pass wait.", &[
         req("path", String, "Destination file. The extension should match the format."),
         opt("format", String, "mp4 (default), hevc, prores, webm, gif, audio (AAC) or wav."),
         opt("quality", String, "draft, standard (default) or high."),
@@ -357,6 +358,7 @@ pub static SPECS: &[Spec] = &[
         opt("fps", Number, "Output frame rate (default: the project's)."),
         opt("from", Number, "Start of the range in seconds (default 0)."),
         opt("to", Number, "End of the range in seconds (default: the end)."),
+        opt("encoder", String, "auto (default: the GPU or media engine when there is one, redone on the CPU if it fails), hardware (GPU only; WebM may be AV1) or software (CPU only: slower, smallest files)."),
         WAIT,
     ]).perm(Perm::Files),
     query("export.status", "Exports with their progress, or one export.", &[opt("exportId", String, "One export.")]),

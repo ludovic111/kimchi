@@ -153,8 +153,9 @@ impl PreviewStream {
         let (tx, rx) = mpsc::channel(FRAMES_AHEAD);
         stream.frames = rx;
         let (t2, p2) = (tools.clone(), project.clone());
+        let decode_caps = caps.clone();
         stream.tasks.push(tokio::task::spawn_blocking(move || {
-            let mut r = Renderer::new(&t2, &p2, width, height, fps);
+            let mut r = Renderer::new(&t2, &p2, width, height, fps).with_hardware_decoding(decode_caps);
             let frames = ((end - from) * fps - 1e-6).ceil().max(0.0) as u64;
             for n in 0..frames {
                 let pts = from + n as f64 / fps;
@@ -281,6 +282,7 @@ fn settings(width: u32, height: u32, fps: f64, range: (f64, f64)) -> ExportSetti
         height: Some(height),
         fps: Some(fps),
         range: Some(range),
+        encoder: Default::default(),
     }
 }
 

@@ -57,7 +57,7 @@ Rules that keep it working:
 kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
 
-- [x] **Command registry**: 104 `family.verb` commands (project, media, track, clip, motion,
+- [x] **Command registry**: 105 `family.verb` commands (project, media, track, clip, motion,
       timeline, history, generate, export, handoff, app, ui), one undo history for every client,
       batches as one step, `project.overview`, names or ids everywhere.
 - [x] **CLI**: `kimchi-cli <command>` on the running app or `--file project.json`; `batch`, `doctor`,

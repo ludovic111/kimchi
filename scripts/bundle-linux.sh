@@ -44,6 +44,8 @@ for b in "${bins[@]}"; do
   strip --strip-debug "$tree/bin/$b" || true
 done
 cp "target/ffmpeg/$triple/kimchi-ffmpeg" "target/ffmpeg/$triple/kimchi-ffprobe" "$tree/bin/"
+# The ffmpeg libraries (libavcodec…), which it finds through its $ORIGIN/../lib rpath.
+cp -a "target/ffmpeg/$triple/lib/." "$tree/lib/"
 cp "target/ffmpeg/$triple/FFMPEG-LICENSE.txt" LICENSE "$tree/share/doc/kimchi/"
 cp "$resources/kimchi.desktop" "$tree/share/applications/kimchi.desktop"
 cp "$resources/kimchi.png" "$tree/share/icons/hicolor/512x512/apps/kimchi.png"

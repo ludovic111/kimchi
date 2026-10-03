@@ -44,6 +44,7 @@ pub struct Renderer {
     height: u32,
     fps: f64,
     strict: bool,
+    decode_caps: Option<crate::Caps>,
     /// Output pixels per project pixel.
     sx: f32,
     sy: f32,
@@ -103,9 +104,16 @@ impl Renderer {
             height,
             fps: if fps.is_finite() && fps > 0.0 { fps } else { 30.0 },
             strict,
+            decode_caps: None,
             streams: HashMap::new(),
             grabbed: HashMap::new(),
         }
+    }
+
+    /// Enable hardware decoding for heavy sources, with per-stream software retries.
+    pub fn with_hardware_decoding(mut self, caps: crate::Caps) -> Self {
+        self.decode_caps = Some(caps);
+        self
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -347,7 +355,9 @@ impl Renderer {
         }
         let (dw, dh) = self.decode_size(clip, asset.meta.width, asset.meta.height);
         let local = local.max(0.0);
-        let s = VideoStream::start(&self.tools, Path::new(&asset.path), clip.source_time(clip.start + local), clip.speed, self.fps, dw, dh, local)?;
+        let decode = self.decode_caps.as_ref().filter(|_| self.streams.len() < crate::accel::MAX_HW_DECODERS)
+            .map(|caps| crate::accel::decode_args(caps, &asset.meta)).unwrap_or_default();
+        let s = VideoStream::start_with_decode(&self.tools, Path::new(&asset.path), clip.source_time(clip.start + local), clip.speed, self.fps, dw, dh, local, decode)?;
         self.streams.insert(key, s);
         Ok(())
     }
@@ -356,7 +366,7 @@ impl Renderer {
         if !self.streams.get(&key).is_some_and(|s| s.serves(local)) {
             self.start_stream(clip, key.clone(), local)?;
         }
-        Ok(self.streams.get_mut(&key).and_then(|s| s.at(local)))
+        self.streams.get_mut(&key).map(|s| s.at(local)).unwrap_or(Ok(None))
     }
 
     /// Decodes, in parallel, the frame every visible video clip shows at `t`.
@@ -439,7 +449,7 @@ impl ScenePictures<'_> {
                         let s = VideoStream::start(&self.r.tools, &path, time.max(0.0), 1.0, self.r.fps, dw, dh, time.max(0.0)).ok()?;
                         self.r.streams.insert(key.clone(), s);
                     }
-                    self.r.streams.get_mut(&key)?.at(time)?
+                    self.r.streams.get_mut(&key)?.at(time).ok()??
                 } else {
                     Arc::new(source::grab(&self.r.tools, &path, Some(time.max(0.0)), dw, dh).ok()?)
                 }

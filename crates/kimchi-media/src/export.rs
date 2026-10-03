@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
+use crate::accel::{self, Codec, EncoderChoice, Hardware, Verified};
 use crate::{Caps, MediaError, MediaResult, Tools, process};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,6 +64,19 @@ pub struct ExportSettings {
     pub fps: Option<f64>,
     /// Only render this range (seconds).
     pub range: Option<(f64, f64)>,
+    #[serde(default)]
+    pub encoder: EncoderChoice,
+}
+
+/// How an export was encoded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Exported {
+    /// The ffmpeg video encoder (`h264_videotoolbox`, `libx264`), `None` for sound only.
+    pub encoder: Option<String>,
+    /// It ran on the GPU or media engine.
+    pub hardware: bool,
+    /// The hardware encode failed and the export was redone on the CPU.
+    pub fell_back: bool,
 }
 
 /// Graphs longer than this go through a script file instead of argv.
@@ -87,9 +101,10 @@ pub async fn export(
     settings: &ExportSettings,
     progress: impl Fn(f64) + Send + Sync,
     cancel: CancellationToken,
-) -> MediaResult<()> {
+) -> MediaResult<Exported> {
     let caps = Caps::detect(tools).await?;
-    let plan = build(project, settings, &caps)?;
+    let hw = hardware_for(tools, &caps, settings).await;
+    let plan = build_with_hardware(project, settings, &caps, &hw)?;
     if let Some(missing) = plan.sources.iter().find(|p| !p.exists()) {
         return Err(MediaError::Unsupported(format!("missing media file {}", missing.display())));
     }
@@ -101,21 +116,25 @@ pub async fn export(
     // Render next to the target and rename at the end, so a failed or cancelled
     // export never leaves a truncated file under the real name.
     let part = out.with_file_name(format!(".{}.part", name.to_string_lossy()));
-    let script = (plan.graph.len() > INLINE_GRAPH_MAX)
-        .then(|| std::env::temp_dir().join(format!("kimchi-graph-{}.txt", kimchi_core::new_id())));
-    if let Some(script) = &script {
-        tokio::fs::write(script, &plan.graph).await?;
-    }
     progress(0.0);
-    let result = run(tools, project, &plan, &plan.args(&part, script.as_deref(), &caps), &progress, &cancel).await;
-    if let Some(script) = &script {
-        let _ = tokio::fs::remove_file(script).await;
+    let mut used = (plan.encoder.clone(), plan.hardware, false);
+    let mut result = attempt(tools, project, &plan, &part, &caps, settings.encoder != EncoderChoice::Software, &progress, &cancel).await;
+    if let Err(e) = &result
+        && plan.hardware
+        && settings.encoder == EncoderChoice::Auto
+        && !matches!(e, MediaError::Cancelled)
+    {
+        tracing::warn!(encoder = ?plan.encoder, error = %e, "hardware encode failed; encoding on the CPU");
+        let plan = build_with_hardware(project, settings, &caps, &Hardware::none())?;
+        progress(0.0);
+        used = (plan.encoder.clone(), false, true);
+        result = attempt(tools, project, &plan, &part, &caps, false, &progress, &cancel).await;
     }
     match result {
         Ok(()) => {
             tokio::fs::rename(&part, &out).await?;
             progress(1.0);
-            Ok(())
+            Ok(Exported { encoder: used.0, hardware: used.1, fell_back: used.2 })
         }
         Err(e) => {
             let _ = tokio::fs::remove_file(&part).await;
@@ -124,11 +143,77 @@ pub async fn export(
     }
 }
 
+/// The video encoder an export of `project` with `settings` would start with (`None` for sound
+/// only), as [`export`] picks it: for showing before or while it runs.
+pub async fn planned_encoder(tools: &Tools, project: &Project, settings: &ExportSettings) -> MediaResult<Option<String>> {
+    let caps = Caps::detect(tools).await?;
+    let hw = hardware_for(tools, &caps, settings).await;
+    let (w, h) = output_size(&project.settings, settings);
+    let codecs = Codecs::pick(settings.format, settings.quality, &caps, &hw, settings.encoder, w, h, output_fps(&project.settings, settings))?;
+    Ok(codecs.encoder)
+}
+
+/// What each format would be encoded with here, per [`EncoderChoice`] (at 1080p30).
+pub async fn encoders(tools: &Tools) -> MediaResult<(Hardware, Vec<FormatEncoders>)> {
+    let caps = Caps::detect(tools).await?;
+    let hw = Hardware::detect(tools, &caps).await;
+    let formats = [ExportFormat::Mp4, ExportFormat::Hevc, ExportFormat::Prores, ExportFormat::Webm, ExportFormat::Gif]
+        .into_iter()
+        .map(|format| {
+            let with = |choice| {
+                Codecs::pick(format, Quality::Standard, &caps, &hw, choice, 1920, 1080, 30.0).ok().and_then(|c| c.encoder)
+            };
+            FormatEncoders {
+                format,
+                auto: with(EncoderChoice::Auto),
+                hardware: with(EncoderChoice::Hardware),
+                software: with(EncoderChoice::Software),
+            }
+        })
+        .collect();
+    Ok((hw, formats))
+}
+
+/// Video encoders for one format; `None` where there is none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FormatEncoders {
+    pub format: ExportFormat,
+    pub auto: Option<String>,
+    pub hardware: Option<String>,
+    pub software: Option<String>,
+}
+
+/// The hardware an export may use: none for sound, or when the CPU was asked for.
+async fn hardware_for(tools: &Tools, caps: &Caps, settings: &ExportSettings) -> Hardware {
+    if settings.encoder == EncoderChoice::Software || settings.format.is_audio_only() || settings.format == ExportFormat::Gif {
+        return Hardware::none();
+    }
+    Hardware::detect(tools, caps).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn attempt(
+    tools: &Tools, project: &Project, plan: &Plan, part: &Path, caps: &Caps, decode_hardware: bool,
+    progress: &(impl Fn(f64) + Sync), cancel: &CancellationToken,
+) -> MediaResult<()> {
+    let script = (plan.graph.len() > INLINE_GRAPH_MAX)
+        .then(|| std::env::temp_dir().join(format!("kimchi-graph-{}.txt", kimchi_core::new_id())));
+    if let Some(script) = &script {
+        tokio::fs::write(script, &plan.graph).await?;
+    }
+    let result = run(tools, project, plan, &plan.args(part, script.as_deref(), caps), decode_hardware.then_some(caps), progress, cancel).await;
+    if let Some(script) = &script {
+        let _ = tokio::fs::remove_file(script).await;
+    }
+    result
+}
+
 async fn run(
     tools: &Tools,
     project: &Project,
     plan: &Plan,
     args: &[String],
+    decode_caps: Option<&Caps>,
     progress: &(impl Fn(f64) + Sync),
     cancel: &CancellationToken,
 ) -> MediaResult<()> {
@@ -150,8 +235,10 @@ async fn run(
         let (Some(video), Some(mut stdin)) = (plan.video, stdin) else { return Ok(()) };
         let (tx, mut rx) = tokio::sync::mpsc::channel::<MediaResult<Vec<u8>>>(3);
         let (tools, project) = (tools.clone(), project.clone());
+        let decode_caps = decode_caps.cloned();
         let render = tokio::task::spawn_blocking(move || {
             let mut r = crate::render::Renderer::for_export(&tools, &project, video.width, video.height, video.fps);
+            if let Some(caps) = decode_caps { r = r.with_hardware_decoding(caps); }
             for n in 0..video.frames {
                 let t = video.from + n as f64 / video.fps;
                 let frame = r.frame(t).map(crate::render::to_rgba);
@@ -224,6 +311,8 @@ pub struct Plan {
     pub duration: f64,
     /// Every file the inputs read.
     pub sources: Vec<PathBuf>,
+    pub encoder: Option<String>,
+    pub hardware: bool,
     /// The frames to render and pipe in, for formats with a picture.
     pub video: Option<VideoFeed>,
 }
@@ -260,11 +349,19 @@ impl Plan {
 /// Only clips that intersect the rendered range get an input and a chain, so rendering a short
 /// range stays cheap however long the timeline is.
 pub fn build(project: &Project, settings: &ExportSettings, caps: &Caps) -> MediaResult<Plan> {
-    compile(project, settings, caps, Sink::Encode).map(|(plan, _)| plan)
+    build_with_hardware(project, settings, caps, &Hardware::none())
+}
+
+pub fn build_with_hardware(project: &Project, settings: &ExportSettings, caps: &Caps, hw: &Hardware) -> MediaResult<Plan> {
+    compile_with_hardware(project, settings, caps, hw, Sink::Encode).map(|(plan, _)| plan)
 }
 
 /// [`build`] for any [`Sink`]; also returns how many sound chains were mixed (0 = silence).
 pub(crate) fn compile(project: &Project, settings: &ExportSettings, caps: &Caps, sink: Sink) -> MediaResult<(Plan, usize)> {
+    compile_with_hardware(project, settings, caps, &Hardware::none(), sink)
+}
+
+fn compile_with_hardware(project: &Project, settings: &ExportSettings, caps: &Caps, hw: &Hardware, sink: Sink) -> MediaResult<(Plan, usize)> {
     let ps = &project.settings;
     let end = project.duration();
     if end <= 1e-6 {
@@ -278,12 +375,10 @@ pub(crate) fn compile(project: &Project, settings: &ExportSettings, caps: &Caps,
     let (width, height) = output_size(ps, settings);
     let fps = output_fps(ps, settings);
     let codecs = match sink {
-        Sink::Encode => Codecs::pick(format, settings.quality, caps, width, height, fps)?,
+        Sink::Encode => Codecs::pick(format, settings.quality, caps, hw, settings.encoder, width, height, fps)?,
         Sink::Samples => Codecs {
-            video: vec![],
             audio: ["-c:a", "pcm_f32le", "-f", "f32le", "-ac", "2"].map(s).to_vec(),
-            muxer: vec![],
-            pix_fmt: "rgba",
+            ..Codecs::new("rgba")
         },
     };
     let total = to - from;
@@ -297,7 +392,7 @@ pub(crate) fn compile(project: &Project, settings: &ExportSettings, caps: &Caps,
         } else {
             ps.sample_rate.max(8_000)
         },
-        inputs: vec![],
+        inputs: codecs.device.clone(),
         count: 0,
         sources: vec![],
         input_of: HashMap::new(),
@@ -314,7 +409,7 @@ pub(crate) fn compile(project: &Project, settings: &ExportSettings, caps: &Caps,
         g.count = 1;
         g.chains.push(match format {
             ExportFormat::Gif => s("[0:v]split[g0][g1];[g0]palettegen[pal];[g1][pal]paletteuse[vout]"),
-            _ => format!("[0:v]scale=out_color_matrix=bt709:out_range=tv,format={}[vout]", codecs.pix_fmt),
+            _ => format!("[0:v]scale=out_color_matrix=bt709:out_range=tv,format={}", codecs.pix_fmt) + if codecs.upload { ",hwupload[vout]" } else { "[vout]" },
         });
         output.extend([s("-map"), s("[vout]")]);
         output.extend(codecs.video);
@@ -350,11 +445,11 @@ pub(crate) fn compile(project: &Project, settings: &ExportSettings, caps: &Caps,
         output.extend([s("-ar"), sr.to_string()]);
         output.extend(codecs.muxer);
         output.extend([s("-t"), num(total)]);
-        return Ok((Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources, video }, audible));
+        return Ok((Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources, encoder: codecs.encoder, hardware: codecs.hardware && picture, video }, audible));
     }
     output.extend(codecs.muxer);
     output.extend([s("-t"), num(total)]);
-    Ok((Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources, video }, 0))
+    Ok((Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources, encoder: codecs.encoder, hardware: codecs.hardware && picture, video }, 0))
 }
 
 fn sorted(clips: &[Clip]) -> Vec<&Clip> {
@@ -562,10 +657,32 @@ struct Codecs {
     audio: Vec<String>,
     muxer: Vec<String>,
     pix_fmt: &'static str,
+    /// The video encoder.
+    encoder: Option<String>,
+    /// It is a hardware encoder.
+    hardware: bool,
+    /// Global options opening its device, before the inputs.
+    device: Vec<String>,
+    /// Frames go up to the device at the end of the graph.
+    upload: bool,
 }
 
 impl Codecs {
-    fn pick(format: ExportFormat, q: Quality, caps: &Caps, w: u32, h: u32, fps: f64) -> MediaResult<Self> {
+    fn new(pix_fmt: &'static str) -> Self {
+        Codecs { video: vec![], audio: vec![], muxer: vec![], pix_fmt, encoder: None, hardware: false, device: vec![], upload: false }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pick(
+        format: ExportFormat,
+        q: Quality,
+        caps: &Caps,
+        hw: &Hardware,
+        choice: EncoderChoice,
+        w: u32,
+        h: u32,
+        fps: f64,
+    ) -> MediaResult<Self> {
         // Bitrate for encoders without a constant-quality mode.
         let bitrate = (w as f64 * h as f64 * fps * by(q, 0.04, 0.08, 0.15)) as u64;
         let aac = || {
@@ -573,13 +690,86 @@ impl Codecs {
             vec![s("-c:a"), s(enc), s("-b:a"), s(by(q, "128k", "192k", "256k"))]
         };
         let missing = |what: &str| MediaError::Unsupported(format!("this ffmpeg build has no {what} encoder"));
-        let mut c = Codecs { video: vec![], audio: vec![], muxer: vec![], pix_fmt: "yuv420p" };
+        let mut c = Codecs::new("yuv420p");
+
+        // The container and the sound.
+        match format {
+            ExportFormat::Mp4 | ExportFormat::Hevc => {
+                c.audio = aac();
+                c.muxer = vec![s("-movflags"), s("+faststart"), s("-f"), s("mp4")];
+            }
+            ExportFormat::Prores => {
+                c.audio = vec![s("-c:a"), s("pcm_s16le")];
+                c.muxer = vec![s("-f"), s("mov")];
+            }
+            ExportFormat::Webm => {
+                c.audio = match caps.pick(&["libopus", "libvorbis", "opus"]).ok_or_else(|| missing("Opus/Vorbis"))? {
+                    "libvorbis" => vec![s("-c:a"), s("libvorbis"), s("-q:a"), s(by(q, "4", "5", "7"))],
+                    // The native Opus encoder is still flagged experimental.
+                    enc => {
+                        let mut a = vec![s("-c:a"), s(enc), s("-b:a"), s(by(q, "96k", "128k", "160k"))];
+                        if enc == "opus" {
+                            a.extend([s("-strict"), s("-2")]);
+                        }
+                        a
+                    }
+                };
+                c.muxer = vec![s("-f"), s("webm")];
+            }
+            ExportFormat::Gif => {
+                c.video = vec![s("-c:v"), s("gif"), s("-loop"), s("0")];
+                c.encoder = Some(s("gif"));
+                c.muxer = vec![s("-f"), s("gif")];
+                return Ok(c);
+            }
+            ExportFormat::Audio => {
+                c.audio = aac();
+                c.muxer = vec![s("-movflags"), s("+faststart"), s("-f"), s("ipod")];
+                return Ok(c);
+            }
+            ExportFormat::Wav => {
+                c.audio = vec![s("-c:a"), s("pcm_s24le")];
+                c.muxer = vec![s("-f"), s("wav")];
+                return Ok(c);
+            }
+        }
+
+        // The picture: the GPU or media engine first, unless the CPU was asked for.
+        let codecs: &[Codec] = match (format, choice) {
+            (ExportFormat::Mp4, _) => &[Codec::H264],
+            (ExportFormat::Hevc, _) => &[Codec::Hevc],
+            (ExportFormat::Prores, _) => &[Codec::Prores],
+            // AV1 in WebM only when hardware was asked for: older players lack it.
+            (ExportFormat::Webm, EncoderChoice::Hardware) => &[Codec::Vp9, Codec::Av1],
+            (ExportFormat::Webm, _) => &[Codec::Vp9],
+            _ => &[],
+        };
+        let found = codecs.iter().filter(|codec| accel::fits(**codec, w, h)).find_map(|codec| hw.best(*codec));
+        match (found, choice) {
+            (Some(v), EncoderChoice::Auto | EncoderChoice::Hardware) => {
+                // Hardware encoders need a little more than x264 for the same picture.
+                let rate = if v.encoder.codec == Codec::H264 { bitrate * 5 / 4 } else { bitrate * 4 / 5 };
+                c.use_hardware(v, q, rate, hw.vaapi_device.as_deref());
+                if format == ExportFormat::Hevc {
+                    c.video.extend([s("-tag:v"), s("hvc1")]);
+                }
+                return Ok(c);
+            }
+            (None, EncoderChoice::Hardware) => {
+                let too_big = codecs.iter().any(|codec| !accel::fits(*codec, w, h) && hw.best(*codec).is_some());
+                return Err(MediaError::Unsupported(if too_big {
+                    format!("{w}×{h} is too big for this computer's hardware {} encoder; use the CPU", name(format))
+                } else {
+                    format!("this computer has no hardware {} encoder; use the CPU (or Auto)", name(format))
+                }));
+            }
+            _ => {}
+        }
+
         match format {
             ExportFormat::Mp4 => {
                 c.video = h264_args(caps, by(q, "veryfast", "medium", "slow"), by(q, 28, 22, 18), bitrate)?;
                 c.video.extend([s("-pix_fmt"), s("yuv420p")]);
-                c.audio = aac();
-                c.muxer = vec![s("-movflags"), s("+faststart"), s("-f"), s("mp4")];
             }
             ExportFormat::Hevc => {
                 let enc = caps.pick(&["libx265", "hevc_videotoolbox", "hevc_mf"]).ok_or_else(|| missing("HEVC"))?;
@@ -605,8 +795,6 @@ impl Codecs {
                 }
                 // hvc1 is what Apple players require.
                 c.video.extend(["-tag:v", "hvc1", "-pix_fmt", "yuv420p"].map(s));
-                c.audio = aac();
-                c.muxer = vec![s("-movflags"), s("+faststart"), s("-f"), s("mp4")];
             }
             ExportFormat::Prores => {
                 let enc =
@@ -619,8 +807,6 @@ impl Codecs {
                     c.video.extend([s("-profile:v"), s("3"), s("-vendor"), s("apl0")]);
                     c.pix_fmt = "yuv422p10le";
                 }
-                c.audio = vec![s("-c:a"), s("pcm_s16le")];
-                c.muxer = vec![s("-f"), s("mov")];
             }
             ExportFormat::Webm => {
                 let enc = caps
@@ -628,45 +814,60 @@ impl Codecs {
                     .ok_or_else(|| missing("VP9/VP8/AV1"))?;
                 c.video = vec![s("-c:v"), s(enc)];
                 match enc {
+                    // Tiles and row threading let VP9 use every core.
                     "libvpx-vp9" => c.video.extend(
                         ["-crf", &by(q, 40, 33, 28).to_string(), "-b:v", "0", "-deadline", "good"]
                             .into_iter()
-                            .chain(["-cpu-used", by(q, "5", "3", "2"), "-row-mt", "1"])
+                            .chain(["-cpu-used", by(q, "5", "3", "2"), "-row-mt", "1", "-tile-columns", vp9_tiles(w)])
                             .map(s),
                     ),
                     "libvpx" => c.video.extend(
                         ["-crf", &by(q, 30, 20, 10).to_string(), "-b:v", &bitrate.to_string(), "-cpu-used", "4"].map(s),
                     ),
                     "libsvtav1" => c.video.extend(["-crf", &by(q, 45, 35, 28).to_string(), "-preset", "8"].map(s)),
-                    _ => c.video.extend(["-crf", &by(q, 45, 35, 28).to_string(), "-b:v", "0", "-cpu-used", "6"].map(s)),
+                    _ => c.video.extend(
+                        ["-crf", &by(q, 45, 35, 28).to_string(), "-b:v", "0", "-cpu-used", "6", "-row-mt", "1"].map(s),
+                    ),
                 }
-                c.audio = match caps.pick(&["libopus", "libvorbis", "opus"]).ok_or_else(|| missing("Opus/Vorbis"))? {
-                    "libvorbis" => vec![s("-c:a"), s("libvorbis"), s("-q:a"), s(by(q, "4", "5", "7"))],
-                    // The native Opus encoder is still flagged experimental.
-                    enc => {
-                        let mut a = vec![s("-c:a"), s(enc), s("-b:a"), s(by(q, "96k", "128k", "160k"))];
-                        if enc == "opus" {
-                            a.extend([s("-strict"), s("-2")]);
-                        }
-                        a
-                    }
-                };
-                c.muxer = vec![s("-f"), s("webm")];
             }
-            ExportFormat::Gif => {
-                c.video = vec![s("-c:v"), s("gif"), s("-loop"), s("0")];
-                c.muxer = vec![s("-f"), s("gif")];
-            }
-            ExportFormat::Audio => {
-                c.audio = aac();
-                c.muxer = vec![s("-movflags"), s("+faststart"), s("-f"), s("ipod")];
-            }
-            ExportFormat::Wav => {
-                c.audio = vec![s("-c:a"), s("pcm_s24le")];
-                c.muxer = vec![s("-f"), s("wav")];
-            }
+            _ => unreachable!("sound-only formats returned above"),
         }
+        c.encoder = c.video.windows(2).find(|w| w[0] == "-c:v").map(|w| w[1].clone());
         Ok(c)
+    }
+
+    fn use_hardware(&mut self, v: &Verified, q: Quality, bitrate: u64, vaapi_device: Option<&str>) {
+        let a = accel::args(v, q, bitrate, vaapi_device);
+        self.video = a.video;
+        if !a.upload {
+            self.video.extend([s("-pix_fmt"), s(a.pix_fmt)]);
+        }
+        self.pix_fmt = a.pix_fmt;
+        self.device = a.device;
+        self.upload = a.upload;
+        self.encoder = Some(s(v.encoder.name));
+        self.hardware = true;
+    }
+}
+
+/// log2 of the VP9 tile columns for a picture `w` wide (tiles are at least 256 px).
+fn vp9_tiles(w: u32) -> &'static str {
+    match w {
+        ..1024 => "1",
+        1024..2048 => "2",
+        2048..4096 => "3",
+        _ => "4",
+    }
+}
+
+fn name(format: ExportFormat) -> &'static str {
+    match format {
+        ExportFormat::Mp4 => "H.264",
+        ExportFormat::Hevc => "HEVC",
+        ExportFormat::Prores => "ProRes",
+        ExportFormat::Webm => "VP9/AV1",
+        ExportFormat::Gif => "GIF",
+        ExportFormat::Audio | ExportFormat::Wav => "audio",
     }
 }
 
@@ -691,6 +892,13 @@ pub(crate) fn h264_args(caps: &Caps, preset: &str, crf: u32, bitrate: u64) -> Me
         }
     }
     Ok(args)
+}
+
+/// Hardware H.264 options for a proxy or similar: `(video args, pix_fmt, device args, upload)`.
+pub(crate) fn h264_hardware(v: &Verified, bitrate: u64, vaapi_device: Option<&str>) -> (Vec<String>, &'static str, Vec<String>, bool) {
+    let mut c = Codecs::new("nv12");
+    c.use_hardware(v, Quality::Standard, bitrate, vaapi_device);
+    (c.video, c.pix_fmt, c.device, c.upload)
 }
 
 /// `#rrggbb`/`#rgb`/`#rrggbbaa` → ffmpeg colour syntax.

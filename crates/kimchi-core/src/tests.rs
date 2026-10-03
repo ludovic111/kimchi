@@ -202,3 +202,25 @@ fn checkpoints_revert_as_one_undoable_step() {
     assert!(ed.undo());
     assert!(ed.project().clip(id).is_none());
 }
+
+#[test]
+fn paste_and_undo_preserve_motion_scenes_and_keyframes() {
+    let mut p = Project::new("animated clipboard", ProjectSettings::default());
+    let scene = templates::TEMPLATES[0].build(&Default::default(), templates::Ctx { width: 1920., height: 1080., duration: 3. }).unwrap();
+    let mut original = Clip::new("motion", 0.0, 3.0, ClipContent::Motion { scene, template: None });
+    original.keyframes.insert("x".into(), vec![Keyframe::new(0.0, 0.0, Default::default()), Keyframe::new(1.0, 100.0, Default::default())]);
+    let track = p.tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap().id;
+    p.track_mut(track).unwrap().clips.push(original.clone());
+    let mut editor = Editor::new(p);
+    let mut copy = original.clone();
+    copy.start = 5.0;
+    editor.apply(&Edit::PasteClips { clips: vec![TrackClip { track_id: track, clip: copy }] }, None).unwrap();
+    let pasted = editor.project().clips().find(|(_, c)| c.start == 5.0).unwrap().1;
+    assert_ne!(pasted.id, original.id);
+    assert_eq!(pasted.content, original.content);
+    assert_eq!(pasted.keyframes, original.keyframes);
+    assert!(editor.undo());
+    assert_eq!(editor.project().clips().count(), 1);
+    assert!(editor.redo());
+    assert_eq!(editor.project().clips().find(|(_, c)| c.start == 5.0).unwrap().1.content, original.content);
+}

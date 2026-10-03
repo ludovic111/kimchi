@@ -42,6 +42,7 @@ rewritten from the ground up in Rust.
 - **3D clips**: camera moves, lights with soft shadows, boxes, spheres, cylinders, tori, extruded 3D text, glTF models and picture cards, metallic/rough materials. On the GPU (Metal on Macs, Apple Silicon included; Vulkan or DirectX 12 elsewhere), on the CPU otherwise
 - **Templates**: lower third, title card, kinetic type, counter, bar chart, logo reveal, callout, quote, subscribe button, aurora background, wipe transition, 3D title, 3D logo spin, turntable, floating shapes; change their words and colours in the inspector
 - **Edit scenes by hand** in the inspector (pick a layer, object or the camera; keyframe its properties; add text, shapes, pictures, 3D objects and lights) or **ask the agent**: it writes the scene, then looks at the frames it made
+- Hardware encoding where the computer has it (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API), checked with a test encode and redone on the CPU if it fails; 4K, HEVC and ProRes sources decode in hardware
 
 **Generation, woven into the edit**
 - **Generate at the playhead.** A placeholder clip appears where the shot will go and turns into the result when it's done

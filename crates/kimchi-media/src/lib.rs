@@ -1,5 +1,6 @@
 //! kimchi-media: everything that touches media files, via ffmpeg/ffprobe.
 
+pub mod accel;
 pub mod export;
 pub mod preview;
 pub mod render;
@@ -13,6 +14,7 @@ use kimchi_core::{Filmstrip, MediaKind, MediaMeta, Waveform};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
 
+pub use accel::{EncoderChoice, Hardware};
 pub use probe::{Probe, probe};
 pub use process::Caps;
 pub use tiny_skia;
@@ -149,7 +151,9 @@ pub async fn filmstrip(tools: &Tools, path: &Path, duration: f64, out: &Path, he
     let duration = if duration > 0.0 { duration } else { meta.duration.unwrap_or(1.0) };
     let interval = (duration / 120.0).max(0.5);
     let frames = ((duration / interval).ceil() as u32).clamp(1, 120);
-    let mut args = vec![];
+    // The whole file is decoded: heavy sources (4K, HEVC…) go through the hardware decoder.
+    let mut args = accel::decode_args(&Caps::detect(tools).await?, &meta);
+    let decode_len = args.len();
     if interval >= 4.0 {
         // Long clip: decoding only keyframes is much faster and precise enough at this zoom.
         args.extend([s("-skip_frame"), s("nokey")]);
@@ -172,7 +176,11 @@ pub async fn filmstrip(tools: &Tools, path: &Path, duration: f64, out: &Path, he
         path_arg(out),
     ]);
     let _ = std::fs::remove_file(out);
-    ffmpeg(tools, &args).await?;
+    if let Err(e) = ffmpeg(tools, &args).await {
+        if decode_len == 0 { return Err(e); }
+        let _ = std::fs::remove_file(out);
+        ffmpeg(tools, &args[decode_len..]).await?;
+    }
     if !made(out) {
         return Err(MediaError::Unsupported(format!("no picture in {}", path.display())));
     }
@@ -301,17 +309,51 @@ pub fn needs_proxy(meta: &MediaMeta, path: &Path) -> bool {
     !ok
 }
 
-/// H.264/AAC MP4 proxy for preview playback.
+/// H.264/AAC MP4 proxy for preview playback, encoded on the GPU or media engine when there is
+/// one (and on the CPU if that fails).
 pub async fn proxy(tools: &Tools, path: &Path, out: &Path) -> MediaResult<()> {
     let meta = probe(tools, path).await?.meta;
     let caps = Caps::detect(tools).await?;
-    let mut args = vec![s("-i"), path_arg(path), s("-sn"), s("-dn")];
+    let hw = if meta.has_video { Hardware::detect(tools, &caps).await } else { Hardware::none() };
+    if let Some(v) = hw.best(accel::Codec::H264) {
+        match proxy_with(tools, &caps, &meta, path, out, Some((v, hw.vaapi_device.as_deref())), true).await {
+            Ok(()) => return Ok(()),
+            Err(e) => tracing::warn!(encoder = v.encoder.name, error = %e, "hardware proxy failed; encoding on the CPU"),
+        }
+    }
+    proxy_with(tools, &caps, &meta, path, out, None, false).await
+}
+
+async fn proxy_with(
+    tools: &Tools,
+    caps: &Caps,
+    meta: &MediaMeta,
+    path: &Path,
+    out: &Path,
+    hardware: Option<(&accel::Verified, Option<&str>)>,
+    decode_hardware: bool,
+) -> MediaResult<()> {
+    let mut args = vec![];
+    if meta.has_video && decode_hardware {
+        args.extend(accel::decode_args(caps, meta));
+    }
+    args.extend([s("-i"), path_arg(path), s("-sn"), s("-dn")]);
     if meta.has_video {
         // Fit within 1920x1080 (1080x1920 for portrait) without upscaling.
-        let vf = "scale=w='if(gte(iw,ih),min(1920,iw),min(1080,iw))':h='if(gte(iw,ih),min(1080,ih),min(1920,ih))':\
-                  force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,format=yuv420p";
-        args.extend([s("-map"), s("0:v:0"), s("-vf"), s(vf)]);
-        args.extend(export::h264_args(&caps, "veryfast", 23, 5_000_000)?);
+        let fit = "scale=w='if(gte(iw,ih),min(1920,iw),min(1080,iw))':h='if(gte(iw,ih),min(1080,ih),min(1920,ih))':\
+                   force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1";
+        let (video, vf) = match hardware {
+            Some((v, device)) => {
+                let (video, pix_fmt, device, upload) = export::h264_hardware(v, 5_000_000, device);
+                let mut global = device;
+                global.append(&mut args);
+                args = global;
+                (video, format!("{fit},format={pix_fmt}{}", if upload { ",hwupload" } else { "" }))
+            }
+            None => (export::h264_args(caps, "veryfast", 23, 5_000_000)?, format!("{fit},format=yuv420p")),
+        };
+        args.extend([s("-map"), s("0:v:0"), s("-vf"), vf]);
+        args.extend(video);
     }
     if meta.has_audio {
         args.extend([s("-map"), s("0:a:0"), s("-c:a"), s("aac"), s("-b:a"), s("160k"), s("-ac"), s("2")]);
