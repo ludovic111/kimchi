@@ -89,8 +89,8 @@ pub(crate) fn shape(s: &Shape3d) -> Option<Arc<Mesh>> {
         Shape3d::Cone { radius, height, segments: 0.0 } => cylinder(*radius as f32, 0.0, *height as f32),
         Shape3d::Torus { radius, tube } => torus(*radius as f32, *tube as f32),
         Shape3d::Plane { width, height } => plane(*width as f32, *height as f32),
-        Shape3d::Text { text, font_family, font_weight, size, depth, align, letter_spacing, .. } => {
-            text_mesh(text, font_family, *font_weight, *size as f32, *depth as f32, *align, *letter_spacing)
+        Shape3d::Text { text, font_family, font_weight, size, depth, align, letter_spacing, bevel } => {
+            text_mesh(text, font_family, *font_weight, *size as f32, *depth as f32, *align, *letter_spacing, *bevel)
         }
         Shape3d::Image { .. } => plane(1.0, 1.0),
         Shape3d::Model { .. } | Shape3d::Group {} | Shape3d::Particles(_) => return None,
@@ -233,7 +233,8 @@ fn plane(w: f32, h: f32) -> Mesh {
 }
 
 /// Letters extruded `depth` along z, `size` units high (em), centred on the origin.
-fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align: kimchi_core::TextAlign, spacing: f64) -> Mesh {
+#[allow(clippy::too_many_arguments)]
+fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align: kimchi_core::TextAlign, spacing: f64, bevel: f64) -> Mesh {
     use lyon_tessellation::path::Path as LPath;
     use lyon_tessellation::path::iterator::PathIterator;
     use lyon_tessellation::{BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers};
@@ -257,8 +258,28 @@ fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align
     let mut b = LPath::builder();
     let pt = |x: f32, y: f32| lyon_tessellation::math::point(x * k, -y * k);
     let mut open = false;
+    // The same outlines as SVG path data (y down, world units), for rounded edges.
+    let mut d = String::new();
+    let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
     for g in &layout.glyphs {
         let crate::text::Ink::Outline { path, .. } = &g.ink else { continue };
+        if bevel > 0.0 {
+            use std::fmt::Write;
+            for seg in path.segments() {
+                let mut at = |p: tiny_skia::Point| {
+                    lo = [lo[0].min(p.x), lo[1].min(p.y)];
+                    hi = [hi[0].max(p.x), hi[1].max(p.y)];
+                    format!("{} {}", p.x * k, p.y * k)
+                };
+                let _ = match seg {
+                    tiny_skia::PathSegment::MoveTo(p) => write!(d, "M{} ", at(p)),
+                    tiny_skia::PathSegment::LineTo(p) => write!(d, "L{} ", at(p)),
+                    tiny_skia::PathSegment::QuadTo(c, p) => write!(d, "Q{} {} ", at(c), at(p)),
+                    tiny_skia::PathSegment::CubicTo(c1, c2, p) => write!(d, "C{} {} {} ", at(c1), at(c2), at(p)),
+                    tiny_skia::PathSegment::Close => write!(d, "Z "),
+                };
+            }
+        }
         for seg in path.segments() {
             match seg {
                 tiny_skia::PathSegment::MoveTo(p) => {
@@ -290,6 +311,23 @@ fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align
         b.end(true);
     }
     let path = b.build();
+    // Rounded edges: kimchi-core's extruder (it fits the outline centred to its larger side, so
+    // move it back where the letters are).
+    if bevel > 0.0 && depth > 0.0 && lo[0] <= hi[0] {
+        let extent = ((hi[0] - lo[0]).max(hi[1] - lo[1]) * k) as f64;
+        let bevel = bevel.min(depth as f64 / 2.0);
+        if let Some(poly) = kimchi_core::mesh::shape_mesh(&Shape3d::Extrude { d, size: extent, depth: depth as f64, bevel }) {
+            let mut m = from_tris(&poly.triangulate());
+            let centre = [(lo[0] + hi[0]) / 2.0 * k, -(lo[1] + hi[1]) / 2.0 * k];
+            for p in &mut m.pos {
+                p[0] += centre[0];
+                p[1] += centre[1];
+            }
+            let (w, h) = ((layout.width as f32 * k).max(1e-3), (layout.height as f32 * k).max(1e-3));
+            m.uv = m.pos.iter().map(|p| [p[0] / w + 0.5, 0.5 - p[1] / h]).collect();
+            return m;
+        }
+    }
     let tolerance = (size * 0.002).max(1e-4);
     let mut m = Mesh::default();
     let hd = depth.max(0.0) / 2.0;
@@ -584,7 +622,7 @@ mod tests {
 
     #[test]
     fn text_is_extruded_and_centred() {
-        let m = text_mesh("Hi", "Manrope", 800.0, 1.0, 0.3, kimchi_core::TextAlign::Center, 0.0);
+        let m = text_mesh("Hi", "Manrope", 800.0, 1.0, 0.3, kimchi_core::TextAlign::Center, 0.0, 0.0);
         closed_enough(&m);
         let (lo, hi) = m.bounds();
         assert!((hi.2 - 0.15).abs() < 1e-4 && (lo.2 + 0.15).abs() < 1e-4);
@@ -593,11 +631,25 @@ mod tests {
     }
 
     #[test]
+    fn text_bevels_round_its_edges_in_place() {
+        let flat = text_mesh("Bo", "Manrope", 700.0, 1.0, 0.3, kimchi_core::TextAlign::Center, 0.0, 0.0);
+        let round = text_mesh("Bo", "Manrope", 700.0, 1.0, 0.3, kimchi_core::TextAlign::Center, 0.0, 0.05);
+        closed_enough(&round);
+        let (a, b) = (flat.bounds(), round.bounds());
+        for (p, q) in [(a.0, b.0), (a.1, b.1)] {
+            assert!((p - q).len() < 0.02, "same place and size: {a:?} vs {b:?}");
+        }
+        let slanted = |m: &Mesh| m.normal.iter().filter(|n| n[2].abs() > 0.2 && n[2].abs() < 0.9).count();
+        assert_eq!(slanted(&flat), 0, "square edges without a bevel");
+        assert!(slanted(&round) > 50, "rounded edges with one: {}", slanted(&round));
+    }
+
+    #[test]
     fn text_faces_wind_outwards() {
         // Booleans and solidify read the winding: every triangle turns counter-clockwise seen
         // from outside, the way its normals point, letters with holes too.
         for text in ["KIM", "O", "Bo8"] {
-            let m = text_mesh(text, "Manrope", 700.0, 1.0, 0.3, kimchi_core::TextAlign::Center, 0.0);
+            let m = text_mesh(text, "Manrope", 700.0, 1.0, 0.3, kimchi_core::TextAlign::Center, 0.0, 0.0);
             let mut volume = 0.0f64;
             for t in m.index.as_chunks::<3>().0.iter() {
                 let v = |a: [f32; 3]| V3(a[0], a[1], a[2]);
