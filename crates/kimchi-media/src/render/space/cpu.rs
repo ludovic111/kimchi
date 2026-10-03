@@ -273,10 +273,14 @@ fn lit(m: &ShadowMap, p: V3, n: V3, f: &Frame3d) -> f32 {
         return 1.0;
     }
     let q = V3(q4[0] / q4[3], q4[1] / q4[3], q4[2] / q4[3]);
-    // Outside a light's frustum is lit; beyond the sun's box, its edge is used.
-    if !(0.0..1.0).contains(&q.2) || !m.res.ortho && (q.0.abs() > 1.0 || q.1.abs() > 1.0) {
+    // Outside a light's frustum is lit. The sun's box ends around what the camera sees: past
+    // it, fading to lit (its edge texels hold other, nearer ground, which used to cast a
+    // shadow band across every far floor).
+    let edge = q.0.abs().max(q.1.abs());
+    if !(0.0..1.0).contains(&q.2) || edge > 1.0 {
         return 1.0;
     }
+    let fade = if m.res.ortho { ((edge - 0.9) / 0.1).clamp(0.0, 1.0) } else { 0.0 };
     let size = m.size as f32;
     let (sx, sy) = ((q.0 * 0.5 + 0.5) * size, (0.5 - q.1 * 0.5) * size);
     // World size of a texel where `p` is, and the filter's reach in texels.
@@ -307,7 +311,8 @@ fn lit(m: &ShadowMap, p: V3, n: V3, f: &Frame3d) -> f32 {
             sum += if mine <= d { 1.0 } else { 0.0 };
         }
     }
-    sum / ((2 * taps + 1) * (2 * taps + 1)) as f32
+    let lit = sum / ((2 * taps + 1) * (2 * taps + 1)) as f32;
+    lit + (1.0 - lit) * fade
 }
 
 fn shadow_map(f: &Frame3d, m: &M4, n: usize) -> Vec<f32> {

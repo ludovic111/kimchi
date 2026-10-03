@@ -288,8 +288,13 @@ fn shadow_lit(li: i32, world: vec3<f32>, n: vec3<f32>) -> f32 {
     }
     let q = q4.xyz / q4.w;
     let ortho = s.p.x > 0.5;
-    if (q.z < 0.0 || q.z >= 1.0 || (!ortho && (abs(q.x) > 1.0 || abs(q.y) > 1.0))) {
+    let edge = max(abs(q.x), abs(q.y));
+    if (q.z < 0.0 || q.z >= 1.0 || edge > 1.0) {
         return 1.0;
+    }
+    var fade = 0.0;
+    if (ortho) {
+        fade = clamp((edge - 0.9) / 0.1, 0.0, 1.0);
     }
     let size = f32(textureDimensions(shadow_maps).x);
     let sx = (q.x * 0.5 + 0.5) * size;
@@ -334,7 +339,8 @@ fn shadow_lit(li: i32, world: vec3<f32>, n: vec3<f32>) -> f32 {
             }
         }
     }
-    return sum / f32((2 * taps + 1) * (2 * taps + 1));
+    let lit = sum / f32((2 * taps + 1) * (2 * taps + 1));
+    return lit + (1.0 - lit) * fade;
 }
 
 fn lobe_shininess(rough: f32) -> f32 {

@@ -141,6 +141,25 @@ fn objects_cast_shadows_on_a_floor() {
 }
 
 #[test]
+fn far_floor_past_the_suns_box_is_lit() {
+    // A floor running to the horizon under a low sun: past the sun's shadow box it used to be
+    // darkened by the box's edge, a band across the distance.
+    let v = |shadows: bool| {
+        json!({"background": "#000000", "fog": false, "shadows": shadows,
+            "camera": {"position": [0.5, 1.9, 5.2], "target": [0, 0.5, 0], "fov": 38},
+            "lights": [{"id": "sun", "type": "directional", "direction": [-0.6, -0.55, -0.5], "intensity": 2}],
+            "objects": [{"id": "floor", "type": "plane", "width": 400, "height": 400, "rotation": [-90, 0, 0], "material": {"color": "#808080", "roughness": 1}},
+                        {"id": "b", "type": "box", "size": 1, "position": [0, 0.5, 0]}]})
+    };
+    let draw = |s: bool| Space::cpu().render(&scene(v(s)), 0.0, 320, 180, &mut None_, Quality::Preview).unwrap();
+    let (on, off) = (draw(true), draw(false));
+    dump("far-floor", &on);
+    // The far floor: the rows just under the horizon.
+    let (a, b) = (mean(&on, 0, 14, 320, 34), mean(&off, 0, 14, 320, 34));
+    assert!((a - b).abs() < 3.0, "far floor {a:.1} with shadows, {b:.1} without");
+}
+
+#[test]
 fn small_overhangs_shadow_in_big_scenes() {
     // A thin ledge sticking out a tenth of a unit from a wall, in a scene with a big floor (the
     // sun's shadow map covers many units): the band of wall under it is in shadow, evenly.
