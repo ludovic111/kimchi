@@ -324,7 +324,7 @@ fn best_split(ctx: &Build, idx: &[u32], bounds: &Aabb, cb: &Aabb) -> Option<(usi
     let mut best: Option<(usize, f32, f32)> = None;
     for a in 0..3 {
         let (lo, hi) = (axis(cb.lo, a), axis(cb.hi, a));
-        if !(hi - lo > 1e-12 * (lo.abs() + hi.abs() + 1.0)) {
+        if hi - lo <= 1e-12 * (lo.abs() + hi.abs() + 1.0) || hi.is_nan() || lo.is_nan() {
             continue;
         }
         let scale = BINS as f32 / (hi - lo);

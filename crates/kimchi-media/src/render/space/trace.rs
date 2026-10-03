@@ -190,7 +190,8 @@ type GeoKey = Vec<(Arc<Mesh>, [f32; 16])>;
 /// The geometry of `items`, reused when the previous frame had the same meshes in the same
 /// places (the hierarchy is the slow part of a frame of a still scene).
 fn geometry(items: &[Item]) -> Arc<Geo> {
-    static CACHE: OnceLock<Mutex<Option<(GeoKey, Arc<Geo>)>>> = OnceLock::new();
+    type Cache = Mutex<Option<(GeoKey, Arc<Geo>)>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     let key: GeoKey = items.iter().map(|it| (it.mesh.clone(), it.model.flat())).collect();
     let same = |a: &GeoKey| a.len() == key.len() && a.iter().zip(&key).all(|(x, y)| Arc::ptr_eq(&x.0, &y.0) && x.1 == y.1);
@@ -207,7 +208,9 @@ fn geometry(items: &[Item]) -> Arc<Geo> {
 }
 
 fn build_geo(items: &[Item]) -> Geo {
-    let per_item: Vec<(Vec<Tri>, Vec<(u32, u32)>, Vec<V3>)> = items
+    /// An item's triangles, their owners and its world normals.
+    type Part = (Vec<Tri>, Vec<(u32, u32)>, Vec<V3>);
+    let per_item: Vec<Part> = items
         .par_iter()
         .enumerate()
         .map(|(i, it)| {
@@ -215,7 +218,7 @@ fn build_geo(items: &[Item]) -> Geo {
             let normals: Vec<V3> = it.mesh.normal.par_iter().map(|n| it.normal.dir(V3(n[0], n[1], n[2])).norm()).collect();
             let mut tris = Vec::with_capacity(it.mesh.index.len() / 3);
             let mut owner = Vec::with_capacity(it.mesh.index.len() / 3);
-            for (k, t) in it.mesh.index.chunks_exact(3).enumerate() {
+            for (k, t) in it.mesh.index.as_chunks::<3>().0.iter().enumerate() {
                 let get = |j: u32| pos.get(j as usize).copied();
                 // Indices past the vertices (a broken model) are skipped.
                 if let (Some(a), Some(b), Some(c)) = (get(t[0]), get(t[1]), get(t[2])) {
@@ -302,7 +305,7 @@ impl EnvMap {
             }
         }
         let total: f32 = row_sum.iter().sum();
-        if !(total > 0.0) || !total.is_finite() {
+        if total.is_nan() || total <= 0.0 || !total.is_finite() {
             return None;
         }
         let mut rows = vec![0.0f32; h + 1];
@@ -712,7 +715,7 @@ impl Bsdf {
             reflect(wo, vndf_sample(wo, COAT_ROUGHNESS * COAT_ROUGHNESS, u1, u2))
         };
         let (f, pdf) = self.eval(wo, wi);
-        if !(pdf > 1e-12) || !pdf.is_finite() {
+        if pdf.is_nan() || pdf <= 1e-12 || !pdf.is_finite() {
             return None;
         }
         let weight = scale(f, 1.0 / pdf);
@@ -764,7 +767,7 @@ impl World {
             .items
             .iter()
             .map(|it| {
-                let clear = it.mat.base[3] < 0.999 || it.mat.texture.as_ref().is_some_and(|t| t.rgba.chunks_exact(4).any(|p| p[3] < 255));
+                let clear = it.mat.base[3] < 0.999 || it.mat.texture.as_ref().is_some_and(|t| t.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 255));
                 ItemInfo { mat: it.mat.clone(), mesh: it.mesh.clone(), clear }
             })
             .collect();
@@ -953,7 +956,7 @@ impl World {
                 }
                 let to = q - p;
                 let dist = to.len();
-                if !(dist > 1e-6) {
+                if dist.is_nan() || dist <= 1e-6 {
                     return None;
                 }
                 let mut k = falloff(l, (c - p).len());
@@ -971,7 +974,7 @@ impl World {
                 let q = l.v + fr.x * ((u1 - 0.5) * l.size[0].max(0.0)) + fr.y * ((u2 - 0.5) * l.size[1].max(0.0));
                 let to = q - p;
                 let dist = to.len();
-                if !(dist > 1e-6) {
+                if dist.is_nan() || dist <= 1e-6 {
                     return None;
                 }
                 let wi = to * (1.0 / dist);
@@ -1103,11 +1106,11 @@ impl World {
                 continue;
             }
             let base: Rgb = [surf.base[0].max(0.0), surf.base[1].max(0.0), surf.base[2].max(0.0)];
-            if depth == 0 {
-                if let Some((near, far, _)) = self.fog {
-                    let k = (((surf.p - self.cam.eye).len() - near) / (far - near).max(1e-3)).clamp(0.0, 1.0);
-                    fog = k * k * (3.0 - 2.0 * k);
-                }
+            if depth == 0
+                && let Some((near, far, _)) = self.fog
+            {
+                let k = (((surf.p - self.cam.eye).len() - near) / (far - near).max(1e-3)).clamp(0.0, 1.0);
+                fog = k * k * (3.0 - 2.0 * k);
             }
             aov_dist += hit.t;
 

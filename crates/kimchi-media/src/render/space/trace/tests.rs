@@ -61,10 +61,7 @@ fn settings_come_from_the_scene() {
     let t = Settings::of(&s.render);
     assert_eq!((t.samples, t.bounces, t.denoise), (12, 2, false));
     // Odd values stay in range.
-    let mut r = RenderSettings::default();
-    r.samples = -5.0;
-    r.bounces = f64::NAN;
-    let t = Settings::of(&r);
+    let t = Settings::of(&RenderSettings { samples: -5.0, bounces: f64::NAN, ..RenderSettings::default() });
     assert_eq!((t.samples, t.bounces), (1, 4));
 }
 

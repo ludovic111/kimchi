@@ -115,7 +115,7 @@ pub(crate) fn denoise(w: usize, h: usize, color: &[[f32; 3]], g: &Guides) -> Vec
                         let sigma_l = SIGMA_LUM * var[p].max(var[q]).sqrt() + 1e-4;
                         let wl = (-(lp - lum(irr[q])).abs() / sigma_l).exp();
                         let wgt = hx * hy * wn * wz * wa * wl;
-                        if !(wgt > 0.0) {
+                        if wgt.is_nan() || wgt <= 0.0 {
                             continue;
                         }
                         for k in 0..3 {
