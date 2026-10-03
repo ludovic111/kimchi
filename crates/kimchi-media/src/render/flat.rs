@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use kimchi_core::anim::{Easing, value_at};
 use kimchi_core::motion::particles::ParticleSystem;
-use kimchi_core::motion::{Layer, LayerKind, Matte, Scene2d, TextLayer, walk_layers};
+use kimchi_core::motion::{EvalOptions, Layer, LayerKind, Matte, Scene2d, TextLayer, walk_layers};
 use kimchi_core::{TextAlign, TextStyle};
 use tiny_skia::{
     BlendMode, Color, FillRule, LineCap, LineJoin, Mask, MaskType, Path, Pixmap, PixmapPaint, Point, Rect, Stroke, Transform,
@@ -48,6 +48,8 @@ pub(crate) struct Flat<'a> {
     pub quality: super::Quality,
     /// Seconds per frame of the project: motion blur's shutter, animated grain.
     pub frame: f64,
+    /// What expressions see: the project fps and the clip's length in scene seconds.
+    pub eval: EvalOptions,
 }
 
 /// Compositions inside compositions, at most.
@@ -71,10 +73,10 @@ pub(crate) fn draw(canvas: &mut Pixmap, scene: &Scene2d, t: f64, base: Transform
     }
     let axis = |a: f32, b: f32| (a * a + b * b).sqrt().max(1e-6) as f64;
     let project = (canvas.width() as f64 / axis(base.sx, base.ky), canvas.height() as f64 / axis(base.kx, base.sy));
-    remember_canvas(project);
-    let layers = scene.layers_at(t);
+    remember_canvas(project, fx.eval);
+    let layers = scene.layers_at_with(t, &fx.eval);
     let hidden = hidden_ids(&layers);
-    let cx = Cx { scene, comp: None, home: &layers, hidden: &hidden, t, rate: 1.0, depth: 0, nest: 0, canvas: project, project, k: fx.scale.max(1e-4) };
+    let cx = Cx { scene, comp: None, home: &layers, hidden: &hidden, t, rate: 1.0, depth: 0, nest: 0, canvas: project, project, k: fx.scale.max(1e-4), opts: fx.eval };
     draw_list(canvas, &layers, Place { to: base, home: base }, &cx, fx);
 }
 
@@ -100,6 +102,8 @@ struct Cx<'a> {
     project: (f64, f64),
     /// Target pixels per project pixel of this canvas.
     k: f32,
+    /// For evaluating layers at other moments (expressions need the fps and length).
+    opts: EvalOptions,
 }
 
 /// Where a list lands on the target: `to` maps the list's space (where its layers' x and y are),
@@ -132,8 +136,8 @@ fn hidden_ids(list: &[Layer]) -> HashSet<String> {
 /// The scene's or a composition's layers at another moment.
 fn list_at(cx: &Cx, time: f64) -> Option<Vec<Layer>> {
     match cx.comp {
-        None => Some(cx.scene.layers_at(time)),
-        Some(c) => cx.scene.comp_layers_at(c, time),
+        None => Some(cx.scene.layers_at_with(time, &cx.opts)),
+        Some(c) => cx.scene.comp_layers_at_with(c, time, &cx.opts),
     }
 }
 
@@ -347,7 +351,7 @@ fn motion_blur(l: &Layer, list: &[Layer], place: Place, cx: &Cx, fx: &mut Flat, 
         *o = ((*a + half) / n as u32).min(255) as u8;
     }
     // Rounding can leave colour a hair above alpha; keep it premultiplied.
-    for px in out.data_mut().chunks_exact_mut(4) {
+    for px in out.data_mut().as_chunks_mut::<4>().0.iter_mut() {
         let a = px[3];
         px[0] = px[0].min(a);
         px[1] = px[1].min(a);
@@ -396,7 +400,7 @@ fn matte_values(m: &Matte, place: Place, cx: &Cx, fx: &mut Flat, w: u32, h: u32)
     let luma = m.mode.starts_with("luma");
     let Some(p) = pic else { return vec![if inverted { 1.0 } else { 0.0 }; n] };
     p.data()
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|px| {
             let v = if luma {
                 (0.2126 * px[0] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[2] as f32) / 255.0
@@ -457,7 +461,7 @@ fn adjust(target: &mut Pixmap, l: &Layer, list: &[Layer], place: Place, cx: &Cx,
     }
     let opacity = l.opacity.clamp(0.0, 1.0) as f32 * alpha;
     let data = target.data_mut();
-    for (i, (o, d)) in data.chunks_exact_mut(4).zip(done.data().chunks_exact(4)).enumerate() {
+    for (i, (o, d)) in data.as_chunks_mut::<4>().0.iter_mut().zip(done.data().as_chunks::<4>().0.iter()).enumerate() {
         let k = opacity * weight.as_ref().map_or(1.0, |c| c[i].clamp(0.0, 1.0));
         if k <= 0.0 {
             continue;
@@ -632,7 +636,7 @@ fn composition(target: &mut Pixmap, l: &Layer, id: &str, speed: f64, offset: f64
     if let Some(bg) = &c.background {
         pic.fill(color(bg));
     }
-    let Some(list) = cx.scene.comp_layers_at(id, ct) else { return };
+    let Some(list) = cx.scene.comp_layers_at_with(id, ct, &cx.opts) else { return };
     let hidden = hidden_ids(&list);
     let (kx, ky) = (pw as f64 / cw, ph as f64 / ch);
     let base = Transform::from_translate(pw as f32 / 2.0, ph as f32 / 2.0).pre_scale(kx as f32, ky as f32);
@@ -648,6 +652,7 @@ fn composition(target: &mut Pixmap, l: &Layer, id: &str, speed: f64, offset: f64
         canvas: (cw, ch),
         project: cx.project,
         k: kx.min(ky) as f32,
+        opts: cx.opts,
     };
     draw_list(&mut pic, &list, Place { to: base, home: base }, &inner, fx);
     let at = ts.pre_scale((cw / pw as f64) as f32, (ch / ph as f64) as f32).pre_translate(-(pw as f32) / 2.0, -(ph as f32) / 2.0);
@@ -1015,27 +1020,31 @@ fn bounds_once(l: &Layer, scene: &Scene2d, project: (f64, f64), canvas: (f64, f6
     }
 }
 
-/// The project canvas last drawn (compositions without a size use it), for the Studio.
-fn last_canvas() -> &'static Mutex<(f64, f64)> {
-    static C: OnceLock<Mutex<(f64, f64)>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new((1920.0, 1080.0)))
+/// The project canvas last drawn (compositions without a size use it) and what expressions saw
+/// then, for the Studio.
+fn last_canvas() -> &'static Mutex<((f64, f64), EvalOptions)> {
+    static C: OnceLock<Mutex<((f64, f64), EvalOptions)>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(((1920.0, 1080.0), EvalOptions::default())))
 }
 
-fn remember_canvas(size: (f64, f64)) {
+fn remember_canvas(size: (f64, f64), opts: EvalOptions) {
     if size.0.is_finite() && size.1.is_finite() && size.0 > 0.0 && size.1 > 0.0 {
-        *last_canvas().lock().unwrap_or_else(|e| e.into_inner()) = size;
+        *last_canvas().lock().unwrap_or_else(|e| e.into_inner()) = (size, opts);
     }
 }
 
 /// The layers the Studio looks at: the scene's or a composition's, at `t`, with their canvas.
-fn studio_list(scene: &Scene2d, t: f64, comp: Option<&str>) -> Option<(Vec<Layer>, (f64, f64), (f64, f64))> {
-    let project = *last_canvas().lock().unwrap_or_else(|e| e.into_inner());
+/// Layers, the canvas they are on and the project's canvas.
+type StudioList = (Vec<Layer>, (f64, f64), (f64, f64));
+
+fn studio_list(scene: &Scene2d, t: f64, comp: Option<&str>) -> Option<StudioList> {
+    let (project, opts) = *last_canvas().lock().unwrap_or_else(|e| e.into_inner());
     match comp {
-        None => Some((scene.layers_at(t), project, project)),
+        None => Some((scene.layers_at_with(t, &opts), project, project)),
         Some(id) => {
             let c = scene.composition(id)?;
             let canvas = (c.width.unwrap_or(project.0), c.height.unwrap_or(project.1));
-            Some((scene.comp_layers_at(id, t)?, canvas, project))
+            Some((scene.comp_layers_at_with(id, t, &opts)?, canvas, project))
         }
     }
 }

@@ -20,6 +20,7 @@
 //! Timing matches the old ffmpeg graph: a clip shows from half a frame before its start to half a
 //! frame before its end, and fades are linear in opacity.
 
+pub mod cache;
 pub(crate) mod effects2d;
 pub(crate) mod flat;
 pub mod grade;
@@ -73,6 +74,8 @@ pub struct Renderer {
     graded: HashMap<Id, (usize, String, Arc<Pixmap>)>,
     /// Quick settings for the preview, the scenes' own render settings for exports.
     quality: Quality,
+    /// Whether each rendered motion clip's file still matches its scene.
+    current: HashMap<Id, bool>,
 }
 
 /// What one track shows at an instant.
@@ -164,6 +167,7 @@ impl Renderer {
             early,
             graded: HashMap::new(),
             quality: Quality::Preview,
+            current: HashMap::new(),
         }
     }
 
@@ -205,6 +209,38 @@ impl Renderer {
         Ok(canvas)
     }
 
+    /// A motion clip's scene alone at scene time `t`, transparent around it, at this renderer's
+    /// quality (what a render to the timeline stores).
+    pub fn scene_frame(&mut self, clip_id: Id, t: f64) -> MediaResult<Pixmap> {
+        let shading = if self.quality == Quality::Final { space::viewport::Shading::Rendered } else { space::viewport::Shading::Material };
+        let opts = space::viewport::ViewOptions { through_camera: true, shading, ..Default::default() };
+        self.scene_view(clip_id, t, None, &opts, None)
+    }
+
+    /// The frame a rendered motion clip's file has for timeline time `t` (scene time `st`), when
+    /// the file is still right and covers it.
+    fn rendered_frame(&mut self, clip: &Clip, t: f64, st: f64, streaming: bool, used: &mut HashSet<StreamKey>) -> Option<Arc<Pixmap>> {
+        let r = clip.rendered.as_ref()?;
+        let project = self.project.clone();
+        let ok = *self.current.entry(clip.id).or_insert_with(|| cache::is_current(&project, clip));
+        if !ok || !r.covers(st) {
+            return None;
+        }
+        let path = PathBuf::from(&r.file);
+        let file_t = (st - r.from).max(0.0);
+        let key = StreamKey(clip.id, Some("@rendered".into()));
+        used.insert(key.clone());
+        if !streaming {
+            return source::grab(&self.tools, &path, Some(file_t), self.width, self.height).ok().map(Arc::new);
+        }
+        let local = t - clip.start;
+        if !self.streams.get(&key).is_some_and(|s| s.serves(local)) {
+            let s = VideoStream::start(&self.tools, &path, file_t, clip.speed, self.fps, self.width, self.height, local).ok()?;
+            self.streams.insert(key.clone(), s);
+        }
+        self.streams.get_mut(&key)?.at(local).ok()?
+    }
+
     /// A motion clip's scene on its own at scene time `t`, for the Studio: a 3D scene from the
     /// editor's `view` (or through its camera, with `opts.through_camera`), with the view's
     /// overlays; a 2D scene on its canvas (or one of its compositions, `comp`).
@@ -220,12 +256,13 @@ impl Renderer {
             Scene::Flat(s) => {
                 let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
                 let (sx, quality, frame) = (self.sx, self.quality, 1.0 / self.fps);
+                let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(&clip)) };
                 let shown = match comp.and_then(|c| s.composition(c)) {
                     Some(c) => kimchi_core::Scene2d { background: c.background.clone(), layers: c.layers.clone(), compositions: s.compositions.clone(), ..s.clone() },
                     None => s.clone(),
                 };
                 let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
-                let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame };
+                let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame, eval };
                 flat::draw(&mut canvas, &shown, t, base, &mut fx);
             }
             Scene::Space(s) => {
@@ -379,18 +416,23 @@ impl Renderer {
             ClipContent::Motion { scene, .. } => {
                 let st = clip.scene_time(t);
                 let scene = scene.clone();
+                let rendered = self.rendered_frame(clip, t, st, streaming, used);
                 // Scene pixels map to the canvas through the clip's placement, around the canvas centre.
                 let ts = center.pre_scale(pl.scale_x as f32, pl.scale_y as f32).pre_translate(-w / 2.0, -h / 2.0);
                 let plain = ts.is_identity() && alpha >= 1.0 && blur <= 0.0 && !fx.is_active();
                 let mut own = if plain { None } else { Some(Pixmap::new(self.width, self.height).expect("non-empty")) };
-                {
+                if let Some(pic) = rendered {
+                    let target = own.as_mut().unwrap_or(canvas);
+                    draw_picture(target, &pic, Transform::from_scale(w / pic.width() as f32, h / pic.height() as f32), 1.0);
+                } else {
                     let target = own.as_mut().unwrap_or(canvas);
                     match &scene {
                         Scene::Flat(s) => {
                             let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
                             let (sx, quality, frame) = (self.sx, self.quality, 1.0 / self.fps);
+                            let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(clip)) };
                             let mut pics = ScenePictures { r: self, clip: clip.id, streaming, used };
-                            let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame };
+                            let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame, eval };
                             flat::draw(target, s, st, base, &mut fx);
                         }
                         Scene::Space(s) => {
@@ -682,6 +724,11 @@ fn fitted(fit: Fit, sw: Option<u32>, sh: Option<u32>, w: f32, h: f32) -> (f32, f
             (iw * s, ih * s)
         }
     }
+}
+
+/// How many scene seconds a motion clip shows (what expressions call `duration`).
+fn scene_length(c: &Clip) -> f64 {
+    (c.scene_time(c.end()) - c.scene_time(c.start)).abs()
 }
 
 /// Opacity from the clip's fades at `t` (linear, like ffmpeg's `fade`).

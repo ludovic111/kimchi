@@ -27,7 +27,7 @@ fn scene(v: serde_json::Value) -> Scene2d {
 fn draw_on(s: &Scene2d, t: f64, w: u32, h: u32, quality: Quality) -> Pixmap {
     let mut canvas = Pixmap::new(w, h).unwrap();
     let mut pics = Blue;
-    let mut fx = Flat { pictures: &mut pics, scale: 1.0, quality, frame: 1.0 / 30.0 };
+    let mut fx = Flat { pictures: &mut pics, scale: 1.0, quality, frame: 1.0 / 30.0, eval: EvalOptions { fps: 30.0, duration: None } };
     draw(&mut canvas, s, t, Transform::from_translate(w as f32 / 2.0, h as f32 / 2.0), &mut fx);
     canvas
 }
@@ -621,6 +621,17 @@ fn motion_blur_widens_moving_things() {
     // A still layer stays sharp.
     let still = scene(json!({"layers": [{"id": "a", "type": "rect", "width": 20, "height": 20, "fill": "#ffffff", "motionBlur": true}]}));
     assert_eq!(width(&draw_on(&still, 0.05, 200, 100, Quality::Final)), 20);
+}
+
+#[test]
+fn expressions_drive_layers() {
+    let v = json!({"layers": [{"id": "a", "type": "rect", "width": 10, "height": 10, "fill": "#ffffff", "expressions": {"x": "time * 100"}}]});
+    let p = render(v, 0.5);
+    assert_eq!(span(&p, 50), Some((145, 154)), "x = 50 at 0.5 s");
+    // Motion blur sees the formula's motion too.
+    let s = scene(json!({"layers": [{"id": "a", "type": "rect", "width": 10, "height": 10, "fill": "#ffffff", "motionBlur": true, "expressions": {"x": "time * 1200"}}]}));
+    let blurred = draw_on(&s, 0.05, 200, 100, Quality::Final);
+    assert!((0..200).filter(|x| alpha(&blurred, *x, 50) > 0).count() >= 26);
 }
 
 #[test]

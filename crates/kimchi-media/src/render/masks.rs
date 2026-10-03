@@ -67,7 +67,7 @@ pub(crate) fn apply(p: &mut Pixmap, masks: &[Mask], ts: Transform) {
 
 /// Scales every pixel of `p` by `cov` (0–1 per pixel).
 pub(crate) fn multiply(p: &mut Pixmap, cov: &[f32]) {
-    for (px, c) in p.data_mut().chunks_exact_mut(4).zip(cov) {
+    for (px, c) in p.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(cov) {
         let c = c.clamp(0.0, 1.0);
         if c >= 1.0 {
             continue;
@@ -91,7 +91,7 @@ fn shape(m: &Mask, ts: Transform, scale: f32, w: u32, h: u32) -> Vec<f32> {
         let paint = if grow > 0.0 { white } else { Paint { blend_mode: BlendMode::Clear, ..white } };
         pic.stroke_path(&path, &paint, &stroke, ts, None);
     }
-    let mut cov: Vec<f32> = pic.data().chunks_exact(4).map(|px| px[3] as f32 / 255.0).collect();
+    let mut cov: Vec<f32> = pic.data().as_chunks::<4>().0.iter().map(|px| px[3] as f32 / 255.0).collect();
     let feather = m.n("feather") as f32 * scale;
     if feather > 0.3 {
         // The soft edge spans about the feather width (±2σ), centred on the outline.

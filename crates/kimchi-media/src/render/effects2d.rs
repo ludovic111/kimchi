@@ -458,7 +458,7 @@ fn read(p: &Pixmap, r: Roi) -> Vec<Px> {
     let mut out = vec![[0.0; 4]; r.w() * r.h()];
     out.par_chunks_mut(r.w().max(1)).enumerate().for_each(|(j, row)| {
         let src = &data[((r.y0 + j) * w + r.x0) * 4..((r.y0 + j) * w + r.x1) * 4];
-        for (o, s) in row.iter_mut().zip(src.chunks_exact(4)) {
+        for (o, s) in row.iter_mut().zip(src.as_chunks::<4>().0.iter()) {
             *o = [s[0] as f32, s[1] as f32, s[2] as f32, s[3] as f32];
         }
     });
@@ -475,7 +475,7 @@ fn write(p: &mut Pixmap, r: Roi, buf: &[Px]) {
     let w = p.width() as usize;
     let rw = r.w().max(1);
     rows_mut(p.data_mut(), w, r, |j, row| {
-        for (o, s) in row.chunks_exact_mut(4).zip(&buf[(j - r.y0) * rw..]) {
+        for (o, s) in row.as_chunks_mut::<4>().0.iter_mut().zip(&buf[(j - r.y0) * rw..]) {
             o.copy_from_slice(&store(*s));
         }
     });
@@ -524,7 +524,7 @@ fn map_rgba(p: &mut Pixmap, roi: Option<Roi>, f: impl Fn([f32; 4], f32, f32) -> 
     let Some(r) = roi.or_else(|| ink(p)) else { return };
     let w = p.width() as usize;
     rows_mut(p.data_mut(), w, r, |y, row| {
-        for (i, px) in row.chunks_exact_mut(4).enumerate() {
+        for (i, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let a = px[3];
             if a == 0 {
                 continue;
@@ -544,7 +544,7 @@ fn warp(p: &mut Pixmap, roi: Option<Roi>, f: impl Fn(f32, f32) -> (f32, f32) + S
     let (w, h) = (p.width() as usize, p.height() as usize);
     let src = p.data().to_vec();
     rows_mut(p.data_mut(), w, r, |y, row| {
-        for (i, px) in row.chunks_exact_mut(4).enumerate() {
+        for (i, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let (sx, sy) = f((r.x0 + i) as f32 + 0.5, y as f32 + 0.5);
             px.copy_from_slice(&store(sample_u8(&src, w, h, sx, sy)));
         }
@@ -813,7 +813,7 @@ fn glow(p: &mut Pixmap, radius: f32, intensity: f32, threshold: f32, tint: [f32;
 fn silhouette(p: &Pixmap, tint: [f32; 4]) -> Pixmap {
     let mut s = Pixmap::new(p.width(), p.height()).expect("same size");
     let k = tint[3];
-    for (o, src) in s.data_mut().chunks_exact_mut(4).zip(p.data().chunks_exact(4)) {
+    for (o, src) in s.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(p.data().as_chunks::<4>().0.iter()) {
         let a = src[3] as f32 * k;
         if a > 0.0 {
             o.copy_from_slice(&store([tint[0] * a, tint[1] * a, tint[2] * a, a]));
@@ -938,7 +938,7 @@ fn halftone(p: &mut Pixmap, size: f32, angle: f32, colored: bool, origin: (f32, 
     let src = p.data().to_vec();
     let (s, c) = angle.to_radians().sin_cos();
     rows_mut(p.data_mut(), w, r, |y, row| {
-        for (i, px) in row.chunks_exact_mut(4).enumerate() {
+        for (i, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let (x, yy) = ((r.x0 + i) as f32 + 0.5 - origin.0, y as f32 + 0.5 - origin.1);
             // Into the dot grid's own (turned) space.
             let (gx, gy) = (x * c + yy * s, -x * s + yy * c);
@@ -1006,7 +1006,7 @@ fn mosaic(p: &mut Pixmap, size: f32, origin: (f32, f32)) {
     });
     rows_mut(p.data_mut(), w, r, |y, row| {
         let j = (block(y, oy) - by0).clamp(0, bh as i64 - 1) as usize;
-        for (i, px) in row.chunks_exact_mut(4).enumerate() {
+        for (i, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let b = (block(r.x0 + i, ox) - bx0).clamp(0, bw as i64 - 1) as usize;
             px.copy_from_slice(&store(avg[j * bw + b]));
         }
@@ -1023,7 +1023,7 @@ fn split_channels(p: &mut Pixmap, roi: Option<Roi>, dx: f32, dy: f32) {
     let (w, h) = (p.width() as usize, p.height() as usize);
     let src = p.data().to_vec();
     rows_mut(p.data_mut(), w, r, |y, row| {
-        for (i, px) in row.chunks_exact_mut(4).enumerate() {
+        for (i, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let (x, y) = ((r.x0 + i) as f32 + 0.5, y as f32 + 0.5);
             let red = sample_u8(&src, w, h, x - dx, y - dy);
             let green = sample_u8(&src, w, h, x, y);
@@ -1055,7 +1055,7 @@ fn glitch(p: &mut Pixmap, amount: f32, speed: f32, seed: u32, t: f64, k: f32) {
         }
         let src = p.data().to_vec();
         rows_mut(p.data_mut(), w, r, |y, row| {
-            for (i, px) in row.chunks_exact_mut(4).enumerate() {
+            for (i, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 px.copy_from_slice(&store(sample_u8(&src, w, h, i as f32 + 0.5 - shift, y as f32 + 0.5)));
             }
         });
