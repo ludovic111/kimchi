@@ -1113,6 +1113,13 @@ pub fn fill(m: &mut PolyMesh, sel: &Selection) -> Result<Selection, String> {
     if vs.len() < 3 {
         return Err("fill needs three or more vertices".into());
     }
+    // Fill closes holes and joins loose vertices; vertices deep inside a closed surface (every
+    // edge round them already has two faces) have nothing open to fill.
+    let open: HashSet<u32> = m.edges().iter().filter(|e| e.faces.len() < 2).flat_map(|e| [e.a, e.b]).collect();
+    let loose: HashSet<u32> = (0..m.positions.len() as u32).filter(|v| !m.faces.iter().any(|f| f.contains(v))).collect();
+    if vs.iter().all(|v| !open.contains(v) && !loose.contains(v)) {
+        return Err("fill closes holes (open edges) and joins loose vertices, and the selection is inside a closed surface: there is nothing open to fill".into());
+    }
     let loops = border_loops(m, &vs).unwrap_or_default();
     let face = match loops.as_slice() {
         [l] if l.len() == vs.len() => l.clone(),
@@ -1146,6 +1153,15 @@ pub fn fill(m: &mut PolyMesh, sel: &Selection) -> Result<Selection, String> {
             f
         }
     };
+    let mut key = face.clone();
+    key.sort_unstable();
+    if let Some(i) = m.faces.iter().position(|f| {
+        let mut g = f.clone();
+        g.sort_unstable();
+        g == key
+    }) {
+        return Err(format!("those vertices already make face {i}"));
+    }
     let verts = face.clone();
     let fi = m.add_face(face, None);
     Ok(tidy(m, verts, [fi]))
@@ -1430,6 +1446,18 @@ pub fn spin(m: &mut PolyMesh, sel: &Selection, angle: f64, steps: usize, axis: [
     }
     if !faces.is_empty() {
         let originals: Vec<Vec<u32>> = faces.iter().map(|&f| m.faces[f].clone()).collect();
+        // A closed region (a whole solid) has no border to sweep: it would only spin in place
+        // and, all the way round, vanish.
+        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        for f in &originals {
+            for k in 0..f.len() {
+                let (a, b) = (f[k], f[(k + 1) % f.len()]);
+                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        if uses.values().all(|&n| n != 1) {
+            return Err("spin sweeps the border of the selected faces (or selected edges, like a profile), and these faces close up with no border: select part of the surface, or the edges to turn".into());
+        }
         let mut region_verts: Vec<u32> = originals.iter().flatten().copied().collect();
         region_verts.sort_unstable();
         region_verts.dedup();

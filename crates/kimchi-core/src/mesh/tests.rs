@@ -749,6 +749,12 @@ fn fill_bridge_and_normals() {
     ops::fill(&mut m, &top).unwrap();
     assert!(m.is_closed());
     assert!(close(m.volume(), 1.0, 1e-9), "filled facing out");
+    // Nothing open to fill on a closed box: no duplicate face, no face through the middle.
+    for sel in [top_face(&m), Selection::all(&m)] {
+        let mut c = m.clone();
+        assert!(ops::fill(&mut c, &sel).unwrap_err().contains("nothing open"));
+        assert_eq!(c.faces.len(), m.faces.len());
+    }
     // Bridge two facing squares into a tube.
     let mut m = cube(1.0);
     let mut far = cube(1.0);
@@ -834,6 +840,11 @@ fn spin_and_knife() {
     let edge = Selection::of_vertices([0, 1]);
     ops::spin(&mut e, &edge, 360.0, 12, [0.0, 1.0, 0.0], [0.0; 3]).unwrap();
     assert_eq!(e.faces.len(), 1 + 12);
+    // A whole closed solid has no border to sweep: an error, not an emptied mesh.
+    let mut solid = cube(1.0);
+    let all = Selection::all(&solid);
+    assert!(ops::spin(&mut solid, &all, 360.0, 12, [0.0, 1.0, 0.0], [0.0; 3]).unwrap_err().contains("border"));
+    assert_eq!(solid.faces.len(), 6, "left as it was");
     // Knife across a box's middle: every side face splits.
     let mut k = cube(1.0);
     let out = ops::knife(&mut k, &Selection::none(), [0.0, 0.1, 0.0], [0.0, 1.0, 0.0]).unwrap();
