@@ -79,9 +79,9 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         },
         "captions.transcribe" => transcribe(s, cx, &a).await,
         "captions.import" => {
-            let path = a.str("path")?;
-            let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-            let mut cues = kimchi_captions::parse(&text)?;
+            let path = crate::commands::media::absolute(a.str("path")?)?;
+            let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let mut cues = kimchi_captions::parse(&kimchi_captions::decode(&bytes))?;
             let offset = a.opt_f64("offset").unwrap_or(0.0);
             for c in &mut cues {
                 c.start = (c.start + offset).max(0.0);
@@ -95,7 +95,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         }
         "captions.export" => {
             let p = s.project()?;
-            let path = PathBuf::from(a.str("path")?);
+            let path = crate::commands::media::absolute(a.str("path")?)?;
             let format = match a.opt_str("format") {
                 Some(f) => Format::parse(f)?,
                 None => Format::of_path(&path).unwrap_or(Format::Srt),
@@ -290,6 +290,16 @@ async fn transcribe(s: &Arc<Session>, cx: &Ctx, a: &Args) -> CmdResult {
         }
         *st = Some(Status { stage: "mixing", progress: 0.0, model: model.info().id, cancel: cancel.clone() });
     }
+    // Cleared however this ends, even when the caller stops waiting (the future is dropped):
+    // then the download or the listening thread is stopped too.
+    struct Running(CancellationToken);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            self.0.cancel();
+            *status().lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+    let running = Running(cancel.clone());
     let result = async {
         let dir = models_dir(s);
         if !model.is_downloaded(&dir) {
@@ -312,7 +322,7 @@ async fn transcribe(s: &Arc<Session>, cx: &Ctx, a: &Args) -> CmdResult {
         .map_err(err)?
     }
     .await;
-    *status().lock().unwrap_or_else(|e| e.into_inner()) = None;
+    drop(running);
     let transcript = result.map_err(|e| if e == "cancelled" { "The transcription was cancelled.".to_string() } else { e })?;
     let mut cues = kimchi_captions::cues_from_segments(&transcript.segments, max_chars);
     for c in &mut cues {

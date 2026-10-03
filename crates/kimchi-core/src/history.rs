@@ -7,16 +7,20 @@
 //! what an agent changed and `history.list` can show it.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::edit::{Edit, EditOutcome, EditResult};
+use crate::edit::{Edit, EditError, EditOutcome, EditResult};
 use crate::model::Project;
 
 const MAX_HISTORY: usize = 300;
 const MAX_CHECKPOINTS: usize = 64;
 const COALESCE_WINDOW: Duration = Duration::from_millis(1200);
+/// Checkpoint ids are unique in the process, so one taken on a project never names a state of
+/// another (an agent run's "Revert" after the person switched projects).
+static NEXT_CHECKPOINT: AtomicU64 = AtomicU64::new(1);
 
 /// What one undo step did and who did it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -37,13 +41,18 @@ struct Step {
 /// Open batch: everything applied until [`Editor::end_batch`] is one undo step.
 #[derive(Debug, Clone)]
 struct Batch {
-    depth: usize,
-    /// Project and history length when the outermost batch began, for rollback.
+    /// One per nesting depth, innermost last: what a rollback at that depth goes back to.
+    levels: Vec<Level>,
+    pushed: bool,
+    info: StepInfo,
+}
+
+#[derive(Debug, Clone)]
+struct Level {
     start: Project,
     undo_len: usize,
     redo: Vec<Step>,
     pushed: bool,
-    info: StepInfo,
 }
 
 pub struct Editor {
@@ -54,9 +63,11 @@ pub struct Editor {
     dirty: bool,
     batch: Option<Batch>,
     checkpoints: BTreeMap<u64, Project>,
-    next_checkpoint: u64,
     /// Label and source for the next steps, set by the command layer.
     current: StepInfo,
+    /// The caller isn't the one that opened the batch: its changes would fold into (and be
+    /// rolled back with) someone else's step, so they are refused while a batch is open.
+    outsider: bool,
 }
 
 impl Editor {
@@ -69,8 +80,8 @@ impl Editor {
             dirty: false,
             batch: None,
             checkpoints: BTreeMap::new(),
-            next_checkpoint: 1,
             current: StepInfo { label: "edit".into(), source: "window".into() },
+            outsider: false,
         }
     }
 
@@ -110,20 +121,43 @@ impl Editor {
         self.current = StepInfo { label: label.into(), source: source.into() };
     }
 
+    /// Marks the caller as not owning an open batch (see [`busy`](Self::busy)).
+    pub fn set_outsider(&mut self, outsider: bool) {
+        self.outsider = outsider;
+    }
+
+    /// Refuses a change from an outsider while a batch is open.
+    fn busy(&self) -> EditResult {
+        match &self.batch {
+            Some(b) if self.outsider => Err(EditError::Busy(b.info.source.clone())),
+            _ => Ok(()),
+        }
+    }
+
     /// Applies an edit. Edits sharing a `coalesce` key within a short window
-    /// (e.g. dragging a slider) collapse into a single undo step.
+    /// (e.g. dragging a slider) collapse into a single undo step. An edit that fails changes
+    /// nothing (multi-part edits are put back as they were).
     pub fn apply(&mut self, edit: &Edit, coalesce: Option<&str>) -> EditResult<EditOutcome> {
-        self.dirty = true;
         if edit.is_background() {
+            // They fail (if at all) before changing anything.
             let out = self.project.apply(edit)?;
+            self.dirty = true;
             // Background edits describe facts (a render finished, a thumbnail
             // exists), so they hold in every past and future state too.
             self.apply_everywhere(edit);
             return Ok(out);
         }
+        self.busy()?;
 
         let before = self.project.clone();
-        let out = self.project.apply(edit)?;
+        let out = match self.project.apply(edit) {
+            Ok(out) => out,
+            Err(e) => {
+                self.project = before;
+                return Err(e);
+            }
+        };
+        self.dirty = true;
         // `apply` stamps `updated_at`; an edit that changed nothing else (a slider's final value,
         // the same as its last) is no step.
         self.project.updated_at = before.updated_at;
@@ -136,13 +170,15 @@ impl Editor {
     }
 
     /// Replaces the whole project as one undo step (used to revert to a checkpoint).
-    pub fn replace(&mut self, project: Project) {
+    pub fn replace(&mut self, project: Project) -> EditResult {
+        self.busy()?;
         if project == self.project {
-            return;
+            return Ok(());
         }
         let before = std::mem::replace(&mut self.project, project);
         self.dirty = true;
         self.record(before, None);
+        Ok(())
     }
 
     fn record(&mut self, before: Project, coalesce: Option<&str>) {
@@ -182,35 +218,29 @@ impl Editor {
         for p in self.checkpoints.values_mut() {
             let _ = p.apply(edit);
         }
-        if let Some(b) = &mut self.batch {
-            let _ = b.start.apply(edit);
-            for s in &mut b.redo {
+        for l in self.batch.iter_mut().flat_map(|b| b.levels.iter_mut()) {
+            let _ = l.start.apply(edit);
+            for s in &mut l.redo {
                 let _ = s.before.apply(edit);
             }
         }
     }
 
     /// Starts a batch: every change until the matching [`end_batch`](Self::end_batch)
-    /// becomes one undo step labelled `label`. Batches nest; the outermost wins.
+    /// becomes one undo step labelled `label`. Batches nest; the outermost names the step.
     pub fn begin_batch(&mut self, label: impl Into<String>, source: impl Into<String>) {
-        if let Some(b) = &mut self.batch {
-            b.depth += 1;
-            return;
+        let pushed = self.batch.as_ref().is_some_and(|b| b.pushed);
+        let level = Level { start: self.project.clone(), undo_len: self.undo.len(), redo: self.redo.clone(), pushed };
+        match &mut self.batch {
+            Some(b) => b.levels.push(level),
+            None => self.batch = Some(Batch { levels: vec![level], pushed: false, info: StepInfo { label: label.into(), source: source.into() } }),
         }
-        self.batch = Some(Batch {
-            depth: 1,
-            start: self.project.clone(),
-            undo_len: self.undo.len(),
-            redo: self.redo.clone(),
-            pushed: false,
-            info: StepInfo { label: label.into(), source: source.into() },
-        });
     }
 
     pub fn end_batch(&mut self) {
         if let Some(b) = &mut self.batch {
-            b.depth -= 1;
-            if b.depth == 0 {
+            b.levels.pop();
+            if b.levels.is_empty() {
                 self.batch = None;
                 self.last_coalesce = None;
                 self.trim();
@@ -218,14 +248,19 @@ impl Editor {
         }
     }
 
-    /// Ends the outermost batch and puts everything back as it was when it began.
+    /// Ends the innermost batch and puts everything back as it was when that one began (an
+    /// outer batch carries on with what came before).
     pub fn rollback_batch(&mut self) {
-        if let Some(b) = self.batch.take() {
-            self.project = b.start;
-            self.undo.truncate(b.undo_len);
-            self.redo = b.redo;
-            self.last_coalesce = None;
+        let Some(b) = &mut self.batch else { return };
+        let Some(l) = b.levels.pop() else { return };
+        b.pushed = l.pushed;
+        if b.levels.is_empty() {
+            self.batch = None;
         }
+        self.project = l.start;
+        self.undo.truncate(l.undo_len);
+        self.redo = l.redo;
+        self.last_coalesce = None;
     }
 
     pub fn in_batch(&self) -> bool {
@@ -234,8 +269,7 @@ impl Editor {
 
     /// Remembers the current project so it can be restored with [`revert_to`](Self::revert_to).
     pub fn checkpoint(&mut self) -> u64 {
-        let id = self.next_checkpoint;
-        self.next_checkpoint += 1;
+        let id = NEXT_CHECKPOINT.fetch_add(1, Ordering::Relaxed);
         self.checkpoints.insert(id, self.project.clone());
         while self.checkpoints.len() > MAX_CHECKPOINTS {
             let oldest = *self.checkpoints.keys().next().expect("not empty");
@@ -245,11 +279,12 @@ impl Editor {
     }
 
     /// Puts the project back as it was at `checkpoint`, as one new undo step
-    /// (so the revert itself can be undone). Returns false for an unknown checkpoint.
-    pub fn revert_to(&mut self, checkpoint: u64) -> bool {
-        let Some(p) = self.checkpoints.get(&checkpoint).cloned() else { return false };
-        self.replace(p);
-        true
+    /// (so the revert itself can be undone). Returns false for a checkpoint this history
+    /// doesn't have (another project's, or too old).
+    pub fn revert_to(&mut self, checkpoint: u64) -> EditResult<bool> {
+        let Some(p) = self.checkpoints.get(&checkpoint).cloned() else { return Ok(false) };
+        self.replace(p)?;
+        Ok(true)
     }
 
     pub fn has_checkpoint(&self, checkpoint: u64) -> bool {

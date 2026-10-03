@@ -2,7 +2,7 @@
 //! `export.encoders`), a destination from the save panel, then `export.start`. Progress comes from the store's export list (the session's events), so an
 //! export started by the agent or the CLI shows here too, and closing the dialog doesn't stop it.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use gpui::{AnyElement, App, Context, Entity, FocusHandle, FontWeight, KeyBinding, Render, SharedString, Subscription, Window, actions, div, prelude::*, px, relative};
 use kimchi_control::ExportStatus;
@@ -545,7 +545,7 @@ impl ExportDialog {
             Some(e) if e.done => {
                 let path = PathBuf::from(&e.path);
                 let ok = e.error.is_none();
-                row.when(ok, |d| d.child(Button::new("export-reveal", "Show in Finder").with_icon("folder-search").on_click(move |_, _, cx| cx.reveal_path(&path))))
+                row.when(ok, |d| d.child(Button::new("export-reveal", crate::ui::reveal_label()).with_icon("folder-search").on_click(move |_, _, cx| cx.reveal_path(&path))))
                     .when(!ok, |d| {
                         d.child(Button::new("export-back", "Back").ghost().on_click(cx.listener(|this, _, _, cx| {
                             this.job = None;
@@ -634,10 +634,9 @@ impl Render for ExportDialog {
 }
 
 /// Where the save panel opens: ~/Movies, else home.
+/// Movies (macOS), Videos (Windows, Linux), else the home folder.
 pub fn default_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
-    let movies = home.join("Movies");
-    if Path::new(&movies).is_dir() { movies } else { home }
+    dirs::video_dir().filter(|d| d.is_dir()).or_else(dirs::home_dir).unwrap_or_else(std::env::temp_dir)
 }
 
 /// A file name from a project name.

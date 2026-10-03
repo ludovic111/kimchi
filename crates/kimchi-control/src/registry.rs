@@ -220,6 +220,9 @@ pub(crate) fn call_boxed<'a>(
     Box::pin(run_checked(session, source, spec, params))
 }
 
+/// How long a change waits for a running `project.batch` to end.
+const BATCH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 async fn run_checked(session: &Arc<Session>, source: Source, spec: &'static Spec, params: Value) -> CmdResult {
     let params = match params {
         Value::Null => Value::Object(Map::new()),
@@ -233,6 +236,11 @@ async fn run_checked(session: &Arc<Session>, source: Source, spec: &'static Spec
             "`{}` needs the kimchi window. Start the app and use kimchi-cli without --file, or kimchi-mcp --live.",
             spec.name
         ));
+    }
+    // A change from outside a running `project.batch` lets it finish first (briefly: past that,
+    // the editor refuses the change while the batch is open rather than fold it in).
+    if spec.mutates && spec.name != "project.batch" && !crate::session::in_batch_scope() {
+        let _ = tokio::time::timeout(BATCH_WAIT, session.batch_lock.lock()).await;
     }
     crate::commands::dispatch(session, &Ctx { source, spec }, Args(params.as_object().cloned().unwrap_or_default())).await
 }
@@ -288,6 +296,11 @@ pub fn validate(spec: &Spec, params: &Value) -> CmdResult<()> {
         if !p.kind.accepts(v) {
             let want = p.kind.schema_type().unwrap_or("a value");
             return Err(format!("`{k}` should be {} {want} ({}), got {v}", article(want), p.doc));
+        }
+        // Infinity or NaN (from a client's arithmetic) would be written as null and make the
+        // project file unreadable.
+        if matches!(p.kind, Kind::Number | Kind::Integer) && !v.as_f64().is_some_and(f64::is_finite) {
+            return Err(format!("`{k}` should be a finite number ({}), got {v}", p.doc));
         }
     }
     for p in spec.params.iter().filter(|p| p.required) {

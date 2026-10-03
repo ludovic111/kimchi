@@ -364,7 +364,14 @@ impl Provider for Bfl {
             }
             let label = if n > 1 { format!("Image {} of {n}", i + 1) } else { "Generating".into() };
             let one = run_one(cx, m, &body, &label).await?;
-            out.items.push(OutputItem::url(OutputKind::Image, one.url));
+            // Sample URLs expire after ~10 minutes, and a long batch can outlast that: fetch each
+            // one now. The last goes straight to the harness, which downloads it at once.
+            if i + 1 < n {
+                let (data, mime) = util::download(cx, &one.url, &[]).await?;
+                out.items.push(OutputItem::bytes(OutputKind::Image, data, mime));
+            } else {
+                out.items.push(OutputItem::url(OutputKind::Image, one.url));
+            }
             out.seed = out.seed.or(one.seed);
             if let Some(c) = one.credits {
                 credits = Some(credits.unwrap_or(0.0) + c);

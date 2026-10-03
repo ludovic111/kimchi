@@ -520,7 +520,7 @@ impl Inspector {
                     .child(caps("Source", cx))
                     .child(div().text_size(px(sz::SM)).truncate().child(a.name.clone()))
                     .child(facts(a, cx))
-                    .child(Button::new("reveal-source", "Reveal in Finder").small().with_icon("folder-search").on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&path))))
+                    .child(Button::new("reveal-source", crate::ui::reveal_label()).small().with_icon("folder-search").on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&path))))
                     .into_any_element(),
             );
         }
@@ -536,7 +536,9 @@ impl Inspector {
         let n = clips.len();
         let ids: Vec<Id> = clips.iter().map(|c| c.id).collect();
         let mut body = vec![];
-        if n == 2 {
+        // Bridging makes a video between two shots: only for clips on video tracks, as in the timeline's menu.
+        let on_video = self.store.read(cx).project.as_ref().is_some_and(|p| clips.iter().all(|c| p.locate_clip(c.id).is_some_and(|(t, _)| p.tracks[t].kind == TrackKind::Video)));
+        if n == 2 && on_video {
             let (a, b) = (clips[0].clone(), clips[1].clone());
             body.push(
                 section(cx)
@@ -595,7 +597,8 @@ impl Inspector {
             .child(match poster_path(a) {
                 Some(p) => img(PathBuf::from(p)).size_full().object_fit(ObjectFit::Contain).into_any_element(),
                 None if a.kind == MediaKind::Audio => icon("audio-lines").size(px(28.)).text_color(t.success).into_any_element(),
-                None => div().text_size(px(sz::SM)).text_color(t.text_2).child("Preparing a preview…").into_any_element(),
+                None if preview_pending(a) => div().text_size(px(sz::SM)).text_color(t.text_2).child("Preparing a preview…").into_any_element(),
+                None => div().text_size(px(sz::SM)).text_color(t.text_2).child("No preview for this file.").into_any_element(),
             });
         let mut body = vec![poster.into_any_element()];
         if let AssetOrigin::Generated(g) = &a.origin {
@@ -797,6 +800,11 @@ fn kind_name(k: MediaKind) -> &'static str {
         MediaKind::Image => "image",
         MediaKind::Audio => "audio",
     }
+}
+
+/// Whether a missing thumbnail may still come (it is made just after import).
+pub fn preview_pending(a: &Asset) -> bool {
+    chrono::Utc::now() - a.created_at < chrono::TimeDelta::seconds(60)
 }
 
 /// The picture to show for a media item: its thumbnail, or the image itself.

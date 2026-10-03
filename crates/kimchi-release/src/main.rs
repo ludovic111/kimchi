@@ -202,6 +202,10 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         "verify" => {
+            // Nothing checked must not read as "all good" in a release script.
+            if a.positional.is_empty() {
+                return Err("verify <file>… [--version V]".into());
+            }
             let pk = public_key_b64();
             for f in &a.positional {
                 let signed = verify(Path::new(f), &pk)?;

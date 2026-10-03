@@ -85,21 +85,23 @@ pub fn ticks(pps: f64, scroll_x: f64, view_w: f64) -> (Vec<Tick>, f64) {
 /// `12s`, `1:05`, or frames (`15f`) when zoomed in far enough to see them.
 pub fn tick_label(t: f64, pps: f64, fps: f64) -> String {
     let frac = t - t.floor();
-    if pps >= 300. && frac > 1e-6 {
+    if pps >= 300. && frac > 1e-6 && (1. - frac) > 1e-6 {
         return format!("{}f", (frac * fps).round() as i64);
     }
-    let m = (t / 60.).floor() as i64;
-    let s = (t - m as f64 * 60.).round() as i64;
-    if m > 0 { format!("{m}:{s:02}") } else { format!("{s}s") }
+    // Half seconds (majors every 0.5 s) keep their decimal so labels don't repeat.
+    let tenths = (t * 10.).round() as i64;
+    let (m, s10) = (tenths / 600, tenths % 600);
+    let s = if s10 % 10 == 0 { format!("{}", s10 / 10) } else { format!("{}.{}", s10 / 10, s10 % 10) };
+    if m > 0 { format!("{m}:{}{s}", if s10 < 100 { "0" } else { "" }) } else { format!("{s}s") }
 }
 
 /// Compact human duration: `4.2s`, `12s`, `1:05`.
 pub fn short(t: f64) -> String {
-    if t < 60. {
-        return if t < 10. { format!("{t:.1}s") } else { format!("{}s", t.round() as i64) };
+    if t < 9.95 {
+        return format!("{:.1}s", t.max(0.));
     }
-    let m = (t / 60.).floor() as i64;
-    format!("{m}:{:02}", (t - m as f64 * 60.).round() as i64)
+    let total = t.round() as i64;
+    if total < 60 { format!("{total}s") } else { format!("{}:{:02}", total / 60, total % 60) }
 }
 
 /// Times a moving edge sticks to: zero, the playhead, markers and every other clip's edges.
@@ -235,5 +237,24 @@ mod tests {
         track.clips = vec![text(0., 2.), text(5., 2.)];
         assert_eq!(gap_at(&track, 3.), (2., 3., true));
         assert_eq!(gap_at(&track, 9.), (7., 5., false));
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    #[test]
+    fn labels_carry_and_keep_half_seconds() {
+        assert_eq!(tick_label(1.5, 200., 30.), "1.5s");
+        assert_eq!(tick_label(1.0, 200., 30.), "1s");
+        assert_eq!(tick_label(65.0, 50., 30.), "1:05");
+        assert_eq!(tick_label(90.5, 200., 30.), "1:30.5");
+        assert_eq!(tick_label(119.99, 50., 30.), "2:00");
+        assert_eq!(short(119.6), "2:00");
+        assert_eq!(short(4.21), "4.2s");
+        assert_eq!(short(9.97), "10s");
+        assert_eq!(crate::ui::timecode(59.996), "1:00.00");
+        assert_eq!(crate::ui::timecode(61.25), "1:01.25");
     }
 }

@@ -70,6 +70,15 @@ pub fn context_menu(menu: ContextMenu, cx: &App) -> AnyElement {
 
 pub fn toasts(list: Vec<Toast>, cx: &App) -> AnyElement {
     let t = cx.theme().clone();
+    if list.is_empty() {
+        return div().into_any_element();
+    }
+    // Above dialogs (priority 1) and menus (2), so an error from a dialog isn't dimmed under it.
+    deferred(toast_stack(list, &t, cx)).with_priority(3).into_any_element()
+}
+
+fn toast_stack(list: Vec<Toast>, t: &crate::theme::Theme, _cx: &App) -> impl IntoElement {
+    let t = t.clone();
     div()
         .absolute()
         .bottom(px(16.))
@@ -85,8 +94,11 @@ pub fn toasts(list: Vec<Toast>, cx: &App) -> AnyElement {
                 ToastKind::Info => ("info", t.text_2),
             };
             let id = toast.id;
+            let action = toast.action.clone();
             let el = div()
                 .id(("toast", id as usize))
+                // Over a dialog: the scrim below must not take the click (it would close it).
+                .occlude()
                 .relative()
                 .max_w(px(420.))
                 .flex()
@@ -99,9 +111,22 @@ pub fn toasts(list: Vec<Toast>, cx: &App) -> AnyElement {
                 .shadow(t.glass_shadow())
                 .cursor_pointer()
                 .on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.dismiss(id, cx)))
+                .role(gpui::Role::Status)
+                .aria_label(toast.text.clone())
                 .child(icon(ic).text_color(color).mt(px(2.)))
-                .child(div().text_size(px(sz::BASE)).font_weight(FontWeight::MEDIUM).child(toast.text));
+                .child(div().flex_1().min_w_0().text_size(px(sz::BASE)).font_weight(FontWeight::MEDIUM).child(toast.text))
+                .when_some(action, |d, (label, dialog)| {
+                    d.child(
+                        crate::ui::Button::new(("toast-action", id as usize), label).small().on_click(move |_, _, cx| {
+                            let dialog = dialog.clone();
+                            cx.stop_propagation();
+                            cx.store().update(cx, |s, cx| {
+                                s.dismiss(id, cx);
+                                s.open_dialog(dialog, cx);
+                            })
+                        }),
+                    )
+                });
             motion::enter(el, ("toast-in", id as usize), motion::BASE, (18., 0.))
         }))
-        .into_any_element()
 }

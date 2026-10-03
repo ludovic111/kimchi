@@ -156,12 +156,21 @@ Grab the build for your system from the [latest release](https://github.com/ludo
 ffmpeg is bundled, and so are `kimchi-cli` and `kimchi-mcp`. The macOS build is signed with a Developer ID and
 notarized by Apple, so it opens like any other app.
 
-**Updates.** kimchi checks GitHub Releases when it starts and installs a new version in one click (also
+**Updates.** kimchi checks GitHub Releases when it starts and every few hours, and installs a new version in one
+click, or by itself with Settings › Updates › "Download and install updates by themselves" (also
 `kimchi-cli app.checkUpdates` / `app.installUpdate`). Every update is signed and its signature checked before
-anything is replaced; on macOS and with the AppImage the previous copy is kept until the new one has started.
-On Windows and with the `.deb`, kimchi tells you about the update and links to the file. Turn the check off with
-the setting `updates.checkOnStart` or `KIMCHI_NO_UPDATE=1`. Installs of 0.1.x (the Tauri builds) update to the
-new app through their own updater.
+anything is replaced; on macOS and with the AppImage the previous copy is kept until the new one has started. On
+Windows the verified installer runs when kimchi restarts or quits. With the `.deb` or the portable `.zip`, kimchi
+tells you about the update and links to the file. Turn the checks off with the setting `updates.checkOnStart` or
+`KIMCHI_NO_UPDATE=1`. Installs of 0.1.x (the Tauri builds) update to the new app through their own updater. After
+an update, kimchi shows what changed (from [CHANGELOG.md](CHANGELOG.md); Help › What's New any time).
+
+**Logs and crash reports.** Each run writes a log to `logs/` in kimchi's data folder (`kimchi.log`, the previous
+runs as `kimchi.1.log`…), and problems leave a report in `logs/crashes/`: a panic with its backtrace, or a run that
+ended without quitting. Settings › Diagnostics shows them, and Help › Report a Problem opens a GitHub issue with the
+version and system filled in. Nothing is sent anywhere by kimchi itself. The level is the setting
+`diagnostics.logLevel` (`info`, `debug`, `trace`) or `RUST_LOG`; `kimchi-cli app.logs` and `app.crashReports` read
+them too.
 
 ## Development
 
@@ -191,7 +200,9 @@ The packaging resources (Info.plist template, entitlements, icons, `.desktop` fi
 
 ### Releases
 
-Bump the version in `Cargo.toml` (`[workspace.package]`), tag `vX.Y.Z` and push the tag. The release workflow builds
+Bump the version in `Cargo.toml` (`[workspace.package]`), add its section at the top of `CHANGELOG.md` (a test
+checks it is there; the app shows it after updating and the release notes start with it), tag `vX.Y.Z` and push
+the tag. The release workflow builds
 macOS (Apple Silicon and Intel; signed and notarized), Windows and Linux, signs the update files, writes
 `latest.json` and drafts the GitHub release; publishing the draft rolls the update out to everyone.
 

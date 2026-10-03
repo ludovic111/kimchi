@@ -31,6 +31,21 @@ pub fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+tokio::task_local! {
+    /// Set while `project.batch` runs its commands: their edits belong to its open batch.
+    static IN_BATCH: ();
+}
+
+/// Whether this task is running a `project.batch`'s commands.
+pub(crate) fn in_batch_scope() -> bool {
+    IN_BATCH.try_with(|_| ()).is_ok()
+}
+
+/// Runs `f` as part of the open `project.batch` (see [`in_batch_scope`]).
+pub(crate) async fn batch_scope<F: std::future::Future>(f: F) -> F::Output {
+    IN_BATCH.scope((), f).await
+}
+
 /// Who is calling a command. Agent and MCP calls are checked against
 /// `settings.agent.permissions`; the window and plain CLI calls are not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +219,8 @@ pub struct Session {
     runtime: tokio::runtime::Handle,
     pub(crate) update: Mutex<crate::update::UpdateState>,
     pub(crate) bridge_port: Mutex<Option<u16>>,
+    /// Held by a running `project.batch`; other changes wait for it (briefly) before starting.
+    pub(crate) batch_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Session {
@@ -243,6 +260,7 @@ impl Session {
             runtime: tokio::runtime::Handle::current(),
             update: Mutex::new(Default::default()),
             bridge_port: Mutex::new(None),
+            batch_lock: Arc::new(tokio::sync::Mutex::new(())),
         });
         crate::commands::generate::spawn_job_listener(&session);
         Ok(session)
@@ -282,7 +300,8 @@ impl Session {
             f(&mut s);
             s.clone()
         };
-        s.save(&self.config_dir).map_err(err)?;
+        s.save(&self.config_dir).map_err(|e| format!("Couldn't save settings in {}: {e}", self.config_dir.display()))?;
+        crate::diagnostics::set_level(&s.diagnostics.log_level);
         self.emit(Event::SettingsChanged);
         Ok(s)
     }
@@ -302,7 +321,8 @@ impl Session {
 
     pub fn save_provider_settings(&self) -> CmdResult<()> {
         let json = serde_json::to_vec_pretty(&self.harness.settings()).map_err(err)?;
-        std::fs::write(self.config_dir.join("providers.json"), json).map_err(err)
+        let tmp = self.config_dir.join("providers.json.tmp");
+        std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, self.config_dir.join("providers.json"))).map_err(|e| format!("Couldn't save provider settings: {e}"))
     }
 
     // ---- tools ----------------------------------------------------------
@@ -389,6 +409,17 @@ impl Session {
         self.emit(Event::ProjectSwitched { project_id: Some(id) });
     }
 
+    /// Opens a library project. Read under the lock background writes take (see
+    /// [`with_project`](Self::with_project)), so none lands between reading and opening it.
+    pub fn open_library_project(&self, id: Id) -> CmdResult<Project> {
+        let mut guard = self.doc.lock();
+        let project = self.library.load(id).map_err(|e| format!("Couldn't open the project: {e}"))?;
+        *guard = Some(OpenDoc { editor: Editor::new(project.clone()), location: Location::Library });
+        drop(guard);
+        self.emit(Event::ProjectSwitched { project_id: Some(id) });
+        Ok(project)
+    }
+
     /// Remembers the open project (see `Editor::checkpoint`), without an undo step or an event.
     pub fn checkpoint(&self) -> Option<(Id, u64)> {
         let mut guard = self.doc.lock();
@@ -405,11 +436,18 @@ impl Session {
 
     /// Runs `f` on the open project's editor, then saves and announces the change.
     /// `label` and `source` are recorded with any undo step `f` makes.
+    /// Outside a running `project.batch`, changes are refused while one is open (they would
+    /// become part of its step, and go with it if it is rolled back).
     pub fn edit<R>(&self, label: &str, source: Source, f: impl FnOnce(&mut Editor) -> CmdResult<R>) -> CmdResult<R> {
         let mut guard = self.doc.lock();
         let doc = guard.as_mut().ok_or(NO_PROJECT)?;
         doc.editor.set_step_info(label, source.as_str());
-        let r = f(&mut doc.editor)?;
+        // Only a batch already open when this call came in is someone else's (a command's own
+        // internal batch, opened inside `f`, is not).
+        doc.editor.set_outsider(doc.editor.in_batch() && !in_batch_scope());
+        let r = f(&mut doc.editor);
+        doc.editor.set_outsider(false);
+        let r = r?;
         self.persist(doc)?;
         let id = doc.editor.project().id;
         drop(guard);
@@ -425,20 +463,47 @@ impl Session {
     /// Runs `f` against the open project if it is `id`, otherwise against the
     /// copy in the library. Saves afterwards. Used by background work (imports,
     /// previews, generations) that may finish after the person switched projects.
+    ///
+    /// A closed project is read, changed and written back under the open project's lock, so
+    /// two background writes (a preview and a generation landing) can't lose one another, and
+    /// opening it waits for them.
     pub fn with_project<R>(&self, id: Id, f: impl FnOnce(&mut Editor) -> R) -> CmdResult<R> {
         let mut guard = self.doc.lock();
         if let Some(doc) = guard.as_mut().filter(|d| d.editor.project().id == id) {
+            // Only a batch already open when this call came in is someone else's (a command's own
+            // internal batch, opened inside `f`, is not).
+            doc.editor.set_outsider(doc.editor.in_batch() && !in_batch_scope());
             let r = f(&mut doc.editor);
+            doc.editor.set_outsider(false);
             self.persist(doc)?;
             drop(guard);
             self.emit(Event::ProjectChanged { project_id: id });
             return Ok(r);
         }
-        drop(guard);
         let mut ed = Editor::new(self.library.load(id).map_err(err)?);
         let r = f(&mut ed);
-        self.library.save(ed.project()).map_err(err)?;
+        if ed.is_dirty() {
+            self.library.save(ed.project()).map_err(err)?;
+        }
+        drop(guard);
         Ok(r)
+    }
+
+    /// Ends (or rolls back) the open project's batch, if the open project is still `id` and the
+    /// batch is still open. `project.batch` calls it when it ends or is dropped.
+    pub(crate) fn close_batch(&self, id: Id, label: &str, source: Source, rollback: bool) -> CmdResult<()> {
+        let mut guard = self.doc.lock();
+        let Some(doc) = guard.as_mut().filter(|d| d.editor.project().id == id && d.editor.in_batch()) else { return Ok(()) };
+        doc.editor.set_step_info(label, source.as_str());
+        if rollback {
+            doc.editor.rollback_batch();
+        } else {
+            doc.editor.end_batch();
+        }
+        self.persist(doc)?;
+        drop(guard);
+        self.emit(Event::ProjectChanged { project_id: id });
+        Ok(())
     }
 
     fn persist(&self, doc: &mut OpenDoc) -> CmdResult<()> {
@@ -518,7 +583,10 @@ pub fn write_project_file(path: &Path, project: &Project) -> CmdResult<()> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(err)?;
     }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("Couldn't write {}: {e}", path.display()))
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "project.json".into());
+    let tmp = path.with_file_name(kimchi_core::store::tmp_name(&name));
+    std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, path)).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("Couldn't write {}: {e}", path.display())
+    })
 }

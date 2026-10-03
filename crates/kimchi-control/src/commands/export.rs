@@ -45,7 +45,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         }
         "export.start" => {
             let settings = ExportSettings {
-                path: a.str("path")?.to_string(),
+                path: crate::commands::media::path_str(&crate::commands::media::absolute(a.str("path")?)?),
                 format: format(a.opt_str("format").unwrap_or("mp4"))?,
                 quality: quality(a.opt_str("quality").unwrap_or("standard"))?,
                 width: a.opt_u32("width"),

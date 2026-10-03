@@ -22,7 +22,7 @@ use crate::ui::{Button, GlassExt, drag, smpte};
 mod body;
 mod clip;
 pub mod dnd;
-mod geom;
+pub(crate) mod geom;
 mod menus;
 #[cfg(test)]
 mod tests;
@@ -54,9 +54,10 @@ impl Timeline {
     }
 
     /// Width of the track area (the lanes, without the headers), as last drawn: for zoom to fit.
-    pub fn tracks_width(&self) -> Pixels {
-        let w = self.lanes.get().size.width;
-        if w > px(1.) { w } else { px(900.) }
+    /// Zooms to show the whole project from its start (the Fit button and the shortcut alike).
+    pub fn fit(this: &Entity<Self>, cx: &mut gpui::App) {
+        let body = this.read(cx).body.clone();
+        body.update(cx, |b, cx| b.fit(cx));
     }
 
     // ---- zoom slider ---------------------------------------------------------

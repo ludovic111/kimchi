@@ -112,7 +112,7 @@ impl Renderer {
     /// Media are read through their proxies when those exist.
     pub fn new(tools: &Tools, project: &Project, width: u32, height: u32, fps: f64) -> Self {
         let (width, height) = (even(width), even(height));
-        Self::with_project(tools, playable(project), width, height, fps, false)
+        Self::with_project(tools, playable(tools, project), width, height, fps, false)
     }
 
     /// Render original media and report failures instead of omitting clips.
@@ -136,7 +136,7 @@ impl Renderer {
             project: Arc::new(project),
             width,
             height,
-            fps: if fps.is_finite() && fps > 0.0 { fps } else { 30.0 },
+            fps: if fps.is_finite() && fps > 0.0 { crate::snap_fps(fps) } else { 30.0 },
             strict,
             decode_caps: None,
             streams: HashMap::new(),
@@ -280,7 +280,8 @@ impl Renderer {
                 if !Path::new(&asset.path).is_file() {
                     return Err(crate::MediaError::Unsupported(format!("missing media file {}", asset.path)));
                 }
-                let (dw, dh) = self.decode_size(clip, asset.meta.width, asset.meta.height);
+                let (mw, mh) = self.upright_size(&asset);
+                let (dw, dh) = self.decode_size(clip, mw, mh);
                 let pic = match asset.kind {
                     MediaKind::Image => self.still_image(Path::new(&asset.path), dw, dh)?,
                     MediaKind::Video if asset.meta.has_video => {
@@ -290,13 +291,11 @@ impl Renderer {
                         let pic = if streaming { self.stream_frame(clip, key, local)? } else { self.grabbed.get(&key).cloned() };
                         match pic {
                             Some(p) => p,
-                            // An export says why: decoding the frame on its own gives ffmpeg's reason.
+                            // An export decodes the frame on its own: the picture, or ffmpeg's reason.
                             None if self.strict => {
                                 let len = asset.duration().unwrap_or(f64::INFINITY);
                                 let (dw, dh) = (dw.max(2), dh.max(2));
-                                return Err(source::grab(&self.tools, Path::new(&asset.path), Some(clip.source_time(t).clamp(0.0, len)), dw, dh)
-                                    .err()
-                                    .unwrap_or_else(|| crate::MediaError::Unsupported(format!("no picture from {}", asset.path))));
+                                Arc::new(source::grab(&self.tools, Path::new(&asset.path), Some(clip.source_time(t).clamp(0.0, len)), dw, dh)?)
                             }
                             None => return Err(crate::MediaError::Unsupported("no frame".into())),
                         }
@@ -304,7 +303,7 @@ impl Renderer {
                     _ => return Ok(()),
                 };
                 let pic = self.grade(clip, pic, &fx, asset.kind == MediaKind::Image);
-                let (fw, fh) = fitted(clip.transform.fit, asset.meta.width, asset.meta.height, w, h);
+                let (fw, fh) = fitted(clip.transform.fit, mw, mh, w, h);
                 let ts = center
                     .pre_scale((fw * pl.scale_x as f32) / pic.width() as f32, (fh * pl.scale_y as f32) / pic.height() as f32)
                     .pre_translate(-(pic.width() as f32) / 2.0, -(pic.height() as f32) / 2.0);
@@ -422,6 +421,17 @@ impl Renderer {
         p
     }
 
+    /// A media item's picture size, upright: stills imported before EXIF orientation was read
+    /// have it sideways in their metadata.
+    fn upright_size(&self, asset: &kimchi_core::Asset) -> (Option<u32>, Option<u32>) {
+        if asset.kind == MediaKind::Image
+            && let Some((w, h)) = source::dimensions(&self.tools, Path::new(&asset.path))
+        {
+            return (Some(w), Some(h));
+        }
+        (asset.meta.width, asset.meta.height)
+    }
+
     /// Size to decode a clip's picture at: its fitted size at the largest scale it reaches,
     /// never more than the source or twice the output.
     fn decode_size(&self, clip: &Clip, sw: Option<u32>, sh: Option<u32>) -> (u32, u32) {
@@ -457,7 +467,8 @@ impl Renderer {
         if asset.kind != MediaKind::Video || !asset.meta.has_video {
             return Ok(());
         }
-        let (dw, dh) = self.decode_size(clip, asset.meta.width, asset.meta.height);
+        let (mw, mh) = self.upright_size(&asset);
+        let (dw, dh) = self.decode_size(clip, mw, mh);
         // Before the media's first frame (a transition showing the clip early) the stream starts
         // at that frame, which is held until then.
         let before = asset.duration().map_or(0.0, |len| clip.room(len).0);
@@ -522,7 +533,8 @@ impl Renderer {
             .or_else(|| p.assets.iter().find(|a| a.name == reference))
             .or_else(|| p.assets.iter().find(|a| a.name.eq_ignore_ascii_case(reference)));
         if let Some(a) = asset {
-            return Some((PathBuf::from(&a.path), a.kind, a.meta.width, a.meta.height));
+            let (w, h) = self.upright_size(a);
+            return Some((PathBuf::from(&a.path), a.kind, w, h));
         }
         let path = PathBuf::from(reference);
         if path.is_file() {
@@ -626,12 +638,19 @@ fn fade(c: &Clip, t: f64) -> f64 {
     k
 }
 
-/// The project as the renderer reads it: proxies where they exist, and without the media whose
-/// files are gone (their clips are skipped instead of failing the whole frame).
-pub(crate) fn playable(project: &Project) -> Project {
+/// The project as the renderer reads it: proxies where they exist (not for VP8/VP9 with an
+/// alpha channel, which an H.264 proxy loses), and without the media whose files are gone (their
+/// clips are skipped instead of failing the whole frame).
+pub(crate) fn playable(tools: &Tools, project: &Project) -> Project {
     let mut project = project.clone();
     project.assets.retain_mut(|a| {
-        if let Some(proxy) = a.proxy.as_deref().filter(|p| Path::new(p).is_file()) {
+        let alpha = || {
+            matches!(a.meta.video_codec.as_deref(), Some("vp8" | "vp9"))
+                && crate::probe::source(tools, Path::new(&a.path)).is_some_and(|s| s.alpha.is_some())
+        };
+        if let Some(proxy) = a.proxy.as_deref().filter(|p| Path::new(p).is_file())
+            && !alpha()
+        {
             a.path = proxy.to_string();
         }
         Path::new(&a.path).is_file()

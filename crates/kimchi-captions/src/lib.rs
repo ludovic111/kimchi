@@ -45,24 +45,46 @@ impl Format {
 }
 
 /// Reads SRT or WebVTT (detected from the text). Styling tags are dropped.
+///
+/// Cues are read line by line: a time line (`-->`) starts one, a blank line (even one holding
+/// spaces) ends it. Files that leave out the blank lines still split at each time line, the
+/// cue number just before it dropped.
 pub fn parse(text: &str) -> Result<Vec<Cue>, String> {
     let text = text.trim_start_matches('\u{feff}').replace("\r\n", "\n").replace('\r', "\n");
     let mut cues = vec![];
-    for block in text.split("\n\n") {
-        let lines: Vec<&str> = block.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
-        let Some(at) = lines.iter().position(|l| l.contains("-->")) else { continue };
-        let (a, b) = lines[at].split_once("-->").expect("checked");
-        // WebVTT settings follow the end time ("00:01.000 --> 00:02.000 line:90%").
-        let b = b.split_whitespace().next().unwrap_or("");
-        let (Some(start), Some(end)) = (timestamp(a.trim()), timestamp(b)) else {
-            return Err(format!("Bad caption time line: `{}`", lines[at]));
-        };
-        let words: Vec<String> = lines[at + 1..].iter().map(|l| strip_tags(l)).collect();
-        let text = words.join("\n").trim().to_string();
-        if !text.is_empty() && end > start {
-            cues.push(Cue { start, end, text });
+    // The cue being read: its times and text lines.
+    let mut cur: Option<(f64, f64, Vec<&str>)> = None;
+    let finish = |cur: &mut Option<(f64, f64, Vec<&str>)>, cues: &mut Vec<Cue>| {
+        if let Some((start, end, lines)) = cur.take() {
+            let words: Vec<String> = lines.iter().map(|l| strip_tags(l)).collect();
+            let text = words.join("\n").trim().to_string();
+            if !text.is_empty() && end > start {
+                cues.push(Cue { start, end, text });
+            }
         }
+    };
+    for line in text.lines().map(str::trim_end) {
+        if line.trim().is_empty() {
+            finish(&mut cur, &mut cues);
+        } else if let Some((a, b)) = line.split_once("-->") {
+            if let Some((_, _, lines)) = &mut cur
+                && lines.last().is_some_and(|l| l.trim().chars().all(|c| c.is_ascii_digit()))
+            {
+                lines.pop();
+            }
+            finish(&mut cur, &mut cues);
+            // WebVTT settings follow the end time ("00:01.000 --> 00:02.000 line:90%").
+            let b = b.split_whitespace().next().unwrap_or("");
+            let (Some(start), Some(end)) = (timestamp(a.trim()), timestamp(b)) else {
+                return Err(format!("Bad caption time line: `{line}`"));
+            };
+            cur = Some((start, end, vec![]));
+        } else if let Some((_, _, lines)) = &mut cur {
+            lines.push(line);
+        }
+        // Anything else is outside a cue: `WEBVTT`, NOTE and STYLE blocks, cue numbers and ids.
     }
+    finish(&mut cur, &mut cues);
     if cues.is_empty() {
         return Err("No captions found (expected SRT or WebVTT).".into());
     }
@@ -82,21 +104,30 @@ fn timestamp(s: &str) -> Option<f64> {
     Some(h * 3600.0 + m * 60.0 + sec)
 }
 
+/// Drops styling tags (`<i>`, `</b>`, `<v Ann>`, `<00:01.000>`) and decodes the
+/// usual entities. Only a `<` that is closed by a `>` starts a tag: "I <3 you" stays whole.
 fn strip_tags(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
-    let mut depth = 0;
-    for c in line.chars() {
-        match c {
-            '<' => depth += 1,
-            '>' if depth > 0 => depth -= 1,
-            _ if depth == 0 => out.push(c),
-            _ => {}
+    let mut rest = line;
+    while let Some(i) = rest.find('<') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let opens = after.chars().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '/');
+        match after.find(['>', '<']) {
+            Some(j) if opens && after.as_bytes()[j] == b'>' => rest = &after[j + 1..],
+            _ => {
+                out.push('<');
+                rest = after;
+            }
         }
     }
-    out.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ")
+    out.push_str(rest);
+    // `&amp;` last, so `&amp;lt;` reads as the text `&lt;`.
+    out.replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ").replace("&amp;", "&")
 }
 
-/// Writes cues as SRT or WebVTT.
+/// Writes cues as SRT or WebVTT. Blank lines inside a cue's text would end it early, so they
+/// are left out; WebVTT text escapes `&`, `<` and `>` (so a `-->` can't read as a time line).
 pub fn write(cues: &[Cue], format: Format) -> String {
     let mut out = String::new();
     if format == Format::Vtt {
@@ -107,9 +138,46 @@ pub fn write(cues: &[Cue], format: Format) -> String {
             out.push_str(&format!("{}\n", i + 1));
         }
         let sep = if format == Format::Srt { ',' } else { '.' };
-        out.push_str(&format!("{} --> {}\n{}\n\n", clock(c.start, sep), clock(c.end, sep), c.text.trim()));
+        let lines: Vec<&str> = c.text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+        let mut text = lines.join("\n");
+        match format {
+            Format::Vtt => text = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;"),
+            // SRT has no escapes: break up an arrow so the line isn't read as a time line.
+            Format::Srt => text = text.replace("-->", "- ->"),
+        }
+        out.push_str(&format!("{} --> {}\n{}\n\n", clock(c.start, sep), clock(c.end, sep), text));
     }
     out
+}
+
+/// Text from a caption file's bytes: UTF-16 (with its byte order mark) or UTF-8, else
+/// Windows-1252 (what older subtitle tools write).
+pub fn decode(bytes: &[u8]) -> String {
+    let utf16 = |bytes: &[u8], le: bool| {
+        let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|b| if le { u16::from_le_bytes(*b) } else { u16::from_be_bytes(*b) }).collect();
+        String::from_utf16_lossy(&units)
+    };
+    match bytes {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, true),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, false),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
+        _ => match std::str::from_utf8(bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => bytes.iter().map(|&b| windows_1252(b)).collect(),
+        },
+    }
+}
+
+/// One Windows-1252 byte: Latin-1, except 0x80–0x9F (curly quotes, dashes, €…).
+fn windows_1252(b: u8) -> char {
+    const HIGH: [u16; 32] = [
+        0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x8D, 0x017D, 0x8F, //
+        0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
+    ];
+    match b {
+        0x80..=0x9F => char::from_u32(HIGH[(b - 0x80) as usize] as u32).unwrap_or('\u{fffd}'),
+        _ => b as char,
+    }
 }
 
 fn clock(t: f64, sep: char) -> String {
@@ -256,6 +324,45 @@ mod tests {
         let srt = "\u{feff}1\r\n00:00:01,000 --> 00:00:02,000\r\nWindows\r\n\r\n";
         assert_eq!(parse(srt).unwrap()[0].text, "Windows");
         assert!(parse("just words").is_err());
+    }
+
+    #[test]
+    fn parses_sloppy_files() {
+        // Blank lines holding spaces, CRLF, no blank lines at all between cues.
+        let srt = "1\r\n00:00:01,000 --> 00:00:02,000\r\nOne\r\n  \r\n2\r\n00:00:03,000 --> 00:00:04,000\r\nTwo\r\n3\r\n00:00:05,000 --> 00:00:06,000\r\nThree\r\n";
+        let cues = parse(srt).unwrap();
+        assert_eq!(cues.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["One", "Two", "Three"]);
+        // A number as a caption's own text stays when a blank line follows it.
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\n42\n\n2\n00:00:03,000 --> 00:00:04,000\nok\n";
+        assert_eq!(parse(srt).unwrap()[0].text, "42");
+        // Unclosed `<` is text; entities decode once.
+        let vtt = "WEBVTT\n\n00:01.000 --> 00:02.000\nI <3 you &amp;lt;3 <i>a lot</i>\n";
+        assert_eq!(parse(vtt).unwrap()[0].text, "I <3 you &lt;3 a lot");
+    }
+
+    #[test]
+    fn writes_text_that_reads_back() {
+        let cues = vec![Cue { start: 0.0, end: 1.0, text: "a < b & c --> d\n\n  \nsecond".into() }];
+        let vtt = write(&cues, Format::Vtt);
+        assert!(vtt.contains("a &lt; b &amp; c --&gt; d\nsecond\n"), "{vtt}");
+        assert_eq!(parse(&vtt).unwrap(), vec![Cue { start: 0.0, end: 1.0, text: "a < b & c --> d\nsecond".into() }]);
+        let srt = write(&cues, Format::Srt);
+        let back = parse(&srt).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].text.lines().count(), 2, "{srt}");
+    }
+
+    #[test]
+    fn decodes_utf16_and_windows_1252() {
+        let text = "1\n00:00:01,000 --> 00:00:02,000\nCafé “ok”\n";
+        let mut le = vec![0xFF, 0xFE];
+        le.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        let mut be = vec![0xFE, 0xFF];
+        be.extend(text.encode_utf16().flat_map(u16::to_be_bytes));
+        assert_eq!(decode(&le), text);
+        assert_eq!(decode(&be), text);
+        assert_eq!(decode(text.as_bytes()), text);
+        assert_eq!(decode(b"Caf\xe9 \x93ok\x94 \x80"), "Café “ok” €");
     }
 
     #[test]

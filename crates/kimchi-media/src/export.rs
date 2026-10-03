@@ -7,12 +7,12 @@
 //! Graph shape: input 0 is the rendered picture (`[0:v]`), converted to the encoder's format
 //! with BT.709 colours. Audible clips are reversed if they play backwards, tempo-adjusted, faded
 //! (and their volume keyframes applied), delayed to their start and mixed with `amix`. Clips on
-//! both sides of a transition crossfade over it ([`with_crossfades`]).
+//! both sides of a transition crossfade over it ([`with_crossfades`]). Each media file is opened
+//! once per run of nearby reads and cut per clip ([`Graph::wire`]).
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use kimchi_core::{Clip, ClipContent, Id, MediaKind, Project, ProjectSettings};
+use kimchi_core::{Clip, ClipContent, MediaKind, Project, ProjectSettings};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
@@ -125,10 +125,11 @@ pub async fn export(
     progress(0.0);
     let mut used = (plan.encoder.clone(), plan.hardware, false);
     let mut result = attempt(tools, project, &plan, &part, &caps, settings.encoder != EncoderChoice::Software, &progress, &cancel).await;
-    if let Err(e) = &result
+    // Only a failed hardware encoder is worth redoing on the CPU; a picture that can't be
+    // rendered or decoded would fail the same way.
+    if let Err(Failure::Encoder(e)) = &result
         && plan.hardware
         && settings.encoder == EncoderChoice::Auto
-        && !matches!(e, MediaError::Cancelled)
     {
         tracing::warn!(encoder = ?plan.encoder, error = %e, "hardware encode failed; encoding on the CPU");
         let plan = build_with_hardware(project, settings, &caps, &Hardware::none())?;
@@ -136,17 +137,43 @@ pub async fn export(
         used = (plan.encoder.clone(), false, true);
         result = attempt(tools, project, &plan, &part, &caps, false, &progress, &cancel).await;
     }
-    match result {
-        Ok(()) => {
-            tokio::fs::rename(&part, &out).await?;
-            progress(1.0);
-            Ok(Exported { encoder: used.0, hardware: used.1, fell_back: used.2 })
-        }
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&part).await;
-            Err(e)
-        }
+    let done = match result {
+        Ok(()) => tokio::fs::rename(&part, &out).await.map_err(MediaError::from),
+        Err(Failure::Encoder(e) | Failure::Other(e)) => Err(e),
+    };
+    if let Err(e) = done {
+        let _ = tokio::fs::remove_file(&part).await;
+        return Err(e);
     }
+    progress(1.0);
+    Ok(Exported { encoder: used.0, hardware: used.1, fell_back: used.2 })
+}
+
+/// Why an export attempt failed.
+enum Failure {
+    /// ffmpeg (the encoder and muxer) gave up.
+    Encoder(MediaError),
+    /// Anything else: rendering, decoding, cancelling, the file system.
+    Other(MediaError),
+}
+
+impl From<MediaError> for Failure {
+    fn from(e: MediaError) -> Self {
+        Failure::Other(e)
+    }
+}
+
+/// A temporary file for a long filter graph. ffmpeg reads its path from its arguments, which
+/// are UTF-8 here: a temporary folder whose path isn't is reported rather than mangled.
+pub(crate) fn script_path(what: &str) -> MediaResult<PathBuf> {
+    let path = std::env::temp_dir().join(format!("kimchi-{what}-{}.txt", kimchi_core::new_id()));
+    if path.to_str().is_none() {
+        return Err(MediaError::Unsupported(format!(
+            "the temporary folder's path ({}) isn't valid UTF-8; point TMPDIR (TEMP on Windows) at another folder",
+            path.display()
+        )));
+    }
+    Ok(path)
 }
 
 /// The video encoder an export of `project` with `settings` would start with (`None` for sound
@@ -201,11 +228,10 @@ async fn hardware_for(tools: &Tools, caps: &Caps, settings: &ExportSettings) -> 
 async fn attempt(
     tools: &Tools, project: &Project, plan: &Plan, part: &Path, caps: &Caps, decode_hardware: bool,
     progress: &(impl Fn(f64) + Sync), cancel: &CancellationToken,
-) -> MediaResult<()> {
-    let script = (plan.graph.len() > INLINE_GRAPH_MAX)
-        .then(|| std::env::temp_dir().join(format!("kimchi-graph-{}.txt", kimchi_core::new_id())));
+) -> Result<(), Failure> {
+    let script = (plan.graph.len() > INLINE_GRAPH_MAX).then(|| script_path("graph")).transpose()?;
     if let Some(script) = &script {
-        tokio::fs::write(script, &plan.graph).await?;
+        tokio::fs::write(script, &plan.graph).await.map_err(MediaError::from)?;
     }
     let result = run(tools, project, plan, &plan.args(part, script.as_deref(), caps), decode_hardware.then_some(caps), progress, cancel).await;
     if let Some(script) = &script {
@@ -222,7 +248,7 @@ async fn run(
     decode_caps: Option<&Caps>,
     progress: &(impl Fn(f64) + Sync),
     cancel: &CancellationToken,
-) -> MediaResult<()> {
+) -> Result<(), Failure> {
     let mut child = process::spawn_with_stdin(&tools.ffmpeg, args, true, plan.video.is_some())?;
     let stderr = process::collect_stderr(&mut child);
     let mut lines = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
@@ -284,10 +310,10 @@ async fn run(
     };
     let Some(status) = status else {
         let _ = child.kill().await;
-        return Err(MediaError::Cancelled);
+        return Err(Failure::Other(MediaError::Cancelled));
     };
     if !status.success() {
-        return Err(MediaError::Ffmpeg(process::summarize(&stderr.await.unwrap_or_default(), status)));
+        return Err(Failure::Encoder(MediaError::Ffmpeg(process::summarize(&stderr.await.unwrap_or_default(), status))));
     }
     Ok(())
 }
@@ -307,7 +333,8 @@ pub struct VideoFeed {
 #[derive(Debug, Clone)]
 pub struct Plan {
     /// Input options: the picture pipe first (when there is a picture), then
-    /// `[-ss …] [-t …] -i path` per media input, in input-index order.
+    /// `[-ss …] [-t …] -i path` per media input (a file, or a stretch of one several clips
+    /// read), in input-index order.
     pub inputs: Vec<String>,
     /// The `-filter_complex` graph; produces `[vout]` and/or `[aout]`.
     pub graph: String,
@@ -407,7 +434,7 @@ fn compile_with_hardware(project: &Project, settings: &ExportSettings, caps: &Ca
         inputs: codecs.device.clone(),
         count: 0,
         sources: vec![],
-        input_of: HashMap::new(),
+        sounds: vec![],
         chains: vec![],
     };
 
@@ -417,7 +444,7 @@ fn compile_with_hardware(project: &Project, settings: &ExportSettings, caps: &Ca
         let frames = ((total * fps) - 1e-6).ceil().max(1.0) as u64;
         video = Some(VideoFeed { width, height, fps, from, frames });
         g.inputs.extend(["-f", "rawvideo", "-pix_fmt", "rgba", "-s"].map(s));
-        g.inputs.extend([format!("{width}x{height}"), s("-r"), num(fps), s("-i"), s("pipe:0")]);
+        g.inputs.extend([format!("{width}x{height}"), s("-r"), crate::ntsc(fps).map_or_else(|| num(fps), s), s("-i"), s("pipe:0")]);
         g.count = 1;
         g.chains.push(match format {
             ExportFormat::Gif => s("[0:v]split[g0][g1];[g0]palettegen[pal];[g1][pal]paletteuse[vout]"),
@@ -436,6 +463,7 @@ fn compile_with_hardware(project: &Project, settings: &ExportSettings, caps: &Ca
                 mixed.extend(g.audible(&clip));
             }
         }
+        g.wire();
         let sr = g.sample_rate;
         let audible = mixed.len();
         g.chains.push(if mixed.is_empty() {
@@ -513,7 +541,8 @@ pub(crate) fn output_size(ps: &ProjectSettings, st: &ExportSettings) -> (u32, u3
 
 fn output_fps(ps: &ProjectSettings, st: &ExportSettings) -> f64 {
     let fps = st.fps.filter(|f| *f > 0.0).unwrap_or(ps.fps).clamp(1.0, 240.0);
-    if st.format == ExportFormat::Gif { st.fps.filter(|f| *f > 0.0).unwrap_or(15.0).min(fps).min(30.0) } else { fps }
+    let fps = if st.format == ExportFormat::Gif { st.fps.filter(|f| *f > 0.0).unwrap_or(15.0).min(fps).min(30.0) } else { fps };
+    crate::snap_fps(fps)
 }
 
 /// Which part of a clip lands in the export window, and how to decode it.
@@ -577,37 +606,99 @@ struct Graph<'a> {
     /// Inputs so far (the picture pipe counts).
     count: usize,
     sources: Vec<PathBuf>,
-    /// Clip → input index.
-    input_of: HashMap<Id, usize>,
+    /// Clips' sounds, given inputs by [`Graph::wire`].
+    sounds: Vec<Sound>,
     chains: Vec<String>,
 }
+
+/// One clip's sound: `len` seconds of `file` read from `from`, then `filters`, as `[label]`.
+struct Sound {
+    file: String,
+    from: f64,
+    len: f64,
+    filters: String,
+    label: String,
+}
+
+/// Reads closer than this (seconds of source) share an input.
+const SHARE_GAP: f64 = 1.0;
+/// Decoded before a sound's start, then trimmed off by timestamp (see `wire`).
+const PREROLL: f64 = 0.25;
+/// Most media inputs one graph opens. Each is an open file and a few hundred characters of
+/// command line (Windows stops at 32 767; macOS apps get 256 files by default), so beyond this
+/// the closest reads of a file share inputs even when far apart.
+const MAX_INPUTS: usize = 64;
 
 impl Graph<'_> {
     fn input(&mut self, opts: Vec<String>, file: &str) -> usize {
         self.inputs.extend(opts);
-        self.inputs.extend([s("-i"), s(file)]);
-        self.sources.push(PathBuf::from(file));
+        self.inputs.extend([s("-i"), path(Path::new(file))]);
+        if !self.sources.iter().any(|p| p == Path::new(file)) {
+            self.sources.push(PathBuf::from(file));
+        }
         self.count += 1;
         self.count - 1
     }
 
-    /// Seeked and trimmed input for a clip's media.
-    fn media_input(&mut self, clip: &Clip, file: &str, w: &Window) -> usize {
-        if let Some(&i) = self.input_of.get(&clip.id) {
-            return i;
+    /// Gives the sounds their inputs: each file is opened once per run of nearby reads (seeked
+    /// to the first, cut for each sound with `asplit` + `atrim`), not once per clip, so hundreds
+    /// of clips cut from one recording stay a handful of inputs.
+    fn wire(&mut self) {
+        // Runs of reads per file: (file, from, to, sounds), files in order of first use.
+        let mut runs: Vec<(String, f64, f64, Vec<usize>)> = vec![];
+        let mut files: Vec<&str> = vec![];
+        for snd in &self.sounds {
+            if !files.contains(&snd.file.as_str()) {
+                files.push(&snd.file);
+            }
         }
-        // A reversed clip shows its source backwards: the decoded window is read forwards from
-        // the matching source time, then reversed.
-        let from = if clip.reverse { clip.duration - w.decoded() - w.decode_from } else { w.decode_from };
-        let seek = clip.in_point.max(0.0) + from.max(0.0) * clip.speed;
-        let mut opts = vec![];
-        if seek > 1e-6 {
-            opts.extend([s("-ss"), num(seek)]);
+        for file in files {
+            let mut mine: Vec<usize> = (0..self.sounds.len()).filter(|&i| self.sounds[i].file == file).collect();
+            mine.sort_by(|&a, &b| self.sounds[a].from.total_cmp(&self.sounds[b].from));
+            for i in mine {
+                let snd = &self.sounds[i];
+                match runs.last_mut() {
+                    Some((f, _, to, members)) if f == file && snd.from <= *to + SHARE_GAP => {
+                        *to = to.max(snd.from + snd.len);
+                        members.push(i);
+                    }
+                    _ => runs.push((file.to_string(), snd.from, snd.from + snd.len, vec![i])),
+                }
+            }
         }
-        opts.extend([s("-t"), num(w.decoded() * clip.speed)]);
-        let i = self.input(opts, file);
-        self.input_of.insert(clip.id, i);
-        i
+        // Too many inputs: merge the neighbouring runs (same file) with the smallest gap.
+        while runs.len() > MAX_INPUTS {
+            let closest = runs.windows(2).enumerate().filter(|(_, w)| w[0].0 == w[1].0).min_by(|(_, a), (_, b)| (a[1].1 - a[0].2).total_cmp(&(b[1].1 - b[0].2)));
+            let Some((i, _)) = closest else { break }; // all different files
+            let next = runs.remove(i + 1);
+            let run = &mut runs[i];
+            run.2 = run.2.max(next.2);
+            run.3.extend(next.3);
+        }
+        // Inputs in the order the clips came (stable input numbers for a timeline).
+        runs.sort_by_key(|r| r.3.iter().copied().min());
+        for (file, from, to, mut members) in runs {
+            // Seek a little early and cut by timestamp: input seeking alone isn't sample-exact
+            // in every ffmpeg (9.0 starts AAC ~15 ms off and short), the timestamps are.
+            let seek = (from - PREROLL).max(0.0);
+            let mut opts = vec![];
+            if seek > 1e-6 {
+                opts.extend([s("-ss"), num(seek)]);
+            }
+            opts.extend([s("-t"), num(to - seek)]);
+            let i = self.input(opts, &file);
+            let trim = |snd: &Sound| format!("atrim=start={}:end={},asetpts=PTS-STARTPTS,{}[{}]", num(snd.from - seek), num(snd.from - seek + snd.len), snd.filters, snd.label);
+            if let [only] = members[..] {
+                self.chains.push(format!("[{i}:a:0]{}", trim(&self.sounds[only])));
+                continue;
+            }
+            members.sort_unstable();
+            let outs: String = (0..members.len()).map(|k| format!("[s{i}_{k}]")).collect();
+            self.chains.push(format!("[{i}:a:0]asplit={}{outs}", members.len()));
+            for (k, m) in members.into_iter().enumerate() {
+                self.chains.push(format!("[s{i}_{k}]{}", trim(&self.sounds[m])));
+            }
+        }
     }
 
     /// Adds the sound chain for `clip` and returns its label, if it makes any sound.
@@ -625,9 +716,15 @@ impl Graph<'_> {
             return None;
         }
         let w = Window::of(clip, self.from, self.to)?;
-        let i = self.media_input(clip, &asset.path, &w);
+        // A reversed clip shows its source backwards: the decoded window is read forwards from
+        // the matching source time, then reversed.
+        let from = if clip.reverse { clip.duration - w.decoded() - w.decode_from } else { w.decode_from };
+        let seek = clip.in_point.max(0.0) + from.max(0.0) * clip.speed;
+        let file = asset.path.clone();
         let sr = self.sample_rate;
-        let mut f = vec![format!("[{i}:a:0]aformat=sample_fmts=fltp:sample_rates={sr}:channel_layouts=stereo")];
+        // An explicit resampler: the one ffmpeg inserts for `aformat` alone starts a cut's sound
+        // differently depending on where its input was seeked.
+        let mut f = vec![format!("aresample={sr},aformat=sample_fmts=fltp:sample_rates={sr}:channel_layouts=stereo")];
         if clip.reverse {
             f.push(s("areverse"));
         }
@@ -654,8 +751,8 @@ impl Graph<'_> {
         if delay > 0 {
             f.push(format!("adelay=delays={delay}S:all=1"));
         }
-        let label = format!("a{}", self.chains.len());
-        self.chains.push(format!("{}[{label}]", f.join(",")));
+        let label = format!("a{}", self.sounds.len());
+        self.sounds.push(Sound { file, from: seek, len: w.decoded() * clip.speed, filters: f.join(","), label: label.clone() });
         Some(label)
     }
 }
@@ -986,8 +1083,9 @@ fn s(x: &str) -> String {
     x.to_string()
 }
 
+/// A path for the command line (paths here come from UTF-8 settings and projects).
 fn path(p: &Path) -> String {
-    p.to_string_lossy().into_owned()
+    crate::probe::input_path(p).to_string_lossy().into_owned()
 }
 
 #[cfg(test)]

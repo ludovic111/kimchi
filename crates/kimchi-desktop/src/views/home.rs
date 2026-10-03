@@ -226,6 +226,7 @@ impl Home {
         let connected = s.providers.iter().filter(|p| p.ready).count();
         let update = s.update.available.clone();
         let fullscreen = window.is_fullscreen();
+        let controls = crate::ui::window_controls(window, cx);
         div()
             .id("home-top")
             .h(px(crate::views::editor::TOPBAR_H))
@@ -235,7 +236,8 @@ impl Home {
             .justify_between()
             // Room for the macOS traffic lights.
             .pl(px(if fullscreen || !cfg!(target_os = "macos") { 18. } else { 92. }))
-            .pr(px(14.))
+            .when(controls.is_none(), |d| d.pr(px(14.)))
+            .window_control_area(gpui::WindowControlArea::Drag)
             .on_mouse_down(MouseButton::Left, |e, window, _| {
                 if e.click_count == 2 {
                     window.titlebar_double_click();
@@ -289,6 +291,7 @@ impl Home {
                             .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: None }, cx))),
                     ),
             )
+            .children(controls)
             .into_any_element()
     }
 
@@ -538,7 +541,7 @@ impl Home {
         let (_, name) = self.confirm.clone()?;
         let t = cx.theme().clone();
         Some(
-            deferred(
+            deferred(crate::ui::motion::fade(
                 div()
                     .id("confirm-scrim")
                     .key_context("HomeConfirm")
@@ -583,7 +586,9 @@ impl Home {
                                     .child(Button::new("confirm-yes", "Delete").danger().with_icon("trash").on_click(cx.listener(|h, _, w, cx| h.confirm_delete(&ConfirmDelete, w, cx)))),
                             ),
                     ),
-            )
+                "confirm-in",
+                crate::ui::motion::FAST,
+            ))
             .with_priority(1)
             .into_any_element(),
         )
@@ -710,11 +715,7 @@ pub fn title_from(p: &str) -> String {
 
 /// Compact duration: `4.2s`, `12s`, `1:05`.
 pub fn short(t: f64) -> String {
-    if t < 60.0 {
-        return if t < 10.0 { format!("{t:.1}s") } else { format!("{}s", t.round()) };
-    }
-    let m = (t / 60.0).floor();
-    format!("{m}:{:02}", (t % 60.0).round() as u64)
+    crate::views::timeline::geom::short(t)
 }
 
 /// "just now", "5 min ago", "3 h ago", "2 d ago", else the date.

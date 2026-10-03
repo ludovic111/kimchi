@@ -50,6 +50,8 @@ pub struct AgentPanel {
     /// Terminal sessions (by checkpoint) reverted from the Changes tab.
     pub(crate) reverted_sessions: std::collections::HashSet<u64>,
     project_seen: Option<usize>,
+    /// The project the runs and conversation belong to.
+    project_id: Option<kimchi_core::Id>,
     pub(crate) expanded: HashSet<u64>,
     scroll: ScrollHandle,
     changes_scroll: ScrollHandle,
@@ -93,6 +95,7 @@ impl AgentPanel {
             history: None,
             reverted_sessions: Default::default(),
             project_seen: None,
+            project_id: None,
             expanded: HashSet::new(),
             scroll: ScrollHandle::new(),
             changes_scroll: ScrollHandle::new(),
@@ -121,6 +124,19 @@ impl AgentPanel {
         let fresh: Vec<CommandRecord> = s.commands.iter().filter(|r| r.seq > self.last_seq).cloned().collect();
         let provider = s.settings.agent.provider.clone();
         let project = s.project.as_ref().map(|p| Arc::as_ptr(p) as usize);
+        let project_id = s.project.as_ref().map(|p| p.id);
+        if project_id != self.project_id {
+            // Another project: a run still going would edit it, and "Revert this run" would
+            // apply to it. Stop, and start the conversation afresh.
+            let switched = self.project_id.is_some();
+            self.project_id = project_id;
+            if switched {
+                self.stop(cx);
+                self.runs.clear();
+                self.reverted_sessions.clear();
+                self.new_conversation(cx);
+            }
+        }
         for r in fresh {
             self.last_seq = self.last_seq.max(r.seq);
             self.add_command(r, None);
@@ -475,8 +491,8 @@ impl AgentPanel {
 
     fn mcp_line(&self, i: usize, client: &str, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
-        let path = self.mcp.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "/Applications/kimchi.app/Contents/MacOS/kimchi-mcp".into());
-        let line = format!("{client} mcp add kimchi -- {path} --live");
+        let path = self.mcp.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| crate::ui::mcp_fallback().into());
+        let line = format!("{client} mcp add kimchi -- {} --live", crate::ui::shell_quote(&path));
         let copy = line.clone();
         div()
             .id(("mcp-line", i))

@@ -221,7 +221,7 @@ impl SettingsDialog {
             let saved = p.key_preview.clone().map(|preview| {
                 let source = match p.key_source {
                     KeySource::Env => format!("from {}", p.info.key_env.join(" / ")),
-                    _ => "in the keychain".into(),
+                    _ => format!("in the {}", crate::ui::keychain_name()),
                 };
                 div()
                     .flex()

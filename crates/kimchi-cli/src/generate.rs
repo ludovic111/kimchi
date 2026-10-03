@@ -66,7 +66,7 @@ pub async fn run(args: &[String]) -> Result<(), String> {
         match j.status {
             JobStatus::Succeeded => {
                 for o in j.outputs {
-                    println!("{}", o.path);
+                    say!("{}", o.path);
                 }
                 return Ok(());
             }

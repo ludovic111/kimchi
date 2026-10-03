@@ -540,3 +540,128 @@ async fn captions_from_speech() {
     assert!(text.contains("ask not what your country can do for you"), "{text}");
     assert!(list[0]["start"].as_f64().unwrap() >= 2.0, "timed on the timeline: {list}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_move_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({})).await;
+    let a = registry::created_clips(&ok(&s, Source::Agent, "clip.addSolid", json!({ "color": "#111111", "start": 0 })).await)[0];
+    let b = registry::created_clips(&ok(&s, Source::Agent, "clip.addSolid", json!({ "color": "#222222", "start": 10 })).await)[0];
+    let tracks = ok(&s, Source::Agent, "track.list", json!({})).await;
+    let audio = tracks.as_array().unwrap().iter().find(|t| t["kind"] == "audio").unwrap()["id"].as_str().unwrap().to_string();
+    let moves = json!({ "moves": [{ "clipId": a.to_string(), "start": 30 }, { "clipId": b.to_string(), "trackId": audio, "start": 0 }] });
+    assert!(registry::call(&s, Source::Agent, "clip.moveMany", moves).await.is_err());
+    let p = s.project().unwrap();
+    assert_eq!(p.clip(a).unwrap().start, 0.0, "the first move is put back");
+    assert_eq!(s.read(|ed| ed.undo_steps().len()).unwrap(), 2);
+    // Absurd times are refused rather than written as null.
+    assert!(registry::call(&s, Source::Agent, "timeline.addMarker", json!({ "time": 1e300 })).await.is_err());
+    let e = registry::call(&s, Source::Agent, "generate.wait", json!({ "jobId": "nope", "timeout": 1e20 })).await.unwrap_err();
+    assert!(e.contains("No job"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn batches_hold_others_back_and_end_when_dropped() {
+    use futures::StreamExt;
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({})).await;
+    // `timeline.play` waits for the window, which answers when the test says.
+    let mut ui = s.attach_ui();
+    let batch = |label: &'static str| {
+        let s = s.clone();
+        async move {
+            registry::call(&s, Source::Agent, "project.batch", json!({ "commands": [
+                { "command": "timeline.addMarker", "params": { "time": 1, "label": label } },
+                { "command": "timeline.play" },
+            ]}))
+            .await
+        }
+    };
+    let markers = |s: &Arc<Session>| s.project().unwrap().markers.iter().map(|m| m.label.clone()).collect::<Vec<_>>();
+    let running = tokio::spawn(batch("agent"));
+    let call = ui.next().await.unwrap();
+    assert_eq!(markers(&s), ["agent"]);
+    // The window's change waits for the batch instead of folding into it.
+    let s2 = s.clone();
+    let window = tokio::spawn(async move { registry::call(&s2, Source::Window, "timeline.addMarker", json!({ "time": 2, "label": "window" })).await });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(!window.is_finished());
+    call.reply.send(Err("no".into())).unwrap();
+    assert!(running.await.unwrap().is_err());
+    window.await.unwrap().unwrap();
+    assert_eq!(markers(&s), ["window"], "the batch rolled back only its own change");
+    // A batch whose caller stops waiting (an agent's Stop) is rolled back, not left open.
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(300), batch("dropped")).await.is_err());
+    assert!(!s.read(|ed| ed.in_batch()).unwrap());
+    assert_eq!(markers(&s), ["window"]);
+    ok(&s, Source::Window, "timeline.addMarker", json!({ "time": 3, "label": "after" })).await;
+    assert_eq!(s.read(|ed| ed.undo_steps().len()).unwrap(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn projects_keep_to_themselves() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    // A checkpoint names a state of its own project only.
+    ok(&s, Source::Window, "project.create", json!({ "name": "A" })).await;
+    let cp = ok(&s, Source::Window, "history.checkpoint", json!({})).await["checkpoint"].clone();
+    ok(&s, Source::Window, "project.create", json!({ "name": "B" })).await;
+    let e = registry::call(&s, Source::Window, "history.revertTo", json!({ "checkpoint": cp })).await.unwrap_err();
+    assert!(e.contains("isn't in the open project's history"), "{e}");
+    // Renaming a project opened from a file answers with its new name.
+    let file = dir.path().join("b.json");
+    ok(&s, Source::Window, "project.saveAs", json!({ "path": file })).await;
+    ok(&s, Source::Window, "project.open", json!({ "path": file })).await;
+    assert_eq!(ok(&s, Source::Window, "project.rename", json!({ "name": "Renamed" })).await["name"], "Renamed");
+    // A duplicate has its own copy of the generated media.
+    ok(&s, Source::Window, "project.create", json!({ "name": "Orig" })).await;
+    let orig = s.current_id().unwrap();
+    let gen_dir = s.library.generated_dir(orig);
+    std::fs::create_dir_all(&gen_dir).unwrap();
+    std::fs::write(gen_dir.join("pic.png"), b"png").unwrap();
+    let asset = kimchi_core::Asset {
+        id: kimchi_core::new_id(),
+        name: "pic".into(),
+        kind: kimchi_core::MediaKind::Image,
+        path: gen_dir.join("pic.png").to_string_lossy().into_owned(),
+        meta: Default::default(),
+        origin: kimchi_core::AssetOrigin::Imported,
+        created_at: chrono::Utc::now(),
+        thumbnail: None,
+        filmstrip: None,
+        waveform: None,
+        proxy: None,
+    };
+    s.apply("test", Source::Window, &kimchi_core::Edit::AddAsset { asset }, None).unwrap();
+    let copy = ok(&s, Source::Window, "project.duplicate", json!({})).await;
+    let copy_id: kimchi_core::Id = copy["id"].as_str().unwrap().parse().unwrap();
+    ok(&s, Source::Window, "project.delete", json!({ "projectId": orig.to_string() })).await;
+    let p = s.library.load(copy_id).unwrap();
+    let path = std::path::Path::new(&p.assets[0].path);
+    assert!(path.starts_with(s.library.project_dir(copy_id)) && path.is_file(), "{path:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn captions_files_in_other_encodings() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({})).await;
+    let srt = dir.path().join("utf16.srt");
+    let mut bytes = vec![0xFF, 0xFE];
+    bytes.extend("1\r\n00:00:01,000 --> 00:00:02,000\r\nÇa va\r\n2\r\n00:00:03,000 --> 00:00:04,000\r\nOui\r\n".encode_utf16().flat_map(u16::to_le_bytes));
+    std::fs::write(&srt, bytes).unwrap();
+    assert_eq!(ok(&s, Source::Agent, "captions.import", json!({ "path": srt })).await["captions"], 2);
+    let list = ok(&s, Source::Agent, "captions.list", json!({})).await;
+    assert_eq!(list[0]["text"], "Ça va");
+}
+
+#[tokio::test]
+async fn paths_and_lines_are_bounded() {
+    let p = crate::commands::media::absolute("-take2.mov").unwrap();
+    assert!(p.is_absolute() && p.ends_with("-take2.mov"));
+    let mut r: &[u8] = b"short\r\nwaaaaaaaay too long\n";
+    assert_eq!(crate::bridge::read_line(&mut r, 8).await.unwrap().as_deref(), Some("short"));
+    assert!(crate::bridge::read_line(&mut r, 8).await.is_err());
+}

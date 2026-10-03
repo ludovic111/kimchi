@@ -83,9 +83,11 @@ pub(super) async fn step(api: &Api, run: &Run, defs: &[ToolDef], messages: &[Mes
     // index → (id, name, arguments)
     let mut calls: Vec<(String, String, String)> = vec![];
     let mut finish = String::new();
+    let mut done = false;
     while let Some(data) = lines.next_sse().await? {
         let data = data.trim();
         if data == "[DONE]" {
+            done = true;
             break;
         }
         let chunk: Value = match serde_json::from_str(data) {
@@ -123,6 +125,11 @@ pub(super) async fn step(api: &Api, run: &Run, defs: &[ToolDef], messages: &[Mes
         if let Some(f) = choice["finish_reason"].as_str() {
             finish = f.to_string();
         }
+    }
+    // Some compatible servers close after the finish reason without `[DONE]`; with neither, the
+    // reply (and any half-streamed command) is cut off.
+    if !done && finish.is_empty() {
+        return Err(format!("{label}: the connection closed before the reply finished. Try again."));
     }
     match finish.as_str() {
         "length" => return Err("The reply reached its length limit; no unfinished command was run. Ask for less at a time.".into()),

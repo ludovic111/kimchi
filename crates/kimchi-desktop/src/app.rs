@@ -41,6 +41,39 @@ pub fn init(session: Arc<Session>, cx: &mut App) {
     .detach();
 }
 
+/// Quits and starts kimchi again (into an installed update, when there is one).
+pub fn restart(cx: &mut App) {
+    match kimchi_control::update::restart() {
+        Ok(()) => cx.quit(),
+        Err(e) => cx.store().update(cx, |s, cx| s.error(format!("Couldn't restart kimchi: {e}"), cx)),
+    }
+}
+
+/// A new GitHub issue with the version, the system and the last crash's summary filled in
+/// (nothing else: the person adds what they want to share).
+pub fn issue_url(session: &Session) -> String {
+    let crash = kimchi_control::diagnostics::reports(&session.data_dir).into_iter().next();
+    let mut body = format!(
+        "**What happened**\n\n\n**What you expected**\n\n\n**Steps to reproduce**\n1. \n\n---\nkimchi {} on {} ({})\n",
+        kimchi_control::update::CURRENT,
+        kimchi_control::diagnostics::os_name(),
+        std::env::consts::ARCH
+    );
+    if let Some(c) = crash {
+        body.push_str(&format!("Last crash report ({}): {}\n(Attach the file from Settings › Diagnostics if it's related.)\n", c.at.format("%Y-%m-%d %H:%M UTC"), c.summary));
+    }
+    format!("https://github.com/ludovic111/kimchi/issues/new?body={}", url_encode(&body))
+}
+
+fn url_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 /// Re-reads the appearance setting (and the OS) into the theme.
 pub fn apply_theme_setting(cx: &mut App) {
     let settings = cx.store().read(cx).settings.clone();
@@ -157,6 +190,9 @@ impl Workspace {
                     "settings" => s.open_dialog(Dialog::Settings { section: params["section"].as_str().map(str::to_string) }, cx),
                     "export" => s.open_dialog(Dialog::Export, cx),
                     "palette" => s.open_dialog(Dialog::Palette, cx),
+                    "whatsNew" | "releaseNotes" => s.open_dialog(Dialog::WhatsNew { since: None, all: params["all"].as_bool().unwrap_or(false) }, cx),
+                    "shortcuts" => s.open_dialog(Dialog::Shortcuts, cx),
+                    "diagnostics" | "logs" => s.open_dialog(Dialog::Settings { section: Some("diagnostics".into()) }, cx),
                     _ => {}
                 });
                 if panel == "home" {
@@ -178,21 +214,23 @@ impl Workspace {
             "ui.zoom" => {
                 let fit = params["fit"].as_bool().unwrap_or(false);
                 let pps = params["pixelsPerSecond"].as_f64();
-                store.update(cx, |s, cx| {
-                    if fit {
-                        let w = self.editor.read(cx).timeline_width(cx);
-                        let d = s.duration().max(1.0);
-                        s.set_zoom(f64::from(w) / d * 0.92, cx);
-                    } else if let Some(p) = pps {
-                        s.set_zoom(p, cx);
-                    }
-                });
+                if fit {
+                    views::editor::Editor::fit_timeline(&self.editor, cx);
+                } else if let Some(p) = pps {
+                    store.update(cx, |s, cx| s.set_zoom(p, cx));
+                }
                 Ok(json!({ "pixelsPerSecond": store.read(cx).pps }))
             }
             "ui.screenshot" => views::screenshot::capture(params["path"].as_str(), window),
             "app.quit" => {
                 cx.quit();
                 Ok(json!({ "quitting": true }))
+            }
+            "app.restart" => {
+                kimchi_control::update::restart().map_err(|e| format!("Couldn't restart kimchi: {e}"))?;
+                // Answer first: the bridge client is waiting for the reply.
+                cx.defer(|cx| cx.quit());
+                Ok(json!({ "restarting": true }))
             }
             "app.notify" => {
                 let kind = match params["kind"].as_str() {
@@ -526,8 +564,9 @@ impl Workspace {
                 s.run("clip.delete", json!({ "clipIds": ids, "ripple": ripple }), cx);
                 s.clear_selection(cx);
             } else if let Some(a) = asset {
-                s.run("media.remove", json!({ "assetId": a }), cx);
-                s.select_asset(None, cx);
+                // The media panel asks first, as its menu does: every clip using it goes too.
+                s.set_left_tab(LeftTab::Media, cx);
+                cx.emit(StoreEvent::AskRemoveAsset(a));
             }
         });
     }
@@ -661,7 +700,24 @@ impl Workspace {
     }
 
     fn about(&mut self, _: &About, _: &mut Window, cx: &mut Context<Self>) {
-        self.store.update(cx, |s, cx| s.info(format!("kimchi {} — part of lsuite. MIT licensed.", env!("CARGO_PKG_VERSION")), cx));
+        self.store.update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: Some("about".into()) }, cx));
+    }
+
+    fn whats_new(&mut self, _: &WhatsNew, _: &mut Window, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.open_dialog(Dialog::WhatsNew { since: None, all: false }, cx));
+    }
+
+    fn show_diagnostics(&mut self, _: &ShowDiagnostics, _: &mut Window, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: Some("diagnostics".into()) }, cx));
+    }
+
+    fn report_problem(&mut self, _: &ReportProblem, _: &mut Window, cx: &mut Context<Self>) {
+        let session = self.store.read(cx).session.clone();
+        cx.open_url(&issue_url(&session));
+    }
+
+    fn restart_app(&mut self, _: &RestartApp, _: &mut Window, cx: &mut Context<Self>) {
+        restart(cx);
     }
 
     fn help(&mut self, _: &OpenHelp, _: &mut Window, cx: &mut Context<Self>) {
@@ -818,6 +874,7 @@ impl Render for Workspace {
         let dropping = store.dropping && cx.has_active_drag();
         let menu = store.menu.clone();
         let toasts = store.toasts.clone();
+        let modal = store.dialog.is_some();
         let pb = store.playback.clone();
         let project = store.project.as_ref().map(|p| (p.duration(), p.settings.fps, p.name.clone()));
         match project {
@@ -829,7 +886,8 @@ impl Render for Workspace {
         }
 
         div()
-            .key_context("Workspace")
+            // `Modal` keeps editing keys (Space, Backspace, T…) off the project behind a dialog.
+            .key_context(if modal { "Workspace Modal" } else { "Workspace" })
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
@@ -886,6 +944,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_project))
             .on_action(cx.listener(Self::check_updates))
             .on_action(cx.listener(Self::about))
+            .on_action(cx.listener(Self::whats_new))
+            .on_action(cx.listener(Self::show_diagnostics))
+            .on_action(cx.listener(Self::report_problem))
+            .on_action(cx.listener(Self::restart_app))
             .on_action(cx.listener(Self::help))
             .on_action(cx.listener(Self::support))
             .on_drop(cx.listener(Self::on_drop_paths))
@@ -900,8 +962,11 @@ impl Render for Workspace {
             .on_mouse_down(MouseButton::Left, cx.listener(|ws, _, window, cx| {
                 ws.store.update(cx, |s, cx| s.close_menu(cx));
                 // Clicking anywhere but a text field (which stops the event) takes focus back,
-                // so single-key shortcuts work again.
-                window.focus(&ws.focus, cx);
+                // so single-key shortcuts work again; unless what was clicked took focus itself
+                // (a track name being renamed, a slider) and said so with `prevent_default`.
+                if !window.default_prevented() {
+                    window.focus(&ws.focus, cx);
+                }
             }))
             .relative()
             .size_full()

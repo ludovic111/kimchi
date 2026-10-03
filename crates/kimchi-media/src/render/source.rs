@@ -4,14 +4,17 @@
 //! bounded buffer (playback and export ask for frames in order). [`grab`] decodes one frame
 //! (scrubbing). Stills are decoded once and kept.
 
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use tiny_skia::Pixmap;
 
+use crate::probe::{Source, source};
+use crate::process::Features;
 use crate::{MediaError, MediaResult, Tools};
 
 /// Frames decoded ahead of the compositor, per stream.
@@ -29,14 +32,9 @@ impl Drop for Proc {
     }
 }
 
-fn command(tools: &Tools, args: &[String]) -> MediaResult<Child> {
-    let mut cmd = Command::new(&tools.ffmpeg);
-    cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error"]).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
+fn command(tools: &Tools, args: &[OsString]) -> MediaResult<Child> {
+    let mut cmd = crate::process::blocking(&tools.ffmpeg);
+    cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error"]).args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.spawn().map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => MediaError::ToolsMissing,
         _ => MediaError::Io(e),
@@ -56,9 +54,18 @@ fn read_stderr(child: &mut Child) -> std::thread::JoinHandle<String> {
     })
 }
 
-/// `scale=…,format=rgba` for a frame of exactly `w`×`h`.
-fn scale(w: u32, h: u32) -> String {
-    format!("scale={w}:{h}:flags=bicubic,setsar=1,format=rgba")
+/// How to decode `path` (orientation, alpha, HDR) with this ffmpeg; plain when ffprobe can't tell.
+fn decoding(tools: &Tools, path: &Path) -> (Arc<Features>, Arc<Source>) {
+    (Features::get(tools), source(tools, path).unwrap_or_default())
+}
+
+fn os(args: impl IntoIterator<Item = impl Into<OsString>>) -> Vec<OsString> {
+    args.into_iter().map(Into::into).collect()
+}
+
+/// `-ss t` (input seeking), when `t` isn't the start.
+fn seek(t: f64) -> Vec<OsString> {
+    if t > 1e-6 { os(["-ss".to_string(), format!("{t:.6}")]) } else { vec![] }
 }
 
 /// Straight RGBA (ffmpeg) → premultiplied (tiny-skia), in place.
@@ -80,37 +87,27 @@ fn pixmap(mut rgba: Vec<u8>, w: u32, h: u32) -> Option<Pixmap> {
     Pixmap::from_vec(rgba, tiny_skia::IntSize::from_wh(w, h)?)
 }
 
-/// Width and height of a picture or video file (ffprobe), for files that aren't media items.
+/// Upright width and height of a picture or video file (ffprobe, as [`crate::probe`] reports
+/// them), for files that aren't media items.
 pub(crate) fn dimensions(tools: &Tools, path: &Path) -> Option<(u32, u32)> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, (u32, u32)>>> = std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(Default::default);
-    if let Some(d) = cache.lock().ok()?.get(path) {
-        return Some(*d);
-    }
-    let mut cmd = Command::new(&tools.ffprobe);
-    cmd.args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x"]).arg(path);
-    cmd.stdin(Stdio::null()).stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-    }
-    let out = cmd.output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let (w, h) = text.trim().lines().next()?.split_once('x')?;
-    let d = (w.trim().parse().ok()?, h.trim().parse().ok()?);
-    cache.lock().ok()?.insert(path.to_path_buf(), d);
-    Some(d)
+    let s = source(tools, path)?;
+    Some((s.width?, s.height?))
 }
 
 /// One frame of `path` at `time` seconds into it (0 for stills), `w`×`h`.
 pub(crate) fn grab(tools: &Tools, path: &Path, time: Option<f64>, w: u32, h: u32) -> MediaResult<Pixmap> {
-    let mut args = vec![];
-    if let Some(t) = time.filter(|t| *t > 1e-6) {
-        args.extend(["-ss".into(), format!("{t:.6}")]);
+    let (f, src) = decoding(tools, path);
+    // Well past the picture's end (a longer sound track): straight to its last picture.
+    if let Some(t) = time
+        && src.video_end.is_some_and(|end| t > end + 0.5)
+    {
+        return grab_last(tools, path, t, w, h);
     }
-    args.extend(["-i".into(), path.to_string_lossy().into_owned(), "-an".into(), "-frames:v".into(), "1".into()]);
-    args.extend(["-vf".into(), scale(w, h), "-f".into(), "rawvideo".into(), "-".into()]);
+    let mut args = seek(time.unwrap_or(0.0));
+    args.extend(src.input(&f, path));
+    args.extend(os(["-an", "-frames:v", "1", "-vf"]));
+    args.push(src.picture(&f, w, h).into());
+    args.extend(os(["-f", "rawvideo", "-"]));
     let mut child = Proc(command(tools, &args)?);
     let errors = read_stderr(&mut child.0);
     let mut out = Vec::with_capacity(w as usize * h as usize * 4);
@@ -131,34 +128,36 @@ pub(crate) fn grab(tools: &Tools, path: &Path, time: Option<f64>, w: u32, h: u32
     pixmap(out, w, h).ok_or_else(|| MediaError::Unsupported("bad frame size".into()))
 }
 
+/// The last picture at or before `before` seconds (the media ends earlier, or its picture does).
 fn grab_last(tools: &Tools, path: &Path, before: f64, w: u32, h: u32) -> MediaResult<Pixmap> {
-    let from = (before - 1.0).max(0.0);
-    let args: Vec<String> = vec![
-        "-ss".into(),
-        format!("{from:.6}"),
-        "-i".into(),
-        path.to_string_lossy().into_owned(),
-        "-an".into(),
-        "-vf".into(),
-        scale(w, h),
-        "-f".into(),
-        "rawvideo".into(),
-        "-".into(),
-    ];
-    let mut child = Proc(command(tools, &args)?);
-    let errors = read_stderr(&mut child.0);
-    let mut out = vec![];
-    child.0.stdout.take().expect("piped").read_to_end(&mut out)?;
-    let status = child.0.wait()?;
-    let errors = errors.join().unwrap_or_default();
-    if !status.success() { return Err(MediaError::Ffmpeg(crate::process::summarize(&errors, status))); }
+    let (f, src) = decoding(tools, path);
+    let until = src.video_end.map_or(before, |end| end.min(before));
     let len = w as usize * h as usize * 4;
-    let n = out.len() / len;
-    if n == 0 {
-        return Err(MediaError::Ffmpeg(format!("no picture from {}", path.display())));
+    // Decode the last second, or ten when the picture stopped well before the file says.
+    for back in [1.0, 10.0] {
+        let from = (until - back).max(0.0);
+        let mut args = seek(from);
+        args.extend(src.input(&f, path));
+        args.extend(os(["-an".to_string(), "-t".into(), format!("{:.6}", before - from + 0.05), "-vf".into()]));
+        args.push(src.picture(&f, w, h).into());
+        args.extend(os(["-f", "rawvideo", "-"]));
+        let mut child = Proc(command(tools, &args)?);
+        let errors = read_stderr(&mut child.0);
+        let mut out = vec![];
+        child.0.stdout.take().expect("piped").read_to_end(&mut out)?;
+        let status = child.0.wait()?;
+        let errors = errors.join().unwrap_or_default();
+        if !status.success() { return Err(MediaError::Ffmpeg(crate::process::summarize(&errors, status))); }
+        let n = out.len() / len;
+        if n > 0 {
+            let last = out[(n - 1) * len..n * len].to_vec();
+            return pixmap(last, w, h).ok_or_else(|| MediaError::Unsupported("bad frame size".into()));
+        }
+        if from <= 0.0 {
+            break;
+        }
     }
-    let last = out[(n - 1) * len..n * len].to_vec();
-    pixmap(last, w, h).ok_or_else(|| MediaError::Unsupported("bad frame size".into()))
+    Err(MediaError::Ffmpeg(format!("no picture from {}", path.display())))
 }
 
 /// The decoder chunk being read by a reverse stream's thread; killed with the stream.
@@ -188,6 +187,9 @@ pub(crate) struct VideoStream {
     last: Option<Arc<Pixmap>>,
     ended: bool,
     fallback: Option<(Tools, std::path::PathBuf, f64, f64, u32, u32)>,
+    /// Where a forward stream started, to hold the media's last picture when it gave none (it
+    /// started past the end of the picture: a longer sound track).
+    tail: Option<(Tools, std::path::PathBuf, f64, u32, u32)>,
 }
 
 impl VideoStream {
@@ -200,16 +202,18 @@ impl VideoStream {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_with_decode(tools: &Tools, path: &Path, source_start: f64, speed: f64, fps: f64, w: u32, h: u32, first: f64, decode: Vec<String>) -> MediaResult<Self> {
+        let (f, src) = decoding(tools, path);
+        // libvpx (for the alpha) decodes on the CPU.
+        let decode = if src.forces_decoder(&f) { vec![] } else { decode };
         let hardware = !decode.is_empty();
         let speed = speed.max(1e-3);
-        let mut args = decode;
-        if source_start > 1e-6 {
-            args.extend(["-ss".into(), format!("{source_start:.6}")]);
-        }
-        args.extend(["-i".into(), path.to_string_lossy().into_owned(), "-an".into(), "-vf".into()]);
+        let mut args = os(decode);
+        args.extend(seek(source_start));
+        args.extend(src.input(&f, path));
+        args.extend(os(["-an", "-vf"]));
         let setpts = if (speed - 1.0).abs() > 1e-9 { format!("setpts=(PTS-STARTPTS)/{speed}") } else { "setpts=PTS-STARTPTS".into() };
-        args.push(format!("{setpts},fps={fps},{}", scale(w, h)));
-        args.extend(["-f".into(), "rawvideo".into(), "-".into()]);
+        args.push(format!("{setpts},fps={},{}", crate::rate(fps), src.picture(&f, w, h)).into());
+        args.extend(os(["-f", "rawvideo", "-"]));
         let mut child = command(tools, &args)?;
         let errors = read_stderr(&mut child);
         let mut stdout = child.stdout.take().expect("piped");
@@ -238,7 +242,8 @@ impl VideoStream {
             })
             .map_err(MediaError::Io)?;
         Ok(Self { frames: rx, _proc: Keep::Proc(proc), first, fps, next: 0, last: None, ended: false,
-            fallback: hardware.then(|| (tools.clone(), path.to_path_buf(), source_start, speed, w, h)) })
+            fallback: hardware.then(|| (tools.clone(), path.to_path_buf(), source_start, speed, w, h)),
+            tail: Some((tools.clone(), path.to_path_buf(), source_start, w, h)) })
     }
 
     /// A clip played backwards: frame `k` is what the owner shows at local time `first + k / fps`,
@@ -251,6 +256,7 @@ impl VideoStream {
         let speed = speed.max(1e-3);
         let step = speed / fps;
         let (tools, path) = (tools.clone(), path.to_path_buf());
+        let (f, src) = decoding(&tools, &path);
         let (tx, rx): (SyncSender<MediaResult<Pixmap>>, Receiver<MediaResult<Pixmap>>) = sync_channel(AHEAD);
         // The decoder of the chunk being read, so dropping the stream stops it.
         let current: Arc<std::sync::Mutex<Option<Proc>>> = Arc::default();
@@ -259,7 +265,11 @@ impl VideoStream {
         std::thread::Builder::new()
             .name("kimchi-decode-rev".into())
             .spawn(move || {
-                let mut k = 0u64;
+                // Frames past the end of the picture (the sound goes on) hold the next picture
+                // that comes: the media's last.
+                let mut owed = src.video_end.map(|end| end + 0.5).filter(|end| source_start > *end).map_or(0, |end| ((source_start - end) / step).floor() as u64);
+                let mut k = owed;
+                let mut skipped = 0.0;
                 loop {
                     // This chunk: frames k … k + n − 1, the earliest source time last.
                     let top = source_start - k as f64 * step;
@@ -268,14 +278,12 @@ impl VideoStream {
                     }
                     let n = (REVERSE_CHUNK as u64).min((top / step + 1e-6).floor() as u64 + 1);
                     let lo = (top - (n - 1) as f64 * step).max(0.0);
-                    let mut args = vec![];
-                    if lo > 1e-6 {
-                        args.extend(["-ss".into(), format!("{lo:.6}")]);
-                    }
+                    let mut args = seek(lo);
                     let setpts = if (speed - 1.0).abs() > 1e-9 { format!("setpts=(PTS-STARTPTS)/{speed}") } else { "setpts=PTS-STARTPTS".into() };
-                    args.extend(["-i".into(), path.to_string_lossy().into_owned(), "-an".into(), "-frames:v".into(), n.to_string(), "-vf".into()]);
-                    args.push(format!("{setpts},fps={fps},{}", scale(w, h)));
-                    args.extend(["-f".into(), "rawvideo".into(), "-".into()]);
+                    args.extend(src.input(&f, &path));
+                    args.extend(os(["-an".to_string(), "-frames:v".into(), n.to_string(), "-vf".into()]));
+                    args.push(format!("{setpts},fps={},{}", crate::rate(fps), src.picture(&f, w, h)).into());
+                    args.extend(os(["-f", "rawvideo", "-"]));
                     let Ok(mut child) = command(&tools, &args) else { break };
                     let _errors = read_stderr(&mut child);
                     let mut stdout = child.stdout.take().expect("piped");
@@ -293,23 +301,34 @@ impl VideoStream {
                     }
                     *super::lock(&held) = None;
                     if chunk.is_empty() {
-                        break; // past the end of the media, or it can't be read
+                        // Past the end of the picture (it ends earlier than the file says), or it
+                        // can't be read: try earlier, for a minute of source at most.
+                        owed += n;
+                        k += n;
+                        skipped += n as f64 * step;
+                        if skipped > 60.0 {
+                            break;
+                        }
+                        continue;
                     }
+                    skipped = 0.0;
                     // Fewer frames than asked (the media ends early): the latest is held.
                     while chunk.len() < n as usize {
                         let last = chunk.last().cloned().expect("non-empty");
                         chunk.push(last);
                     }
-                    for p in chunk.into_iter().rev() {
+                    let latest = chunk.last().cloned().expect("non-empty");
+                    for p in std::iter::repeat_n(latest, owed as usize).chain(chunk.into_iter().rev()) {
                         if tx.send(Ok(p)).is_err() {
                             return; // the stream was dropped
                         }
                     }
+                    owed = 0;
                     k += n;
                 }
             })
             .map_err(MediaError::Io)?;
-        Ok(Self { frames: rx, _proc: Keep::Slot(ProcSlot(current)), first, fps, next: 0, last: None, ended: false, fallback: None })
+        Ok(Self { frames: rx, _proc: Keep::Slot(ProcSlot(current)), first, fps, next: 0, last: None, ended: false, fallback: None, tail: None })
     }
 
     /// The frame for owner-local time `local`; the last one once the media has ended.
@@ -330,6 +349,11 @@ impl VideoStream {
                     }
                     if let Ok(Err(e)) = outcome { return Err(e); }
                     self.ended = true;
+                    if self.last.is_none()
+                        && let Some((tools, path, from, w, h)) = self.tail.take()
+                    {
+                        self.last = grab_last(&tools, &path, from, w, h).ok().map(Arc::new);
+                    }
                 }
             }
         }

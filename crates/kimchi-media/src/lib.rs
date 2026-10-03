@@ -9,6 +9,7 @@ pub mod text;
 mod probe;
 mod process;
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use kimchi_core::{Filmstrip, MediaKind, MediaMeta, Waveform};
@@ -76,8 +77,43 @@ fn find_tool(name: &str, env: &str) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PATH") {
         candidates.extend(std::env::split_paths(&path).map(|d| d.join(&exe)));
     }
-    candidates.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(|d| Path::new(d).join(&exe)));
+    candidates.extend(install_dirs().into_iter().map(|d| d.join(&exe)));
     candidates.into_iter().find(|p| p.is_file() && runs(p))
+}
+
+/// Where package managers put ffmpeg, for apps started without the shell's `PATH` (the Dock,
+/// a desktop launcher, Explorer).
+fn install_dirs() -> Vec<PathBuf> {
+    let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+    let mut dirs = vec![];
+    if cfg!(windows) {
+        dirs.extend(env("ProgramData").map(|d| d.join("chocolatey").join("bin")));
+        dirs.extend(env("USERPROFILE").map(|d| d.join("scoop").join("shims")));
+        dirs.extend(env("LOCALAPPDATA").map(|d| d.join("Microsoft").join("WinGet").join("Links")));
+        dirs.push(PathBuf::from(r"C:\ffmpeg\bin"));
+    } else {
+        dirs.extend(["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", "/usr/bin", "/snap/bin", "/home/linuxbrew/.linuxbrew/bin"].map(PathBuf::from));
+        dirs.extend(env("HOME").map(|h| h.join(".local").join("bin")));
+    }
+    dirs
+}
+
+/// NTSC rates, which players expect as exact fractions: (fraction, value).
+const NTSC: [(&str, f64); 3] = [("24000/1001", 24000.0 / 1001.0), ("30000/1001", 30000.0 / 1001.0), ("60000/1001", 60000.0 / 1001.0)];
+
+/// The NTSC rate `fps` stands for (29.97 → `30000/1001`), if any.
+pub(crate) fn ntsc(fps: f64) -> Option<&'static str> {
+    NTSC.iter().find(|(_, v)| (fps - v).abs() < 1e-3).map(|(f, _)| *f)
+}
+
+/// `fps`, exactly the NTSC rate it stands for.
+pub(crate) fn snap_fps(fps: f64) -> f64 {
+    NTSC.iter().find(|(_, v)| (fps - v).abs() < 1e-3).map_or(fps, |(_, v)| *v)
+}
+
+/// `fps` as ffmpeg's `fps=` and `-r` take it.
+pub(crate) fn rate(fps: f64) -> String {
+    ntsc(fps).map_or_else(|| fps.to_string(), String::from)
 }
 
 fn runs(path: &Path) -> bool {
@@ -96,18 +132,31 @@ fn runs(path: &Path) -> bool {
 }
 
 /// `ffmpeg -y -v error <args>` and nothing else.
-async fn ffmpeg(tools: &Tools, args: &[String]) -> MediaResult<Vec<u8>> {
-    let mut all = vec!["-hide_banner".into(), "-nostdin".into(), "-y".into(), "-v".into(), "error".into()];
+async fn ffmpeg(tools: &Tools, args: &[OsString]) -> MediaResult<Vec<u8>> {
+    let mut all: Vec<OsString> = ["-hide_banner", "-nostdin", "-y", "-v", "error"].map(OsString::from).to_vec();
     all.extend_from_slice(args);
     process::output(&tools.ffmpeg, &all).await
 }
 
-fn s(x: impl ToString) -> String {
-    x.to_string()
+fn s(x: impl ToString) -> OsString {
+    x.to_string().into()
 }
 
-fn path_arg(p: &Path) -> String {
-    p.to_string_lossy().into_owned()
+/// A path for ffmpeg's command line: not taken for an option or a protocol, never re-encoded.
+fn path_arg(p: &Path) -> OsString {
+    probe::input_path(p)
+}
+
+/// How ffmpeg should read `path`: `[-noautorotate] [-c:v …] -i path`, and the filters to put
+/// before and after scaling (upright, HDR → SDR), as the compositor decodes it.
+async fn reading(tools: &Tools, path: &Path) -> (Vec<OsString>, Option<&'static str>, Option<String>) {
+    let (f, src) = (probe::features_async(tools).await, probe::source_async(tools, path).await.unwrap_or_default());
+    (src.input(&f, path), src.upright(), src.tonemap(&f))
+}
+
+/// `[upright,]<scale>[,tonemap]` as one filter chain.
+fn around(upright: Option<&str>, scale: &str, tonemap: Option<&str>) -> String {
+    upright.into_iter().chain([scale]).chain(tonemap).collect::<Vec<_>>().join(",")
 }
 
 fn made(out: &Path) -> bool {
@@ -123,13 +172,16 @@ pub async fn thumbnail(tools: &Tools, path: &Path, kind: MediaKind, out: &Path, 
         MediaKind::Video => probe(tools, path).await?.meta.duration.unwrap_or(0.0) * 0.1,
         _ => 0.0,
     };
-    let filter = format!("scale=w='min(iw,{})':h=-2,format=yuvj420p", max_width.max(2));
+    let (input, upright, tonemap) = reading(tools, path).await;
+    let scale = format!("scale=w='min(iw,{})':h=-2", max_width.max(2));
+    let filter = around(upright, &scale, tonemap.as_deref()) + ",format=yuvj420p";
     let attempt = |seek: Option<f64>| {
         let mut args = vec![];
         if let Some(t) = seek {
-            args.extend([s("-ss"), format!("{t:.3}")]);
+            args.extend([s("-ss"), s(format!("{t:.3}"))]);
         }
-        args.extend([s("-i"), path_arg(path), s("-frames:v"), s("1"), s("-vf"), filter.clone()]);
+        args.extend(input.iter().cloned());
+        args.extend([s("-frames:v"), s("1"), s("-vf"), s(&filter)]);
         args.extend([s("-q:v"), s("4"), s("-update"), s("1"), s("-f"), s("image2"), path_arg(out)]);
         args
     };
@@ -153,20 +205,29 @@ pub async fn filmstrip(tools: &Tools, path: &Path, duration: f64, out: &Path, he
     let duration = if duration > 0.0 { duration } else { meta.duration.unwrap_or(1.0) };
     let interval = (duration / 120.0).max(0.5);
     let frames = ((duration / interval).ceil() as u32).clamp(1, 120);
-    // The whole file is decoded: heavy sources (4K, HEVC…) go through the hardware decoder.
-    let mut args = accel::decode_args(&Caps::detect(tools).await?, &meta);
+    let (input, upright, tonemap) = reading(tools, path).await;
+    // The whole file is decoded: heavy sources (4K, HEVC…) go through the hardware decoder
+    // (not libvpx, forced for an alpha channel).
+    let mut args: Vec<OsString> = if input.iter().any(|a| a == "-c:v") {
+        vec![]
+    } else {
+        accel::decode_args(&Caps::detect(tools).await?, &meta).into_iter().map(OsString::from).collect()
+    };
     let decode_len = args.len();
     if interval >= 4.0 {
         // Long clip: decoding only keyframes is much faster and precise enough at this zoom.
         args.extend([s("-skip_frame"), s("nokey")]);
     }
-    args.extend([s("-an"), s("-sn"), s("-i"), path_arg(path)]);
+    args.extend([s("-an"), s("-sn")]);
+    args.extend(input);
+    let scale = format!("scale={frame_width}:{frame_height},setsar=1");
     let vf = format!(
-        "fps=1/{interval:.4}:round=down,scale={frame_width}:{frame_height},setsar=1,tile={frames}x1,format=yuvj420p"
+        "fps=1/{interval:.4}:round=down,{},tile={frames}x1,format=yuvj420p",
+        around(upright, &scale, tonemap.as_deref())
     );
     args.extend([
         s("-vf"),
-        vf,
+        s(vf),
         s("-frames:v"),
         s("1"),
         s("-q:v"),
@@ -186,7 +247,7 @@ pub async fn filmstrip(tools: &Tools, path: &Path, duration: f64, out: &Path, he
     if !made(out) {
         return Err(MediaError::Unsupported(format!("no picture in {}", path.display())));
     }
-    Ok(Filmstrip { path: path_arg(out), frames, frame_width, frame_height, interval })
+    Ok(Filmstrip { path: out.to_string_lossy().into_owned(), frames, frame_width, frame_height, interval })
 }
 
 /// Audio peaks (little-endian f32 in 0..1) at `peaks_per_second`.
@@ -194,23 +255,9 @@ pub async fn waveform(tools: &Tools, path: &Path, out: &Path, peaks_per_second: 
     let pps = peaks_per_second.max(1);
     // A low decode rate keeps this fast; enough samples per bucket to find the peak.
     let rate = (pps * 64).clamp(4_000, 16_000);
-    let args = [
-        "-hide_banner",
-        "-nostdin",
-        "-v",
-        "error",
-        "-i",
-        &path_arg(path),
-        "-map",
-        "0:a:0",
-        "-ac",
-        "1",
-        "-ar",
-        &rate.to_string(),
-        "-f",
-        "f32le",
-        "-",
-    ];
+    let mut args: Vec<OsString> = ["-hide_banner", "-nostdin", "-v", "error", "-i"].map(OsString::from).to_vec();
+    args.push(path_arg(path));
+    args.extend(["-map", "0:a:0", "-ac", "1", "-ar", &rate.to_string(), "-f", "f32le", "-"].map(OsString::from));
     let mut child = process::spawn(&tools.ffmpeg, &args, true)?;
     let mut stdout = child.stdout.take().expect("piped stdout");
     let stderr = process::collect_stderr(&mut child);
@@ -254,7 +301,7 @@ pub async fn waveform(tools: &Tools, path: &Path, out: &Path, peaks_per_second: 
     let bytes: Vec<u8> =
         peaks.iter().flat_map(|p| if max > 0.0 { (p / max).min(1.0) } else { 0.0 }.to_le_bytes()).collect();
     tokio::fs::write(out, bytes).await?;
-    Ok(Waveform { path: path_arg(out), peaks_per_second: pps })
+    Ok(Waveform { path: out.to_string_lossy().into_owned(), peaks_per_second: pps })
 }
 
 fn push_peak(peaks: &mut Vec<f32>, index: u64, pps: u32, rate: u32, sample: f32) {
@@ -335,9 +382,9 @@ async fn proxy_with(
     hardware: Option<(&accel::Verified, Option<&str>)>,
     decode_hardware: bool,
 ) -> MediaResult<()> {
-    let mut args = vec![];
+    let mut args: Vec<OsString> = vec![];
     if meta.has_video && decode_hardware {
-        args.extend(accel::decode_args(caps, meta));
+        args.extend(accel::decode_args(caps, meta).into_iter().map(OsString::from));
     }
     args.extend([s("-i"), path_arg(path), s("-sn"), s("-dn")]);
     if meta.has_video {
@@ -347,15 +394,15 @@ async fn proxy_with(
         let (video, vf) = match hardware {
             Some((v, device)) => {
                 let (video, pix_fmt, device, upload) = export::h264_hardware(v, 5_000_000, device);
-                let mut global = device;
+                let mut global: Vec<OsString> = device.into_iter().map(OsString::from).collect();
                 global.append(&mut args);
                 args = global;
                 (video, format!("{fit},format={pix_fmt}{}", if upload { ",hwupload" } else { "" }))
             }
             None => (export::h264_args(caps, "veryfast", 23, 5_000_000)?, format!("{fit},format=yuv420p")),
         };
-        args.extend([s("-map"), s("0:v:0"), s("-vf"), vf]);
-        args.extend(video);
+        args.extend([s("-map"), s("0:v:0"), s("-vf"), s(vf)]);
+        args.extend(video.into_iter().map(OsString::from));
     }
     if meta.has_audio {
         args.extend([s("-map"), s("0:a:0"), s("-c:a"), s("aac"), s("-b:a"), s("160k"), s("-ac"), s("2")]);
@@ -373,12 +420,17 @@ async fn proxy_with(
 
 /// Full-resolution PNG of the frame at `time` seconds.
 pub async fn grab_frame(tools: &Tools, path: &Path, time: f64, out: &Path) -> MediaResult<()> {
+    let (input, upright, tonemap) = reading(tools, path).await;
+    let vf = (upright.is_some() || tonemap.is_some()).then(|| around(upright, "null", tonemap.as_deref()));
     // `-update 1` keeps overwriting the file, so without `-frames:v 1` the last decoded frame wins.
     let attempt = |seek: &[&str], first_only: bool| {
-        let mut args: Vec<String> = seek.iter().map(s).collect();
-        args.extend([s("-i"), path_arg(path)]);
+        let mut args: Vec<OsString> = seek.iter().map(s).collect();
+        args.extend(input.iter().cloned());
         if first_only {
             args.extend([s("-frames:v"), s("1")]);
+        }
+        if let Some(vf) = &vf {
+            args.extend([s("-vf"), s(vf)]);
         }
         args.extend([s("-update"), s("1"), s("-f"), s("image2"), s("-c:v"), s("png"), path_arg(out)]);
         args

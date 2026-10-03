@@ -115,7 +115,7 @@ async fn to_ryolune(s: &Arc<Session>, a: &Args) -> CmdResult {
 async fn from_ryolune(s: &Arc<Session>, cx: &Ctx, a: &Args) -> CmdResult {
     let project = s.project()?;
     let path = match a.opt_str("path") {
-        Some(p) => PathBuf::from(p),
+        Some(p) => crate::commands::media::absolute(p)?,
         None => {
             let mut r = RyoluneClient::connect().await.map_err(|e| format!("{e} Give a path to an audio file ryolune exported instead."))?;
             let dir = handoff_dir("kimchi");

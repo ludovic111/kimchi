@@ -66,8 +66,9 @@ impl Editor {
     }
 
     /// Width the timeline's tracks have (for zoom to fit).
-    pub fn timeline_width(&self, cx: &App) -> Pixels {
-        self.timeline.read(cx).tracks_width()
+    pub fn fit_timeline(this: &Entity<Self>, cx: &mut App) {
+        let timeline = this.read(cx).timeline.clone();
+        crate::views::timeline::Timeline::fit(&timeline, cx);
     }
 
     fn start_resize(&mut self, which: Splitter, e: &MouseDownEvent, cx: &mut Context<Self>) {
@@ -186,6 +187,7 @@ impl Editor {
         let name = p.as_ref().map(|p| p.name.clone()).unwrap_or_default();
         let spec = p.as_ref().map(|p| format!("{}×{} · {}fps", p.settings.width, p.settings.height, p.settings.fps)).unwrap_or_default();
         let fullscreen = window.is_fullscreen();
+        let controls = crate::ui::window_controls(window, cx);
         div()
             .id("top-bar")
             .h(px(TOPBAR_H))
@@ -193,8 +195,10 @@ impl Editor {
             .flex()
             .items_center()
             .justify_between()
-            .pl(px(if fullscreen { 14. } else { 84. }))
-            .pr(px(12.))
+            // Room for the macOS traffic lights.
+            .pl(px(if fullscreen || !cfg!(target_os = "macos") { 14. } else { 84. }))
+            .when(controls.is_none(), |d| d.pr(px(12.)))
+            .window_control_area(gpui::WindowControlArea::Drag)
             .glass(t.glass1)
             .border_0()
             .border_b_1()
@@ -209,6 +213,8 @@ impl Editor {
             .child(
                 div()
                     .flex()
+                    .flex_1()
+                    .min_w_0()
                     .items_center()
                     .gap(px(8.))
                     .child(
@@ -234,6 +240,9 @@ impl Editor {
                         Some((input, _)) => div().w(px(240.)).child(input.clone()).into_any_element(),
                         None => div()
                             .id("project-name")
+                            .min_w_0()
+                            .max_w(px(320.))
+                            .truncate()
                             .px(px(6.))
                             .py(px(3.))
                             .rounded(px(sz::R_SM))
@@ -246,22 +255,18 @@ impl Editor {
                             .child(name)
                             .into_any_element(),
                     })
-                    .child(div().font_family(MONO).text_size(px(sz::XS)).text_color(t.text_3).child(spec)),
+                    .child(div().flex_none().font_family(MONO).text_size(px(sz::XS)).text_color(t.text_3).child(spec)),
             )
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .items_center()
                     .gap(px(4.))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .when_some(update.available.clone(), |d, v| {
                         let button = if update.ready {
-                            Button::new("update", "Restart to update").small().primary().with_icon("refresh-cw").on_click(|_, _, cx| {
-                                match kimchi_control::update::restart() {
-                                    Ok(()) => cx.quit(),
-                                    Err(e) => cx.store().update(cx, |s, cx| s.error(format!("Couldn't restart: {e}"), cx)),
-                                }
-                            })
+                            Button::new("update", "Restart to update").small().primary().with_icon("refresh-cw").on_click(|_, _, cx| crate::app::restart(cx))
                         } else if let Some(p) = update.progress {
                             Button::new("update", format!("Updating… {:.0}%", p * 100.0)).small().disabled(true)
                         } else if update.can_install {
@@ -323,6 +328,7 @@ impl Editor {
                     .child(Button::icon("sponsor", "heart", "Support kimchi").on_click(|_, _, cx| cx.open_url(crate::app::SUPPORT_URL)))
                     .child(Button::new("export", "Export").small().primary().with_icon("share").tooltip(tip("Export", &act::Export)).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Export, cx)))),
             )
+            .children(controls)
     }
 }
 

@@ -133,6 +133,35 @@ fn speaks_mcp_over_a_project_file() {
 }
 
 #[test]
+fn requests_overlap_and_answers_stay_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("cut.json");
+    let mut mcp = Mcp::start(dir.path(), &["--file", file.to_str().unwrap()]);
+    mcp.request(1, "initialize", json!({ "protocolVersion": "2025-06-18" }));
+    // Sent back to back: every request is answered once, in whatever order they finish.
+    for id in 2..12u64 {
+        let frame = if id % 2 == 0 {
+            json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": "app_commands", "arguments": {} } })
+        } else {
+            json!({ "jsonrpc": "2.0", "id": id, "method": "ping" })
+        };
+        mcp.send(frame);
+    }
+    // Cancelling something unknown (or already answered) is a no-op.
+    mcp.send(json!({ "jsonrpc": "2.0", "method": "notifications/cancelled", "params": { "requestId": 99 } }));
+    let mut ids = vec![];
+    for _ in 2..12 {
+        let mut line = String::new();
+        mcp.reader.read_line(&mut line).unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line}"));
+        ids.push(reply["id"].as_u64().unwrap());
+    }
+    ids.sort();
+    assert_eq!(ids, (2..12).collect::<Vec<_>>());
+    assert_eq!(mcp.request(12, "ping", json!({}))["result"], json!({}));
+}
+
+#[test]
 fn usage_errors_exit_with_2() {
     let out = Command::new(env!("CARGO_BIN_EXE_kimchi-mcp")).arg("--bogus").stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
     assert_eq!(out.code(), Some(2));

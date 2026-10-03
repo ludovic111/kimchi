@@ -306,18 +306,57 @@ fn a_stopped_turn_is_closed_before_the_next() {
 
 #[test]
 fn cli_invocations_attach_kimchi_only() {
-    let args = cli::claude_args(std::path::Path::new("/tmp/mcp.json"), "", Some("sess-1"));
+    let args = cli::claude_args(std::path::Path::new("/tmp/mcp.json"), "", Some("sess-1"), false);
     let joined = args.join(" ");
     for flag in ["-p", "--output-format stream-json", "--strict-mcp-config", "--allowedTools mcp__kimchi__*", "--mcp-config /tmp/mcp.json", "--resume sess-1"] {
         assert!(joined.contains(flag), "{flag} in {joined}");
     }
     assert!(!joined.contains("--model"));
     let live = cli::Live { mcp: "/Apps/kimchi \"x\"/kimchi-mcp".into(), control: "/data/control.json".into() };
-    let args = cli::codex_args(&live, "gpt-5", Some("thread-9"));
+    let args = cli::codex_args(&live, "gpt-5", Some("thread-9"), &["node_repl".into(), "kimchi".into()]);
     assert_eq!(&args[..2], ["exec", "--json"]);
+    for c in ["features.plugins=false", "features.computer_use=false", "mcp_servers.node_repl.enabled=false"] {
+        assert!(args.windows(2).any(|w| w == ["-c", c]), "{c} in {args:?}");
+    }
+    assert!(!args.iter().any(|a| a == "mcp_servers.kimchi.enabled=false"));
     assert!(args.contains(&"mcp_servers.kimchi.command=\"/Apps/kimchi \\\"x\\\"/kimchi-mcp\"".to_string()), "{args:?}");
     assert!(args.windows(2).any(|w| w == ["resume", "thread-9"]));
     assert_eq!(args.last().unwrap(), "-");
+}
+
+#[test]
+fn a_batch_shim_gets_the_system_prompt_on_one_line() {
+    let args = cli::claude_args(std::path::Path::new("/tmp/mcp.json"), "", None, true);
+    let system = &args[args.iter().position(|a| a == "--append-system-prompt").unwrap() + 1];
+    assert!(!system.contains('\n') && system.contains("mcp__kimchi__family_verb"), "{system}");
+}
+
+#[test]
+fn codex_config_servers_are_found() {
+    let config = r#"
+model = "gpt-5"
+[mcp_servers.node_repl]
+command = "node"
+[mcp_servers.node_repl.env]
+X = "1"
+[mcp_servers."my.server"]
+command = "x"
+[projects."/home/me"]
+trust_level = "trusted"
+[mcp_servers]
+inline = { command = "y" }
+"#;
+    assert_eq!(cli::codex_mcp_servers(config), ["node_repl", "\"my.server\"", "inline"]);
+}
+
+#[test]
+fn children_get_a_path_with_the_cli_folder_first() {
+    let path = cli::child_path(std::path::Path::new("/opt/somewhere/bin/claude"));
+    let dirs: Vec<_> = std::env::split_paths(&path).collect();
+    assert_eq!(dirs[0], std::path::Path::new("/opt/somewhere/bin"));
+    for d in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).filter(|d| !d.as_os_str().is_empty()) {
+        assert!(dirs.contains(&d), "{d:?} kept");
+    }
 }
 
 #[cfg(unix)]

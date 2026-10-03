@@ -64,7 +64,8 @@ pub fn apply(preset: &str, clip: &Clip, canvas: (f64, f64), length: Option<f64>)
         },
         _ => 0.6,
     });
-    let len = len.min(d);
+    // A tiny `length` would make millions of keys (and a cycle shorter than a frame is noise).
+    let len = len.max(MIN_LENGTH).min(d);
     let tf = &clip.transform;
     let (w, h) = canvas;
     let mut k = clip.keyframes.clone();
@@ -176,10 +177,15 @@ pub fn apply(preset: &str, clip: &Clip, canvas: (f64, f64), length: Option<f64>)
     Ok(k)
 }
 
+/// Shortest move or cycle, in seconds.
+const MIN_LENGTH: f64 = 0.05;
+/// Most cycles a repeating preset writes.
+const MAX_CYCLES: f64 = 1000.0;
+
 /// Repeats a little curve (`(fraction of a cycle, value)`) every `len` seconds over `d` seconds.
 fn cycles(k: &mut Keyframes, name: &str, d: f64, len: f64, shape: &[(f64, f64)]) {
     let smooth = Easing::parse("easeInOutSine").expect("named");
-    let n = (d / len).floor().max(1.0) as usize;
+    let n = (d / len).floor().clamp(1.0, MAX_CYCLES) as usize;
     for c in 0..n {
         for (f, v) in shape {
             if c > 0 && *f == 0.0 {
@@ -222,5 +228,17 @@ mod tests {
         assert_eq!(k["x"][0].value.as_f64(), Some(-1920.0));
         let pulse = apply("pulse", &c, (1920.0, 1080.0), None).unwrap();
         assert_eq!(pulse["scale"].len(), 9, "four beats of three keys sharing ends");
+    }
+
+    #[test]
+    fn tiny_lengths_stay_bounded() {
+        let mut long = clip();
+        long.duration = 1e6;
+        for p in ["pulse", "wiggle", "float", "shake", "fadeIn"] {
+            let k = apply(p, &long, (1920.0, 1080.0), Some(1e-9)).unwrap();
+            assert!(k.values().all(|v| v.len() <= 4001), "{p}");
+        }
+        let k = apply("fadeIn", &clip(), (1920.0, 1080.0), Some(1e-9)).unwrap();
+        assert_eq!(k["opacity"][1].time, 0.05);
     }
 }

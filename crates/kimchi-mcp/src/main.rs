@@ -7,14 +7,20 @@
 //! agent and the person edit the same project with one undo history. With `--file` the server
 //! hosts a session on a project file and saves after every change. MCP requests are always held
 //! to Settings › Agent › Permissions. Only protocol goes to stdout; logs go to stderr.
+//!
+//! Requests are served concurrently: each one is a task, so `ping` is answered while a
+//! generation runs, and `notifications/cancelled` aborts the request it names. One writer
+//! thread owns stdout, one JSON line at a time.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use kimchi_cli::Backend;
 use kimchi_control::{Perm, Source, registry};
 use serde_json::{Value, json};
-use tokio::io::AsyncBufReadExt;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
 mod prompts;
 
@@ -89,31 +95,166 @@ async fn main() {
     };
     eprintln!("kimchi-mcp {}: {} mode{}", env!("CARGO_PKG_VERSION"), backend.mode(), backend.path().map(|p| format!(" on {}", p.display())).unwrap_or_default());
 
-    let mut server = Server { backend };
-    let mut lines = tokio::io::BufReader::with_capacity(1 << 16, tokio::io::stdin()).lines();
+    let (out, writer) = protocol_out();
+    let server = Arc::new(Server { backend });
+    // Requests in flight by id (as JSON text), to cancel them.
+    let running: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>> = Arc::default();
+    let mut stdin = tokio::io::BufReader::with_capacity(1 << 16, tokio::io::stdin());
     loop {
-        let line = match lines.next_line().await {
-            Ok(Some(l)) => l,
-            Ok(None) => break,
+        let line = match read_line(&mut stdin, MAX_LINE).await {
+            Ok(Line::Text(l)) => l,
+            Ok(Line::TooLong) => {
+                eprintln!("kimchi-mcp: skipped a request over 64 MiB");
+                out.send(error(Value::Null, -32600, "The request exceeds 64 MiB"));
+                continue;
+            }
+            Ok(Line::Eof) => break,
             Err(e) => {
                 eprintln!("kimchi-mcp: {e}");
                 break;
             }
         };
-        if line.len() > MAX_LINE {
-            eprintln!("kimchi-mcp: a request exceeds 64 MiB");
-            break;
-        }
         if line.trim().is_empty() {
             continue;
         }
-        let Some(reply) = server.handle_line(&line).await else { continue };
-        let mut out = std::io::stdout().lock();
-        let written = serde_json::to_writer(&mut out, &reply).map_err(std::io::Error::other).and_then(|()| out.write_all(b"\n")).and_then(|()| out.flush());
-        if written.is_err() {
-            break;
+        let frame = match server.frame(&line) {
+            Ok(f) => f,
+            Err(reply) => {
+                out.send(reply);
+                continue;
+            }
+        };
+        let Some(Frame { id, method, params }) = frame else { continue };
+        let Some(id) = id else {
+            // Notifications get no answer; a cancelled request gets none either.
+            if method == "notifications/cancelled"
+                && let Some(task) = params.get("requestId").and_then(|r| running.lock().unwrap_or_else(|e| e.into_inner()).remove(&r.to_string()))
+            {
+                task.abort();
+            }
+            continue;
+        };
+        let key = id.to_string();
+        let (server, out, done) = (server.clone(), out.clone(), running.clone());
+        // Held while spawning, so a quick task can't remove its entry before it is there.
+        let mut tasks = running.lock().unwrap_or_else(|e| e.into_inner());
+        let task_key = key.clone();
+        let task = tokio::spawn(async move {
+            let reply = match server.dispatch(&method, &params).await {
+                Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                Err((code, message)) => error(id, code, &message),
+            };
+            done.lock().unwrap_or_else(|e| e.into_inner()).remove(&task_key);
+            out.send(reply);
+        });
+        tasks.insert(key, task);
+    }
+    // The client is gone; let calls already running finish (a file-mode edit saves its file),
+    // up to a few seconds.
+    let left: Vec<_> = running.lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, t)| t).collect();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        for t in left {
+            let _ = t.await;
+        }
+    })
+    .await;
+    // Out with the answers already given, then stop (a call still running keeps a sender: bounded).
+    drop(out);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), tokio::task::spawn_blocking(move || writer.join())).await;
+}
+
+/// One line of input, read without ever holding more than `max` bytes of it.
+#[derive(Debug, PartialEq)]
+enum Line {
+    Text(String),
+    /// Over `max`: skipped up to its end.
+    TooLong,
+    Eof,
+}
+
+async fn read_line(r: &mut (impl AsyncBufRead + Unpin), max: usize) -> std::io::Result<Line> {
+    let mut buf: Vec<u8> = vec![];
+    let mut over = false;
+    loop {
+        let chunk = r.fill_buf().await?;
+        if chunk.is_empty() {
+            return Ok(match (over, buf.is_empty()) {
+                (true, _) => Line::TooLong,
+                (false, true) => Line::Eof,
+                (false, false) => Line::Text(String::from_utf8_lossy(&buf).into_owned()),
+            });
+        }
+        let newline = chunk.iter().position(|b| *b == b'\n');
+        let take = newline.map_or(chunk.len(), |i| i + 1);
+        if !over && buf.len() + take > max + 1 {
+            over = true;
+            buf = vec![];
+        }
+        if !over {
+            buf.extend_from_slice(&chunk[..take]);
+        }
+        r.consume(take);
+        if newline.is_some() {
+            if over {
+                return Ok(Line::TooLong);
+            }
+            while buf.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+                buf.pop();
+            }
+            return Ok(Line::Text(String::from_utf8_lossy(&buf).into_owned()));
         }
     }
+}
+
+/// The protocol's way out: a thread that writes one JSON line per message. When stdout is gone
+/// the client is too, and the server stops.
+#[derive(Clone)]
+struct Out(std::sync::mpsc::Sender<Value>);
+
+impl Out {
+    fn send(&self, v: Value) {
+        let _ = self.0.send(v);
+    }
+}
+
+fn protocol_out() -> (Out, std::thread::JoinHandle<()>) {
+    let mut stdout = protocol_stdout();
+    let (tx, rx) = std::sync::mpsc::channel::<Value>();
+    let writer = std::thread::spawn(move || {
+        for v in rx {
+            let written = serde_json::to_writer(&mut stdout, &v).map_err(std::io::Error::other).and_then(|()| stdout.write_all(b"\n")).and_then(|()| stdout.flush());
+            if written.is_err() {
+                std::process::exit(0);
+            }
+        }
+    });
+    (Out(tx), writer)
+}
+
+/// stdout for the protocol only. On Unix the real stdout is kept aside and fd 1 points at
+/// stderr from here on, so a stray print (ours, a library's or a child process's, like ffmpeg)
+/// can never corrupt the JSON-RPC stream.
+#[cfg(unix)]
+fn protocol_stdout() -> Box<dyn Write + Send> {
+    use std::os::fd::FromRawFd;
+    unsafe extern "C" {
+        fn dup(fd: i32) -> i32;
+        fn dup2(old: i32, new: i32) -> i32;
+    }
+    // SAFETY: plain descriptor calls on 0–2, which exist for the life of the process; the
+    // duplicate is owned by the File alone.
+    unsafe {
+        let fd = dup(1);
+        if fd >= 0 && dup2(2, 1) >= 0 {
+            return Box::new(std::io::BufWriter::new(std::fs::File::from_raw_fd(fd)));
+        }
+    }
+    Box::new(std::io::stdout())
+}
+
+#[cfg(not(unix))]
+fn protocol_stdout() -> Box<dyn Write + Send> {
+    Box::new(std::io::stdout())
 }
 
 fn exit_usage(message: &str) -> ! {
@@ -125,14 +266,23 @@ struct Server {
     backend: Backend,
 }
 
+/// A request (with an id) or a notification.
+struct Frame {
+    id: Option<Value>,
+    method: String,
+    params: Value,
+}
+
 impl Server {
-    async fn handle_line(&mut self, line: &str) -> Option<Value> {
+    /// Reads one line: `Ok(None)` for something to ignore (a client's response), `Err` for the
+    /// error answer to a bad frame.
+    fn frame(&self, line: &str) -> Result<Option<Frame>, Value> {
         let frame: Value = match serde_json::from_str(line) {
             Ok(v) => v,
-            Err(e) => return Some(error(Value::Null, -32700, &format!("Parse error: {e}"))),
+            Err(e) => return Err(error(Value::Null, -32700, &format!("Parse error: {e}"))),
         };
         let Some(obj) = frame.as_object() else {
-            return Some(error(Value::Null, -32600, "Batch requests are not supported"));
+            return Err(error(Value::Null, -32600, "Batch requests are not supported"));
         };
         let id = obj.get("id").cloned();
         if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
@@ -141,21 +291,16 @@ impl Server {
         {
             // A response from the client (we send no requests) or a malformed frame.
             if obj.contains_key("result") || obj.contains_key("error") {
-                return None;
+                return Ok(None);
             }
-            return Some(error(id.unwrap_or(Value::Null), -32600, "Invalid JSON-RPC 2.0 request"));
+            return Err(error(id.unwrap_or(Value::Null), -32600, "Invalid JSON-RPC 2.0 request"));
         }
-        let method = obj.get("method").and_then(Value::as_str).unwrap_or("");
+        let method = obj.get("method").and_then(Value::as_str).unwrap_or("").to_string();
         let params = obj.get("params").cloned().unwrap_or(Value::Null);
-        // Notifications (initialized, cancelled, progress) get no answer.
-        let id = id?;
-        Some(match self.dispatch(method, &params).await {
-            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-            Err((code, message)) => error(id, code, &message),
-        })
+        Ok(Some(Frame { id, method, params }))
     }
 
-    async fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
+    async fn dispatch(&self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
         match method {
             "initialize" => {
                 let requested = params.get("protocolVersion").and_then(Value::as_str).unwrap_or("");
@@ -302,4 +447,21 @@ fn tools() -> Vec<Value> {
 
 fn error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn lines_are_read_within_the_limit() {
+        let input: &[u8] = b"{\"a\":1}\r\n0123456789abcdef\nshort\nlast";
+        let mut r = tokio::io::BufReader::with_capacity(4, input);
+        assert_eq!(read_line(&mut r, 10).await.unwrap(), Line::Text("{\"a\":1}".into()));
+        // Skipped to its end, and the next line is whole.
+        assert_eq!(read_line(&mut r, 10).await.unwrap(), Line::TooLong);
+        assert_eq!(read_line(&mut r, 10).await.unwrap(), Line::Text("short".into()));
+        assert_eq!(read_line(&mut r, 10).await.unwrap(), Line::Text("last".into()));
+        assert_eq!(read_line(&mut r, 10).await.unwrap(), Line::Eof);
+    }
 }

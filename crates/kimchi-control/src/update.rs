@@ -17,11 +17,15 @@
 //! * **macOS**: the running `kimchi.app` is moved aside to `.kimchi.app.previous` next to it and the
 //!   new bundle moved in. [`finish_pending`] removes the previous copy once the new one has started.
 //! * **Linux AppImage** (`$APPIMAGE`): the same, with `.<name>.previous`.
-//! * **Windows, Linux packages, development builds**: the update is announced with
+//! * **Windows**, installed with the installer (`uninstall.exe` beside `kimchi.exe`): the signed
+//!   installer is downloaded and verified, then run passively once kimchi has exited, when it
+//!   restarts ([`restart`]) or quits ([`apply_on_quit`]).
+//! * **Portable Windows copies, Linux packages, development builds**: the update is announced with
 //!   `can_install: false` and the file to download by hand (`download_url`).
 //!
-//! `KIMCHI_NO_UPDATE=1` or `settings.updates.checkOnStart = false` turn off the check at start
-//! ([`check_on_start`]); `app.checkUpdates` and `app.installUpdate` always work. `KIMCHI_UPDATE_URL`
+//! `KIMCHI_NO_UPDATE=1` or `settings.updates.checkOnStart = false` turn off the checks at start and
+//! every [`RECHECK`] ([`run_in_background`], which also installs by itself with
+//! `updates.autoInstall`); `app.checkUpdates` and `app.installUpdate` always work. `KIMCHI_UPDATE_URL`
 //! points the check at another `latest.json` (signatures are still checked against [`PUBLIC_KEY`];
 //! debug builds accept `KIMCHI_UPDATE_PUBKEY` instead, for testing with a throwaway key).
 
@@ -51,6 +55,11 @@ pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 /// Refuse downloads larger than this (a release archive is ~100 MB).
 const MAX_DOWNLOAD: u64 = 2 << 30;
+/// How often a running app checks again.
+pub const RECHECK: Duration = Duration::from_secs(6 * 3600);
+
+/// A verified Windows installer waiting for kimchi to exit.
+static PENDING_INSTALLER: parking_lot::Mutex<Option<PathBuf>> = parking_lot::Mutex::new(None);
 
 /// What the app knows about updates, shown in the window and returned by
 /// `app.checkUpdates`.
@@ -119,6 +128,8 @@ pub enum Install {
     MacBundle(PathBuf),
     /// A Linux AppImage (`$APPIMAGE`), replaced in place.
     AppImage(PathBuf),
+    /// Windows, installed by the installer into this folder; the next installer runs over it.
+    WindowsInstalled(PathBuf),
     /// Windows, a Linux package, a portable folder or `cargo run`: updated by hand.
     Other,
 }
@@ -177,12 +188,34 @@ pub async fn check(s: &Arc<Session>, manual: bool) -> CmdResult<UpdateStatus> {
 }
 
 /// The check the app runs when it starts; does nothing when `KIMCHI_NO_UPDATE` is set or
-/// `updates.checkOnStart` is off. Never fails: a failed check stays quiet.
+/// `updates.checkOnStart` is off. Never fails: a failed check stays quiet. With
+/// `updates.autoInstall`, a found update is downloaded and installed.
 pub async fn check_on_start(s: &Arc<Session>) {
-    if !s.settings().update_check_enabled() {
+    let settings = s.settings();
+    if !settings.update_check_enabled() {
         return;
     }
-    let _ = check(s, false).await;
+    if let Ok(st) = check(s, false).await
+        && settings.updates.auto_install
+        && st.available.is_some()
+        && st.can_install
+        && !st.ready
+    {
+        tracing::info!("installing kimchi {} in the background (updates.autoInstall)", st.available.as_deref().unwrap_or_default());
+        if let Err(e) = install(s).await {
+            tracing::warn!("the automatic update failed: {e}");
+        }
+    }
+}
+
+/// Checks a few seconds after start, then every [`RECHECK`] while the app runs (each time
+/// subject to the settings, which may change in between).
+pub async fn run_in_background(s: Arc<Session>) {
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    loop {
+        check_on_start(&s).await;
+        tokio::time::sleep(RECHECK).await;
+    }
 }
 
 pub fn status(s: &Session) -> UpdateStatus {
@@ -253,6 +286,7 @@ fn platform_keys_for(install: &Install) -> Vec<String> {
     let installer = match install {
         Install::MacBundle(_) => Some("app"),
         Install::AppImage(_) => Some("appimage"),
+        Install::WindowsInstalled(_) => Some("nsis"),
         Install::Other if cfg!(windows) => Some("nsis"),
         Install::Other => None,
     };
@@ -355,7 +389,20 @@ pub async fn install(s: &Arc<Session>) -> CmdResult<UpdateStatus> {
     };
     s.emit(Event::Update { status: status(s) });
 
+    // If this future is dropped (a client went away mid-download), the next install may start.
+    struct NotBusy<'a>(&'a Session);
+    impl Drop for NotBusy<'_> {
+        fn drop(&mut self) {
+            let mut u = self.0.update.lock();
+            if u.busy {
+                u.busy = false;
+                u.status.progress = None;
+            }
+        }
+    }
+    let guard = NotBusy(s);
     let result = download_and_install(s, &found, &install).await;
+    drop(guard);
 
     let st = {
         let mut u = s.update.lock();
@@ -392,13 +439,20 @@ async fn download_and_install(s: &Arc<Session>, found: &Found, install: &Install
         tokio::task::spawn_blocking(move || match install {
             Install::MacBundle(bundle) => install_bundle(&file, &bundle),
             Install::AppImage(path) => install_appimage(&file, &path),
+            // The installer can't replace a running kimchi.exe: it runs once kimchi has exited.
+            Install::WindowsInstalled(_) => {
+                *PENDING_INSTALLER.lock() = Some(file);
+                Ok(())
+            }
             Install::Other => Err("This copy of kimchi can't replace itself.".into()),
         })
         .await
         .map_err(|e| e.to_string())?
     }
     .await;
-    let _ = tokio::fs::remove_dir_all(&dir).await;
+    if PENDING_INSTALLER.lock().as_deref().is_none_or(|p| !p.starts_with(&dir)) {
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
     result
 }
 
@@ -466,6 +520,11 @@ pub fn current_install() -> Install {
     {
         return Install::AppImage(path);
     }
+    if cfg!(windows)
+        && let Some(dir) = exe.parent().filter(|d| d.join("uninstall.exe").is_file())
+    {
+        return Install::WindowsInstalled(dir.to_path_buf());
+    }
     Install::Other
 }
 
@@ -479,15 +538,16 @@ pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
 
 /// Ok when this copy can replace itself, else why not.
 fn install_support(install: &Install) -> Result<(), String> {
-    let target = match install {
+    let target: PathBuf = match install {
         Install::MacBundle(b) => {
             if b.to_string_lossy().contains("/AppTranslocation/") {
                 return Err("kimchi is running from a temporary location (macOS App Translocation). Move kimchi.app to Applications and open it from there to update in one click.".into());
             }
-            b
+            b.clone()
         }
-        Install::AppImage(p) => p,
-        Install::Other if cfg!(windows) => return Err("On Windows, updates are installed with the installer.".into()),
+        Install::AppImage(p) => p.clone(),
+        Install::WindowsInstalled(dir) => dir.join("kimchi.exe"),
+        Install::Other if cfg!(windows) => return Err("This portable copy of kimchi is updated by hand; the installer version updates itself.".into()),
         Install::Other => return Err("This copy of kimchi (a package or a build from source) is updated by hand.".into()),
     };
     let dir = target.parent().ok_or("kimchi's folder can't be found.")?;
@@ -582,7 +642,7 @@ pub fn install_appimage(new: &Path, appimage: &Path) -> Result<(), String> {
 pub fn finish_pending() -> Vec<PathBuf> {
     match current_install() {
         Install::MacBundle(target) | Install::AppImage(target) => cleanup_beside(&target),
-        Install::Other => vec![],
+        Install::WindowsInstalled(_) | Install::Other => vec![],
     }
 }
 
@@ -603,7 +663,8 @@ fn cleanup_beside(target: &Path) -> Vec<PathBuf> {
     removed
 }
 
-/// Starts the installed copy once this process has exited. Call it, then quit the app.
+/// Starts the installed copy once this process has exited (on Windows, after running a downloaded
+/// installer). Call it, then quit the app.
 pub fn restart() -> std::io::Result<()> {
     let install = current_install();
     #[cfg(unix)]
@@ -613,7 +674,7 @@ pub fn restart() -> std::io::Result<()> {
         let (target, launch) = match &install {
             Install::MacBundle(b) => (b.clone(), r#"exec /usr/bin/open -n "$0""#),
             Install::AppImage(p) => (p.clone(), r#"exec "$0""#),
-            Install::Other => (std::env::current_exe()?, r#"exec "$0""#),
+            Install::WindowsInstalled(_) | Install::Other => (std::env::current_exe()?, r#"exec "$0""#),
         };
         let script = format!(r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; {launch}"#);
         std::process::Command::new("/bin/sh")
@@ -631,8 +692,52 @@ pub fn restart() -> std::io::Result<()> {
     #[cfg(not(unix))]
     {
         let _ = install;
-        std::process::Command::new(std::env::current_exe()?).spawn().map(|_| ())
+        match PENDING_INSTALLER.lock().take() {
+            // Passive, then start kimchi again (`/R`).
+            Some(setup) => after_exit(&setup, &["/P", "/R"]),
+            None => after_exit(&std::env::current_exe()?, &[]),
+        }
     }
+}
+
+/// When the app quits with a downloaded Windows installer waiting: runs it (passive, without
+/// starting kimchi again). Does nothing elsewhere, or after [`restart`] took the installer.
+pub fn apply_on_quit() {
+    #[cfg(windows)]
+    if let Some(setup) = PENDING_INSTALLER.lock().take() {
+        tracing::info!("installing the downloaded update on quit");
+        if let Err(e) = after_exit(&setup, &["/P"]) {
+            tracing::warn!("couldn't start the installer: {e}");
+        }
+    }
+}
+
+/// Starts `program` with `args` once this process has exited, from a hidden PowerShell.
+#[cfg(windows)]
+fn after_exit(program: &Path, args: &[&str]) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    let args = if args.is_empty() { String::new() } else { format!(" -ArgumentList {}", args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(",")) };
+    let script = format!(
+        "try {{ Wait-Process -Id {} -Timeout 120 -ErrorAction SilentlyContinue }} catch {{}}; Start-Process -FilePath {}{args}",
+        std::process::id(),
+        quote(&program.to_string_lossy())
+    );
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", &script])
+        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn after_exit(program: &Path, args: &[&str]) -> std::io::Result<()> {
+    std::process::Command::new(program).args(args).spawn().map(|_| ())
 }
 
 #[cfg(test)]

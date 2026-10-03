@@ -64,6 +64,8 @@ impl Slider {
 
     fn down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
+        // Keep it: the window takes focus back on mouse down otherwise (arrow keys then nudge).
+        window.prevent_default();
         if let (Some(n), 2) = (self.neutral, e.click_count) {
             self.set(n, true, cx);
             return;

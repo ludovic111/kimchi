@@ -63,6 +63,7 @@ pub(super) async fn step(api: &Api, run: &Run, defs: &[ToolDef], messages: &[Mes
     let mut lines = Lines::new(response);
     let mut text = String::new();
     let mut calls: Vec<(String, Result<Value, String>)> = vec![];
+    let mut done = false;
     while let Some(line) = lines.next().await? {
         let Ok(chunk) = serde_json::from_str::<Value>(&line) else { continue };
         if let Some(e) = chunk["error"].as_str() {
@@ -87,8 +88,12 @@ pub(super) async fn step(api: &Api, run: &Run, defs: &[ToolDef], messages: &[Mes
             if chunk["done_reason"] == "length" {
                 return Err("The reply reached its length limit; no unfinished command was run.".into());
             }
+            done = true;
             break;
         }
+    }
+    if !done {
+        return Err("Ollama: the connection closed before the reply finished. Try again.".into());
     }
     let mut parts = vec![];
     if !text.is_empty() {
