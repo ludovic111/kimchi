@@ -291,6 +291,11 @@ impl Editor {
         self.checkpoints.contains_key(&checkpoint)
     }
 
+    /// Whether the project is as it was at `checkpoint` (after a revert to it, say).
+    pub fn is_at_checkpoint(&self, checkpoint: u64) -> bool {
+        self.checkpoints.get(&checkpoint).is_some_and(|p| *p == self.project)
+    }
+
     pub fn undo(&mut self) -> bool {
         if self.batch.is_some() {
             return false;

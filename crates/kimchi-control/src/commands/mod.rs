@@ -1,6 +1,7 @@
 //! Every command's spec and handler. Specs are listed here in one table so the
 //! docs, the CLI help and the MCP tools are generated in a stable order.
 
+pub mod agent;
 pub mod app;
 pub mod captions;
 pub mod clip;
@@ -485,6 +486,32 @@ pub static SPECS: &[Spec] = &[
     edit("app.clearCrashReports", "Delete every crash report.", &[]).perm(Perm::Files),
     edit("app.quit", "Quit kimchi.", &[]).perm(Perm::AppControl).window(),
     edit("app.notify", "Show a short message in the window.", &[req("text", String, "Message."), opt("kind", String, "info (default), success or error.")]).window(),
+    // ---- agent ------------------------------------------------------------
+    query("agent.providers", "The models that can run the built-in agent (Claude Code, Codex, the Anthropic and OpenAI APIs, Ollama), whether each is ready on this computer and why not, and which one is chosen.", &[]).window(),
+    edit("agent.setProvider", "Choose what runs the built-in agent (Settings › Agent).", &[
+        req("provider", String, "claude-code, codex, anthropic, openai or ollama."),
+        opt("model", String, "Model id for the API providers and Ollama; empty for the provider's default."),
+        opt("baseUrl", String, "Server address for Ollama or an OpenAI-compatible server; empty for the default."),
+    ]).perm(Perm::PersonOnly),
+    edit("agent.send", "Ask the built-in agent (the Agent panel) to do something, in words. It continues the panel's conversation, runs commands like any client (permissions apply) and shows them as cards. Returns the run at once, or once it ends with wait. One run at a time. Uses the person's model account, so agents need the generate permission.", &[
+        req("prompt", String, "The request, e.g. \"Add a title saying Hello at 0 s and fade it in\"."),
+        opt("wait", Boolean, "Wait until the run ends and return it with its reply and commands (default false)."),
+        opt("timeout", Number, "With wait: stop waiting after this many seconds (default 900); the run goes on."),
+    ]).perm(Perm::Generate).window(),
+    query("agent.status", "One agent run (the running or latest one by default): the request, whether it is still working and on what, the reply, every command it ran with its outcome, changes, time and tokens.", &[
+        opt("run", Integer, "Run id from agent.runs."),
+        opt("wait", Boolean, "Wait until the run ends."),
+        opt("timeout", Number, "With wait: stop waiting after this many seconds (default 900)."),
+    ]).window(),
+    query("agent.runs", "The agent's runs on the open project, oldest first: request, provider, outcome, changes and whether agent.revert can undo them.", &[]).window(),
+    query("agent.conversation", "The Agent panel's conversation as it shows it: requests, replies, one card per command (the agent's, and those of MCP clients and the CLI) and how each run ended.", &[
+        opt("since", Integer, "Only entries from this index on (each answer gives the next index)."),
+    ]).window(),
+    edit("agent.stop", "Stop the agent's run. Edits it finished stay (agent.revert removes them).", &[]).window(),
+    edit("agent.revert", "Revert an agent run: the project goes back to how it was before the run's first change, as one undo step (history.undo brings the run back).", &[
+        opt("run", Integer, "Run id (default: the latest run that changed something and isn't reverted)."),
+    ]).window(),
+    edit("agent.newConversation", "Start a new conversation in the Agent panel: the agent forgets the thread. Earlier runs can still be reverted.", &[]).window(),
     // ---- ui ---------------------------------------------------------------
     query("ui.state", "What the window shows: home or editor, playhead, playing, selection, zoom, open panel and dialogs, theme.", &[]),
     edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears.").of(String), opt("assetId", String, "A media item to select instead.")]).window(),
@@ -534,6 +561,7 @@ pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "export" => export::run(s, cx, a).await,
         "handoff" => handoff::run(s, cx, a).await,
         "app" => app::run(s, cx, a).await,
+        "agent" => agent::run(s, cx, a).await,
         "ui" => ui::run(s, cx, a).await,
         _ => Err(unhandled(cx)),
     }

@@ -7,7 +7,9 @@ license.workspace = true
 
 [dependencies]
 kimchi-control.workspace = true
+kimchi-core.workspace = true
 
+chrono.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
 reqwest.workspace = true

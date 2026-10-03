@@ -196,6 +196,13 @@ pub enum Event {
     Update { status: crate::update::UpdateStatus },
 }
 
+/// The built-in agent, installed by the app (`kimchi-agent` depends on this crate, so the
+/// `agent.*` commands reach it through this trait). Ids and names are already validated.
+pub trait AgentHost: Send + Sync {
+    /// Carries out one `agent.*` command for `source`.
+    fn call(self: Arc<Self>, session: Arc<Session>, source: Source, command: &'static str, args: crate::registry::Args) -> futures::future::BoxFuture<'static, CmdResult>;
+}
+
 /// A command only the window can carry out (`ui.*`, playback, selection).
 pub struct UiCall {
     pub command: String,
@@ -239,6 +246,7 @@ pub struct Session {
     events: broadcast::Sender<Event>,
     ui: Mutex<Option<mpsc::UnboundedSender<UiCall>>>,
     ui_state: RwLock<UiState>,
+    agent: RwLock<Option<Arc<dyn AgentHost>>>,
     seq: AtomicU64,
     runtime: tokio::runtime::Handle,
     pub(crate) update: Mutex<crate::update::UpdateState>,
@@ -280,6 +288,7 @@ impl Session {
             events,
             ui: Mutex::new(None),
             ui_state: RwLock::new(UiState::default()),
+            agent: RwLock::new(None),
             seq: AtomicU64::new(1),
             runtime: tokio::runtime::Handle::current(),
             update: Mutex::new(Default::default()),
@@ -398,6 +407,17 @@ impl Session {
 
     pub fn ui_state(&self) -> UiState {
         self.ui_state.read().clone()
+    }
+
+    // ---- the built-in agent ---------------------------------------------
+
+    /// Called by the app once: `agent.*` commands go to `host`.
+    pub fn set_agent_host(&self, host: Arc<dyn AgentHost>) {
+        *self.agent.write() = Some(host);
+    }
+
+    pub fn agent_host(&self) -> Option<Arc<dyn AgentHost>> {
+        self.agent.read().clone()
     }
 
     // ---- the open project -----------------------------------------------

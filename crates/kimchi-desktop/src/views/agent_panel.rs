@@ -4,23 +4,24 @@
 //! history are the same as for MCP and the CLI. It shows one card per command
 //! (from its own runs, and from MCP clients and the CLI driving kimchi), the
 //! changes with "Revert this run", and how to connect an outside agent.
+//!
+//! The conversation itself is `kimchi_agent::Host`'s: the panel sends, stops and reverts with the
+//! `agent.*` commands, as `kimchi-cli` and MCP clients can, and draws the host's snapshot.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use futures::StreamExt;
 use gpui::{AnyElement, ClipboardItem, Context, Entity, FontWeight, Render, ScrollHandle, Subscription, Task, Window, div, prelude::*, px};
-use kimchi_agent::{Agent, AgentConfig, AgentEvent, Conversation, ProviderKind, ProviderStatus};
-use kimchi_control::CommandRecord;
-use serde_json::{Value, json};
+use kimchi_agent::{AgentConfig, Entry, ProviderKind, ProviderStatus, Snapshot};
+use serde_json::json;
 
 use crate::store::{Dialog, MenuItem, Store, StoreExt};
 use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::{Button, GlassExt, caps, icon, segmented};
-use crate::views::agent::{Active, History, Item, Outcome, OutcomeKind, RunSummary, Tab};
+use crate::views::agent::cards::Ending;
+use crate::views::agent::{History, Tab};
 use crate::views::generate::spinner_icon;
 
 const EXAMPLES: [&str; 4] = [
@@ -34,15 +35,9 @@ pub struct AgentPanel {
     pub(crate) store: Entity<Store>,
     tab: Tab,
     composer: Entity<TextInput>,
-    pub(crate) items: Vec<Item>,
-    /// Command seq → index in `items`, so a command reported twice (by the run
-    /// and by the session's stream) shows once.
-    seen: HashMap<u64, usize>,
-    last_seq: u64,
-    conversation: Conversation,
-    pub(crate) runs: Vec<RunSummary>,
-    active: Option<Active>,
-    _pump: Option<Task<()>>,
+    /// The host's conversation and runs, as last drawn.
+    pub(crate) snap: Snapshot,
+    _pump: Task<()>,
     _ticker: Option<Task<()>>,
     statuses: Vec<ProviderStatus>,
     checking: bool,
@@ -50,8 +45,6 @@ pub struct AgentPanel {
     /// Terminal sessions (by checkpoint) reverted from the Changes tab.
     pub(crate) reverted_sessions: std::collections::HashSet<u64>,
     project_seen: Option<usize>,
-    /// The project the runs and conversation belong to.
-    project_id: Option<kimchi_core::Id>,
     pub(crate) expanded: HashSet<u64>,
     scroll: ScrollHandle,
     changes_scroll: ScrollHandle,
@@ -78,24 +71,28 @@ impl AgentPanel {
             }),
         ];
         let provider_seen = store.read(cx).settings.agent.provider.clone();
+        // Redraw whenever the host's conversation changes, whoever changed it.
+        let host = store.read(cx).agent.clone();
+        let mut changes = host.subscribe();
+        let pump = cx.spawn(async move |this, cx| {
+            while changes.changed().await.is_ok() {
+                if this.update(cx, |p, cx| p.refresh(cx)).is_err() {
+                    break;
+                }
+            }
+        });
         let mut this = Self {
             store,
             tab: Tab::Conversation,
             composer,
-            items: vec![],
-            seen: HashMap::new(),
-            last_seq: 0,
-            conversation: Conversation::new(),
-            runs: vec![],
-            active: None,
-            _pump: None,
+            snap: host.snapshot(),
+            _pump: pump,
             _ticker: None,
             statuses: vec![],
             checking: false,
             history: None,
             reverted_sessions: Default::default(),
             project_seen: None,
-            project_id: None,
             expanded: HashSet::new(),
             scroll: ScrollHandle::new(),
             changes_scroll: ScrollHandle::new(),
@@ -121,26 +118,8 @@ impl AgentPanel {
     fn on_store_changed(&mut self, cx: &mut Context<Self>) {
         let s = self.store.read(cx);
         let open = s.agent_open;
-        let fresh: Vec<CommandRecord> = s.commands.iter().filter(|r| r.seq > self.last_seq).cloned().collect();
         let provider = s.settings.agent.provider.clone();
-        let project = s.project.as_ref().map(|p| Arc::as_ptr(p) as usize);
-        let project_id = s.project.as_ref().map(|p| p.id);
-        if project_id != self.project_id {
-            // Another project: a run still going would edit it, and "Revert this run" would
-            // apply to it. Stop, and start the conversation afresh.
-            let switched = self.project_id.is_some();
-            self.project_id = project_id;
-            if switched {
-                self.stop(cx);
-                self.runs.clear();
-                self.reverted_sessions.clear();
-                self.new_conversation(cx);
-            }
-        }
-        for r in fresh {
-            self.last_seq = self.last_seq.max(r.seq);
-            self.add_command(r, None);
-        }
+        let project = s.project.as_ref().map(|p| std::sync::Arc::as_ptr(p) as usize);
         if open && (!self.was_open || provider != self.provider_seen) {
             self.refresh_statuses(cx);
         }
@@ -193,166 +172,75 @@ impl AgentPanel {
         .detach();
     }
 
-    fn add_command(&mut self, record: CommandRecord, result: Option<Value>) {
-        if let Some(&i) = self.seen.get(&record.seq) {
-            if let (Some(r), Some(Item::Command { result: slot, .. })) = (result, self.items.get_mut(i)) {
-                *slot = Some(r);
-            }
-            return;
+    /// Takes the host's latest snapshot.
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        let host = self.store.read(cx).agent.clone();
+        let snap = host.snapshot();
+        let grew = snap.entries.len() != self.snap.entries.len() || snap.entries.last().map(entry_len) != self.snap.entries.last().map(entry_len);
+        let ended = self.snap.running.is_some() && snap.running.is_none();
+        let started = snap.running.is_some() && self._ticker.is_none();
+        if snap.entries.is_empty() {
+            self.expanded.clear();
         }
-        self.seen.insert(record.seq, self.items.len());
-        self.items.push(Item::Command { record: Box::new(record), result });
-        self.scroll.scroll_to_bottom();
+        self.snap = snap;
+        if grew {
+            self.scroll.scroll_to_bottom();
+        }
+        if ended {
+            self._ticker = None;
+            self.refresh_history(cx);
+        }
+        if started {
+            // Keeps the elapsed time moving while the model thinks.
+            self._ticker = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                    let going = this.update(cx, |p, cx| {
+                        cx.notify();
+                        p.snap.running.is_some()
+                    });
+                    if !matches!(going, Ok(true)) {
+                        break;
+                    }
+                }
+            }));
+        }
+        cx.notify();
     }
 
     // ---- runs ----------------------------------------------------------------
 
     fn send(&mut self, cx: &mut Context<Self>) {
         let prompt = self.composer.read(cx).text().trim().to_string();
-        if prompt.is_empty() || self.active.is_some() {
+        if prompt.is_empty() || self.snap.running.is_some() {
             return;
         }
         self.composer.update(cx, |i, cx| i.set_text("", cx));
-        let s = self.store.read(cx);
-        let session = s.session.clone();
-        let config = AgentConfig::from_settings(&s.settings.agent);
-        let provider = config.provider;
-        self.items.push(Item::User { text: prompt.clone() });
-        self.runs.push(RunSummary { prompt: prompt.clone(), provider, checkpoint: None, changes: 0, finished: false, reverted: false, at: chrono::Local::now() });
-        let run_ix = self.runs.len() - 1;
-        // The run itself lives on the session's Tokio runtime; this only reads its events.
-        let mut run = Agent::start(&session, config, prompt, self.conversation.clone());
-        let handle = run.handle();
-        let mut events = run.take_events().expect("fresh run");
-        self.active = Some(Active { handle, run: run_ix, status: Some(format!("Starting {}…", provider.label())), started: Instant::now(), tokens: (0, 0), streamed: false });
-        self._pump = Some(cx.spawn(async move |this, cx| {
-            while let Some(ev) = events.next().await {
-                if this.update(cx, |p, cx| p.on_agent_event(ev, cx)).is_err() {
-                    break;
-                }
-            }
-        }));
-        // Keeps the elapsed time moving while the model thinks.
-        self._ticker = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
-                let going = this.update(cx, |p, cx| {
-                    cx.notify();
-                    p.active.is_some()
-                });
-                if !matches!(going, Ok(true)) {
-                    break;
-                }
-            }
-        }));
+        self.store.update(cx, |s, cx| s.run("agent.send", json!({ "prompt": prompt }), cx));
         self.tab = Tab::Conversation;
         self.scroll.scroll_to_bottom();
         cx.notify();
     }
 
-    fn on_agent_event(&mut self, ev: AgentEvent, cx: &mut Context<Self>) {
-        match ev {
-            AgentEvent::Status { message } => {
-                if let Some(a) = &mut self.active {
-                    a.status = Some(message);
-                }
-            }
-            AgentEvent::Text { delta } => {
-                if let Some(a) = &mut self.active {
-                    a.streamed = true;
-                }
-                match self.items.last_mut() {
-                    Some(Item::Assistant { text }) => text.push_str(&delta),
-                    _ => self.items.push(Item::Assistant { text: delta.trim_start().to_string() }),
-                }
-                self.scroll.scroll_to_bottom();
-            }
-            AgentEvent::Command { record, result } => {
-                self.last_seq = self.last_seq.max(record.seq);
-                self.add_command(*record, result);
-            }
-            AgentEvent::Usage { input_tokens, output_tokens } => {
-                if let Some(a) = &mut self.active {
-                    a.tokens.0 += input_tokens;
-                    a.tokens.1 += output_tokens;
-                }
-            }
-            AgentEvent::Done { summary, checkpoint, changes, conversation } => {
-                self.conversation = conversation;
-                if self.active.as_ref().is_some_and(|a| !a.streamed) && !summary.trim().is_empty() {
-                    self.items.push(Item::Assistant { text: summary });
-                }
-                self.finish(OutcomeKind::Done, None, checkpoint, changes, cx);
-            }
-            AgentEvent::Error { message, checkpoint, changes } => {
-                if let Some(a) = &self.active {
-                    self.conversation = a.handle.conversation();
-                }
-                self.finish(OutcomeKind::Error, Some(message), checkpoint, changes, cx);
-            }
-            AgentEvent::Cancelled { checkpoint, changes } => {
-                if let Some(a) = &self.active {
-                    self.conversation = a.handle.conversation();
-                }
-                self.finish(OutcomeKind::Cancelled, None, checkpoint, changes, cx);
-            }
-        }
-        cx.notify();
-    }
-
-    fn finish(&mut self, kind: OutcomeKind, message: Option<String>, checkpoint: Option<u64>, changes: usize, cx: &mut Context<Self>) {
-        let Some(a) = self.active.take() else { return };
-        if let Some(r) = self.runs.get_mut(a.run) {
-            r.checkpoint = checkpoint;
-            r.changes = changes;
-            r.finished = true;
-        }
-        self.items.push(Item::Outcome(Outcome { run: a.run, kind, message, changes, tokens: a.tokens, secs: a.started.elapsed().as_secs_f32() }));
-        self.scroll.scroll_to_bottom();
-        self.refresh_history(cx);
-    }
-
     fn stop(&mut self, cx: &mut Context<Self>) {
-        if let Some(a) = &mut self.active {
-            a.handle.cancel();
-            a.status = Some("Stopping…".into());
-        }
-        cx.notify();
+        self.store.update(cx, |s, cx| s.run("agent.stop", json!({}), cx));
     }
 
     /// "Revert this run": back to the checkpoint taken before its first change, as one undo step.
-    pub(crate) fn revert_run(&mut self, run: usize, cx: &mut Context<Self>) {
-        let Some(cp) = self.runs.get(run).and_then(|r| r.checkpoint) else { return };
-        let task = self.store.update(cx, |s, cx| s.call("history.revertTo", json!({ "checkpoint": cp }), cx));
-        cx.spawn(async move |this, cx| {
-            let r = task.await;
-            this.update(cx, |p, cx| {
-                match r {
-                    Ok(_) => {
-                        if let Some(run) = p.runs.get_mut(run) {
-                            run.reverted = true;
-                        }
-                        p.store.update(cx, |s, cx| s.info("Reverted the run. Undo brings it back.", cx));
-                    }
-                    Err(e) => p.store.update(cx, |s, cx| s.error(e, cx)),
-                }
-                p.refresh_history(cx);
-                cx.notify();
+    pub(crate) fn revert_run(&mut self, run: u64, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        self.store.update(cx, |s, cx| {
+            s.run_then("agent.revert", json!({ "run": run }), cx, move |s, _, cx| {
+                s.info("Reverted the run. Undo brings it back.", cx);
+                this.update(cx, |p, cx| p.refresh_history(cx)).ok();
             })
-            .ok();
-        })
-        .detach();
+        });
     }
 
     fn new_conversation(&mut self, cx: &mut Context<Self>) {
-        if self.active.is_some() {
-            return;
+        if self.snap.running.is_none() {
+            self.store.update(cx, |s, cx| s.run("agent.newConversation", json!({}), cx));
         }
-        self.items.clear();
-        self.seen.clear();
-        self.expanded.clear();
-        self.conversation = Conversation::new();
-        cx.notify();
     }
 
     fn open_agent_settings(cx: &mut gpui::App) {
@@ -437,15 +325,9 @@ impl AgentPanel {
                     .child(icon("chevron-down").size(px(12.))),
             )
             .child(div().flex_1())
-            .child(Button::icon("agent-new", "plus", "New conversation").disabled(self.active.is_some() || self.items.is_empty()).on_click(cx.listener(|this, _, _, cx| this.new_conversation(cx))))
+            .child(Button::icon("agent-new", "plus", "New conversation").disabled(self.snap.running.is_some() || self.snap.entries.is_empty()).on_click(cx.listener(|this, _, _, cx| this.new_conversation(cx))))
             .child(Button::icon("agent-settings", "shield-check", "Agent settings and permissions").on_click(|_, _, cx| Self::open_agent_settings(cx)))
-            .child(Button::icon("agent-close", "x", crate::actions::tip("Close", &crate::actions::ToggleAgent)).on_click(|_, _, cx| {
-                cx.store().update(cx, |s, cx| {
-                    s.agent_open = false;
-                    s.sync_ui(cx);
-                    cx.notify();
-                })
-            }))
+            .child(Button::icon("agent-close", "x", crate::actions::tip("Close", &crate::actions::ToggleAgent)).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_agent_open(false, cx))))
     }
 
     /// Warns when the chosen provider can't run, or agents are turned off.
@@ -590,8 +472,8 @@ impl AgentPanel {
 
     fn running_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let t = cx.theme().clone();
-        let a = self.active.as_ref()?;
-        let secs = a.started.elapsed().as_secs();
+        let a = self.snap.running.and_then(|id| self.snap.run(id))?;
+        let secs = a.seconds() as u64;
         Some(
             div()
                 .flex()
@@ -600,25 +482,28 @@ impl AgentPanel {
                 .text_size(px(sz::SM))
                 .text_color(t.text_2)
                 .child(div().text_color(t.accent_text).child(spinner_icon("loader-circle", true, "agent-spin", 13.)))
-                .child(div().flex_1().min_w_0().truncate().child(a.status.clone().unwrap_or_else(|| "Working…".into())))
+                .child(div().flex_1().min_w_0().truncate().child(a.activity.clone().unwrap_or_else(|| "Working…".into())))
                 .child(div().font_family(MONO).text_size(px(sz::XS)).child(format!("{}:{:02}", secs / 60, secs % 60)))
                 .into_any_element(),
         )
     }
 
     fn conversation_view(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.items.is_empty() && self.active.is_none() {
+        if self.snap.entries.is_empty() && self.snap.running.is_none() {
             return div().id("agent-scroll").size_full().overflow_y_scroll().track_scroll(&self.scroll).child(self.empty_state(cx)).into_any_element();
         }
         let items: Vec<AnyElement> = self
-            .items
+            .snap
+            .entries
             .iter()
             .enumerate()
             .map(|(i, item)| match item {
-                Item::User { text } => self.user_bubble(i, text, cx),
-                Item::Assistant { text } => self.assistant_text(text, cx),
-                Item::Command { record, result } => self.command_card(record, result.as_ref(), cx),
-                Item::Outcome(o) => self.outcome_row(i, o, cx),
+                Entry::User { text, source, .. } => self.user_bubble(i, text, *source, cx),
+                Entry::Assistant { text, .. } => self.assistant_text(text, cx),
+                Entry::Command { record, result, .. } => self.command_card(record, result.as_ref(), cx),
+                Entry::Outcome { run, state, error, changes, seconds, tokens } => {
+                    self.outcome_row(i, Ending { run: *run, state: *state, error: error.as_deref(), changes: *changes, seconds: *seconds, tokens: *tokens }, cx)
+                }
             })
             .collect();
         let running = self.running_row(cx);
@@ -634,7 +519,7 @@ impl AgentPanel {
     fn composer_view(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let focused = self.composer.read(cx).is_focused(window);
-        let running = self.active.is_some();
+        let running = self.snap.running.is_some();
         let empty = self.composer.read(cx).text().trim().is_empty();
         div().p(px(10.)).border_t_1().border_color(t.line).child(
             div()
@@ -718,5 +603,14 @@ impl Render for AgentPanel {
             .children(notices)
             .child(div().flex_1().min_h_0().child(body))
             .when(self.tab == Tab::Conversation, |d| d.child(composer))
+    }
+}
+
+/// How much an entry holds, to notice the last one growing (streamed text).
+fn entry_len(e: &Entry) -> usize {
+    match e {
+        Entry::Assistant { text, .. } => text.len(),
+        Entry::Command { result, .. } => usize::from(result.is_some()),
+        _ => 0,
     }
 }

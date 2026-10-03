@@ -28,7 +28,9 @@ pub fn init(session: Arc<Session>, cx: &mut App) {
     cx.set_global(Theme::new(mode, settings.appearance.transparency && !os_reduces_transparency()));
     cx.set_reduce_motion(crate::theme::os_reduces_motion());
     let playback = cx.new(|_| Playback::new(session.clone()));
-    let store = cx.new(|cx| Store::new(session, playback, cx));
+    // The built-in agent answers `agent.*` for every client; the Agent panel draws it.
+    let agent = kimchi_agent::Host::install(&session);
+    let store = cx.new(|cx| Store::new(session, playback, agent, cx));
     cx.set_global(GlobalStore(store));
     crate::actions::bind(cx);
     cx.set_menus(crate::actions::menus());

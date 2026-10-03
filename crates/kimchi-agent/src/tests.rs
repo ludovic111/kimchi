@@ -488,3 +488,175 @@ async fn live_claude_code_edits_through_the_bridge() {
     revert(&s, *checkpoint).await.unwrap();
     assert_eq!(s.project().unwrap().clips().count(), 0);
 }
+
+/// One Anthropic answer that calls a tool.
+fn anthropic_tool(id: &str, name: &str, input: &str) -> String {
+    sse(&[
+        json!({ "type": "message_start", "message": { "id": "msg_t", "role": "assistant", "content": [], "usage": { "input_tokens": 100, "output_tokens": 1 } } }),
+        json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "tool_use", "id": id, "name": name, "input": {} } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": input } }),
+        json!({ "type": "content_block_stop", "index": 0 }),
+        json!({ "type": "message_delta", "delta": { "stop_reason": "tool_use" }, "usage": { "output_tokens": 20 } }),
+        json!({ "type": "message_stop" }),
+    ])
+}
+
+/// A session with the host installed (and a stand-in window: `agent.*` needs the app).
+async fn hosted(dir: &std::path::Path, server: &MockServer) -> Arc<Session> {
+    use futures::StreamExt;
+    let s = with_project(dir).await;
+    s.set_secret("anthropic", Some("sk-ant-test")).unwrap();
+    s.update_settings(|st| {
+        st.agent.provider = "anthropic".into();
+        st.agent.base_url = server.uri();
+    })
+    .unwrap();
+    let mut calls = s.attach_ui();
+    tokio::spawn(async move { while calls.next().await.is_some() {} });
+    Host::install(&s);
+    s
+}
+
+async fn call(s: &Arc<Session>, source: Source, name: &str, params: Value) -> Value {
+    kimchi_control::call(s, source, name, params).await.unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+/// `agent.*` from the CLI: send and wait, read the run with its commands and the conversation,
+/// revert it; the next request continues the thread.
+#[tokio::test(flavor = "multi_thread")]
+async fn clients_drive_the_agent_with_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = mock(
+        "/v1/messages",
+        "text/event-stream",
+        vec![anthropic_tool("toolu_1", "clip_addText", "{\"text\": \"Hello\", \"start\": 0}"), anthropic_text("Added Hello."), anthropic_text("You're welcome.")],
+    )
+    .await;
+    let s = hosted(dir.path(), &server).await;
+    // A command from a terminal before the run shows as a card of its own.
+    call(&s, Source::Cli, "timeline.addMarker", json!({ "time": 2, "label": "Beat" })).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while call(&s, Source::Cli, "agent.conversation", json!({})).await["entries"] == json!([]) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the marker's card");
+
+    let run = call(&s, Source::Cli, "agent.send", json!({ "prompt": "Put Hello at the start", "wait": true })).await;
+    assert_eq!(run["state"], "done", "{run}");
+    assert_eq!(run["source"], "cli");
+    assert_eq!(run["reply"], "Added Hello.");
+    assert_eq!(run["changes"], 1);
+    assert_eq!(run["canRevert"], true);
+    let list = run["commandList"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{run}");
+    assert_eq!(list[0]["command"], "clip.addText");
+    assert_eq!(s.project().unwrap().clips().count(), 1);
+
+    let status = call(&s, Source::Mcp, "agent.status", json!({})).await;
+    assert_eq!(status["id"], run["id"]);
+    assert_eq!(status["running"], Value::Null);
+    let convo = call(&s, Source::Cli, "agent.conversation", json!({})).await;
+    let kinds: Vec<&str> = convo["entries"].as_array().unwrap().iter().map(|e| e["type"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["command", "user", "command", "assistant", "outcome"], "{convo}");
+    assert_eq!(convo["entries"][0]["run"], Value::Null, "the marker is nobody's run");
+    let next = convo["next"].as_u64().unwrap();
+    assert_eq!(call(&s, Source::Cli, "agent.conversation", json!({ "since": next })).await["entries"], json!([]));
+
+    let reverted = call(&s, Source::Cli, "agent.revert", json!({})).await;
+    assert_eq!(reverted["run"], run["id"]);
+    assert_eq!(s.project().unwrap().clips().count(), 0);
+    assert_eq!(s.project().unwrap().markers.len(), 1, "only the run is reverted");
+    let e = kimchi_control::call(&s, Source::Cli, "agent.revert", json!({})).await.unwrap_err();
+    assert!(e.contains("No agent run to revert"), "{e}");
+    // Undoing the revert brings the run back, and it can be reverted again (redo too).
+    let reverted = |s: &Arc<Session>, want: bool| {
+        let s = s.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while call(&s, Source::Cli, "agent.runs", json!({})).await["runs"][0]["reverted"] != json!(want) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+    };
+    call(&s, Source::Window, "history.undo", json!({})).await;
+    assert_eq!(s.project().unwrap().clips().count(), 1);
+    assert!(reverted(&s, false).await, "the run is back");
+    call(&s, Source::Cli, "history.redo", json!({})).await;
+    assert!(reverted(&s, true).await, "and reverted again by the redo");
+    call(&s, Source::Cli, "history.undo", json!({})).await;
+    assert!(reverted(&s, false).await);
+    call(&s, Source::Cli, "agent.revert", json!({})).await;
+    assert_eq!(s.project().unwrap().clips().count(), 0);
+
+    let follow = call(&s, Source::Window, "agent.send", json!({ "prompt": "Thanks", "wait": true })).await;
+    assert_eq!(follow["reply"], "You're welcome.");
+    let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[2].body).unwrap();
+    assert_eq!(body["messages"].as_array().unwrap().len(), 5, "the thread goes on");
+    assert!(body["tools"].as_array().unwrap().iter().all(|t| !t["name"].as_str().unwrap().starts_with("agent_")), "the agent doesn't drive itself");
+    let runs = call(&s, Source::Cli, "agent.runs", json!({})).await;
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 2);
+
+    // A new conversation forgets the thread; the runs stay.
+    call(&s, Source::Cli, "agent.newConversation", json!({})).await;
+    assert_eq!(call(&s, Source::Cli, "agent.conversation", json!({})).await["entries"], json!([]));
+    assert_eq!(call(&s, Source::Cli, "agent.runs", json!({})).await["runs"].as_array().unwrap().len(), 2);
+}
+
+/// One run at a time, stopped from another client; agents can't choose their own model, and
+/// sending needs the generate permission.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_run_at_a_time_and_permissions_hold() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60))).mount(&server).await;
+    let s = hosted(dir.path(), &server).await;
+    let run = call(&s, Source::Window, "agent.send", json!({ "prompt": "Something slow" })).await;
+    assert_eq!(run["state"], "running");
+    let e = kimchi_control::call(&s, Source::Cli, "agent.send", json!({ "prompt": "Me too" })).await.unwrap_err();
+    assert!(e.contains("still working on run"), "{e}");
+    let e = kimchi_control::call(&s, Source::Cli, "agent.newConversation", json!({})).await.unwrap_err();
+    assert!(e.contains("stop it first"), "{e}");
+    call(&s, Source::Mcp, "agent.stop", json!({})).await;
+    let done = call(&s, Source::Cli, "agent.status", json!({ "wait": true, "timeout": 10 })).await;
+    assert_eq!(done["state"], "cancelled", "{done}");
+
+    let e = kimchi_control::call(&s, Source::Mcp, "agent.setProvider", json!({ "provider": "ollama" })).await.unwrap_err();
+    assert!(e.contains("stays with the person"), "{e}");
+    s.update_settings(|st| st.agent.permissions.generate = false).unwrap();
+    let e = kimchi_control::call(&s, Source::Mcp, "agent.send", json!({ "prompt": "Hi" })).await.unwrap_err();
+    assert!(e.contains("\"generate\" permission"), "{e}");
+    // The person picks the model: a provider change clears the last one's model and address.
+    let v = call(&s, Source::Cli, "agent.setProvider", json!({ "provider": "codex" })).await;
+    assert_eq!(v, json!({ "provider": "codex", "model": "", "baseUrl": "" }));
+    let e = kimchi_control::call(&s, Source::Cli, "agent.setProvider", json!({ "provider": "gemini" })).await.unwrap_err();
+    assert!(e.contains("claude-code, codex"), "{e}");
+}
+
+/// Another project starts another conversation: a run going on is stopped.
+#[tokio::test(flavor = "multi_thread")]
+async fn switching_projects_starts_afresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60))).mount(&server).await;
+    let s = hosted(dir.path(), &server).await;
+    call(&s, Source::Window, "agent.send", json!({ "prompt": "Something slow" })).await;
+    call(&s, Source::Window, "project.create", json!({ "name": "Other" })).await;
+    let runs = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let v = call(&s, Source::Cli, "agent.runs", json!({})).await;
+            if v["running"].is_null() {
+                return v;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the run stops");
+    assert_eq!(runs["runs"], json!([]));
+    assert_eq!(call(&s, Source::Cli, "agent.conversation", json!({})).await["entries"], json!([]));
+}

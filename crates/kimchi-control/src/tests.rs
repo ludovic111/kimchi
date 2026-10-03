@@ -686,3 +686,60 @@ async fn paths_and_lines_are_bounded() {
     assert_eq!(crate::bridge::read_line(&mut r, 8).await.unwrap().as_deref(), Some("short"));
     assert!(crate::bridge::read_line(&mut r, 8).await.is_err());
 }
+
+/// A cut from a script: clip.delete hands back the clips as they were, and clip.paste takes them.
+#[tokio::test(flavor = "multi_thread")]
+async fn deleted_clips_can_be_pasted_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Cli, "project.create", json!({})).await;
+    ok(&s, Source::Cli, "clip.addText", json!({ "text": "Cut me", "start": 1, "duration": 2 })).await;
+    let cut = ok(&s, Source::Cli, "clip.delete", json!({ "clipIds": ["Cut me"] })).await;
+    let removed = cut["removed"].as_array().unwrap();
+    assert_eq!(removed.len(), 1);
+    assert!(removed[0]["trackId"].is_string(), "{cut}");
+    assert_eq!(s.project().unwrap().clips().count(), 0);
+    let pasted = ok(&s, Source::Cli, "clip.paste", json!({ "clips": removed, "time": 5 })).await;
+    assert_eq!(pasted["clips"].as_array().unwrap().len(), 1, "{pasted}");
+    let p = s.project().unwrap();
+    let (_, c) = p.clips().next().unwrap();
+    assert_eq!((c.start, c.duration), (5.0, 2.0));
+}
+
+/// What `ui.action` runs as the window is held to the permission of what it does.
+#[tokio::test(flavor = "multi_thread")]
+async fn window_actions_are_named_and_checked() {
+    use futures::StreamExt;
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    // A stand-in window that answers every call with what it was asked.
+    let mut calls = s.attach_ui();
+    tokio::spawn(async move {
+        while let Some(c) = calls.next().await {
+            let _ = c.reply.send(Ok(json!({ "command": c.command, "params": c.params })));
+        }
+    });
+    let spec = registry::spec("ui.action").unwrap();
+    for (name, _) in crate::commands::ui::ACTIONS {
+        assert!(spec.params[0].doc.contains(name), "{name} is missing from ui.action's documentation");
+    }
+    let v = ok(&s, Source::Mcp, "ui.action", json!({ "action": "pasteclips" })).await;
+    assert_eq!(v["params"]["action"], "PasteClips", "names are matched without case");
+    let e = registry::call(&s, Source::Cli, "ui.action", json!({ "action": "PasteClip" })).await.unwrap_err();
+    assert!(e.contains("Did you mean PasteClips"), "{e}");
+    // Settings are off for agents by default: the theme toggle is refused, the person's CLI isn't.
+    let e = registry::call(&s, Source::Agent, "ui.action", json!({ "action": "ToggleTheme" })).await.unwrap_err();
+    assert!(e.contains("\"settings\" permission"), "{e}");
+    ok(&s, Source::Cli, "ui.action", json!({ "action": "ToggleTheme" })).await;
+    let e = registry::call(&s, Source::Mcp, "ui.action", json!({ "action": "Quit" })).await.unwrap_err();
+    assert!(e.contains("app control"), "{e}");
+
+    let e = registry::call(&s, Source::Cli, "timeline.play", json!({ "speed": 0 })).await.unwrap_err();
+    assert!(e.contains("-8 to 8"), "{e}");
+    ok(&s, Source::Cli, "timeline.play", json!({ "speed": -2 })).await;
+    let e = registry::call(&s, Source::Cli, "ui.reveal", json!({ "path": dir.path().join("nope") })).await.unwrap_err();
+    assert!(e.contains("doesn't exist"), "{e}");
+    // The built-in agent lives in the app: without it, agent.* says so.
+    let e = registry::call(&s, Source::Cli, "agent.runs", json!({})).await.unwrap_err();
+    assert!(e.contains("built-in agent runs"), "{e}");
+}

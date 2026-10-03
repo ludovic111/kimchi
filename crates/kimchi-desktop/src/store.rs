@@ -193,6 +193,8 @@ pub enum StoreEvent {
 pub struct Store {
     pub session: Arc<Session>,
     pub playback: Entity<Playback>,
+    /// The built-in agent's conversation and runs (the Agent panel draws it; `agent.*` drives it).
+    pub agent: Arc<kimchi_agent::Host>,
 
     pub project: Option<Arc<Project>>,
     pub can_undo: bool,
@@ -243,7 +245,7 @@ impl StoreExt for App {
 }
 
 impl Store {
-    pub fn new(session: Arc<Session>, playback: Entity<Playback>, cx: &mut Context<Self>) -> Self {
+    pub fn new(session: Arc<Session>, playback: Entity<Playback>, agent: Arc<kimchi_agent::Host>, cx: &mut Context<Self>) -> Self {
         let mut rx = session.subscribe();
         let pump = cx.spawn(async move |this, cx| {
             loop {
@@ -267,6 +269,7 @@ impl Store {
         let mut store = Self {
             session: session.clone(),
             playback,
+            agent,
             project: None,
             can_undo: false,
             can_redo: false,
