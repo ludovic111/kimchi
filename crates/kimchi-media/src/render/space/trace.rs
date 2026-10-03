@@ -1106,7 +1106,17 @@ impl World {
             let ng = if wo_w.dot(surf.ng) >= 0.0 { surf.ng } else { -surf.ng };
             let ns = if wo_w.dot(surf.ns) >= 0.0 { surf.ns } else { -surf.ns };
             // Interpolated normals can face away from the viewer near silhouettes.
-            let n = if wo_w.dot(ns) > 1e-4 { ns } else { ng };
+            let mut n = if wo_w.dot(ns) > 1e-4 { ns } else { ng };
+            // A bumped (or smoothed) normal leaning away from a low view sends the mirror
+            // direction under the surface, where nothing comes back: black specks all over a
+            // bumpy floor seen low. Lean it back towards the true surface until it clears.
+            for _ in 0..6 {
+                let mirror = d - n * (2.0 * d.dot(n));
+                if mirror.dot(ng) > 0.05 * wo_w.dot(ng).min(1.0) {
+                    break;
+                }
+                n = (n + ng).norm();
+            }
             let frame = Frame::new(n);
             let wo = frame.local(wo_w);
             let bsdf = Bsdf::new(mat, base, entering, wo);

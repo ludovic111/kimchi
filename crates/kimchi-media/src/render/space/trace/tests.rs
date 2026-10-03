@@ -361,6 +361,30 @@ fn denoising_removes_grain() {
 /// A half see-through card over nothing comes out half transparent; a bump texture makes a
 /// flat card's shading vary.
 #[test]
+fn bumpy_floors_seen_low_have_no_black_specks() {
+    // Fine bumps on a shiny floor under a bright uniform sky, seen at a grazing angle: every
+    // pixel of the floor reflects some sky (none goes black because a leaning normal sent its
+    // reflection under the surface).
+    let s = scene(json!({"fog": false, "camera": {"position": [0, 0.6, 4], "target": [0, 0, -4], "fov": 40},
+        "environment": {"type": "color", "color": "#ffffff", "visible": true}, "render": {"engine": "path"},
+        "objects": [{"id": "floor", "type": "plane", "width": 60, "height": 60, "rotation": [-90, 0, 0],
+            "material": {"color": "#ffffff", "roughness": 0.15, "metallic": 1, "pattern": {"type": "noise", "color": "#ffffff", "color2": "#ffffff", "scale": 8, "bump": 2}, "textureScale": [8, 8]}}]}));
+    let p = render(&frame(&s, 96, 54), &settings(8, false));
+    dump("bumpy-floor", &p);
+    let mut black = 0;
+    let mut floor = 0;
+    for y in 30..54 {
+        for x in 0..96 {
+            floor += 1;
+            if rgba(&p, x, y)[0] < 40 {
+                black += 1;
+            }
+        }
+    }
+    assert!(black * 100 < floor, "{black} black pixels of {floor}");
+}
+
+#[test]
 fn opacity_and_bumps() {
     let s = scene(json!({"fog": false, "camera": {"position": [0, 0, 3]}, "lights": [{"id": "sun", "direction": [0.5, -0.3, -1]}],
         "render": {"engine": "path"},
