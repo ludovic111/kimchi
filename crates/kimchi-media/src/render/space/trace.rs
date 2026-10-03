@@ -748,8 +748,6 @@ struct World {
     env_nee: bool,
     sky: Rgb,
     ground: Rgb,
-    /// Towards the main directional light, and its colour (for the "sky" world).
-    sun: Option<(V3, Rgb)>,
     cam: Cam,
     background: Option<[f32; 4]>,
     fog: Option<(f32, f32, Rgb)>,
@@ -779,7 +777,6 @@ impl World {
         }
         let env = f.env.clone().filter(|e| e.strength.is_finite());
         let env_map = env.as_ref().filter(|e| e.kind == EnvKind::Image).and_then(|e| e.image.as_ref().and_then(|t| EnvMap::new(t, e.strength.max(0.0))));
-        let sun = f.lights.iter().filter(|l| l.kind == LightKind::Directional).max_by(|a, b| lum(a.color).total_cmp(&lum(b.color))).map(|l| (-l.v.norm(), l.color));
         // Scene scale, for nudging rays off surfaces.
         let mut reach: f32 = f.camera.eye.0.abs().max(f.camera.eye.1.abs()).max(f.camera.eye.2.abs());
         for it in &f.items {
@@ -799,7 +796,6 @@ impl World {
             env_nee: true,
             sky: f.sky,
             ground: f.ground,
-            sun,
             cam: Cam::new(&f.camera, f.width.max(1), f.height.max(1)),
             background: f.background,
             fog: f.fog,
@@ -817,29 +813,10 @@ impl World {
             let t = 0.5 + 0.75 * d.1;
             return lerp(self.ground, self.sky, t).map(|v| v.max(0.0));
         };
-        let e = rot_y(d, -env.rotation);
-        match env.kind {
-            EnvKind::Color => env.color,
-            EnvKind::Gradient => gradient(env, e.1),
-            EnvKind::Sky => {
-                let mut c = gradient(env, e.1);
-                if let Some((s, col)) = self.sun {
-                    // A soft glow around the sun (the sun itself is the directional light).
-                    let k = d.dot(s).max(0.0).powi(16) * 0.12 * env.strength.max(0.0);
-                    c = add(c, scale(col, k));
-                }
-                c
-            }
-            EnvKind::Image => match &env.image {
-                Some(t) => {
-                    let (u, v) = dir_to_uv(e);
-                    let s = t.sample(u, v);
-                    let c = scale([s[0], s[1], s[2]], env.strength.max(0.0));
-                    if finite(c) { c } else { [0.0; 3] }
-                }
-                None => env.color,
-            },
-        }
+        // The same world the standard engine shows (its sky follows the sun, its gradient eases
+        // into the horizon), so switching engines doesn't change the weather.
+        let c = env.radiance(d);
+        if finite(c) { c } else { [0.0; 3] }
     }
 
     /// Density (per solid angle) with which the panorama sampling picks direction `d`.
@@ -989,12 +966,6 @@ impl World {
 /// `range`, none without one), so switching engines keeps the exposure.
 fn falloff(l: &LightRes, dist: f32) -> f32 {
     if l.range > 0.0 { (1.0 - dist / l.range).clamp(0.0, 1.0).powi(2) } else { 1.0 }
-}
-
-fn gradient(env: &Env, y: f32) -> Rgb {
-    // Linear in the elevation angle, from the horizon up to the top or down to the bottom.
-    let t = y.clamp(-1.0, 1.0).asin() / (PI / 2.0);
-    if t >= 0.0 { lerp(env.horizon, env.top, t) } else { lerp(env.horizon, env.bottom, -t) }
 }
 
 /// The shading normal tilted by the slope of a height texture at `uv`: `k` = 1 tilts it by

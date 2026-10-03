@@ -86,6 +86,30 @@ fn sunlit_floor_matches_the_standard_engine() {
 }
 
 #[test]
+fn the_world_behind_is_the_standard_engines() {
+    // A sunset sky and a gradient look the same seen through either engine.
+    for (env, sun) in [
+        (json!({"type": "sky", "visible": true}), [-1.0, -0.08, -0.3]),
+        (json!({"type": "sky", "visible": true}), [-0.3, -1.0, -0.5]),
+        (json!({"type": "gradient", "top": "#204080", "horizon": "#f0d0a0", "bottom": "#302820", "visible": true}), [0.0, -1.0, 0.0]),
+    ] {
+        let s = scene(json!({"environment": env, "camera": {"position": [0, 0, 0], "target": [0, 0.3, -1], "fov": 60},
+            "lights": [{"id": "sun", "type": "directional", "direction": sun}], "render": {"engine": "path"},
+            "objects": [{"id": "far", "type": "box", "size": 0.01, "position": [0, -50, 0]}]}));
+        let traced = render(&frame(&s, 48, 27), &settings(4, false));
+        let raster = Space::cpu().render(&s, 0.0, 48, 27, &mut NoPictures, Quality::Preview).unwrap();
+        dump("world-traced", &traced);
+        dump("world-raster", &raster);
+        for (x0, y0) in [(4, 2), (20, 12), (36, 22)] {
+            for ch in 0..3 {
+                let (a, b) = (mean(&traced, x0, y0, x0 + 8, y0 + 4, ch), mean(&raster, x0, y0, x0 + 8, y0 + 4, ch));
+                assert!((a - b).abs() < 12.0, "{env}: channel {ch} at {x0},{y0}: path tracer {a}, standard {b}");
+            }
+        }
+    }
+}
+
+#[test]
 fn unlit_colour_and_transparent_background() {
     let s = scene(json!({"camera": {"position": [0, 0, 3]}, "render": {"engine": "path"},
         "objects": [{"id": "card", "type": "plane", "width": 1, "height": 1, "material": {"color": "#00ff00", "unlit": true}}]}));
