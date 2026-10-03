@@ -1,0 +1,1284 @@
+//! The Studio: where a motion clip's scene is made, inside the editor's centre. A 3D scene gets
+//! a Blender-like editor (outliner, a viewport with an editor camera, the transform gizmo, edit
+//! mode for meshes, property tabs), a 2D scene an After Effects-like one (layers, the canvas
+//! with handles, the pen and shape tools). Both share a dope sheet and a graph editor over the
+//! clip's time.
+//!
+//! The Studio never changes the project itself: every edit is a `motion.*` command through the
+//! store (drags fold into one undo step with a coalesce key), so the agent, MCP and the CLI see
+//! and undo the same steps. What the Studio shows (the clip, the selection, the mode, the view…)
+//! is its own state, reachable with `ui.studio` and reported in `ui.state`.
+
+pub mod math;
+pub mod model;
+
+mod fields;
+mod menus;
+mod outliner;
+mod properties;
+mod specs;
+mod timeline;
+mod toolbar;
+mod viewport;
+
+#[cfg(test)]
+mod tests;
+
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use gpui::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render, Subscription, Task, Window, div, prelude::*, px};
+use kimchi_control::CmdResult;
+use kimchi_core::{Clip, Id, Project, Scene};
+use kimchi_media::render::space::viewport::{Shading, ViewCamera};
+use serde_json::{Value, json};
+
+use crate::actions::*;
+use crate::store::{Store, StoreExt};
+use crate::theme::ActiveTheme;
+use crate::ui::drag;
+
+pub use menus::Popover;
+pub use outliner::Outliner;
+pub use properties::Properties;
+pub use timeline::StudioTimeline;
+pub use viewport::Viewport;
+
+const LEFT_W: f32 = 260.;
+const RIGHT_W: f32 = 320.;
+const BOTTOM_H: f32 = 230.;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    Object,
+    /// Editing a mesh's vertices, edges and faces.
+    Edit,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SelectMode {
+    Vertex,
+    Edge,
+    Face,
+}
+
+impl SelectMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            SelectMode::Vertex => "vertex",
+            SelectMode::Edge => "edge",
+            SelectMode::Face => "face",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tool {
+    Select,
+    Move,
+    Rotate,
+    Scale,
+    /// 2D: drag a layer's anchor point (After Effects' Y).
+    Anchor,
+    /// 2D: draw paths and masks.
+    Pen,
+    Rect,
+    Ellipse,
+    Star,
+    Polygon,
+    Text,
+}
+
+impl Tool {
+    pub const ALL: [Tool; 11] = [Tool::Select, Tool::Move, Tool::Rotate, Tool::Scale, Tool::Anchor, Tool::Pen, Tool::Rect, Tool::Ellipse, Tool::Star, Tool::Polygon, Tool::Text];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Tool::Select => "select",
+            Tool::Move => "move",
+            Tool::Rotate => "rotate",
+            Tool::Scale => "scale",
+            Tool::Anchor => "anchor",
+            Tool::Pen => "pen",
+            Tool::Rect => "rect",
+            Tool::Ellipse => "ellipse",
+            Tool::Star => "star",
+            Tool::Polygon => "polygon",
+            Tool::Text => "text",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Tool> {
+        Tool::ALL.into_iter().find(|t| t.name() == s)
+    }
+
+    /// Draws a new layer by dragging on the 2D canvas.
+    pub fn is_shape(self) -> bool {
+        matches!(self, Tool::Rect | Tool::Ellipse | Tool::Star | Tool::Polygon)
+    }
+}
+
+/// Which panel was used last (Delete and A act there).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Area {
+    Viewport,
+    Outliner,
+    Properties,
+    Timeline,
+}
+
+/// Selected parts of the mesh being edited.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EditSel {
+    pub vertices: Vec<u32>,
+    pub edges: Vec<(u32, u32)>,
+    pub faces: Vec<u32>,
+}
+
+impl EditSel {
+    pub fn is_empty(&self) -> bool {
+        self.vertices.is_empty() && self.edges.is_empty() && self.faces.is_empty()
+    }
+
+    /// Every vertex the selection touches (edges' ends included).
+    pub fn all_vertices(&self, faces: &[Vec<u32>]) -> Vec<u32> {
+        let mut v: Vec<u32> = self.vertices.clone();
+        v.extend(self.edges.iter().flat_map(|(a, b)| [*a, *b]));
+        for f in &self.faces {
+            if let Some(face) = faces.get(*f as usize) {
+                v.extend(face.iter().copied());
+            }
+        }
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// `motion.editMesh` selection params.
+    pub fn params(&self) -> Value {
+        let mut v: Vec<u32> = self.vertices.clone();
+        v.extend(self.edges.iter().flat_map(|(a, b)| [*a, *b]));
+        v.sort_unstable();
+        v.dedup();
+        json!({ "vertices": v, "faces": self.faces })
+    }
+}
+
+/// The 2D canvas's zoom (screen pixels per project pixel) and pan (screen pixels the canvas
+/// centre sits from the view's centre); `fit` follows the view's size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Canvas2d {
+    pub zoom: f64,
+    pub pan: [f64; 2],
+    pub fit: bool,
+}
+
+/// One keyframe picked in the dope sheet or graph editor: thing, property, scene time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyRef {
+    pub id: String,
+    pub property: String,
+    pub time: f64,
+}
+
+pub enum StudioEvent {
+    /// Back to the edit: the workspace takes the keyboard again.
+    Closed,
+}
+
+impl EventEmitter<StudioEvent> for Studio {}
+
+/// Edits sent while dragging: one batch at a time, the newest waiting (older ones are dropped,
+/// the newest always lands).
+#[derive(Default)]
+struct Sender {
+    busy: bool,
+    queued: Option<Vec<(String, Value)>>,
+}
+
+pub struct Studio {
+    pub store: Entity<Store>,
+    pub focus: FocusHandle,
+    pub clip: Option<Id>,
+    /// Selected keys (ids, `scene`, `material:<id>`, `comp:<id>`); the last is the active one.
+    pub selection: Vec<String>,
+    pub mode: Mode,
+    pub select_mode: SelectMode,
+    pub edit_sel: EditSel,
+    pub tool: Tool,
+    pub shading: Shading,
+    pub grid: bool,
+    pub helpers: bool,
+    pub through_camera: bool,
+    pub view: ViewCamera,
+    /// The gizmo follows the object's own axes.
+    pub local: bool,
+    /// Snap moves to the grid and turns to 15° (Ctrl also does while dragging).
+    pub snapping: bool,
+    pub canvas: Canvas2d,
+    /// 2D: the composition shown instead of the scene.
+    pub composition: Option<String>,
+    /// 2D pen: draw a mask on the selected layer instead of a new path layer.
+    pub mask_mode: bool,
+    pub show_graph: bool,
+    /// The graph editor's property (of the active item).
+    pub graph_property: Option<String>,
+    /// Outliner rows (and dope sheet items) folded closed.
+    pub collapsed: HashSet<String>,
+    /// Dope sheet rows opened to their properties.
+    pub expanded: HashSet<String>,
+    pub area: Area,
+    pub keys: Vec<KeyRef>,
+    pub playing: bool,
+    _play: Option<Task<()>>,
+    pub popover: Option<Popover>,
+    sender: Sender,
+    drag_n: u64,
+    left_w: f32,
+    right_w: f32,
+    bottom_h: f32,
+    resizing: Option<(u8, Pixels, f32)>,
+    pub viewport: Entity<Viewport>,
+    pub outliner: Entity<Outliner>,
+    pub properties: Entity<Properties>,
+    pub timeline: Entity<StudioTimeline>,
+    _subs: Vec<Subscription>,
+}
+
+impl Focusable for Studio {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Studio {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let store = cx.store();
+        let playback = store.read(cx).playback.clone();
+        let subs = vec![cx.observe(&store, |this, _, cx| this.project_changed(cx)), cx.observe(&playback, |this, _, cx| if this.clip.is_some() { cx.notify() })];
+        let me = cx.entity();
+        Self {
+            focus: cx.focus_handle(),
+            clip: None,
+            selection: vec![],
+            mode: Mode::Object,
+            select_mode: SelectMode::Vertex,
+            edit_sel: EditSel::default(),
+            tool: Tool::Move,
+            shading: Shading::Material,
+            grid: true,
+            helpers: true,
+            through_camera: false,
+            view: ViewCamera::default(),
+            local: false,
+            snapping: false,
+            canvas: Canvas2d { zoom: 0.5, pan: [0.0, 0.0], fit: true },
+            composition: None,
+            mask_mode: false,
+            show_graph: false,
+            graph_property: None,
+            collapsed: HashSet::new(),
+            expanded: HashSet::new(),
+            area: Area::Viewport,
+            keys: vec![],
+            playing: false,
+            _play: None,
+            popover: None,
+            sender: Sender::default(),
+            drag_n: 0,
+            left_w: LEFT_W,
+            right_w: RIGHT_W,
+            bottom_h: BOTTOM_H,
+            resizing: None,
+            viewport: cx.new(|cx| Viewport::new(me.clone(), window, cx)),
+            outliner: cx.new(|cx| Outliner::new(me.clone(), window, cx)),
+            properties: cx.new(|cx| Properties::new(me.clone(), window, cx)),
+            timeline: cx.new(|cx| StudioTimeline::new(me.clone(), window, cx)),
+            store,
+            _subs: subs,
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.clip.is_some()
+    }
+
+    // ---- reading ----------------------------------------------------------------------------
+
+    pub fn project(&self, cx: &App) -> Option<Arc<Project>> {
+        self.store.read(cx).project.clone()
+    }
+
+    /// The open clip and its scene (cloned out of the project).
+    pub fn clip_scene(&self, cx: &App) -> Option<(Clip, Scene)> {
+        let p = self.project(cx)?;
+        let (c, s) = model::motion_clip(&p, self.clip?)?;
+        Some((c.clone(), s.clone()))
+    }
+
+    pub fn is_3d(&self, cx: &App) -> bool {
+        let Some(p) = self.project(cx) else { return false };
+        self.clip.and_then(|id| model::motion_clip(&p, id)).is_some_and(|(_, s)| s.is_3d())
+    }
+
+    /// The playhead (timeline seconds).
+    pub fn playhead(&self, cx: &App) -> f64 {
+        self.store.read(cx).playback.read(cx).playhead
+    }
+
+    /// The scene time shown: the clip's at the playhead (held at its ends).
+    pub fn scene_time(&self, cx: &App) -> f64 {
+        let p = self.project(cx);
+        match p.as_ref().and_then(|p| model::motion_clip(p, self.clip?)) {
+            Some((c, _)) => model::scene_time(c, self.playhead(cx)),
+            None => 0.0,
+        }
+    }
+
+    /// The active (last selected) thing.
+    pub fn active(&self) -> Option<&str> {
+        self.selection.last().map(String::as_str)
+    }
+
+    // ---- opening and closing ----------------------------------------------------------------
+
+    pub fn open(&mut self, clip: Id, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(p) = self.project(cx) else { return };
+        let Some((c, scene)) = model::motion_clip(&p, clip) else { return };
+        let (start, end) = (c.start, c.end());
+        let again = self.clip == Some(clip);
+        self.clip = Some(clip);
+        if !again {
+            self.selection.clear();
+            self.mode = Mode::Object;
+            self.edit_sel = EditSel::default();
+            self.composition = None;
+            self.keys.clear();
+            self.graph_property = None;
+            self.through_camera = false;
+            self.canvas.fit = true;
+            self.tool = if scene.is_3d() { Tool::Move } else { Tool::Select };
+            self.view = ViewCamera::default();
+            if let Scene::Space(s) = scene {
+                self.frame_all(s, cx);
+            }
+        }
+        // The playhead goes into the clip, so the scene shows.
+        let t = self.playhead(cx);
+        if t < start || t >= end {
+            let pb = self.store.read(cx).playback.clone();
+            pb.update(cx, |p, cx| p.seek(start, cx));
+        }
+        window.focus(&self.focus, cx);
+        self.changed(cx);
+    }
+
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        if self.clip.is_none() {
+            return;
+        }
+        self.stop(cx);
+        self.viewport.update(cx, |v, cx| v.cancel_modal(cx));
+        self.clip = None;
+        self.popover = None;
+        self.store.update(cx, |s, cx| s.set_studio_state(None, cx));
+        cx.emit(StudioEvent::Closed);
+        cx.notify();
+    }
+
+    /// The project changed: drop what no longer exists; close if the clip went.
+    fn project_changed(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.clip else { return };
+        let Some(p) = self.project(cx) else {
+            self.close(cx);
+            return;
+        };
+        let Some((_, scene)) = model::motion_clip(&p, id) else {
+            self.close(cx);
+            return;
+        };
+        let before = self.selection.len();
+        self.selection.retain(|k| model::item(scene, k).is_some());
+        if let Some(c) = &self.composition
+            && !matches!(scene, Scene::Flat(f) if f.composition(c).is_some())
+        {
+            self.composition = None;
+        }
+        if self.mode == Mode::Edit && !self.active().is_some_and(|a| matches!(model::item(scene, a), Some(model::Item::Object("mesh")))) {
+            self.mode = Mode::Object;
+            self.edit_sel = EditSel::default();
+        }
+        if before != self.selection.len() {
+            self.publish(cx);
+        }
+        cx.notify();
+    }
+
+    // ---- state ------------------------------------------------------------------------------
+
+    /// Something the Studio shows changed: redraw and tell `ui.state`.
+    pub fn changed(&mut self, cx: &mut Context<Self>) {
+        self.publish(cx);
+        cx.notify();
+    }
+
+    fn publish(&self, cx: &mut Context<Self>) {
+        let state = self.clip.map(|_| self.state_json(cx));
+        self.store.update(cx, |s, cx| s.set_studio_state(state, cx));
+    }
+
+    /// What `ui.studio` answers.
+    pub fn state_json(&self, cx: &App) -> Value {
+        let Some(id) = self.clip else { return json!({ "open": false }) };
+        let (name, kind) = self.project(cx).and_then(|p| model::motion_clip(&p, id).map(|(c, s)| (c.name.clone(), if s.is_3d() { "3d" } else { "2d" }))).unwrap_or_default();
+        let mut v = json!({
+            "open": true,
+            "clipId": id,
+            "clipName": name,
+            "kind": kind,
+            "selection": self.selection,
+            "active": self.active(),
+            "mode": if self.mode == Mode::Edit { "edit" } else { "object" },
+            "tool": self.tool.name(),
+            "sceneTime": (self.scene_time(cx) * 1000.0).round() / 1000.0,
+            "playing": self.playing,
+            "showGraph": self.show_graph,
+            "graphProperty": self.graph_property,
+            "selectedKeys": self.keys.iter().map(|k| json!({ "id": k.id, "property": k.property, "time": k.time })).collect::<Vec<_>>(),
+        });
+        if kind == "3d" {
+            v["shading"] = json!(self.shading);
+            v["view"] = if self.through_camera { json!("camera") } else { json!(self.view) };
+            v["grid"] = json!(self.grid);
+            v["helpers"] = json!(self.helpers);
+            v["gizmo"] = json!(if self.local { "local" } else { "global" });
+            if self.mode == Mode::Edit {
+                v["selectMode"] = json!(self.select_mode.name());
+                v["editSelection"] = json!({ "vertices": self.edit_sel.vertices, "edges": self.edit_sel.edges, "faces": self.edit_sel.faces });
+            }
+        } else {
+            v["composition"] = json!(self.composition);
+            v["zoom"] = json!((self.canvas.zoom * 1000.0).round() / 1000.0);
+            v["maskMode"] = json!(self.mask_mode);
+        }
+        v
+    }
+
+    /// `ui.studio`: applies each given parameter in order, then answers with the state.
+    pub fn ui_command(&mut self, params: Value, window: &mut Window, cx: &mut Context<Self>) -> CmdResult {
+        if let Some(id) = params.get("clipId").and_then(Value::as_str) {
+            let id: Id = id.parse().map_err(|_| format!("bad clip id {id}"))?;
+            self.open(id, window, cx);
+            if self.clip != Some(id) {
+                return Err("That clip isn't a motion clip.".into());
+            }
+        }
+        if params.get("close").and_then(Value::as_bool) == Some(true) {
+            self.close(cx);
+            return Ok(self.state_json(cx));
+        }
+        if self.clip.is_none() {
+            return if params.as_object().is_none_or(|o| o.is_empty()) {
+                Ok(self.state_json(cx))
+            } else {
+                Err("The Studio isn't open. Open a motion clip first: ui.studio {\"clipId\": …}.".into())
+            };
+        }
+        let (_, scene) = self.clip_scene(cx).ok_or("The clip is gone.")?;
+        if let Some(c) = params.get("composition") {
+            let c = c.as_str().unwrap_or("");
+            match &scene {
+                Scene::Flat(f) if c.is_empty() || f.composition(c).is_some() => self.composition = (!c.is_empty()).then(|| c.to_string()),
+                Scene::Flat(f) => return Err(format!("No composition \"{c}\". Compositions: {}.", f.compositions.iter().map(|c| c.id.as_str()).collect::<Vec<_>>().join(", "))),
+                Scene::Space(_) => return Err("Compositions are 2D; this is a 3D scene.".into()),
+            }
+        }
+        if let Some(list) = params.get("select") {
+            let keys: Vec<String> = list.as_array().ok_or("select is a list of ids")?.iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
+            if let Some(bad) = keys.iter().find(|k| model::item(&scene, k).is_none()) {
+                return Err(format!("No \"{bad}\" in this scene. Ids: {}.", scene.ids().join(", ")));
+            }
+            self.set_selection(keys, cx);
+        }
+        if let Some(m) = params.get("mode").and_then(Value::as_str) {
+            self.set_mode(if m == "edit" { Mode::Edit } else { Mode::Object }, cx)?;
+        }
+        if let Some(m) = params.get("selectMode").and_then(Value::as_str) {
+            self.select_mode = match m {
+                "edge" => SelectMode::Edge,
+                "face" => SelectMode::Face,
+                _ => SelectMode::Vertex,
+            };
+        }
+        if let Some(e) = params.get("editSelection") {
+            let ints = |k: &str| -> Vec<u32> { e.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(|v| v.as_u64().map(|n| n as u32)).collect() };
+            self.edit_sel = EditSel { vertices: ints("vertices"), edges: vec![], faces: ints("faces") };
+        }
+        if let Some(tool) = params.get("tool").and_then(Value::as_str) {
+            self.tool = Tool::parse(tool).ok_or_else(|| format!("unknown tool {tool}"))?;
+        }
+        if let Some(sh) = params.get("shading").and_then(Value::as_str) {
+            self.shading = match sh {
+                "solid" => Shading::Solid,
+                "rendered" => Shading::Rendered,
+                _ => Shading::Material,
+            };
+        }
+        if let Some(v) = params.get("view") {
+            match v {
+                Value::String(s) => self.set_view(s, cx)?,
+                Value::Object(_) => {
+                    self.view = serde_json::from_value(v.clone()).map_err(|e| format!("view: {e} (give position, target, fov, ortho, orthoSize)"))?;
+                    self.through_camera = false;
+                }
+                _ => return Err("view is an axis name, \"camera\", or a view object".into()),
+            }
+        }
+        if let Some(b) = params.get("grid").and_then(Value::as_bool) {
+            self.grid = b;
+        }
+        if let Some(b) = params.get("helpers").and_then(Value::as_bool) {
+            self.helpers = b;
+        }
+        if params.get("frame").and_then(Value::as_bool) == Some(true) {
+            self.frame_selection(cx);
+        }
+        if let Some(b) = params.get("showGraph").and_then(Value::as_bool) {
+            self.show_graph = b;
+        }
+        if let Some(p) = params.get("graphProperty").and_then(Value::as_str) {
+            self.graph_property = Some(p.to_string());
+            self.show_graph = true;
+        }
+        self.changed(cx);
+        Ok(self.state_json(cx))
+    }
+
+    // ---- selection and modes ----------------------------------------------------------------
+
+    pub fn set_selection(&mut self, keys: Vec<String>, cx: &mut Context<Self>) {
+        if self.selection != keys {
+            self.selection = keys;
+            if self.mode == Mode::Edit {
+                self.mode = Mode::Object;
+                self.edit_sel = EditSel::default();
+            }
+        }
+        self.changed(cx);
+    }
+
+    /// Click (replace), shift/cmd-click (toggle).
+    pub fn select(&mut self, key: &str, additive: bool, cx: &mut Context<Self>) {
+        let mut sel = self.selection.clone();
+        if additive {
+            if let Some(i) = sel.iter().position(|k| k == key) {
+                // A second click on a selected (not active) one makes it active; on the active one, deselects.
+                if i + 1 == sel.len() {
+                    sel.remove(i);
+                } else {
+                    let k = sel.remove(i);
+                    sel.push(k);
+                }
+            } else {
+                sel.push(key.to_string());
+            }
+        } else {
+            sel = vec![key.to_string()];
+        }
+        self.set_selection(sel, cx);
+    }
+
+    pub fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) -> Result<(), String> {
+        if mode == Mode::Edit {
+            let (_, scene) = self.clip_scene(cx).ok_or("no clip")?;
+            if !scene.is_3d() {
+                return Err("Edit mode is for 3D meshes; 2D paths are drawn with the pen.".into());
+            }
+            match self.active().and_then(|a| model::item(&scene, a)) {
+                Some(model::Item::Object("mesh")) => {}
+                Some(model::Item::Object(other)) => {
+                    return Err(format!("\"{}\" is a {other}; convert it to a mesh first (motion.convertToMesh, or its right-click menu).", self.active().unwrap_or("")));
+                }
+                _ => return Err("Select a mesh object to edit it.".into()),
+            }
+        }
+        if self.mode != mode {
+            self.edit_sel = EditSel::default();
+        }
+        self.mode = mode;
+        self.changed(cx);
+        Ok(())
+    }
+
+    /// Tab: into edit mode (offering to convert other shapes), or back out.
+    pub fn toggle_edit(&mut self, cx: &mut Context<Self>) {
+        if self.mode == Mode::Edit {
+            let _ = self.set_mode(Mode::Object, cx);
+            return;
+        }
+        let Some((_, scene)) = self.clip_scene(cx) else { return };
+        if !scene.is_3d() {
+            return;
+        }
+        let Some(active) = self.active().map(str::to_string) else {
+            self.flash("Select a mesh object, then press Tab to edit it.", cx);
+            return;
+        };
+        match model::item(&scene, &active) {
+            Some(model::Item::Object("mesh")) => {
+                let _ = self.set_mode(Mode::Edit, cx);
+            }
+            Some(model::Item::Object(shape)) if !matches!(shape, "group" | "particles" | "model" | "image") => {
+                // Like Blender's "convert to mesh" first: one step, then straight into edit mode.
+                let clip = self.clip;
+                self.run_then("motion.convertToMesh", json!({ "clipId": clip, "id": active }), cx, |this, _, cx| {
+                    this.mode = Mode::Object;
+                    let _ = this.set_mode(Mode::Edit, cx);
+                });
+            }
+            _ => self.flash("Only mesh objects have an edit mode.", cx),
+        }
+    }
+
+    pub fn set_view(&mut self, name: &str, cx: &mut Context<Self>) -> Result<(), String> {
+        match name {
+            "camera" => self.through_camera = true,
+            "persp" | "perspective" => {
+                self.through_camera = false;
+                self.view.ortho = false;
+            }
+            "ortho" | "orthographic" => {
+                self.through_camera = false;
+                self.view.ortho = true;
+            }
+            "front" | "back" | "left" | "right" | "top" | "bottom" => {
+                self.through_camera = false;
+                self.view.align(name);
+            }
+            other => return Err(format!("view is front, back, left, right, top, bottom, camera, persp or ortho, not `{other}`")),
+        }
+        self.changed(cx);
+        Ok(())
+    }
+
+    /// Fits the editor camera around a box.
+    fn frame_box(&mut self, lo: [f64; 3], hi: [f64; 3]) {
+        let c = math::lerp(lo, hi, 0.5);
+        let r = (math::len(math::sub(hi, lo)) / 2.0).max(0.25);
+        let dir = math::norm(math::sub(self.view.position, self.view.target));
+        let dir = if math::len(dir) < 1e-6 { [0.0, 0.3, 1.0] } else { dir };
+        let dist = r / (self.view.fov.to_radians() / 2.0).tan().max(0.05) * 1.15;
+        self.view.target = c;
+        self.view.position = math::add(c, math::scale(dir, dist));
+        self.view.ortho_size = r * 2.4;
+        self.through_camera = false;
+    }
+
+    fn frame_all(&mut self, s: &kimchi_core::motion::Scene3d, cx: &App) {
+        let t = self.scene_time(cx);
+        let w = model::worlds(s, t);
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for o in &s.objects {
+            if let Some((a, b)) = model::world_bounds(s, &w, &o.id) {
+                for i in 0..3 {
+                    lo[i] = lo[i].min(a[i]);
+                    hi[i] = hi[i].max(b[i]);
+                }
+            }
+        }
+        if lo[0] <= hi[0] {
+            self.frame_box(lo, hi);
+        }
+    }
+
+    /// F / `.`: the selection fills the view (everything when nothing is selected).
+    pub fn frame_selection(&mut self, cx: &mut Context<Self>) {
+        let Some((_, scene)) = self.clip_scene(cx) else { return };
+        match &scene {
+            Scene::Space(s) => {
+                let t = self.scene_time(cx);
+                let w = model::worlds(s, t);
+                let mut lo = [f64::INFINITY; 3];
+                let mut hi = [f64::NEG_INFINITY; 3];
+                for k in &self.selection {
+                    if let Some((a, b)) = model::world_bounds(s, &w, k) {
+                        for i in 0..3 {
+                            lo[i] = lo[i].min(a[i]);
+                            hi[i] = hi[i].max(b[i]);
+                        }
+                    }
+                }
+                if lo[0] <= hi[0] {
+                    self.frame_box(lo, hi);
+                } else {
+                    self.frame_all(s, cx);
+                }
+            }
+            Scene::Flat(_) => self.canvas.fit = true,
+        }
+        self.changed(cx);
+    }
+
+    // ---- running commands -------------------------------------------------------------------
+
+    pub fn run(&self, name: &str, params: Value, cx: &mut App) {
+        self.store.update(cx, |s, cx| s.run(name, params, cx));
+    }
+
+    /// Runs a command; `then` gets its answer on the Studio (errors become toasts).
+    pub fn run_then(&self, name: &str, params: Value, cx: &mut Context<Self>, then: impl FnOnce(&mut Self, Value, &mut Context<Self>) + 'static) {
+        let task = self.store.update(cx, |s, cx| s.call(name, params, cx));
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            this.update(cx, |this, cx| match r {
+                Ok(v) => then(this, v, cx),
+                Err(e) => this.store.update(cx, |s, cx| s.error(e, cx)),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// A command's answer, errors included (for fields that show them inline).
+    pub fn call(&self, name: &str, params: Value, cx: &mut App) -> Task<CmdResult> {
+        self.store.update(cx, |s, cx| s.call(name, params, cx))
+    }
+
+    /// A fresh coalesce key: every edit sent during one drag folds into one undo step.
+    pub fn drag_key(&mut self) -> String {
+        self.drag_n += 1;
+        format!("studio:{}:{}", self.clip.map(|c| c.to_string()).unwrap_or_default(), self.drag_n)
+    }
+
+    /// Sends a drag's edits: while one batch runs, only the newest waits.
+    pub fn send(&mut self, batch: Vec<(String, Value)>, cx: &mut Context<Self>) {
+        if batch.is_empty() {
+            return;
+        }
+        if self.sender.busy {
+            self.sender.queued = Some(batch);
+            return;
+        }
+        self.sender.busy = true;
+        let tasks: Vec<Task<CmdResult>> = batch.into_iter().map(|(n, p)| self.call(&n, p, cx)).collect();
+        cx.spawn(async move |this, cx| {
+            let mut error = None;
+            for t in tasks {
+                if let Err(e) = t.await {
+                    error = Some(e);
+                }
+            }
+            this.update(cx, |this, cx| {
+                this.sender.busy = false;
+                if let Some(e) = error {
+                    this.store.update(cx, |s, cx| s.error(e, cx));
+                }
+                if let Some(next) = this.sender.queued.take() {
+                    this.send(next, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub fn flash(&self, text: impl Into<gpui::SharedString>, cx: &mut App) {
+        let text = text.into();
+        self.store.update(cx, |s, cx| s.flash(text, cx));
+    }
+
+    /// Moves the playhead to scene time `st`.
+    pub fn seek_scene(&self, st: f64, cx: &mut App) {
+        let Some((c, _)) = self.clip_scene(cx) else { return };
+        let t = model::timeline_time(&c, st);
+        let pb = self.store.read(cx).playback.clone();
+        pb.update(cx, |p, cx| p.seek(t, cx));
+    }
+
+    // ---- playback (the clip, looping) ---------------------------------------------------------
+
+    pub fn toggle_play(&mut self, cx: &mut Context<Self>) {
+        if self.playing {
+            self.stop(cx);
+        } else {
+            self.play(cx);
+        }
+    }
+
+    fn play(&mut self, cx: &mut Context<Self>) {
+        let Some((c, _)) = self.clip_scene(cx) else { return };
+        let (start, end) = (c.start, c.end());
+        let pb = self.store.read(cx).playback.clone();
+        pb.update(cx, |p, cx| p.pause(cx));
+        let from = self.playhead(cx).clamp(start, end);
+        let from = if from >= end - 1e-3 { start } else { from };
+        let fps = self.store.read(cx).fps().clamp(1.0, 60.0);
+        self.playing = true;
+        let clock = Instant::now();
+        self._play = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs_f64(1.0 / fps)).await;
+                let go = this
+                    .update(cx, |this, cx| {
+                        if !this.playing {
+                            return false;
+                        }
+                        let span = (end - start).max(1e-3);
+                        let t = start + (from - start + clock.elapsed().as_secs_f64()) % span;
+                        let pb = this.store.read(cx).playback.clone();
+                        pb.update(cx, |p, cx| p.seek(t, cx));
+                        true
+                    })
+                    .unwrap_or(false);
+                if !go {
+                    break;
+                }
+            }
+        }));
+        self.changed(cx);
+    }
+
+    pub fn stop(&mut self, cx: &mut Context<Self>) {
+        if self.playing {
+            self.playing = false;
+            self._play = None;
+            self.changed(cx);
+        }
+    }
+
+    // ---- panels -------------------------------------------------------------------------------
+
+    fn splitter(&self, which: u8, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let vertical = which != 2;
+        let active = self.resizing.is_some_and(|(w, _, _)| w == which);
+        div()
+            .id(("studio-split", which as usize))
+            .flex_none()
+            .when(vertical, |d| d.w(px(5.)).h_full().cursor_ew_resize().mx(px(-2.)))
+            .when(!vertical, |d| d.h(px(5.)).w_full().cursor_ns_resize().my(px(-2.)))
+            .relative()
+            .child(
+                div()
+                    .absolute()
+                    .when(vertical, |d| d.left(px(2.)).w(px(1.)).h_full())
+                    .when(!vertical, |d| d.top(px(2.)).h(px(1.)).w_full())
+                    .bg(if active { t.accent } else { t.line }),
+            )
+            .hover(move |s| s.bg(t.accent_soft))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                if e.click_count == 2 {
+                    match which {
+                        0 => this.left_w = LEFT_W,
+                        1 => this.right_w = RIGHT_W,
+                        _ => this.bottom_h = BOTTOM_H,
+                    }
+                    this.resizing = None;
+                } else {
+                    let (pos, value) = match which {
+                        0 => (e.position.x, this.left_w),
+                        1 => (e.position.x, this.right_w),
+                        _ => (e.position.y, this.bottom_h),
+                    };
+                    this.resizing = Some((which, pos, value));
+                }
+                cx.notify();
+            }))
+    }
+
+    fn resize_move(&mut self, e: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some((which, start, value)) = self.resizing else { return };
+        match which {
+            0 => self.left_w = (value + f32::from(e.position.x - start)).clamp(180., 480.),
+            1 => self.right_w = (value - f32::from(e.position.x - start)).clamp(260., 560.),
+            _ => self.bottom_h = (value - f32::from(e.position.y - start)).clamp(120., 600.),
+        }
+        cx.notify();
+    }
+
+    fn resize_end(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.resizing = None;
+        cx.notify();
+    }
+
+    // ---- keys ---------------------------------------------------------------------------------
+
+    fn on_escape(&mut self, _: &StudioEscape, window: &mut Window, cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+        if store.menu.is_some() || store.dialog.is_some() {
+            self.store.update(cx, |s, cx| {
+                s.close_menu(cx);
+                s.close_dialog(cx);
+            });
+            return;
+        }
+        if self.popover.take().is_some() {
+            cx.notify();
+            return;
+        }
+        if self.viewport.update(cx, |v, cx| v.escape(window, cx)) {
+            return;
+        }
+        if self.mode == Mode::Edit {
+            let _ = self.set_mode(Mode::Object, cx);
+            return;
+        }
+        self.close(cx);
+    }
+
+    fn with_viewport(&mut self, window: &mut Window, cx: &mut Context<Self>, f: impl FnOnce(&mut Viewport, &mut Window, &mut Context<Viewport>)) {
+        self.area = Area::Viewport;
+        self.viewport.update(cx, |v, cx| f(v, window, cx));
+    }
+
+    fn register_actions(&self, el: gpui::Div, cx: &mut Context<Self>) -> gpui::Div {
+        el.on_action(cx.listener(Self::on_escape))
+            .on_action(cx.listener(|this, _: &StudioPlay, _, cx| this.toggle_play(cx)))
+            .on_action(cx.listener(|this, _: &StudioGrab, w, cx| this.with_viewport(w, cx, |v, w, cx| v.key_grab(w, cx))))
+            .on_action(cx.listener(|this, _: &StudioRotate, w, cx| this.with_viewport(w, cx, |v, w, cx| v.start_modal(viewport::ModalKind::Rotate, w, cx))))
+            .on_action(cx.listener(|this, _: &StudioScale, w, cx| this.with_viewport(w, cx, |v, w, cx| v.start_modal(viewport::ModalKind::Scale, w, cx))))
+            .on_action(cx.listener(|this, _: &StudioAdd, w, cx| this.open_add_menu(None, w, cx)))
+            .on_action(cx.listener(|this, _: &StudioDelete, w, cx| this.delete(w, cx)))
+            .on_action(cx.listener(|this, _: &StudioDuplicate, _, cx| this.duplicate(cx)))
+            .on_action(cx.listener(|this, _: &StudioToggleEdit, _, cx| this.toggle_edit(cx)))
+            .on_action(cx.listener(|this, _: &StudioSelectAll, _, cx| this.select_all(cx)))
+            .on_action(cx.listener(|this, _: &StudioBoxSelect, w, cx| this.with_viewport(w, cx, |v, _, cx| v.arm_box_select(cx))))
+            .on_action(cx.listener(|this, _: &StudioHide, _, cx| this.hide_selected(true, cx)))
+            .on_action(cx.listener(|this, _: &StudioUnhide, _, cx| this.hide_selected(false, cx)))
+            .on_action(cx.listener(|this, _: &StudioInsert, w, cx| {
+                if this.mode == Mode::Edit {
+                    this.with_viewport(w, cx, |v, w, cx| v.start_modal(viewport::ModalKind::Inset, w, cx));
+                } else {
+                    this.keyframe_selection(cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &StudioKey1, _, cx| this.number_key(1, cx)))
+            .on_action(cx.listener(|this, _: &StudioKey2, _, cx| this.number_key(2, cx)))
+            .on_action(cx.listener(|this, _: &StudioKey3, _, cx| this.number_key(3, cx)))
+            .on_action(cx.listener(|this, _: &StudioKey7, _, cx| this.number_key(7, cx)))
+            .on_action(cx.listener(|this, _: &StudioKey0, _, cx| this.number_key(0, cx)))
+            .on_action(cx.listener(|this, _: &StudioOrtho, _, cx| {
+                this.view.ortho = !this.view.ortho;
+                this.through_camera = false;
+                this.changed(cx);
+            }))
+            .on_action(cx.listener(|this, _: &StudioFrame, _, cx| this.frame_selection(cx)))
+            .on_action(cx.listener(|this, _: &StudioFill, _, cx| {
+                // F fills in edit mode, like Blender; it frames otherwise.
+                if this.mode == Mode::Edit {
+                    this.mesh_op("fill", json!({}), cx);
+                } else {
+                    this.frame_selection(cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &StudioFrameAll, _, cx| {
+                if let Some((_, Scene::Space(s))) = this.clip_scene(cx) {
+                    this.frame_all(&s, cx);
+                } else {
+                    this.canvas.fit = true;
+                }
+                this.changed(cx);
+            }))
+            .on_action(cx.listener(|this, _: &StudioFit, _, cx| {
+                this.canvas.fit = true;
+                this.changed(cx);
+            }))
+            .on_action(cx.listener(|this, _: &StudioExtrude, w, cx| this.with_viewport(w, cx, |v, w, cx| v.start_modal(viewport::ModalKind::Extrude, w, cx))))
+            .on_action(cx.listener(|this, _: &StudioBevel, w, cx| this.with_viewport(w, cx, |v, w, cx| v.start_modal(viewport::ModalKind::Bevel, w, cx))))
+            .on_action(cx.listener(|this, _: &StudioLoopCut, w, cx| this.with_viewport(w, cx, |v, _, cx| v.arm_loop_cut(cx))))
+            .on_action(cx.listener(|this, _: &StudioMerge, _, cx| this.mesh_op("merge", json!({ "at": "center" }), cx)))
+            .on_action(cx.listener(|this, _: &StudioFlip, _, cx| this.mesh_op("flip", json!({}), cx)))
+            .on_action(cx.listener(|this, _: &StudioRecalc, _, cx| this.mesh_op("recalcNormals", json!({}), cx)))
+            .on_action(cx.listener(|this, _: &StudioToolSelect, _, cx| this.set_tool(Tool::Select, cx)))
+            .on_action(cx.listener(|this, _: &StudioToolCycle, _, cx| this.cycle_tool(cx)))
+            .on_action(cx.listener(|this, _: &StudioPen, _, cx| this.set_tool(Tool::Pen, cx)))
+            .on_action(cx.listener(|this, _: &StudioShape, _, cx| {
+                let next = match this.tool {
+                    Tool::Rect => Tool::Ellipse,
+                    Tool::Ellipse => Tool::Star,
+                    Tool::Star => Tool::Polygon,
+                    _ => Tool::Rect,
+                };
+                this.set_tool(next, cx)
+            }))
+            .on_action(cx.listener(|this, _: &StudioText, _, cx| this.set_tool(Tool::Text, cx)))
+            .on_action(cx.listener(|this, _: &StudioAnchor, _, cx| this.set_tool(Tool::Anchor, cx)))
+            .on_action(cx.listener(|this, _: &StudioGraph, _, cx| {
+                this.show_graph = !this.show_graph;
+                this.changed(cx);
+            }))
+    }
+
+    /// 1 / 2 / 3: select modes in edit mode; views otherwise (1 front, 3 right, 7 top, 0 camera).
+    fn number_key(&mut self, n: u8, cx: &mut Context<Self>) {
+        if self.mode == Mode::Edit && matches!(n, 1..=3) {
+            self.select_mode = [SelectMode::Vertex, SelectMode::Edge, SelectMode::Face][n as usize - 1];
+            self.changed(cx);
+            return;
+        }
+        if !self.is_3d(cx) {
+            return;
+        }
+        let ctrl = self.viewport.read(cx).ctrl_held;
+        let view = match (n, ctrl) {
+            (1, false) => "front",
+            (1, true) => "back",
+            (3, false) => "right",
+            (3, true) => "left",
+            (7, false) => "top",
+            (7, true) => "bottom",
+            (0, _) => "camera",
+            _ => return,
+        };
+        let _ = self.set_view(view, cx);
+    }
+
+    pub fn set_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        let three = self.is_3d(cx);
+        let ok = if three { matches!(tool, Tool::Select | Tool::Move | Tool::Rotate | Tool::Scale) } else { !matches!(tool, Tool::Move | Tool::Rotate | Tool::Scale) };
+        if !ok {
+            return;
+        }
+        self.tool = tool;
+        self.viewport.update(cx, |v, cx| v.tool_changed(cx));
+        self.changed(cx);
+    }
+
+    fn cycle_tool(&mut self, cx: &mut Context<Self>) {
+        let list: &[Tool] = if self.is_3d(cx) { &[Tool::Select, Tool::Move, Tool::Rotate, Tool::Scale] } else { &[Tool::Select, Tool::Anchor, Tool::Pen, Tool::Rect, Tool::Ellipse, Tool::Text] };
+        let i = list.iter().position(|t| *t == self.tool).map_or(0, |i| (i + 1) % list.len());
+        self.set_tool(list[i], cx);
+    }
+
+    // ---- edits --------------------------------------------------------------------------------
+
+    /// Delete / X: keyframes in the timeline, the mesh selection in edit mode (a menu), or the
+    /// selected things.
+    pub fn delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.area == Area::Timeline && !self.keys.is_empty() {
+            self.delete_keys(cx);
+            return;
+        }
+        if self.mode == Mode::Edit {
+            let pos = window.mouse_position();
+            self.popover = Some(Popover::delete_mesh(pos));
+            cx.notify();
+            return;
+        }
+        let Some((_, scene)) = self.clip_scene(cx) else { return };
+        let clip = self.clip;
+        let mut commands = vec![];
+        for key in &self.selection {
+            match model::item(&scene, key) {
+                Some(model::Item::Material(m)) => commands.push(json!({ "command": "motion.removeMaterial", "params": { "clipId": clip, "materialId": m } })),
+                Some(model::Item::Composition(c)) => commands.push(json!({ "command": "motion.removeComposition", "params": { "clipId": clip, "compositionId": c } })),
+                Some(model::Item::Scene) | None => {}
+                Some(model::Item::Camera) if key == "camera" => {}
+                Some(_) => {
+                    // A child goes with its parent: skip it when the parent is deleted too.
+                    commands.push(json!({ "command": "motion.removeLayer", "params": { "clipId": clip, "id": key } }));
+                }
+            }
+        }
+        if commands.is_empty() {
+            return;
+        }
+        self.run("project.batch", json!({ "commands": commands, "label": "Delete", "atomic": false }), cx);
+        self.selection.clear();
+        self.changed(cx);
+    }
+
+    pub fn delete_keys(&mut self, cx: &mut Context<Self>) {
+        let Some((c, _)) = self.clip_scene(cx) else { return };
+        let clip = self.clip;
+        let commands: Vec<Value> = self
+            .keys
+            .iter()
+            .map(|k| json!({ "command": "motion.removeKeyframe", "params": { "clipId": clip, "id": k.id, "property": k.property, "time": model::timeline_time(&c, k.time) } }))
+            .collect();
+        self.run("project.batch", json!({ "commands": commands, "label": "Delete keyframes" }), cx);
+        self.keys.clear();
+        self.changed(cx);
+    }
+
+    pub fn duplicate(&mut self, cx: &mut Context<Self>) {
+        let Some((_, scene)) = self.clip_scene(cx) else { return };
+        let ids: Vec<String> = self.selection.iter().filter(|k| model::is_thing(&scene, k) && *k != "camera").cloned().collect();
+        if ids.is_empty() {
+            return;
+        }
+        let clip = self.clip;
+        let n = ids.len();
+        let made = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
+        for id in ids {
+            let made = made.clone();
+            self.run_then("motion.duplicateLayer", json!({ "clipId": clip, "id": id }), cx, move |this, v, cx| {
+                if let Some(id) = v["id"].as_str() {
+                    made.borrow_mut().push(id.to_string());
+                }
+                if made.borrow().len() == n {
+                    let sel = made.borrow().clone();
+                    this.set_selection(sel, cx);
+                    // Then move them, like Blender's Shift+D.
+                    if this.is_3d(cx) {
+                        this.viewport.update(cx, |v, cx| v.start_modal_now(viewport::ModalKind::Grab, cx));
+                    }
+                }
+            });
+        }
+    }
+
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        if self.mode == Mode::Edit {
+            self.viewport.update(cx, |v, cx| v.toggle_all_mesh(cx));
+            return;
+        }
+        if self.area == Area::Timeline {
+            self.timeline.update(cx, |t, cx| t.select_all_keys(cx));
+            return;
+        }
+        let Some((_, scene)) = self.clip_scene(cx) else { return };
+        let all: Vec<String> = match &scene {
+            Scene::Flat(f) => {
+                let mut v = vec![];
+                kimchi_core::motion::walk_layers(model::view_layers(f, self.composition.as_deref()), &mut |l| v.push(l.id.clone()));
+                v
+            }
+            Scene::Space(_) => model::thing_ids(&scene),
+        };
+        let keys = if self.selection.len() >= all.len() { vec![] } else { all };
+        self.set_selection(keys, cx);
+    }
+
+    fn hide_selected(&mut self, hide: bool, cx: &mut Context<Self>) {
+        let Some((_, scene)) = self.clip_scene(cx) else { return };
+        let clip = self.clip;
+        let ids: Vec<String> = if hide {
+            self.selection.iter().filter(|k| model::is_thing(&scene, k) && !matches!(model::item(&scene, k), Some(model::Item::Camera))).cloned().collect()
+        } else {
+            model::rows(&scene, &HashSet::new()).into_iter().filter(|r| r.hidden == Some(true)).map(|r| r.key).collect()
+        };
+        if ids.is_empty() {
+            return;
+        }
+        let commands: Vec<Value> = ids.iter().map(|id| json!({ "command": "motion.updateLayer", "params": { "clipId": clip, "id": id, "props": { "hidden": hide } } })).collect();
+        self.run("project.batch", json!({ "commands": commands, "label": if hide { "Hide" } else { "Show all" } }), cx);
+    }
+
+    /// I (object mode): a keyframe of where each selected thing is now, at the playhead.
+    pub fn keyframe_selection(&mut self, cx: &mut Context<Self>) {
+        let Some((_, scene)) = self.clip_scene(cx) else { return };
+        let clip = self.clip;
+        let time = self.playhead(cx);
+        let mut commands = vec![];
+        for id in self.selection.iter().filter(|k| model::is_thing(&scene, k)) {
+            let props: &[&str] = match (model::item(&scene, id), scene.is_3d()) {
+                (Some(model::Item::Camera), _) => &["position", "target"],
+                (Some(model::Item::Light), _) => &["position", "intensity"],
+                (_, true) => &["position", "rotation", "scale"],
+                (_, false) => &["x", "y", "rotation", "scale", "opacity"],
+            };
+            for p in props {
+                commands.push(json!({ "command": "motion.addKeyframe", "params": { "clipId": clip, "id": id, "property": p, "time": time } }));
+            }
+        }
+        if commands.is_empty() {
+            self.flash("Select something to keyframe.", cx);
+            return;
+        }
+        self.run("project.batch", json!({ "commands": commands, "label": "Insert keyframes" }), cx);
+    }
+
+    /// One `motion.editMesh` call on the active mesh with the edit selection; the answer's
+    /// selection becomes the new one.
+    pub fn mesh_op(&mut self, op: &str, params: Value, cx: &mut Context<Self>) {
+        if self.mode != Mode::Edit {
+            return;
+        }
+        let Some(id) = self.active().map(str::to_string) else { return };
+        let clip = self.clip;
+        let mut p = json!({ "clipId": clip, "id": id, "op": op, "params": params });
+        let sel = self.edit_sel.params();
+        p["vertices"] = sel["vertices"].clone();
+        p["faces"] = sel["faces"].clone();
+        self.run_then("motion.editMesh", p, cx, |this, v, cx| {
+            this.edit_sel = selection_from(&v);
+            this.changed(cx);
+        });
+    }
+
+    pub fn open_add_menu(&mut self, at: Option<gpui::Point<Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == Mode::Edit {
+            return;
+        }
+        let pos = at.unwrap_or_else(|| window.mouse_position());
+        let three = self.is_3d(cx);
+        self.popover = Some(Popover::add(pos, three, window, cx));
+        cx.notify();
+    }
+}
+
+/// The selection `motion.editMesh` answers with (`selection: {vertices, faces}` or at the top).
+pub fn selection_from(v: &Value) -> EditSel {
+    let src = v.get("selection").unwrap_or(v);
+    let ints = |k: &str| -> Vec<u32> { src.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(|x| x.as_u64().map(|n| n as u32)).collect() };
+    let edges = src
+        .get("edges")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let a = e.as_array()?;
+            Some((a.first()?.as_u64()? as u32, a.get(1)?.as_u64()? as u32))
+        })
+        .collect();
+    EditSel { vertices: ints("vertices"), edges, faces: ints("faces") }
+}
+
+impl Render for Studio {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        if self.clip.is_none() {
+            return div().into_any_element();
+        }
+        let busy = self.viewport.read(cx).busy();
+        let toolbar = toolbar::render(self, window, cx);
+        let popover = self.popover.as_ref().map(|p| p.render(cx.entity(), window, cx));
+        let root = div()
+            .id("studio")
+            .key_context(if busy { "Studio StudioBusy" } else { "Studio" })
+            .track_focus(&self.focus)
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(t.bg_raised)
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                // The Studio keeps the keyboard (its keys win over the editor's).
+                if !window.default_prevented() {
+                    window.focus(&this.focus, cx);
+                    window.prevent_default();
+                }
+            }))
+            .on_mouse_down(MouseButton::Right, cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)))
+            .child(toolbar)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(div().w(px(self.left_w)).flex_none().h_full().child(self.outliner.clone()))
+                    .child(self.splitter(0, cx))
+                    .child(div().flex_1().min_w_0().h_full().bg(t.bg_sunken).child(self.viewport.clone()))
+                    .child(self.splitter(1, cx))
+                    .child(div().w(px(self.right_w)).flex_none().h_full().child(self.properties.clone())),
+            )
+            .child(self.splitter(2, cx))
+            .child(div().h(px(self.bottom_h)).flex_none().w_full().child(self.timeline.clone()))
+            .when(self.resizing.is_some(), |d| d.child(drag::track(cx.entity(), Self::resize_move, Self::resize_end)))
+            .children(popover);
+        let root: gpui::Div = div().size_full().child(root);
+        self.register_actions(root, cx).into_any_element()
+    }
+}

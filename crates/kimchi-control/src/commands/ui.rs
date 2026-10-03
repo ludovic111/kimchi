@@ -12,6 +12,14 @@ use crate::session::{CmdResult, Session};
 
 pub const PANELS: &[&str] = &["media", "generate", "text", "motion", "captions", "agent", "jobs", "settings", "export", "palette", "home", "shortcuts", "whatsNew", "diagnostics"];
 
+/// `ui.studio`'s words, checked before the window sees them.
+const STUDIO_CHOICES: [(&str, &[&str]); 4] = [
+    ("mode", &["object", "edit"]),
+    ("selectMode", &["vertex", "edge", "face"]),
+    ("tool", &["select", "move", "rotate", "scale", "anchor", "pen", "rect", "ellipse", "star", "polygon", "text"]),
+    ("shading", &["solid", "material", "rendered"]),
+];
+
 pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
     match cx.spec.name {
         "ui.state" => {
@@ -51,6 +59,26 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             s.ui_call(cx.spec.name, Value::Object(a.0)).await
         }
         "ui.closeDialogs" | "ui.screenshot" => s.ui_call(cx.spec.name, Value::Object(a.0)).await,
+        "ui.studio" => {
+            let mut params = a.0.clone();
+            if let Some(k) = a.opt_str("clipId") {
+                let p = s.project()?;
+                let id = resolve::clip(&p, k)?;
+                if !matches!(p.clip(id).map(|c| &c.content), Some(kimchi_core::ClipContent::Motion { .. })) {
+                    return Err(format!("\"{k}\" isn't a motion clip; only motion clips open in the Studio."));
+                }
+                params.insert("clipId".into(), json!(id));
+            }
+            for (key, allowed) in STUDIO_CHOICES {
+                if let Some(v) = a.opt_str(key)
+                    && !allowed.contains(&v)
+                {
+                    let hint = crate::registry::closest(v, allowed).map(|c| format!(" Did you mean {c}?")).unwrap_or_default();
+                    return Err(format!("{key} is one of {}, not `{v}`.{hint}", allowed.join(", ")));
+                }
+            }
+            s.ui_call(cx.spec.name, Value::Object(params)).await
+        }
         _ => Err(crate::commands::unhandled(cx)),
     }
 }

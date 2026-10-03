@@ -72,6 +72,44 @@ actions!(
         ShowDiagnostics,
         ReportProblem,
         RestartApp,
+        OpenStudio,
+        StudioEscape,
+        StudioPlay,
+        StudioGrab,
+        StudioRotate,
+        StudioScale,
+        StudioAdd,
+        StudioDelete,
+        StudioDuplicate,
+        StudioToggleEdit,
+        StudioSelectAll,
+        StudioBoxSelect,
+        StudioKey1,
+        StudioKey2,
+        StudioKey3,
+        StudioKey7,
+        StudioKey0,
+        StudioOrtho,
+        StudioFrame,
+        StudioFill,
+        StudioFrameAll,
+        StudioInsert,
+        StudioExtrude,
+        StudioBevel,
+        StudioLoopCut,
+        StudioMerge,
+        StudioFlip,
+        StudioRecalc,
+        StudioToolSelect,
+        StudioToolCycle,
+        StudioPen,
+        StudioShape,
+        StudioText,
+        StudioAnchor,
+        StudioFit,
+        StudioGraph,
+        StudioHide,
+        StudioUnhide,
     ]
 );
 
@@ -83,6 +121,8 @@ pub enum Scope {
     /// In the window, but not while a text field has focus or a dialog is open (single keys,
     /// ⌘Z on the project…). Escape still closes dialogs.
     Editing,
+    /// In the Studio (motion clips' editor), like `Editing`; wins over the editor's keys there.
+    Studio,
 }
 
 /// One shortcut. `keys` are GPUI keystrokes where `M` is ⌘ on macOS and Ctrl elsewhere; the
@@ -102,7 +142,7 @@ macro_rules! sc {
 }
 
 #[cfg(test)]
-const GROUPS: [&str; 5] = ["Playback", "Editing", "Timeline", "Panels", "Project"];
+const GROUPS: [&str; 7] = ["Playback", "Editing", "Timeline", "Panels", "Project", "Studio", "Studio: modelling"];
 
 pub static SHORTCUTS: &[Shortcut] = &[
     sc!("Playback", "Play / pause", ["space"], Editing, PlayPause),
@@ -157,6 +197,45 @@ pub static SHORTCUTS: &[Shortcut] = &[
     sc!("Project", "All projects", ["M-w"], App, CloseProject),
     sc!("Project", "Settings", ["M-,"], App, OpenSettings),
     sc!("", "Quit", ["M-q"], App, Quit),
+    sc!("Timeline", "Open the selected motion clip in the Studio", ["M-shift-o"], Editing, OpenStudio),
+    // The Studio: Blender's keys in 3D, After Effects' in 2D.
+    sc!("Studio", "Back to the edit (or cancel)", ["escape"], Studio, StudioEscape),
+    sc!("Studio", "Play / pause the clip (loops)", ["space"], Studio, StudioPlay),
+    sc!("Studio", "Add (object, light, camera, layer…)", ["shift-a"], Studio, StudioAdd),
+    sc!("Studio", "Move (3D) · pen tool (2D)", ["g"], Studio, StudioGrab),
+    sc!("Studio", "Rotate", ["r"], Studio, StudioRotate),
+    sc!("Studio", "Scale", ["s"], Studio, StudioScale),
+    sc!("Studio", "Delete", ["x", "delete", "backspace"], Studio, StudioDelete),
+    sc!("Studio", "Duplicate", ["shift-d", "M-d"], Studio, StudioDuplicate),
+    sc!("Studio", "Select all / none", ["a", "M-a"], Studio, StudioSelectAll),
+    sc!("Studio", "Box select", ["b"], Studio, StudioBoxSelect),
+    sc!("Studio", "Hide selected", ["h"], Studio, StudioHide),
+    sc!("Studio", "Show everything", ["alt-h"], Studio, StudioUnhide),
+    sc!("Studio", "Keyframe the selection at the playhead (edit mode: inset)", ["i"], Studio, StudioInsert),
+    sc!("Studio", "Front view (edit mode: vertices)", ["1"], Studio, StudioKey1),
+    sc!("Studio", "Edges (edit mode)", ["2"], Studio, StudioKey2),
+    sc!("Studio", "Right view (edit mode: faces)", ["3"], Studio, StudioKey3),
+    sc!("Studio", "Top view", ["7"], Studio, StudioKey7),
+    sc!("Studio", "Through the camera", ["0"], Studio, StudioKey0),
+    sc!("Studio", "Perspective / orthographic", ["5"], Studio, StudioOrtho),
+    sc!("Studio", "Frame the selection", ["."], Studio, StudioFrame),
+    sc!("Studio", "Frame the selection (edit mode: fill)", ["f"], Studio, StudioFill),
+    sc!("Studio", "Frame everything", ["home"], Studio, StudioFrameAll),
+    sc!("Studio", "Fit the canvas (2D)", ["shift-z"], Studio, StudioFit),
+    sc!("Studio", "Select tool", ["v"], Studio, StudioToolSelect),
+    sc!("Studio", "Next tool", ["w"], Studio, StudioToolCycle),
+    sc!("Studio", "Pen (2D)", ["p"], Studio, StudioPen),
+    sc!("Studio", "Shape tools (2D)", ["q"], Studio, StudioShape),
+    sc!("Studio", "Text tool (2D)", ["t"], Studio, StudioText),
+    sc!("Studio", "Anchor point tool (2D)", ["y"], Studio, StudioAnchor),
+    sc!("Studio", "Dope sheet / graph editor", ["M-shift-g"], Studio, StudioGraph),
+    sc!("Studio: modelling", "Edit mode", ["tab"], Studio, StudioToggleEdit),
+    sc!("Studio: modelling", "Extrude", ["e"], Studio, StudioExtrude),
+    sc!("Studio: modelling", "Bevel", ["M-b"], Studio, StudioBevel),
+    sc!("Studio: modelling", "Loop cut", ["M-r"], Studio, StudioLoopCut),
+    sc!("Studio: modelling", "Merge", ["m"], Studio, StudioMerge),
+    sc!("Studio: modelling", "Flip normals", ["alt-n"], Studio, StudioFlip),
+    sc!("Studio: modelling", "Recalculate normals", ["shift-n"], Studio, StudioRecalc),
 ];
 
 #[cfg(target_os = "macos")]
@@ -183,6 +262,8 @@ pub fn bind(cx: &mut App) {
                 Scope::App if !bare => Some("Workspace"),
                 _ if s.action().name() == Deselect.name() => Some("Workspace && !TextInput"),
                 Scope::App | Scope::Editing => Some("Workspace && !TextInput && !Modal"),
+                // The Studio's own keys; `StudioBusy` is set while a mouse tool or menu takes the keys.
+                Scope::Studio => Some("Studio && !TextInput && !Modal && !StudioBusy"),
             };
             b.push(KeyBinding::load(&concrete(k), s.action(), context.map(|c| gpui::KeyBindingContextPredicate::parse(c).expect("valid context").into()), false, None, &gpui::DummyKeyboardMapper).expect("valid keystroke"));
         }
@@ -376,7 +457,8 @@ mod tests {
         for s in SHORTCUTS {
             for k in s.keys {
                 gpui::Keystroke::parse(&concrete(k)).unwrap_or_else(|_| panic!("{k} doesn't parse"));
-                assert!(seen.insert(*k), "{k} is bound twice");
+                // The Studio's keys win over the editor's while it is open: unique per scope.
+                assert!(seen.insert((*k, s.scope == Scope::Studio)), "{k} is bound twice");
             }
             assert!(s.group.is_empty() || GROUPS.contains(&s.group), "{} has an unknown group", s.label);
         }

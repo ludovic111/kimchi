@@ -249,6 +249,14 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             scene.validate()?;
             set_scene(s, cx, &a, clip.id, scene, None)
         }
+        "motion.renameLayer" => {
+            let p = s.project()?;
+            let (clip, scene, _) = motion_clip(&p, a.str("clipId")?)?;
+            let (from, to) = (a.str("id")?, a.str("newId")?.trim());
+            let renamed = rename(&scene, from, to).map_err(|e| format!("\"{from}\" in \"{}\": {e}", clip.name))?;
+            let summary = set_scene(s, cx, &a, clip.id, renamed, None)?;
+            Ok(json!({ "id": to, "clip": summary }))
+        }
         "motion.duplicateLayer" => {
             let p = s.project()?;
             let (clip, mut scene, _) = motion_clip(&p, a.str("clipId")?)?;
@@ -662,5 +670,193 @@ fn rename_children(json: &mut Value, key: &str, taken: &mut Vec<String>, fresh: 
             child["id"] = Value::from(new);
         }
         rename_children(child, key, taken, fresh);
+    }
+}
+
+/// The scene with `from` (a thing, a composition or a shared material) called `to`, and every
+/// reference to it changed too.
+fn rename(scene: &Scene, from: &str, to: &str) -> CmdResult<Scene> {
+    if to.is_empty() {
+        return Err("the new id is empty".into());
+    }
+    if matches!(to, "scene" | "camera") {
+        return Err(format!("\"{to}\" is reserved; pick another id"));
+    }
+    if from == "camera" || from == "scene" {
+        return Err(format!("\"{from}\" can't be renamed"));
+    }
+    if from == to {
+        return Ok(scene.clone());
+    }
+    let mut taken: Vec<String> = scene.ids();
+    let (comp, material) = match scene {
+        Scene::Flat(f) => {
+            taken.extend(f.compositions.iter().map(|c| c.id.clone()));
+            (f.composition(from).is_some(), false)
+        }
+        Scene::Space(sp) => {
+            taken.extend(sp.materials.iter().filter_map(|m| m.id.clone()));
+            (false, sp.material(from).is_some())
+        }
+    };
+    let thing = scene.ids().iter().any(|i| i == from);
+    if !thing && !comp && !material {
+        return Err(format!("nothing has the id \"{from}\"; ids: {}", scene.ids().join(", ")));
+    }
+    if taken.iter().any(|t| t == to) {
+        return Err(format!("\"{to}\" is already taken"));
+    }
+    let mut json = scene.to_json();
+    rename_in(&mut json, from, to, thing, comp, material);
+    Scene::from_json(&json)
+}
+
+/// Walks a scene's JSON: ids, references and formulas naming `from` become `to`.
+fn rename_in(v: &mut Value, from: &str, to: &str, thing: bool, comp: bool, material: bool) {
+    let set = |slot: &mut Value| {
+        if slot.as_str() == Some(from) {
+            *slot = Value::from(to);
+        }
+    };
+    match v {
+        Value::Array(list) => {
+            for x in list {
+                rename_in(x, from, to, thing, comp, material);
+            }
+        }
+        Value::Object(o) => {
+            for (k, x) in o.iter_mut() {
+                match k.as_str() {
+                    "id" if thing || comp => set(x),
+                    "parent" | "mask" | "activeCamera" if thing => set(x),
+                    "layer" if thing => set(x),
+                    "comp" if comp => set(x),
+                    "material" if material => set(x),
+                    "expressions" if thing => {
+                        if let Some(ex) = x.as_object_mut() {
+                            for f in ex.values_mut() {
+                                if let Some(src) = f.as_str() {
+                                    *f = Value::from(rename_in_formula(src, from, to));
+                                }
+                            }
+                        }
+                    }
+                    "keyframes" if thing => {
+                        // The scene's activeCamera keyframes name cameras.
+                        if let Some(list) = x.get_mut("activeCamera").and_then(Value::as_array_mut) {
+                            for key in list.iter_mut() {
+                                // `{"time", "value", …}` or `[time, value, easing]`.
+                                let val = if key.is_array() { key.get_mut(1) } else { key.get_mut("value") };
+                                if let Some(val) = val {
+                                    set(val);
+                                }
+                            }
+                        }
+                    }
+                    "modifiers" | "constraints" | "effects" | "operators" | "masks" | "animators" if thing => {
+                        rename_refs(k, x, from, to);
+                        // Stack items never hold things themselves, but their ids aren't the thing's.
+                        continue;
+                    }
+                    _ => {}
+                }
+                if !matches!(k.as_str(), "expressions" | "keyframes") {
+                    rename_in(x, from, to, thing, comp, material);
+                }
+            }
+            // A material is shared by its id in the scene's list.
+            if material
+                && let Some(Value::Array(list)) = o.get_mut("materials")
+            {
+                for m in list {
+                    if let Some(id) = m.get_mut("id") {
+                        set(id);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Reference parameters (`Ref` in the stack tables) naming `from` in one stack.
+fn rename_refs(field: &str, list: &mut Value, from: &str, to: &str) {
+    let Some((_, _, types)) = stack::families().into_iter().find(|(f, _, _)| *f == field) else { return };
+    for item in list.as_array_mut().into_iter().flatten() {
+        let Some(kind) = item.get("type").and_then(Value::as_str).map(str::to_string) else { continue };
+        let Some(spec) = types.iter().find(|t| t.name == kind) else { continue };
+        for p in spec.params.iter().filter(|p| p.kind == stack::ParamKind::Ref) {
+            if let Some(slot) = item.get_mut(p.name)
+                && slot.as_str() == Some(from)
+            {
+                *slot = Value::from(to);
+            }
+        }
+    }
+}
+
+/// `prop("from", …)` / `prop('from', …)` in a formula become `prop("to", …)`.
+fn rename_in_formula(src: &str, from: &str, to: &str) -> String {
+    let mut out = String::new();
+    let mut rest = src;
+    while let Some(i) = rest.find("prop(") {
+        let (head, tail) = rest.split_at(i + 5);
+        out.push_str(head);
+        let spaces = tail.len() - tail.trim_start().len();
+        let after = &tail[spaces..];
+        let quote = after.chars().next().filter(|c| *c == '"' || *c == '\'');
+        match quote {
+            Some(q) if after[1..].starts_with(from) && after[1 + from.len()..].starts_with(q) => {
+                out.push_str(&tail[..spaces]);
+                out.push(q);
+                out.push_str(to);
+                out.push(q);
+                rest = &after[2 + from.len()..];
+            }
+            _ => rest = tail,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+
+    #[test]
+    fn renaming_follows_every_reference() {
+        let s = Scene::from_json(&json!({"layers": [
+            {"id": "ball", "type": "ellipse"},
+            {"id": "shadow", "type": "ellipse", "parent": "ball", "matte": {"layer": "ball"}, "expressions": {"x": "prop('ball', 'x') + prop(\"ball\", \"y\")"}}
+        ]}))
+        .unwrap();
+        let r = rename(&s, "ball", "sun").unwrap();
+        let j = r.to_json();
+        assert_eq!(j["layers"][0]["id"], "sun");
+        assert_eq!(j["layers"][1]["parent"], "sun");
+        assert_eq!(j["layers"][1]["matte"]["layer"], "sun");
+        assert_eq!(j["layers"][1]["expressions"]["x"], "prop('sun', 'x') + prop(\"sun\", \"y\")");
+        assert!(rename(&s, "ball", "shadow").unwrap_err().contains("taken"));
+
+        let s = Scene::from_json(&json!({"cameras": [{"id": "side"}], "activeCamera": "side", "keyframes": {"activeCamera": [[0, "camera"], [1, "side"]]},
+            "materials": [{"id": "gold"}],
+            "objects": [{"id": "cutter", "type": "box"}, {"id": "b", "type": "box", "material": "gold",
+                "modifiers": [{"type": "boolean", "object": "cutter"}], "constraints": [{"type": "lookAt", "target": "cutter"}]}]}))
+        .unwrap();
+        let j = rename(&s, "cutter", "knife").unwrap().to_json();
+        assert_eq!(j["objects"][1]["modifiers"][0]["object"], "knife");
+        assert_eq!(j["objects"][1]["constraints"][0]["target"], "knife");
+        let j = rename(&s, "side", "wide").unwrap().to_json();
+        assert_eq!(j["activeCamera"], "wide");
+        assert_eq!(rename(&s, "side", "wide").unwrap(), {
+            let mut j = s.to_json();
+            j["activeCamera"] = json!("wide");
+            j["cameras"][0]["id"] = json!("wide");
+            j["keyframes"]["activeCamera"][1]["value"] = json!("wide");
+            Scene::from_json(&j).unwrap()
+        });
+        let j = rename(&s, "gold", "brass").unwrap().to_json();
+        assert_eq!((j["materials"][0]["id"].as_str(), j["objects"][1]["material"].as_str()), (Some("brass"), Some("brass")));
     }
 }
