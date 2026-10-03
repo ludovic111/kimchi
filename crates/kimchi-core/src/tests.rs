@@ -224,3 +224,57 @@ fn paste_and_undo_preserve_motion_scenes_and_keyframes() {
     assert!(editor.redo());
     assert_eq!(editor.project().clips().find(|(_, c)| c.start == 5.0).unwrap().1.content, original.content);
 }
+
+fn update(p: &mut Project, id: Id, patch: ClipPatch) {
+    p.apply(&Edit::UpdateClip { clip_id: id, patch }).unwrap();
+}
+
+#[test]
+fn reversed_clips_split_and_trim_from_the_other_end() {
+    let (mut p, a) = setup();
+    let id = insert(&mut p, &a, 0.0);
+    p.apply(&Edit::TrimClip { clip_id: id, edge: Edge::Start, time: 2.0 }).unwrap();
+    // Source 2–10 s on the timeline at 2–10 s; reversed, the first frame shows source 10 s.
+    update(&mut p, id, ClipPatch { reverse: Some(true), ..Default::default() });
+    let c = p.clip(id).unwrap().clone();
+    assert_eq!((c.source_time(2.0), c.source_time(10.0)), (10.0, 2.0));
+    // The left half keeps the end of the source, the right half its start.
+    let right = p.apply(&Edit::Split { time: 4.0, clip_ids: Some(vec![id]) }).unwrap().created_clips[0];
+    let (l, r) = (p.clip(id).unwrap().clone(), p.clip(right).unwrap().clone());
+    assert_eq!((l.in_point, l.duration, l.source_time(2.0)), (8.0, 2.0, 10.0));
+    assert_eq!((r.in_point, r.duration, r.source_time(4.0)), (2.0, 6.0, 8.0));
+    // Dragging the right half's end out reaches back towards source 0.
+    p.apply(&Edit::TrimClip { clip_id: right, edge: Edge::End, time: 30.0 }).unwrap();
+    let r = p.clip(right).unwrap();
+    assert_eq!((r.in_point, r.end()), (0.0, 12.0));
+    // The left half's start can't go earlier: its first frame is the source's last.
+    p.apply(&Edit::TrimClip { clip_id: id, edge: Edge::Start, time: 0.0 }).unwrap();
+    assert_eq!(p.clip(id).unwrap().start, 2.0);
+}
+
+#[test]
+fn stills_cant_play_backwards() {
+    let mut p = Project::new("T", ProjectSettings::default());
+    let clip = Clip::new("s", 0.0, 2.0, ClipContent::Solid { color: "#000000".into() });
+    let id = p.apply(&Edit::AddClip { track_id: None, clip }).unwrap().created_clips[0];
+    let err = p.apply(&Edit::UpdateClip { clip_id: id, patch: ClipPatch { reverse: Some(true), ..Default::default() } }).unwrap_err();
+    assert!(matches!(err, EditError::Invalid(_)));
+}
+
+#[test]
+fn splitting_drops_the_transition_from_the_right_half_and_effects_follow() {
+    let (mut p, a) = setup();
+    let id = insert(&mut p, &a, 0.0);
+    let effects = Effects { saturation: -1.0, ..Default::default() };
+    let transition = Some(Transition::new(TransitionKind::Dissolve, 1.0));
+    update(&mut p, id, ClipPatch { effects: Some(effects.clone()), transition: Some(transition.clone()), ..Default::default() });
+    let right = p.apply(&Edit::Split { time: 5.0, clip_ids: None }).unwrap().created_clips[0];
+    let r = p.clip(right).unwrap();
+    assert_eq!((r.transition.clone(), r.effects.clone()), (None, effects));
+    assert_eq!(p.clip(id).unwrap().transition, transition);
+    // Effect keyframes animate the value.
+    let mut keys = Keyframes::new();
+    keys.insert("saturation".into(), vec![Keyframe::new(0.0, 0.0, Easing::Linear), Keyframe::new(2.0, 1.0, Easing::Linear)]);
+    update(&mut p, id, ClipPatch { keyframes: Some(keys), ..Default::default() });
+    assert!((p.clip(id).unwrap().effects_at(1.0).saturation - 0.5).abs() < 1e-9);
+}

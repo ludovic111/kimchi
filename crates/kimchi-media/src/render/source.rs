@@ -16,6 +16,8 @@ use crate::{MediaError, MediaResult, Tools};
 
 /// Frames decoded ahead of the compositor, per stream.
 const AHEAD: usize = 4;
+/// Frames decoded at once when playing backwards.
+const REVERSE_CHUNK: usize = 12;
 
 /// An ffmpeg process that is killed when dropped.
 struct Proc(Child);
@@ -158,10 +160,25 @@ fn grab_last(tools: &Tools, path: &Path, before: f64, w: u32, h: u32) -> MediaRe
     pixmap(last, w, h).ok_or_else(|| MediaError::Unsupported("bad frame size".into()))
 }
 
+/// The decoder chunk being read by a reverse stream's thread; killed with the stream.
+struct ProcSlot(Arc<std::sync::Mutex<Option<Proc>>>);
+
+impl Drop for ProcSlot {
+    fn drop(&mut self) {
+        super::lock(&self.0).take();
+    }
+}
+
+/// What keeps a stream's ffmpeg alive (and kills it when dropped).
+enum Keep {
+    Proc(Arc<std::sync::Mutex<Proc>>),
+    Slot(ProcSlot),
+}
+
 /// A clip's pictures, in order, at a fixed rate.
 pub(crate) struct VideoStream {
     frames: Receiver<MediaResult<Pixmap>>,
-    _proc: Arc<std::sync::Mutex<Proc>>,
+    _proc: Keep,
     /// Owner-local time (clip or scene seconds) of frame 0.
     first: f64,
     fps: f64,
@@ -219,8 +236,78 @@ impl VideoStream {
                 }
             })
             .map_err(MediaError::Io)?;
-        Ok(Self { frames: rx, _proc: proc, first, fps, next: 0, last: None, ended: false,
+        Ok(Self { frames: rx, _proc: Keep::Proc(proc), first, fps, next: 0, last: None, ended: false,
             fallback: hardware.then(|| (tools.clone(), path.to_path_buf(), source_start, speed, w, h)) })
+    }
+
+    /// A clip played backwards: frame `k` is what the owner shows at local time `first + k / fps`,
+    /// source time `source_start − k × speed / fps` (held at the source's first frame).
+    ///
+    /// ffmpeg only decodes forwards, so a thread decodes the source in short chunks, from the
+    /// latest one back, and hands each chunk's frames over in reverse.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn start_reversed(tools: &Tools, path: &Path, source_start: f64, speed: f64, fps: f64, w: u32, h: u32, first: f64) -> MediaResult<Self> {
+        let speed = speed.max(1e-3);
+        let step = speed / fps;
+        let (tools, path) = (tools.clone(), path.to_path_buf());
+        let (tx, rx): (SyncSender<MediaResult<Pixmap>>, Receiver<MediaResult<Pixmap>>) = sync_channel(AHEAD);
+        // The decoder of the chunk being read, so dropping the stream stops it.
+        let current: Arc<std::sync::Mutex<Option<Proc>>> = Arc::default();
+        let held = current.clone();
+        let len = w as usize * h as usize * 4;
+        std::thread::Builder::new()
+            .name("kimchi-decode-rev".into())
+            .spawn(move || {
+                let mut k = 0u64;
+                loop {
+                    // This chunk: frames k … k + n − 1, the earliest source time last.
+                    let top = source_start - k as f64 * step;
+                    if top < -1e-6 {
+                        break;
+                    }
+                    let n = (REVERSE_CHUNK as u64).min((top / step + 1e-6).floor() as u64 + 1);
+                    let lo = (top - (n - 1) as f64 * step).max(0.0);
+                    let mut args = vec![];
+                    if lo > 1e-6 {
+                        args.extend(["-ss".into(), format!("{lo:.6}")]);
+                    }
+                    let setpts = if (speed - 1.0).abs() > 1e-9 { format!("setpts=(PTS-STARTPTS)/{speed}") } else { "setpts=PTS-STARTPTS".into() };
+                    args.extend(["-i".into(), path.to_string_lossy().into_owned(), "-an".into(), "-frames:v".into(), n.to_string(), "-vf".into()]);
+                    args.push(format!("{setpts},fps={fps},{}", scale(w, h)));
+                    args.extend(["-f".into(), "rawvideo".into(), "-".into()]);
+                    let Ok(mut child) = command(&tools, &args) else { break };
+                    let mut stdout = child.stdout.take().expect("piped");
+                    *super::lock(&held) = Some(Proc(child));
+                    let mut chunk = Vec::with_capacity(n as usize);
+                    loop {
+                        let mut buf = vec![0u8; len];
+                        if stdout.read_exact(&mut buf).is_err() {
+                            break;
+                        }
+                        match pixmap(buf, w, h) {
+                            Some(p) => chunk.push(p),
+                            None => break,
+                        }
+                    }
+                    *super::lock(&held) = None;
+                    if chunk.is_empty() {
+                        break; // past the end of the media, or it can't be read
+                    }
+                    // Fewer frames than asked (the media ends early): the latest is held.
+                    while chunk.len() < n as usize {
+                        let last = chunk.last().cloned().expect("non-empty");
+                        chunk.push(last);
+                    }
+                    for p in chunk.into_iter().rev() {
+                        if tx.send(Ok(p)).is_err() {
+                            return; // the stream was dropped
+                        }
+                    }
+                    k += n;
+                }
+            })
+            .map_err(MediaError::Io)?;
+        Ok(Self { frames: rx, _proc: Keep::Slot(ProcSlot(current)), first, fps, next: 0, last: None, ended: false, fallback: None })
     }
 
     /// The frame for owner-local time `local`; the last one once the media has ended.
@@ -258,6 +345,15 @@ impl Drop for VideoStream {
     fn drop(&mut self) {
         // The decoder thread also owns the process. Kill it before releasing the receiver so
         // a blocked read cannot keep ffmpeg alive after playback/export is cancelled.
-        let _ = self._proc.lock().unwrap().0.kill();
+        match &self._proc {
+            Keep::Proc(p) => {
+                let _ = super::lock(p).0.kill();
+            }
+            Keep::Slot(slot) => {
+                if let Some(p) = super::lock(&slot.0).as_mut() {
+                    let _ = p.0.kill();
+                }
+            }
+        }
     }
 }

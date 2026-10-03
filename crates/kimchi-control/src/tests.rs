@@ -412,3 +412,71 @@ async fn exports_name_their_encoder() {
     let err = registry::call(&s, Source::Cli, "export.start", json!({ "path": out, "encoder": "quantum" })).await.unwrap_err();
     assert!(err.contains("auto, hardware or software"), "{err}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn effects_transitions_and_freeze_frames() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({ "name": "Cut", "width": 640, "height": 360 })).await;
+    let a = ok(&s, Source::Agent, "clip.addSolid", json!({ "color": "#ff0000", "start": 0, "duration": 3, "trackId": "Video 1" })).await["clips"][0]["id"].as_str().unwrap().to_string();
+    let b = ok(&s, Source::Agent, "clip.addSolid", json!({ "color": "#0000ff", "start": 3, "duration": 3, "trackId": "Video 1" })).await["clips"][0]["id"].as_str().unwrap().to_string();
+
+    // Effects: a look, a field on top, a key, a LUT; mistakes explained.
+    let r = ok(&s, Source::Agent, "clip.setEffects", json!({ "clipIds": [a], "look": "vintage", "contrast": 0.4, "chromaKey": "#00ff00" })).await;
+    let fx = &r["clips"][0]["effects"];
+    assert_eq!((fx["contrast"].as_f64(), fx["vignette"].as_f64(), fx["chroma_key"]["color"].as_str()), (Some(0.4), Some(0.45), Some("#00ff00")));
+    let e = registry::call(&s, Source::Agent, "clip.setEffects", json!({ "clipIds": [a], "look": "noire" })).await.unwrap_err();
+    assert!(e.contains("noir"), "{e}");
+    let cube = dir.path().join("id.cube");
+    let mut text = String::from("LUT_3D_SIZE 2\n");
+    for i in 0..8 {
+        text.push_str(&format!("{} {} {}\n", i & 1, (i >> 1) & 1, (i >> 2) & 1));
+    }
+    std::fs::write(&cube, text).unwrap();
+    ok(&s, Source::Agent, "clip.setEffects", json!({ "clipIds": [a], "lut": cube, "lutStrength": 0.5 })).await;
+    let e = registry::call(&s, Source::Agent, "clip.setEffects", json!({ "clipIds": [a], "lut": dir.path().join("nope.cube") })).await.unwrap_err();
+    assert!(e.contains("Can't use"), "{e}");
+    // Effects animate like other properties, and removing the animation keeps the value.
+    ok(&s, Source::Agent, "clip.setKeyframes", json!({ "clipId": a, "property": "saturation", "keyframes": [[0, -1], [2, 1]] })).await;
+    ok(&s, Source::Agent, "clip.removeKeyframe", json!({ "clipId": a, "property": "saturation" })).await;
+    let c = ok(&s, Source::Agent, "clip.get", json!({ "clipId": a })).await;
+    assert!(c["keyframes"]["saturation"].is_null());
+    assert_eq!(c["effects"]["saturation"].as_f64(), Some(-1.0), "the value at the playhead (0 s) stays");
+    let reset = ok(&s, Source::Agent, "clip.setEffects", json!({ "clipIds": [a], "reset": true })).await;
+    assert_eq!(reset["clips"][0]["effects"], json!(null), "no effects left: {reset}");
+    assert_eq!(ok(&s, Source::Agent, "clip.looks", json!({})).await.as_array().unwrap().len(), kimchi_core::effects::LOOKS.len());
+
+    // Transitions: on every cut of a track, listed with where they play, then changed and removed.
+    let r = ok(&s, Source::Agent, "transition.set", json!({ "trackId": "Video 1", "kind": "crossfade", "duration": 1 })).await;
+    assert_eq!(r.as_array().unwrap().len(), 1);
+    assert_eq!((r[0]["kind"].as_str(), r[0]["start"].as_f64(), r[0]["end"].as_f64(), r[0]["from"].as_str()), (Some("dissolve"), Some(2.5), Some(3.5), Some("Solid")));
+    ok(&s, Source::Agent, "transition.set", json!({ "clipIds": [b], "kind": "pushLeft" })).await;
+    let l = ok(&s, Source::Agent, "transition.list", json!({})).await;
+    assert_eq!((l[0]["kind"].as_str(), l[0]["duration"].as_f64()), (Some("pushLeft"), Some(1.0)), "the length stayed");
+    let e = registry::call(&s, Source::Agent, "transition.set", json!({ "clipIds": [b], "kind": "swirl" })).await.unwrap_err();
+    assert!(e.contains("Transitions:"), "{e}");
+    if s.tools().is_ok() {
+        // Halfway through a push the red clip is on the left, the blue one on the right.
+        let f = ok(&s, Source::Agent, "project.renderFrame", json!({ "time": 3.0, "width": 320 })).await;
+        let png = kimchi_media::tiny_skia::Pixmap::load_png(f["path"].as_str().unwrap()).unwrap();
+        let (l, r) = (png.pixel(40, 90).unwrap(), png.pixel(280, 90).unwrap());
+        assert!(l.red() > 200 && l.blue() < 50 && r.blue() > 200 && r.red() < 50, "{l:?} {r:?}");
+    }
+    ok(&s, Source::Agent, "transition.remove", json!({ "clipIds": [b] })).await;
+    assert!(ok(&s, Source::Agent, "transition.list", json!({})).await.as_array().unwrap().is_empty());
+
+    // Solids and titles can't play backwards.
+    let e = registry::call(&s, Source::Agent, "clip.update", json!({ "clipId": a, "reverse": true })).await.unwrap_err();
+    assert!(e.contains("backwards"), "{e}");
+
+    // A freeze frame splits the clip, holds for 2 s and pushes the rest later, as one step.
+    if s.tools().is_ok() {
+        let r = ok(&s, Source::Agent, "clip.freezeFrame", json!({ "clipId": a, "time": 1.0 })).await;
+        assert_eq!((r["clips"][0]["start"].as_f64(), r["clips"][0]["duration"].as_f64()), (Some(1.0), Some(2.0)));
+        let clips = ok(&s, Source::Agent, "clip.list", json!({ "trackId": "Video 1" })).await;
+        let starts: Vec<f64> = clips.as_array().unwrap().iter().map(|c| c["start"].as_f64().unwrap()).collect();
+        assert_eq!(starts, vec![0.0, 1.0, 3.0, 5.0]);
+        ok(&s, Source::Agent, "history.undo", json!({})).await;
+        assert_eq!(ok(&s, Source::Agent, "clip.list", json!({ "trackId": "Video 1" })).await.as_array().unwrap().len(), 2);
+    }
+}

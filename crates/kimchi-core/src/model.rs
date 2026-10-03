@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::anim::{KeyValue, Keyframes, number_at, value_at};
+use crate::effects::{EFFECT_PROPS, Effects};
 use crate::motion::{Scene, TemplateRef};
+use crate::transition::Transition;
 
 pub type Id = Uuid;
 
@@ -227,6 +229,9 @@ pub struct Clip {
     pub in_point: f64,
     #[serde(default = "one")]
     pub speed: f64,
+    /// Plays the source range backwards (the first frame on the timeline is the range's last).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reverse: bool,
     pub content: ClipContent,
     #[serde(default)]
     pub transform: Transform,
@@ -239,10 +244,20 @@ pub struct Clip {
     /// Animated properties ([`CLIP_PROPS`]), times in seconds from the clip's start.
     #[serde(default, skip_serializing_if = "Keyframes::is_empty")]
     pub keyframes: Keyframes,
+    /// Colour corrections, vignette, sharpen, chroma key, LUT.
+    #[serde(default, skip_serializing_if = "Effects::is_default")]
+    pub effects: Effects,
+    /// How the clip comes in at its start (see [`crate::transition`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<Transition>,
 }
 
 fn one() -> f64 {
     1.0
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Clip {
@@ -254,12 +269,15 @@ impl Clip {
             duration,
             in_point: 0.0,
             speed: 1.0,
+            reverse: false,
             content,
             transform: Transform::default(),
             volume: 1.0,
             fade_in: 0.0,
             fade_out: 0.0,
             keyframes: Keyframes::new(),
+            effects: Effects::default(),
+            transition: None,
         }
     }
 
@@ -278,14 +296,57 @@ impl Clip {
         }
     }
 
-    /// Source time (seconds into the media) shown at timeline time `t`.
+    /// Source time (seconds into the media) shown at timeline time `t`. Outside the clip (a
+    /// transition plays it on past its edges) the source continues the same way.
     pub fn source_time(&self, t: f64) -> f64 {
-        self.in_point + (t - self.start) * self.speed
+        let local = t - self.start;
+        if self.reverse { self.in_point + (self.duration - local) * self.speed } else { self.in_point + local * self.speed }
+    }
+
+    /// Source seconds the clip uses: `(in_point, in_point + duration × speed)`.
+    pub fn source_range(&self) -> (f64, f64) {
+        (self.in_point, self.in_point + self.duration * self.speed)
+    }
+
+    /// The part of the clip on the timeline between `a` and `b` (inside it), as a clip with the
+    /// same id: its in-point follows the source (backwards for reversed clips), keyframes stay
+    /// where they were on the timeline. Fades and transitions are left to the caller.
+    pub fn cut(&self, a: f64, b: f64) -> Clip {
+        let mut c = self.clone();
+        let (a, b) = (a.max(self.start), b.min(self.end()));
+        c.start = a;
+        c.duration = (b - a).max(0.0);
+        c.in_point = if self.reverse { self.source_time(b) } else { self.source_time(a) };
+        crate::anim::shift(&mut c.keyframes, -(a - self.start));
+        c
+    }
+
+    /// Source seconds available before the clip's first frame and after its last (how far
+    /// its start and end can be dragged out), for a source `len` seconds long.
+    pub fn room(&self, len: f64) -> (f64, f64) {
+        let (lo, hi) = self.source_range();
+        let (before, after) = ((lo / self.speed).max(0.0), ((len - hi) / self.speed).max(0.0));
+        if self.reverse { (after, before) } else { (before, after) }
     }
 
     /// Scene time a motion clip shows at timeline time `t` (like [`Self::source_time`]).
     pub fn scene_time(&self, t: f64) -> f64 {
         self.source_time(t)
+    }
+
+    /// The clip's effects at timeline time `t`, with their keyframes applied.
+    pub fn effects_at(&self, t: f64) -> Effects {
+        let mut e = self.effects.clone();
+        if self.keyframes.is_empty() {
+            return e;
+        }
+        let local = t - self.start;
+        for name in EFFECT_PROPS {
+            if let Some(v) = number_at(&self.keyframes, name, local) {
+                e.set(name, v);
+            }
+        }
+        e
     }
 
     /// Does anything about the clip change while it plays (keyframes, or a moving scene)?
@@ -353,9 +414,31 @@ impl Clip {
 }
 
 /// Clip properties that take keyframes. Picture clips: x, y, position ([x, y]), scale, scaleX,
-/// scaleY, rotation, opacity, blur. Sound: volume. Text clips also: fontSize, color, letterSpacing.
-pub const CLIP_PROPS: &[&str] =
-    &["x", "y", "position", "scale", "scaleX", "scaleY", "rotation", "opacity", "blur", "volume", "fontSize", "color", "letterSpacing"];
+/// scaleY, rotation, opacity, blur, and the effects brightness, contrast, saturation,
+/// temperature, tint, vignette, sharpen. Sound: volume. Text clips also: fontSize, color,
+/// letterSpacing.
+pub const CLIP_PROPS: &[&str] = &[
+    "x",
+    "y",
+    "position",
+    "scale",
+    "scaleX",
+    "scaleY",
+    "rotation",
+    "opacity",
+    "blur",
+    "volume",
+    "fontSize",
+    "color",
+    "letterSpacing",
+    "brightness",
+    "contrast",
+    "saturation",
+    "temperature",
+    "tint",
+    "vignette",
+    "sharpen",
+];
 
 /// Checks that `name` can be keyframed on `content` and that `value` fits it.
 pub fn check_clip_key(content: &ClipContent, name: &str, value: &KeyValue) -> Result<(), String> {

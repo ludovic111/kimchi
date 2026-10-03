@@ -2,6 +2,7 @@
 
 pub mod anim;
 pub mod edit;
+pub mod effects;
 pub mod history;
 pub mod model;
 pub mod motion;
@@ -9,6 +10,7 @@ pub mod path;
 pub mod presets;
 pub mod store;
 pub mod templates;
+pub mod transition;
 
 pub use edit::{ClipMove, ClipPatch, Edge, Edit, EditError, EditOutcome, TrackClip, TrackPatch};
 pub use history::Editor;
@@ -16,7 +18,9 @@ pub use model::*;
 pub use store::{Library, ProjectSummary};
 
 pub use anim::{Easing, KeyValue, Keyframe, Keyframes};
+pub use effects::{ChromaKey, Effects, Lut};
 pub use motion::{Scene, Scene2d, Scene3d, TemplateRef};
+pub use transition::{Transition, TransitionKind};
 
 /// The candidate closest to a mistyped `word` (edit distance, or one being a prefix of the
 /// other), for "did you mean" hints.

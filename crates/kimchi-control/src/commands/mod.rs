@@ -12,6 +12,7 @@ pub mod motion;
 pub mod project;
 pub mod timeline;
 pub mod track;
+pub mod transition;
 pub mod ui;
 
 use std::sync::Arc;
@@ -152,7 +153,7 @@ pub static SPECS: &[Spec] = &[
         opt("time", Number, "Where the earliest copy starts, in seconds. Defaults to the playhead."),
         opt("trackId", String, "Put every copy on this track instead of each clip's own."),
     ]),
-    edit("clip.update", "Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, speed, text style or solid colour. Only the given fields change. One undo step.", &[
+    edit("clip.update", "Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, speed, reverse, text style or solid colour. Only the given fields change. One undo step.", &[
         CLIP_ID,
         opt("name", String, "Clip name."),
         opt("x", Number, "Offset of the centre from the canvas centre, project pixels."),
@@ -164,12 +165,13 @@ pub static SPECS: &[Spec] = &[
         opt("volume", Number, "0-4 (1 = unchanged)."),
         opt("fadeIn", Number, "Fade-in length in seconds."),
         opt("fadeOut", Number, "Fade-out length in seconds."),
-        opt("speed", Number, "0.1-16; the clip gets shorter or longer on the timeline."),
+        opt("speed", Number, "0.1-16; the clip gets shorter or longer on the timeline. The sound keeps its pitch."),
+        opt("reverse", Boolean, "Video and sound clips: play the same part of the media backwards."),
         opt("style", Object, "Text clips: style fields to change (see clip.addText)."),
         opt("color", String, "Solid clips: colour #rrggbb."),
         crate::registry::COALESCE,
     ]),
-    edit("clip.setKeyframes", "Animate one property of a clip: replace its keyframes (times in seconds from the clip's start). Properties: x, y, position ([x, y]), scale, scaleX, scaleY, rotation, opacity, blur (pixels), volume; text clips also fontSize, color, letterSpacing. One undo step.", &[
+    edit("clip.setKeyframes", "Animate one property of a clip: replace its keyframes (times in seconds from the clip's start). Properties: x, y, position ([x, y]), scale, scaleX, scaleY, rotation, opacity, blur (pixels), volume, the effects brightness, contrast, saturation, temperature, tint, vignette, sharpen (see clip.setEffects); text clips also fontSize, color, letterSpacing. One undo step.", &[
         CLIP_ID,
         req("property", String, "The property to animate."),
         KEYFRAMES,
@@ -177,7 +179,7 @@ pub static SPECS: &[Spec] = &[
     ]),
     edit("clip.addKeyframe", "Set one keyframe of a clip property at a timeline time, replacing one already there (what the window's keyframe buttons do).", &[
         CLIP_ID,
-        req("property", String, "x, y, scale, scaleX, scaleY, rotation, opacity, blur, volume, fontSize, color or letterSpacing."),
+        req("property", String, "x, y, scale, scaleX, scaleY, rotation, opacity, blur, volume, brightness, contrast, saturation, temperature, tint, vignette, sharpen, fontSize, color or letterSpacing."),
         opt("time", Number, "Timeline seconds (default: the playhead)."),
         opt("value", Any, "The value (default: what the property is at that time)."),
         opt("easing", String, "How the value arrives here from the previous keyframe (default linear)."),
@@ -192,6 +194,43 @@ pub static SPECS: &[Spec] = &[
         req("clipIds", Array, "Clips to animate (ids or names)."),
         req("preset", String, "Preset name."),
         opt("length", Number, "Seconds the move takes (default 0.6; one cycle for repeating ones)."),
+    ]),
+    edit("clip.setEffects", "Colour and picture effects on clips: a ready-made look, corrections (brightness, contrast, saturation, temperature, tint), vignette, sharpen, a chroma key (green or blue screen) and a .cube LUT. Drawn in the preview and the export. Only the given fields change; animate the numeric ones with clip.setKeyframes. One undo step.", &[
+        req("clipIds", Array, "Clips to change (ids or names)."),
+        opt("look", String, "Start from a look (clip.looks): none, punchy, warm, cool, mono, faded, vintage, noir, teal, dreamy. The other fields given go on top."),
+        opt("brightness", Number, "-1 to 1 (0 = unchanged)."),
+        opt("contrast", Number, "-1 (flat grey) to 1 (twice the contrast)."),
+        opt("saturation", Number, "-1 (black and white) to 1 (twice as colourful)."),
+        opt("temperature", Number, "-1 (cooler, blue) to 1 (warmer, orange)."),
+        opt("tint", Number, "-1 (greener) to 1 (more magenta)."),
+        opt("vignette", Number, "0-1: darker corners."),
+        opt("sharpen", Number, "0-1."),
+        opt("chromaKey", Any, "Key a colour out: true (a green screen), a colour #rrggbb (the screen's colour, best picked from the footage), {color, similarity, softness, spill} (0-1 each; similarity 0.5, softness 0.1, spill 0.5 by default), or false to remove it."),
+        opt("lut", Any, "Absolute path of a 3D .cube LUT, {path, strength}, or null to remove it."),
+        opt("lutStrength", Number, "0-1: how much of the LUT shows (default 1)."),
+        opt("reset", Boolean, "Remove every effect first."),
+        crate::registry::COALESCE,
+    ]),
+    query("clip.looks", "The ready-made looks clip.setEffects applies, with their values.", &[]),
+    edit("clip.freezeFrame", "Hold the frame a clip shows at a time: the clip is split there and a still of that frame plays for the duration, pushing the rest of its track later. The still keeps the clip's position, size and effects. One undo step.", &[
+        CLIP_ID,
+        opt("time", Number, "Timeline time inside the clip (default: the playhead)."),
+        opt("duration", Number, "Seconds to hold the frame (default 2)."),
+    ]),
+    // ---- transition -------------------------------------------------------
+    query("transition.kinds", "The transitions kimchi draws, with what each looks like.", &[]),
+    query("transition.list", "Every transition in the project: the clip it leads into, the clip it leaves (on a cut), kind, length and where it plays.", &[]),
+    edit("transition.set", "Put a transition at the start of clips. On a cut (the clip before ends where this one starts) it is centred on the cut and both clips play on past it with their media beyond the cut (or hold their edge frame), so nothing moves on the timeline; with no clip right before, the clip transitions in over what is below it. The sound crossfades over the same span. Changes the kind or length of transitions already there. One undo step.", &[
+        opt("clipIds", Array, "The incoming clips (ids or names): each gets a transition at its start."),
+        opt("trackId", String, "Instead of clipIds: every cut on this track."),
+        opt("kind", String, "dissolve (default), dipToBlack, dipToWhite, wipeLeft, wipeRight, wipeUp, wipeDown, slideLeft, slideRight, slideUp, slideDown, pushLeft, pushRight, pushUp, pushDown, zoom, iris or blur."),
+        opt("duration", Number, "Seconds (default 0.8). On a cut it can't be longer than the shorter clip; otherwise than half the clip."),
+        opt("easing", String, "How the progress moves (default easeInOutSine; any keyframe easing)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("transition.remove", "Remove the transitions at the start of clips (or every one on a track). One undo step.", &[
+        opt("clipIds", Array, "Clips whose transition goes (ids or names)."),
+        opt("trackId", String, "Instead of clipIds: every transition on this track."),
     ]),
     // ---- motion -----------------------------------------------------------
     query("motion.guide", "How to make motion graphics and 3D with kimchi: the scene formats (2D layers, 3D objects, camera, lights), every property, keyframes and easings, text reveals, masks, effects, templates and presets, with examples. Read it before writing a scene.", &[
@@ -412,6 +451,7 @@ pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "track" => track::run(s, cx, a).await,
         "motion" => motion::run(s, cx, a).await,
         "clip" => clip::run(s, cx, a).await,
+        "transition" => transition::run(s, cx, a).await,
         "timeline" => timeline::run(s, cx, a).await,
         "history" => history::run(s, cx, a).await,
         "generate" => generate::run(s, cx, a).await,

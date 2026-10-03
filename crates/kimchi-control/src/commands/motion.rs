@@ -468,6 +468,7 @@ pub fn current_value(clip: &Clip, property: &str, t: f64) -> CmdResult<kimchi_co
         "fontSize" => KeyValue::Number(style.ok_or("fontSize is for text clips")?.font_size),
         "letterSpacing" => KeyValue::Number(style.ok_or("letterSpacing is for text clips")?.letter_spacing),
         "color" => KeyValue::Text(style.ok_or("color is for text clips")?.color),
+        fx if kimchi_core::effects::EFFECT_PROPS.contains(&fx) => KeyValue::Number(clip.effects_at(t).get(fx).unwrap_or(0.0)),
         other => return Err(format!("Clips can't animate `{other}`. Clip properties: {}.", kimchi_core::CLIP_PROPS.join(", "))),
     })
 }

@@ -5,8 +5,9 @@
 //! [`export`] runs that plan, feeding it frames, reports progress and handles cancellation.
 //!
 //! Graph shape: input 0 is the rendered picture (`[0:v]`), converted to the encoder's format
-//! with BT.709 colours. Audible clips are tempo-adjusted, faded (and their volume keyframes
-//! applied), delayed to their start and mixed with `amix`.
+//! with BT.709 colours. Audible clips are reversed if they play backwards, tempo-adjusted, faded
+//! (and their volume keyframes applied), delayed to their start and mixed with `amix`. Clips on
+//! both sides of a transition crossfade over it ([`with_crossfades`]).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -420,8 +421,8 @@ fn compile_with_hardware(project: &Project, settings: &ExportSettings, caps: &Ca
     if format != ExportFormat::Gif {
         let mut mixed = vec![];
         for track in project.tracks.iter().filter(|t| !t.muted) {
-            for clip in sorted(&track.clips) {
-                mixed.extend(g.audible(clip));
+            for clip in with_crossfades(project, track) {
+                mixed.extend(g.audible(&clip));
             }
         }
         let sr = g.sample_rate;
@@ -452,8 +453,36 @@ fn compile_with_hardware(project: &Project, settings: &ExportSettings, caps: &Ca
     Ok((Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources, encoder: codecs.encoder, hardware: codecs.hardware && picture, video }, 0))
 }
 
-fn sorted(clips: &[Clip]) -> Vec<&Clip> {
-    let mut clips: Vec<&Clip> = clips.iter().collect();
+/// A track's clips as their sound plays: around each transition on a cut the outgoing clip
+/// plays on and the incoming one starts early (as far as their media allow), fading out and in
+/// over the transition; a transition with no clip before it fades the sound in.
+fn with_crossfades(project: &Project, track: &kimchi_core::Track) -> Vec<Clip> {
+    let mut clips = track.clips.clone();
+    let source_len = |c: &Clip| c.asset_id().and_then(|id| project.asset(id)).and_then(|a| a.duration()).unwrap_or(0.0);
+    for span in kimchi_core::transition::spans(track) {
+        let (len, half) = (span.duration(), span.duration() / 2.0);
+        let Some(from) = span.from else {
+            let to = &mut clips[span.to];
+            to.fade_in = to.fade_in.max(len);
+            continue;
+        };
+        let after = clips[from].room(source_len(&clips[from])).1.min(half);
+        let a = &mut clips[from];
+        a.duration += after;
+        if a.reverse {
+            a.in_point -= after * a.speed;
+        }
+        a.fade_out = after + half;
+        let before = clips[span.to].room(source_len(&clips[span.to])).0.min(half);
+        let b = &mut clips[span.to];
+        b.start -= before;
+        b.duration += before;
+        if !b.reverse {
+            b.in_point -= before * b.speed;
+        }
+        kimchi_core::anim::shift(&mut b.keyframes, before);
+        b.fade_in = before + half;
+    }
     clips.sort_by(|a, b| a.start.total_cmp(&b.start));
     clips
 }
@@ -556,7 +585,10 @@ impl Graph<'_> {
         if let Some(&i) = self.input_of.get(&clip.id) {
             return i;
         }
-        let seek = clip.in_point.max(0.0) + w.decode_from * clip.speed;
+        // A reversed clip shows its source backwards: the decoded window is read forwards from
+        // the matching source time, then reversed.
+        let from = if clip.reverse { clip.duration - w.decoded() - w.decode_from } else { w.decode_from };
+        let seek = clip.in_point.max(0.0) + from.max(0.0) * clip.speed;
         let mut opts = vec![];
         if seek > 1e-6 {
             opts.extend([s("-ss"), num(seek)]);
@@ -585,6 +617,9 @@ impl Graph<'_> {
         let i = self.media_input(clip, &asset.path, &w);
         let sr = self.sample_rate;
         let mut f = vec![format!("[{i}:a:0]aformat=sample_fmts=fltp:sample_rates={sr}:channel_layouts=stereo")];
+        if clip.reverse {
+            f.push(s("areverse"));
+        }
         f.extend(atempo(clip.speed).into_iter().map(|t| format!("atempo={}", num(t))));
         // Timestamps from the sample count: robust after atempo and with odd source timestamps.
         f.push(format!("asetpts=N/{sr}/TB"));

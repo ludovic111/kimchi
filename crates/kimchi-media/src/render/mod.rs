@@ -13,10 +13,16 @@
 //! visible video is decoded at that time, in parallel. Pictures are kept between frames, so a
 //! still image or a title that doesn't move is decoded or drawn once.
 //!
+//! Each clip's effects ([`grade`]) are applied to its picture (media) or its layer (titles,
+//! solids, scenes). A transition ([`kimchi_core::transition`]) draws the outgoing and incoming
+//! clips into layers of their own and mixes them ([`mix`]).
+//!
 //! Timing matches the old ffmpeg graph: a clip shows from half a frame before its start to half a
 //! frame before its end, and fades are linear in opacity.
 
 pub(crate) mod flat;
+pub mod grade;
+pub(crate) mod mix;
 pub(crate) mod paint;
 pub(crate) mod source;
 pub mod space;
@@ -25,7 +31,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use kimchi_core::{Clip, ClipContent, Fit, Id, MediaKind, Placement, Project, Scene, TrackKind};
+use kimchi_core::transition::{self, TransitionKind};
+use kimchi_core::{Clip, ClipContent, Effects, Fit, Id, MediaKind, Placement, Project, Scene, TrackKind};
 use tiny_skia::{FillRule, Pixmap, PixmapPaint, Transform};
 
 use self::source::VideoStream;
@@ -51,6 +58,26 @@ pub struct Renderer {
     streams: HashMap<StreamKey, VideoStream>,
     /// Frames grabbed for the still being drawn (scrubbing).
     grabbed: HashMap<StreamKey, Arc<Pixmap>>,
+    /// Clips shown before their start by a transition: how early, in clip seconds (negative).
+    early: HashMap<Id, f64>,
+    /// Each still picture's graded copy, by clip, with what it was made from.
+    graded: HashMap<Id, (usize, String, Arc<Pixmap>)>,
+}
+
+/// What one track shows at an instant.
+enum Layer {
+    Clip(Clip),
+    /// A transition: the clip ending at the cut (if any), the incoming clip, the eased progress.
+    Mix { from: Option<Clip>, to: Clip, kind: TransitionKind, p: f64 },
+}
+
+impl Layer {
+    fn clips(&self) -> Vec<&Clip> {
+        match self {
+            Layer::Clip(c) => vec![c],
+            Layer::Mix { from, to, .. } => from.iter().chain([to]).collect(),
+        }
+    }
 }
 
 /// Decoded pictures by file and size.
@@ -95,6 +122,12 @@ impl Renderer {
     fn with_project(tools: &Tools, project: Project, width: u32, height: u32, fps: f64, strict: bool) -> Self {
         let (width, height) = (even(width), even(height));
         let ps = &project.settings;
+        let early = project
+            .tracks
+            .iter()
+            .flat_map(|t| transition::spans(t).into_iter().map(move |s| (t.clips[s.to].id, s.start - t.clips[s.to].start)))
+            .filter(|(_, e)| *e < 0.0)
+            .collect();
         Self {
             tools: tools.clone(),
             sx: width as f32 / ps.width.max(1) as f32,
@@ -107,6 +140,8 @@ impl Renderer {
             decode_caps: None,
             streams: HashMap::new(),
             grabbed: HashMap::new(),
+            early,
+            graded: HashMap::new(),
         }
     }
 
@@ -134,7 +169,10 @@ impl Renderer {
             .into_iter()
             .chain(self.visible_clips(t + PREFETCH / 2.0))
             .filter(|c| c.start > t)
-            .map(|c| (c, 0.0))
+            .map(|c| {
+                let local = self.early.get(&c.id).copied().unwrap_or(0.0);
+                (c, local)
+            })
             .collect();
         for (clip, local) in soon {
             let key = StreamKey(clip.id, None);
@@ -154,30 +192,44 @@ impl Renderer {
         canvas
     }
 
-    /// Picture clips on screen at `t`, bottom first.
-    fn visible_clips(&self, t: f64) -> Vec<Clip> {
+    /// What each visible track shows at `t`, bottom first.
+    fn layers(&self, t: f64) -> Vec<Layer> {
         let half = 0.5 / self.fps;
+        let shows = |a: f64, b: f64| t >= a - half - 1e-9 && t < b - half - 1e-9;
         let mut out = vec![];
         for track in self.project.tracks.iter().rev().filter(|tr| tr.kind == TrackKind::Video && !tr.hidden) {
-            for c in &track.clips {
-                if t >= c.start - half - 1e-9 && t < c.end() - half - 1e-9 {
-                    out.push(c.clone());
-                }
+            // At most one transition plays on a track at a time (see transition::effective_length).
+            if let Some(s) = transition::spans(track).into_iter().find(|s| shows(s.start, s.end)) {
+                let to = &track.clips[s.to];
+                let tr = to.transition.as_ref().expect("a span has a transition");
+                out.push(Layer::Mix { from: s.from.map(|i| track.clips[i].clone()), to: to.clone(), kind: tr.kind, p: s.progress(t, tr) });
+                continue;
             }
+            out.extend(track.clips.iter().filter(|c| shows(c.start, c.end())).map(|c| Layer::Clip(c.clone())));
         }
         out
+    }
+
+    /// Picture clips on screen at `t`, bottom first (both sides of a transition).
+    fn visible_clips(&self, t: f64) -> Vec<Clip> {
+        self.layers(t).iter().flat_map(|l| l.clips().into_iter().cloned()).collect()
     }
 
     fn compose(&mut self, t: f64, streaming: bool) -> MediaResult<Pixmap> {
         let mut canvas = Pixmap::new(self.width, self.height).expect("non-empty canvas");
         canvas.fill(paint::color(&self.project.settings.background));
         let mut used = HashSet::new();
-        for clip in self.visible_clips(t) {
-            if let Err(e) = self.draw_clip(&mut canvas, &clip, t, streaming, &mut used) {
+        for layer in self.layers(t) {
+            let drawn = match &layer {
+                Layer::Clip(clip) => self.draw_clip(&mut canvas, clip, t, streaming, &mut used),
+                Layer::Mix { from, to, kind, p } => self.draw_mix(&mut canvas, from.as_ref(), to, *kind, *p as f32, t, streaming, &mut used),
+            };
+            if let Err(e) = drawn {
                 if self.strict {
                     return Err(e);
                 }
-                tracing::warn!(clip = %clip.name, "skipped in this frame: {e}");
+                let names: Vec<&str> = layer.clips().iter().map(|c| c.name.as_str()).collect();
+                tracing::warn!(clip = %names.join(" → "), "skipped in this frame: {e}");
             }
         }
         if streaming {
@@ -186,9 +238,26 @@ impl Renderer {
         Ok(canvas)
     }
 
+    /// Draws both sides of a transition into layers of their own and mixes them onto `canvas`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_mix(&mut self, canvas: &mut Pixmap, from: Option<&Clip>, to: &Clip, kind: TransitionKind, p: f32, t: f64, streaming: bool, used: &mut HashSet<StreamKey>) -> MediaResult<()> {
+        let (w, h) = (self.width, self.height);
+        let blank = || Pixmap::new(w, h).expect("non-empty");
+        let mut a = blank();
+        if let Some(from) = from {
+            self.draw_clip(&mut a, from, t, streaming, used)?;
+        }
+        let mut b = blank();
+        self.draw_clip(&mut b, to, t, streaming, used)?;
+        mix::draw(canvas, &a, &b, kind, p, self.sx);
+        Ok(())
+    }
+
     fn draw_clip(&mut self, canvas: &mut Pixmap, clip: &Clip, t: f64, streaming: bool, used: &mut HashSet<StreamKey>) -> MediaResult<()> {
         let pl = clip.placement_at(t);
-        let alpha = (pl.opacity * fade(clip, t)) as f32;
+        // A transition shows clips past their edges: they keep their first or last state.
+        let alpha = (pl.opacity * fade(clip, t.clamp(clip.start, clip.end()))) as f32;
+        let fx = clip.effects_at(t);
         if alpha <= 0.0 || pl.scale_x <= 0.0 || pl.scale_y <= 0.0 {
             return Ok(());
         }
@@ -202,7 +271,7 @@ impl Renderer {
                 let path = paint::rect(w, h, 0.0).expect("non-empty");
                 let ts = center.pre_scale(pl.scale_x as f32, pl.scale_y as f32);
                 let spec = paint::FillSpec::Solid(paint::color(color));
-                self.layer(canvas, alpha, blur, |own, a| own.fill_path(&path, &spec.paint(a), FillRule::Winding, ts, None));
+                self.layer(canvas, alpha, blur, &fx, |own, a| own.fill_path(&path, &spec.paint(a), FillRule::Winding, ts, None));
                 Ok(())
             }
             ClipContent::Media { asset_id } => {
@@ -226,16 +295,17 @@ impl Renderer {
                     }
                     _ => return Ok(()),
                 };
+                let pic = self.grade(clip, pic, &fx, asset.kind == MediaKind::Image);
                 let (fw, fh) = fitted(clip.transform.fit, asset.meta.width, asset.meta.height, w, h);
                 let ts = center
                     .pre_scale((fw * pl.scale_x as f32) / pic.width() as f32, (fh * pl.scale_y as f32) / pic.height() as f32)
                     .pre_translate(-(pic.width() as f32) / 2.0, -(pic.height() as f32) / 2.0);
-                self.layer(canvas, alpha, blur, |own, a| draw_picture(own, &pic, ts, a));
+                self.layer(canvas, alpha, blur, &Effects::default(), |own, a| draw_picture(own, &pic, ts, a));
                 Ok(())
             }
             ClipContent::Text { .. } => {
                 let pic = self.title(clip, &pl, t);
-                self.layer(canvas, alpha, blur, |own, a| {
+                self.layer(canvas, alpha, blur, &fx, |own, a| {
                     own.draw_pixmap(0, 0, (*pic).as_ref(), &PixmapPaint { opacity: a, ..PixmapPaint::default() }, Transform::identity(), None)
                 });
                 Ok(())
@@ -245,7 +315,7 @@ impl Renderer {
                 let scene = scene.clone();
                 // Scene pixels map to the canvas through the clip's placement, around the canvas centre.
                 let ts = center.pre_scale(pl.scale_x as f32, pl.scale_y as f32).pre_translate(-w / 2.0, -h / 2.0);
-                let plain = ts.is_identity() && alpha >= 1.0 && blur <= 0.0;
+                let plain = ts.is_identity() && alpha >= 1.0 && blur <= 0.0 && !fx.is_active();
                 let mut own = if plain { None } else { Some(Pixmap::new(self.width, self.height).expect("non-empty")) };
                 {
                     let target = own.as_mut().unwrap_or(canvas);
@@ -269,6 +339,7 @@ impl Renderer {
                     if blur > 0.0 {
                         paint::blur(&mut own, blur);
                     }
+                    grade::apply(&mut own, &fx, self.sx);
                     let paint = PixmapPaint { opacity: alpha, quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() };
                     canvas.draw_pixmap(0, 0, own.as_ref(), &paint, ts, None);
                 }
@@ -277,16 +348,41 @@ impl Renderer {
         }
     }
 
-    /// Draws with `f` straight onto the canvas, or onto a layer that is blurred first.
-    fn layer(&self, canvas: &mut Pixmap, alpha: f32, blur: f32, f: impl FnOnce(&mut Pixmap, f32)) {
-        if blur <= 0.0 {
+    /// Draws with `f` straight onto the canvas, or onto a layer that is blurred and graded first.
+    fn layer(&self, canvas: &mut Pixmap, alpha: f32, blur: f32, fx: &Effects, f: impl FnOnce(&mut Pixmap, f32)) {
+        if blur <= 0.0 && !fx.is_active() {
             f(canvas, alpha);
             return;
         }
         let mut own = Pixmap::new(self.width, self.height).expect("non-empty");
         f(&mut own, 1.0);
         paint::blur(&mut own, blur);
+        grade::apply(&mut own, fx, self.sx);
         canvas.draw_pixmap(0, 0, own.as_ref(), &PixmapPaint { opacity: alpha, ..PixmapPaint::default() }, Transform::identity(), None);
+    }
+
+    /// A media picture with the clip's effects. Stills keep their graded copy while neither the
+    /// picture nor the effects change.
+    fn grade(&mut self, clip: &Clip, pic: Arc<Pixmap>, fx: &Effects, still: bool) -> Arc<Pixmap> {
+        if !fx.is_active() {
+            return pic;
+        }
+        let made_from = Arc::as_ptr(&pic) as usize;
+        let key = serde_json::to_string(fx).unwrap_or_default();
+        if still
+            && let Some((from, k, p)) = self.graded.get(&clip.id)
+            && *from == made_from
+            && *k == key
+        {
+            return p.clone();
+        }
+        let mut out = (*pic).clone();
+        grade::apply(&mut out, fx, self.sx);
+        let out = Arc::new(out);
+        if still {
+            self.graded.insert(clip.id, (made_from, key, out.clone()));
+        }
+        out
     }
 
     /// A title's picture (canvas-sized), redrawn only when what it shows changed.
@@ -354,10 +450,19 @@ impl Renderer {
             return Ok(());
         }
         let (dw, dh) = self.decode_size(clip, asset.meta.width, asset.meta.height);
-        let local = local.max(0.0);
-        let decode = self.decode_caps.as_ref().filter(|_| self.streams.len() < crate::accel::MAX_HW_DECODERS)
-            .map(|caps| crate::accel::decode_args(caps, &asset.meta)).unwrap_or_default();
-        let s = VideoStream::start_with_decode(&self.tools, Path::new(&asset.path), clip.source_time(clip.start + local), clip.speed, self.fps, dw, dh, local, decode)?;
+        // Before the media's first frame (a transition showing the clip early) the stream starts
+        // at that frame, which is held until then.
+        let before = asset.duration().map_or(0.0, |len| clip.room(len).0);
+        let local = local.max(-before);
+        let src = clip.source_time(clip.start + local).max(0.0);
+        let path = Path::new(&asset.path);
+        let s = if clip.reverse {
+            VideoStream::start_reversed(&self.tools, path, src, clip.speed, self.fps, dw, dh, local)?
+        } else {
+            let decode = self.decode_caps.as_ref().filter(|_| self.streams.len() < crate::accel::MAX_HW_DECODERS)
+                .map(|caps| crate::accel::decode_args(caps, &asset.meta)).unwrap_or_default();
+            VideoStream::start_with_decode(&self.tools, path, src, clip.speed, self.fps, dw, dh, local, decode)?
+        };
         self.streams.insert(key, s);
         Ok(())
     }
@@ -378,7 +483,8 @@ impl Renderer {
                 continue;
             }
             let (dw, dh) = self.decode_size(&clip, asset.meta.width, asset.meta.height);
-            jobs.push((StreamKey(clip.id, None), PathBuf::from(&asset.path), clip.source_time(t), dw, dh));
+            let len = asset.duration().unwrap_or(f64::INFINITY);
+            jobs.push((StreamKey(clip.id, None), PathBuf::from(&asset.path), clip.source_time(t).clamp(0.0, len), dw, dh));
         }
         let tools = &self.tools;
         let results: Vec<(StreamKey, MediaResult<Pixmap>)> = std::thread::scope(|scope| {

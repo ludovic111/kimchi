@@ -505,3 +505,60 @@ async fn retries_failed_hardware_decoding_without_driver_libraries() {
     assert!(frame.pixels().iter().any(|px| px.red() > 40));
     assert!(std::fs::read_to_string(attempts).unwrap().lines().count() >= 2, "filmstrip and compositor must try hardware then recover");
 }
+
+/// A 2 s video that gets brighter (grey 0 → 200) and a 2 s tone, 64×64 at 10 fps.
+fn ramp(tools: &Tools, root: &Path) -> PathBuf {
+    let out = root.join("ramp.mp4");
+    ff(
+        tools,
+        &[
+            "-f", "lavfi", "-i", "color=c=black:s=64x64:r=10:d=2,format=yuv444p,geq=lum='16+T*100':cb=128:cr=128",
+            "-f", "lavfi", "-i", "sine=f=440:d=2",
+            "-pix_fmt", "yuv420p", "-shortest", out.to_str().unwrap(),
+        ],
+    );
+    out
+}
+
+fn grey(p: &kimchi_media::tiny_skia::Pixmap) -> u8 {
+    p.pixel(32, 32).unwrap().green()
+}
+
+#[tokio::test]
+async fn reversed_clips_and_transitions_render_and_export() {
+    use kimchi_core::{Transition, TransitionKind};
+    use kimchi_media::render::Renderer;
+    let Some(tools) = tools() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let path = ramp(&tools, dir.path());
+    let a = asset(MediaKind::Video, &path, probe(&tools, &path).await.unwrap().meta);
+    let mut p = Project::new("rev", ProjectSettings { width: 64, height: 64, fps: 10.0, ..Default::default() });
+    let backwards = Clip { reverse: true, ..Clip::new("ramp", 0.0, 2.0, ClipContent::Media { asset_id: a.id }) };
+    p.tracks = vec![Track { clips: vec![backwards], ..Track::new(TrackKind::Video, "Video") }];
+    p.assets = vec![a.clone()];
+
+    // Played in order (playback, export) and scrubbed: bright first, dark at the end.
+    let mut r = Renderer::new(&tools, &p, 64, 64, 10.0);
+    let played: Vec<u8> = (0..20).map(|n| grey(&r.frame(n as f64 / 10.0).unwrap())).collect();
+    assert!(played[0] > 180 && played[19] < 50, "{played:?}");
+    assert!(played.windows(2).all(|w| w[1] <= w[0].saturating_add(3)), "never brighter: {played:?}");
+    assert!(grey(&Renderer::new(&tools, &p, 64, 64, 10.0).still(1.5).unwrap()) < 90);
+
+    let st = ExportSettings { path: dir.path().join("rev.mp4").to_string_lossy().into(), format: ExportFormat::Mp4, quality: Quality::Draft, width: None, height: None, fps: None, range: None, encoder: Default::default() };
+    export(&tools, &p, &st, |_| {}, CancellationToken::new()).await.unwrap();
+    let out = Path::new(&st.path);
+    assert!(pixel(&tools, out, 0.1, 32, 32)[1] > 160 && pixel(&tools, out, 1.85, 32, 32)[1] < 60);
+    assert!(shape(&tools, out).await.3, "the reversed sound is there");
+
+    // A dip to black on a cut: the first clip plays on past its end, black at the cut.
+    let mut cut = p.clone();
+    let first = Clip::new("first", 0.0, 1.0, ClipContent::Media { asset_id: a.id });
+    let mut second = Clip::new("second", 1.0, 1.0, ClipContent::Solid { color: "#ffffff".into() });
+    second.transition = Some(Transition::new(TransitionKind::DipToBlack, 0.8));
+    cut.tracks[0].clips = vec![first, second];
+    let mut r = Renderer::new(&tools, &cut, 64, 64, 10.0);
+    let played: Vec<u8> = (0..20).map(|n| grey(&r.frame(n as f64 / 10.0).unwrap())).collect();
+    assert!(played[10] < 10, "black at the cut: {played:?}");
+    assert!(played[9] < played[8] && played[8] < played[7], "the first clip dips from 0.6 s: {played:?}");
+    assert!(played[11] > 50 && played[14] > 250, "then the white clip comes in by 1.4 s: {played:?}");
+}

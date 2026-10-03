@@ -54,6 +54,8 @@ pub struct ClipPatch {
     pub fade_in: Option<f64>,
     pub fade_out: Option<f64>,
     pub speed: Option<f64>,
+    #[serde(default)]
+    pub reverse: Option<bool>,
     pub text: Option<TextStyle>,
     pub color: Option<String>,
     /// Replaces every keyframe of the clip.
@@ -64,6 +66,11 @@ pub struct ClipPatch {
     pub scene: Option<crate::motion::Scene>,
     #[serde(default)]
     pub template: Option<Option<crate::motion::TemplateRef>>,
+    #[serde(default)]
+    pub effects: Option<crate::effects::Effects>,
+    /// `Some(None)` removes the transition.
+    #[serde(default)]
+    pub transition: Option<Option<crate::transition::Transition>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -402,26 +409,30 @@ impl Project {
         let prev_end = if ci > 0 { track.clips[ci - 1].end() } else { 0.0 };
         let next_start = track.clips.get(ci + 1).map(|c| c.start).unwrap_or(f64::INFINITY);
         let c = &mut track.clips[ci];
+        // Source seconds the edges can be dragged out by (unbounded for stills, titles…).
+        let (before, after) = source_len.map_or((f64::INFINITY, f64::INFINITY), |len| c.room(len));
+        let (forward, speed) = (!c.reverse, c.speed);
         match edge {
             Edge::Start => {
-                let mut lo = prev_end;
-                if source_len.is_some() {
-                    lo = lo.max(c.start - c.in_point / c.speed);
-                }
+                let lo = prev_end.max(c.start - before);
                 let new_start = time.clamp(lo, c.end() - MIN_CLIP);
                 let delta = new_start - c.start;
-                c.in_point = (c.in_point + delta * c.speed).max(0.0);
+                // Forward clips lose (or gain) source at the head; reversed ones at the tail.
+                if forward {
+                    c.in_point = (c.in_point + delta * speed).max(0.0);
+                }
                 c.start = new_start;
                 c.duration -= delta;
                 // Keyframes stay where they were on the timeline.
                 crate::anim::shift(&mut c.keyframes, -delta);
             }
             Edge::End => {
-                let mut hi = next_start;
-                if let Some(len) = source_len {
-                    hi = hi.min(c.start + (len - c.in_point) / c.speed);
-                }
+                let hi = next_start.min(c.end() + after);
                 let new_end = time.clamp(c.start + MIN_CLIP, hi.max(c.start + MIN_CLIP));
+                let delta = new_end - c.end();
+                if !forward {
+                    c.in_point = (c.in_point - delta * speed).max(0.0);
+                }
                 c.duration = new_end - c.start;
             }
         }
@@ -441,7 +452,7 @@ impl Project {
         }
         let right = split_right(c, time);
         let left = &mut self.tracks[ti].clips[ci];
-        left.duration = time - left.start;
+        *left = left_part(left, time);
         left.fade_out = 0.0;
         clamp_fades(left);
         let id = right.id;
@@ -510,6 +521,22 @@ impl Project {
                 c.duration = c.duration.min((len - c.in_point) / speed);
             }
         }
+        if let Some(reverse) = p.reverse {
+            if reverse && source_len.is_none() {
+                return Err(EditError::Invalid("only video and sound clips can play backwards".into()));
+            }
+            // Same source range, played the other way.
+            c.reverse = reverse;
+        }
+        if let Some(effects) = &p.effects {
+            c.effects = effects.clone().clamped();
+        }
+        if let Some(tr) = &p.transition {
+            c.transition = tr.clone().map(|mut tr| {
+                tr.duration = tr.duration.clamp(MIN_CLIP, 30.0);
+                tr
+            });
+        }
         if let Some(style) = &p.text {
             match &mut c.content {
                 ClipContent::Text { style: s } => *s = style.clone(),
@@ -551,16 +578,24 @@ fn clamp_fades(c: &mut Clip) {
     c.fade_out = c.fade_out.clamp(0.0, c.duration - c.fade_in);
 }
 
+/// The part of `c` after `time`, as a new clip (no fade in, no transition: it starts on a cut
+/// inside the old clip).
 fn split_right(c: &Clip, time: f64) -> Clip {
-    let mut right = c.clone();
+    let mut right = c.cut(time, c.end());
     right.id = new_id();
-    right.start = time;
-    right.duration = c.end() - time;
-    right.in_point = c.source_time(time);
-    crate::anim::shift(&mut right.keyframes, -(time - c.start));
     right.fade_in = 0.0;
+    right.transition = None;
     clamp_fades(&mut right);
     right
+}
+
+/// The part of `c` before `time` (same id).
+fn left_part(c: &Clip, time: f64) -> Clip {
+    let mut left = c.cut(c.start, time);
+    // Keyframes are relative to the start, which hasn't moved.
+    left.keyframes = c.keyframes.clone();
+    clamp_fades(&mut left);
+    left
 }
 
 /// Inserts `clip` into `track`, overwriting whatever was underneath it.
@@ -574,17 +609,10 @@ pub fn place(track: &mut Track, clip: Clip, assets: &[Asset]) {
         } else if c.start >= s - 1e-9 && c.end() <= e + 1e-9 {
             // Fully covered: gone.
         } else if c.start < s && c.end() > e {
-            let right = split_right(&c, e);
-            let mut left = c;
-            left.duration = s - left.start;
-            clamp_fades(&mut left);
-            keep.push(left);
-            keep.push(right);
+            keep.push(left_part(&c, s));
+            keep.push(split_right(&c, e));
         } else if c.start < s {
-            let mut left = c;
-            left.duration = s - left.start;
-            clamp_fades(&mut left);
-            keep.push(left);
+            keep.push(left_part(&c, s));
         } else {
             keep.push(split_right(&c, e));
         }

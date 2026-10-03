@@ -233,6 +233,9 @@ fn overview(s: &Arc<Session>) -> CmdResult {
                     if let ClipContent::Pending { prompt, .. } = &c.content {
                         problems.push(format!("Clip \"{}\" is still generating (\"{prompt}\").", c.name));
                     }
+                    if let Some(lut) = c.effects.lut.as_ref().filter(|l| !std::path::Path::new(&l.path).is_file()) {
+                        problems.push(format!("Clip \"{}\" uses a LUT that is missing ({}): it is drawn without it.", c.name, lut.path));
+                    }
                     clip_summary(&p, c)
                 }).collect::<Vec<_>>(),
             })
@@ -320,6 +323,15 @@ pub fn clip_summary(p: &Project, c: &kimchi_core::Clip) -> Value {
     }
     if c.speed != 1.0 {
         v["speed"] = json!(c.speed);
+    }
+    if c.reverse {
+        v["reverse"] = json!(true);
+    }
+    if !c.effects.is_default() {
+        v["effects"] = json!(c.effects);
+    }
+    if let Some(tr) = &c.transition {
+        v["transition"] = json!({ "kind": tr.kind, "duration": round(tr.duration) });
     }
     if c.volume != 1.0 {
         v["volume"] = json!(c.volume);

@@ -318,7 +318,7 @@ Paste copies of clips: the earliest copy starts at time and the others keep thei
 
 ### `clip.update`
 
-Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, speed, text style or solid colour. Only the given fields change. One undo step. _(changes things)_
+Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, speed, reverse, text style or solid colour. Only the given fields change. One undo step. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -333,14 +333,15 @@ Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, spe
 | `volume` | number |  | 0-4 (1 = unchanged). |
 | `fadeIn` | number |  | Fade-in length in seconds. |
 | `fadeOut` | number |  | Fade-out length in seconds. |
-| `speed` | number |  | 0.1-16; the clip gets shorter or longer on the timeline. |
+| `speed` | number |  | 0.1-16; the clip gets shorter or longer on the timeline. The sound keeps its pitch. |
+| `reverse` | boolean |  | Video and sound clips: play the same part of the media backwards. |
 | `style` | object |  | Text clips: style fields to change (see clip.addText). |
 | `color` | string |  | Solid clips: colour #rrggbb. |
 | `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
 
 ### `clip.setKeyframes`
 
-Animate one property of a clip: replace its keyframes (times in seconds from the clip's start). Properties: x, y, position ([x, y]), scale, scaleX, scaleY, rotation, opacity, blur (pixels), volume; text clips also fontSize, color, letterSpacing. One undo step. _(changes things)_
+Animate one property of a clip: replace its keyframes (times in seconds from the clip's start). Properties: x, y, position ([x, y]), scale, scaleX, scaleY, rotation, opacity, blur (pixels), volume, the effects brightness, contrast, saturation, temperature, tint, vignette, sharpen (see clip.setEffects); text clips also fontSize, color, letterSpacing. One undo step. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -356,7 +357,7 @@ Set one keyframe of a clip property at a timeline time, replacing one already th
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
-| `property` | string | required | x, y, scale, scaleX, scaleY, rotation, opacity, blur, volume, fontSize, color or letterSpacing. |
+| `property` | string | required | x, y, scale, scaleX, scaleY, rotation, opacity, blur, volume, brightness, contrast, saturation, temperature, tint, vignette, sharpen, fontSize, color or letterSpacing. |
 | `time` | number |  | Timeline seconds (default: the playhead). |
 | `value` | any |  | The value (default: what the property is at that time). |
 | `easing` | string |  | How the value arrives here from the previous keyframe (default linear). |
@@ -381,6 +382,73 @@ Give clips a ready-made animation written as ordinary keyframes: entrances (fade
 | `clipIds` | array | required | Clips to animate (ids or names). |
 | `preset` | string | required | Preset name. |
 | `length` | number |  | Seconds the move takes (default 0.6; one cycle for repeating ones). |
+
+### `clip.setEffects`
+
+Colour and picture effects on clips: a ready-made look, corrections (brightness, contrast, saturation, temperature, tint), vignette, sharpen, a chroma key (green or blue screen) and a .cube LUT. Drawn in the preview and the export. Only the given fields change; animate the numeric ones with clip.setKeyframes. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array | required | Clips to change (ids or names). |
+| `look` | string |  | Start from a look (clip.looks): none, punchy, warm, cool, mono, faded, vintage, noir, teal, dreamy. The other fields given go on top. |
+| `brightness` | number |  | -1 to 1 (0 = unchanged). |
+| `contrast` | number |  | -1 (flat grey) to 1 (twice the contrast). |
+| `saturation` | number |  | -1 (black and white) to 1 (twice as colourful). |
+| `temperature` | number |  | -1 (cooler, blue) to 1 (warmer, orange). |
+| `tint` | number |  | -1 (greener) to 1 (more magenta). |
+| `vignette` | number |  | 0-1: darker corners. |
+| `sharpen` | number |  | 0-1. |
+| `chromaKey` | any |  | Key a colour out: true (a green screen), a colour #rrggbb (the screen's colour, best picked from the footage), {color, similarity, softness, spill} (0-1 each; similarity 0.5, softness 0.1, spill 0.5 by default), or false to remove it. |
+| `lut` | any |  | Absolute path of a 3D .cube LUT, {path, strength}, or null to remove it. |
+| `lutStrength` | number |  | 0-1: how much of the LUT shows (default 1). |
+| `reset` | boolean |  | Remove every effect first. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `clip.looks`
+
+The ready-made looks clip.setEffects applies, with their values. _(read only)_
+
+### `clip.freezeFrame`
+
+Hold the frame a clip shows at a time: the clip is split there and a still of that frame plays for the duration, pushing the rest of its track later. The still keeps the clip's position, size and effects. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `time` | number |  | Timeline time inside the clip (default: the playhead). |
+| `duration` | number |  | Seconds to hold the frame (default 2). |
+
+## transition
+
+### `transition.kinds`
+
+The transitions kimchi draws, with what each looks like. _(read only)_
+
+### `transition.list`
+
+Every transition in the project: the clip it leads into, the clip it leaves (on a cut), kind, length and where it plays. _(read only)_
+
+### `transition.set`
+
+Put a transition at the start of clips. On a cut (the clip before ends where this one starts) it is centred on the cut and both clips play on past it with their media beyond the cut (or hold their edge frame), so nothing moves on the timeline; with no clip right before, the clip transitions in over what is below it. The sound crossfades over the same span. Changes the kind or length of transitions already there. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array |  | The incoming clips (ids or names): each gets a transition at its start. |
+| `trackId` | string |  | Instead of clipIds: every cut on this track. |
+| `kind` | string |  | dissolve (default), dipToBlack, dipToWhite, wipeLeft, wipeRight, wipeUp, wipeDown, slideLeft, slideRight, slideUp, slideDown, pushLeft, pushRight, pushUp, pushDown, zoom, iris or blur. |
+| `duration` | number |  | Seconds (default 0.8). On a cut it can't be longer than the shorter clip; otherwise than half the clip. |
+| `easing` | string |  | How the progress moves (default easeInOutSine; any keyframe easing). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `transition.remove`
+
+Remove the transitions at the start of clips (or every one on a track). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array |  | Clips whose transition goes (ids or names). |
+| `trackId` | string |  | Instead of clipIds: every transition on this track. |
 
 ## motion
 
