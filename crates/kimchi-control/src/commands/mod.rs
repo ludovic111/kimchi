@@ -2,15 +2,18 @@
 //! docs, the CLI help and the MCP tools are generated in a stable order.
 
 pub mod app;
+pub mod captions;
 pub mod clip;
 pub mod export;
 pub mod generate;
 pub mod handoff;
 pub mod history;
 pub mod media;
+pub mod motion;
 pub mod project;
 pub mod timeline;
 pub mod track;
+pub mod transition;
 pub mod ui;
 
 use std::sync::Arc;
@@ -25,6 +28,11 @@ const ASSET_ID: crate::registry::Param = req("assetId", String, "Media id or uni
 const PROJECT_ID: crate::registry::Param = req("projectId", String, "Project id or unique name, as listed by project.list.");
 const OPT_TRACK: crate::registry::Param = opt("trackId", String, "Track id or name. Defaults to the first free compatible track (a new one if none is free).");
 const START: crate::registry::Param = opt("start", Number, "Timeline position in seconds. Defaults to the playhead.");
+const KEYFRAMES: crate::registry::Param = req(
+    "keyframes",
+    Array,
+    "[{\"time\": 0, \"value\": 0}, {\"time\": 0.6, \"value\": 1, \"easing\": \"easeOut\"}] or [[0, 0], [0.6, 1, \"easeOut\"]]. A keyframe's easing shapes the move into it: linear (default), hold, ease, easeIn, easeOut, easeInOut, ease<In|Out|InOut><Sine|Quad|Cubic|Quart|Quint|Expo|Circ|Back|Elastic|Bounce>, cubicBezier(x1,y1,x2,y2), spring(bounce 0-1). Empty removes the animation.",
+);
 
 // Generation parameters shared by the AI editing commands.
 const PROVIDER: crate::registry::Param = opt("provider", String, "Provider id (generate.providers). With model, picks the model; defaults to settings.generate.");
@@ -40,6 +48,11 @@ pub static SPECS: &[Spec] = &[
     query("project.list", "List the projects in the library, most recent first, with their length, size and whether one is open.", &[]),
     query("project.overview", "The whole open project in one bounded answer: settings, every track with its clips (times, media, text, transforms that differ from the defaults), media with generation provenance, markers, running jobs, undo history, what the window shows, and problems (missing files, placeholders still generating, hidden or muted tracks). Read it first.", &[]),
     query("project.get", "The complete open project as JSON (the project file format).", &[]),
+    query("project.renderFrame", "Render what the timeline shows at a time (or a labelled contact sheet of several times) to a PNG and return its path, to look at a result: animations, motion graphics, 3D, the whole cut.", &[
+        opt("time", Number, "Timeline seconds (default: the playhead)."),
+        opt("times", Array, "Several times in seconds: one image with a frame per time, labelled (up to 16)."),
+        opt("width", Integer, "Width of each frame in pixels (default 960, or 480 in a sheet)."),
+    ]),
     edit("project.create", "Create a project in the library and open it, replacing the open one.", &[
         opt("name", String, "Project name (default \"Untitled\")."),
         opt("width", Integer, "Canvas width in pixels (default 1920)."),
@@ -86,12 +99,13 @@ pub static SPECS: &[Spec] = &[
         opt("index", Integer, "Position from the top (0 = top)."),
     ]),
     edit("track.remove", "Delete a track and every clip on it. One undo step.", &[TRACK_ID]),
-    edit("track.update", "Rename, mute, hide or lock a track. One undo step.", &[
+    edit("track.update", "Rename, mute, hide or lock a track, or make it the captions track. One undo step.", &[
         TRACK_ID,
         opt("name", String, "New name."),
         opt("muted", Boolean, "Silence the track."),
         opt("hidden", Boolean, "Hide the track's pictures."),
         opt("locked", Boolean, "Protect the track from edits."),
+        opt("captions", Boolean, "Make it the captions track (video tracks): its titles are the captions."),
     ]),
     edit("track.move", "Move a track to another position (0 = top).", &[TRACK_ID, req("index", Integer, "Zero-based target position from the top.")]),
     // ---- clip -------------------------------------------------------------
@@ -135,7 +149,13 @@ pub static SPECS: &[Spec] = &[
         opt("ripple", Boolean, "Close the gap (default false)."),
     ]),
     edit("clip.duplicate", "Copy clips to the end of their track.", &[req("clipIds", Array, "Clips to duplicate (ids or names).")]),
-    edit("clip.update", "Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, speed, text style or solid colour. Only the given fields change. One undo step.", &[
+    edit("clip.paste", "Paste copies of clips: the earliest copy starts at time and the others keep their spacing and tracks. Whatever they land on is overwritten. One undo step.", &[
+        opt("clipIds", Array, "Clips in the project to copy (ids or names)."),
+        opt("clips", Array, "Clip objects as returned by clip.get (with trackId), e.g. clips deleted since (a cut)."),
+        opt("time", Number, "Where the earliest copy starts, in seconds. Defaults to the playhead."),
+        opt("trackId", String, "Put every copy on this track instead of each clip's own."),
+    ]),
+    edit("clip.update", "Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, speed, reverse, text style or solid colour. Only the given fields change. One undo step.", &[
         CLIP_ID,
         opt("name", String, "Clip name."),
         opt("x", Number, "Offset of the centre from the canvas centre, project pixels."),
@@ -147,9 +167,168 @@ pub static SPECS: &[Spec] = &[
         opt("volume", Number, "0-4 (1 = unchanged)."),
         opt("fadeIn", Number, "Fade-in length in seconds."),
         opt("fadeOut", Number, "Fade-out length in seconds."),
-        opt("speed", Number, "0.1-16; the clip gets shorter or longer on the timeline."),
+        opt("speed", Number, "0.1-16; the clip gets shorter or longer on the timeline. The sound keeps its pitch."),
+        opt("reverse", Boolean, "Video and sound clips: play the same part of the media backwards."),
         opt("style", Object, "Text clips: style fields to change (see clip.addText)."),
         opt("color", String, "Solid clips: colour #rrggbb."),
+        crate::registry::COALESCE,
+    ]),
+    edit("clip.setKeyframes", "Animate one property of a clip: replace its keyframes (times in seconds from the clip's start). Properties: x, y, position ([x, y]), scale, scaleX, scaleY, rotation, opacity, blur (pixels), volume, the effects brightness, contrast, saturation, temperature, tint, vignette, sharpen (see clip.setEffects); text clips also fontSize, color, letterSpacing. One undo step.", &[
+        CLIP_ID,
+        req("property", String, "The property to animate."),
+        KEYFRAMES,
+        crate::registry::COALESCE,
+    ]),
+    edit("clip.addKeyframe", "Set one keyframe of a clip property at a timeline time, replacing one already there (what the window's keyframe buttons do).", &[
+        CLIP_ID,
+        req("property", String, "x, y, scale, scaleX, scaleY, rotation, opacity, blur, volume, brightness, contrast, saturation, temperature, tint, vignette, sharpen, fontSize, color or letterSpacing."),
+        opt("time", Number, "Timeline seconds (default: the playhead)."),
+        opt("value", Any, "The value (default: what the property is at that time)."),
+        opt("easing", String, "How the value arrives here from the previous keyframe (default linear)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("clip.removeKeyframe", "Remove a clip's keyframe at a timeline time, or every keyframe of a property (it then keeps its value at that time, or its own).", &[
+        CLIP_ID,
+        req("property", String, "The animated property."),
+        opt("time", Number, "Timeline seconds; omit to remove the property's whole animation."),
+    ]),
+    edit("clip.animate", "Give clips a ready-made animation written as ordinary keyframes: entrances (fadeIn, riseIn, slideInLeft, popIn, zoomIn, spinIn, dropIn, blurIn…), exits (fadeOut, slideOutRight, popOut…) or over the whole clip (kenBurns, panLeft, pulse, float, wiggle, shake, spin). motion.presets lists them all. One undo step.", &[
+        req("clipIds", Array, "Clips to animate (ids or names)."),
+        req("preset", String, "Preset name."),
+        opt("length", Number, "Seconds the move takes (default 0.6; one cycle for repeating ones)."),
+    ]),
+    edit("clip.setEffects", "Colour and picture effects on clips: a ready-made look, corrections (brightness, contrast, saturation, temperature, tint), vignette, sharpen, a chroma key (green or blue screen) and a .cube LUT. Drawn in the preview and the export. Only the given fields change; animate the numeric ones with clip.setKeyframes. One undo step.", &[
+        req("clipIds", Array, "Clips to change (ids or names)."),
+        opt("look", String, "Start from a look (clip.looks): none, punchy, warm, cool, mono, faded, vintage, noir, teal, dreamy. The other fields given go on top."),
+        opt("brightness", Number, "-1 to 1 (0 = unchanged)."),
+        opt("contrast", Number, "-1 (flat grey) to 1 (twice the contrast)."),
+        opt("saturation", Number, "-1 (black and white) to 1 (twice as colourful)."),
+        opt("temperature", Number, "-1 (cooler, blue) to 1 (warmer, orange)."),
+        opt("tint", Number, "-1 (greener) to 1 (more magenta)."),
+        opt("vignette", Number, "0-1: darker corners."),
+        opt("sharpen", Number, "0-1."),
+        opt("chromaKey", Any, "Key a colour out: true (a green screen), a colour #rrggbb (the screen's colour, best picked from the footage), {color, similarity, softness, spill} (0-1 each; similarity 0.5, softness 0.1, spill 0.5 by default), or false to remove it."),
+        opt("lut", Any, "Absolute path of a 3D .cube LUT, {path, strength}, or null to remove it."),
+        opt("lutStrength", Number, "0-1: how much of the LUT shows (default 1)."),
+        opt("reset", Boolean, "Remove every effect first."),
+        crate::registry::COALESCE,
+    ]),
+    query("clip.looks", "The ready-made looks clip.setEffects applies, with their values.", &[]),
+    edit("clip.freezeFrame", "Hold the frame a clip shows at a time: the clip is split there and a still of that frame plays for the duration, pushing the rest of its track later. The still keeps the clip's position, size and effects. One undo step.", &[
+        CLIP_ID,
+        opt("time", Number, "Timeline time inside the clip (default: the playhead)."),
+        opt("duration", Number, "Seconds to hold the frame (default 2)."),
+    ]),
+    // ---- transition -------------------------------------------------------
+    query("transition.kinds", "The transitions kimchi draws, with what each looks like.", &[]),
+    query("transition.list", "Every transition in the project: the clip it leads into, the clip it leaves (on a cut), kind, length and where it plays.", &[]),
+    edit("transition.set", "Put a transition at the start of clips. On a cut (the clip before ends where this one starts) it is centred on the cut and both clips play on past it with their media beyond the cut (or hold their edge frame), so nothing moves on the timeline; with no clip right before, the clip transitions in over what is below it. The sound crossfades over the same span. Changes the kind or length of transitions already there. One undo step.", &[
+        opt("clipIds", Array, "The incoming clips (ids or names): each gets a transition at its start."),
+        opt("trackId", String, "Instead of clipIds: every cut on this track."),
+        opt("kind", String, "dissolve (default), dipToBlack, dipToWhite, wipeLeft, wipeRight, wipeUp, wipeDown, slideLeft, slideRight, slideUp, slideDown, pushLeft, pushRight, pushUp, pushDown, zoom, iris or blur."),
+        opt("duration", Number, "Seconds (default 0.8). On a cut it can't be longer than the shorter clip; otherwise than half the clip."),
+        opt("easing", String, "How the progress moves (default easeInOutSine; any keyframe easing)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("transition.remove", "Remove the transitions at the start of clips (or every one on a track). One undo step.", &[
+        opt("clipIds", Array, "Clips whose transition goes (ids or names)."),
+        opt("trackId", String, "Instead of clipIds: every transition on this track."),
+    ]),
+    // ---- captions ---------------------------------------------------------
+    query("captions.list", "The captions, by time: clip, start, end and words. Captions are titles on the captions track; edit one like any title (clip.update style.content, clip.trim, clip.delete).", &[]),
+    query("captions.models", "The speech models captions.transcribe can use, their download size and whether they are on this computer.", &[]),
+    query("captions.status", "The transcription running now, if any: stage (downloading the model, mixing, listening) and progress.", &[]),
+    edit("captions.transcribe", "Caption the cut by listening to it: the mixed sound (or one clip's) is transcribed by Whisper on this computer, split into readable captions (two lines at most) and put on the captions track as titles (the track is made if needed), replacing the captions in that span. One undo step. The model is downloaded the first time (150 MB to 1 GB); then the base model takes about a tenth of the sound's length.", &[
+        opt("clipId", String, "Only this clip's sound (default: the whole mix)."),
+        opt("from", Number, "Start of the span in seconds (default 0)."),
+        opt("to", Number, "End of the span in seconds (default: the end of the cut)."),
+        opt("language", String, "Language spoken: en, fr, es, de, ja… (default: detected)."),
+        opt("model", String, "tiny, base (default) or small (captions.models)."),
+        opt("maxChars", Integer, "Longest caption line in characters (default 42)."),
+        opt("replace", Boolean, "Remove the captions already in the span (default true)."),
+    ]),
+    edit("captions.cancel", "Stop the running transcription.", &[]),
+    edit("captions.import", "Read an SRT or WebVTT file onto the captions track. One undo step.", &[
+        req("path", String, "The .srt or .vtt file."),
+        opt("offset", Number, "Seconds added to every time (default 0)."),
+        opt("replace", Boolean, "Remove the captions in the file's span first (default false)."),
+    ]).perm(Perm::Files),
+    edit("captions.export", "Write the captions to an SRT or WebVTT file.", &[
+        req("path", String, "Destination .srt or .vtt."),
+        opt("format", String, "srt or vtt (default: from the extension)."),
+    ]).perm(Perm::Files),
+    edit("captions.add", "Add one caption on the captions track, styled like the others.", &[
+        req("text", String, "The words; \\n starts a second line."),
+        START,
+        opt("duration", Number, "Seconds (default 2.5)."),
+    ]),
+    edit("captions.setStyle", "Restyle every caption at once: text style fields (see clip.addText) and/or their height. One undo step.", &[
+        opt("style", Object, "Text style fields to change, e.g. {\"fontSize\": 60, \"background\": null}."),
+        opt("y", Number, "Vertical offset of the captions' centre from the canvas centre, project pixels (positive is down)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("captions.clear", "Remove every caption. One undo step.", &[]),
+    // ---- motion -----------------------------------------------------------
+    query("motion.guide", "How to make motion graphics and 3D with kimchi: the scene formats (2D layers, 3D objects, camera, lights), every property, keyframes and easings, text reveals, masks, effects, templates and presets, with examples. Read it before writing a scene.", &[
+        opt("topic", String, "2d, 3d, keyframes, templates or all (default)."),
+    ]),
+    query("motion.templates", "Motion templates (lower third, title card, kinetic type, counter, bar chart, logo reveal, callout, quote, subscribe, aurora, wipe, 3D title, 3D logo spin, turntable, floating shapes) with the values each takes.", &[]),
+    query("motion.presets", "The ready-made clip animations clip.animate applies.", &[]),
+    edit("motion.add", "Add a motion clip: 2D motion graphics (layers of shapes, paths, text, images) or a 3D scene (camera, lights, objects, extruded text, glTF models), drawn by kimchi in the preview and the export, every property animatable. Look at the result with project.renderFrame.", &[
+        req("scene", Object, "The scene, as described by motion.guide."),
+        START,
+        opt("duration", Number, "Seconds on the timeline (default: the last keyframe + 1 s, at least 3)."),
+        OPT_TRACK,
+        opt("name", String, "Clip name (default: from the scene)."),
+    ]),
+    edit("motion.addTemplate", "Add a motion clip made from a template with your values (see motion.templates). The clip remembers them: motion.setTemplate changes them later.", &[
+        req("template", String, "Template id, e.g. lowerThird."),
+        opt("values", Object, "Template values to change, e.g. {\"title\": \"Grace Hopper\"}."),
+        START,
+        opt("duration", Number, "Seconds (default: the template's)."),
+        OPT_TRACK,
+    ]),
+    query("motion.get", "A motion clip's scene as JSON, or one layer, object or light of it.", &[CLIP_ID, opt("id", String, "A layer, object or light id, or \"camera\".")]),
+    edit("motion.update", "Replace a motion clip's whole scene. One undo step.", &[CLIP_ID, req("scene", Object, "The new scene."), crate::registry::COALESCE]),
+    edit("motion.setLayer", "Add a layer (2D) or an object or light (3D) to a motion clip, or replace the one with the same id. New 2D layers go on top.", &[
+        CLIP_ID,
+        req("layer", Object, "The layer, object or light (with its id)."),
+        opt("parent", String, "Put it inside this group (2D) or object (3D)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.removeLayer", "Remove a layer, object or light from a motion clip.", &[CLIP_ID, req("id", String, "Its id.")]),
+    edit("motion.setKeyframes", "Animate one property of a layer, object, light or the camera inside a motion clip: replace its keyframes (times in scene seconds).", &[
+        CLIP_ID,
+        req("id", String, "A layer, object or light id, \"camera\", or \"scene\" (background, ambient)."),
+        req("property", String, "The property, e.g. x, opacity, trimEnd, reveal, rotation.y, position, fov."),
+        KEYFRAMES,
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.updateLayer", "Change some properties of one layer, object, light, the camera or the scene (\"scene\": background, ambient) of a motion clip. A property that is animated gets a keyframe at that time instead; others change for the whole clip.", &[
+        CLIP_ID,
+        req("id", String, "A layer, object or light id, \"camera\" or \"scene\"."),
+        req("props", Object, "Properties and values, e.g. {\"x\": 120, \"fill\": \"#ff5a36\", \"text\": \"Hi\"} (any field of motion.guide; nested ones like stroke or material merge)."),
+        opt("time", Number, "Timeline seconds, for animated properties (default: the playhead)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.addKeyframe", "Set one keyframe of a layer, object, light or camera property at a timeline time (replacing one already there).", &[
+        CLIP_ID,
+        req("id", String, "A layer, object or light id, \"camera\" or \"scene\"."),
+        req("property", String, "The property, e.g. x, opacity, rotation.y, fov."),
+        opt("time", Number, "Timeline seconds (default: the playhead)."),
+        opt("value", Any, "The value (default: what the property is at that time)."),
+        opt("easing", String, "How the value arrives here from the previous keyframe (default linear)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.removeKeyframe", "Remove a keyframe of a layer, object, light or camera property at a timeline time, or its whole animation (it then keeps its value at the playhead).", &[
+        CLIP_ID,
+        req("id", String, "A layer, object or light id, \"camera\" or \"scene\"."),
+        req("property", String, "The animated property."),
+        opt("time", Number, "Timeline seconds; omit to remove the property's whole animation."),
+    ]),
+    edit("motion.setTemplate", "Re-make a template clip with new values (the others keep theirs). Edits made to its scene by hand are replaced.", &[
+        CLIP_ID,
+        req("values", Object, "Values to change."),
         crate::registry::COALESCE,
     ]),
     // ---- timeline ---------------------------------------------------------
@@ -162,8 +341,8 @@ pub static SPECS: &[Spec] = &[
     edit("timeline.removeMarker", "Remove a marker.", &[req("markerId", String, "Marker id or unique label, as listed by timeline.markers.")]),
     // ---- history ----------------------------------------------------------
     query("history.list", "The undo and redo steps: which command made each one and who (window, agent, cli, mcp).", &[]),
-    edit("history.undo", "Undo the last step, whoever made it.", &[]),
-    edit("history.redo", "Redo the last undone step.", &[]),
+    edit("history.undo", "Undo the last step, whoever made it. Returns the command that made the step.", &[]),
+    edit("history.redo", "Redo the last undone step. Returns the command that made the step.", &[]),
     edit("history.checkpoint", "Remember the project as it is now; history.revertTo puts it back.", &[]),
     edit("history.revertTo", "Put the project back as it was at a checkpoint, as one new undo step (so the revert can be undone too).", &[req("checkpoint", Integer, "Id returned by history.checkpoint.")]),
     // ---- generate ---------------------------------------------------------
@@ -243,8 +422,9 @@ pub static SPECS: &[Spec] = &[
     edit("generate.cancel", "Cancel a running or queued job; its placeholder goes away.", &[req("jobId", String, "Job id from generate.jobs.")]),
     edit("generate.clearFinished", "Remove finished, failed and cancelled jobs from the list.", &[]),
     // ---- export -----------------------------------------------------------
-    query("export.formats", "Export formats and qualities.", &[]),
-    edit("export.start", "Render the open project to a file through one ffmpeg graph (text is drawn the same as in the preview). Returns an export id; follow it with export.status, or pass wait.", &[
+    query("export.formats", "Export formats, qualities and encoder choices.", &[]),
+    query("export.encoders", "The video encoders this computer uses per format: hardware ones (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API, Media Foundation) that passed a test encode, and the CPU ones.", &[]),
+    edit("export.start", "Render the open project to a file: every frame drawn as in the preview (titles, animation, motion graphics, 3D), encoded on the GPU or CPU with the mixed sound. Returns an export id; follow it with export.status, or pass wait.", &[
         req("path", String, "Destination file. The extension should match the format."),
         opt("format", String, "mp4 (default), hevc, prores, webm, gif, audio (AAC) or wav."),
         opt("quality", String, "draft, standard (default) or high."),
@@ -253,6 +433,8 @@ pub static SPECS: &[Spec] = &[
         opt("fps", Number, "Output frame rate (default: the project's)."),
         opt("from", Number, "Start of the range in seconds (default 0)."),
         opt("to", Number, "End of the range in seconds (default: the end)."),
+        opt("encoder", String, "auto (default: the GPU or media engine when there is one, redone on the CPU if it fails), hardware (GPU only; WebM may be AV1) or software (CPU only: slower, smallest files)."),
+        opt("captions", String, "burn (default: in the picture), file (an .srt next to the video instead), both, or none."),
         WAIT,
     ]).perm(Perm::Files),
     query("export.status", "Exports with their progress, or one export.", &[opt("exportId", String, "One export.")]),
@@ -289,7 +471,7 @@ pub static SPECS: &[Spec] = &[
     // ---- ui ---------------------------------------------------------------
     query("ui.state", "What the window shows: home or editor, playhead, playing, selection, zoom, open panel and dialogs, theme.", &[]),
     edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears."), opt("assetId", String, "A media item to select instead.")]).window(),
-    edit("ui.showPanel", "Open a panel or dialog: media, generate, text (left panel), agent, jobs, settings, export, palette; or home.", &[
+    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette; or home.", &[
         req("panel", String, "Panel name."),
         opt("section", String, "For settings: models, agent, appearance, updates or about."),
     ]).window(),
@@ -304,7 +486,10 @@ pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "project" => project::run(s, cx, a).await,
         "media" => media::run(s, cx, a).await,
         "track" => track::run(s, cx, a).await,
+        "motion" => motion::run(s, cx, a).await,
         "clip" => clip::run(s, cx, a).await,
+        "transition" => transition::run(s, cx, a).await,
+        "captions" => captions::run(s, cx, a).await,
         "timeline" => timeline::run(s, cx, a).await,
         "history" => history::run(s, cx, a).await,
         "generate" => generate::run(s, cx, a).await,

@@ -18,6 +18,16 @@ The whole open project in one bounded answer: settings, every track with its cli
 
 The complete open project as JSON (the project file format). _(read only)_
 
+### `project.renderFrame`
+
+Render what the timeline shows at a time (or a labelled contact sheet of several times) to a PNG and return its path, to look at a result: animations, motion graphics, 3D, the whole cut. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `time` | number |  | Timeline seconds (default: the playhead). |
+| `times` | array |  | Several times in seconds: one image with a frame per time, labelled (up to 16). |
+| `width` | integer |  | Width of each frame in pixels (default 960, or 480 in a sheet). |
+
 ### `project.create`
 
 Create a project in the library and open it, replacing the open one. _(changes things · permission: projects)_
@@ -166,7 +176,7 @@ Delete a track and every clip on it. One undo step. _(changes things)_
 
 ### `track.update`
 
-Rename, mute, hide or lock a track. One undo step. _(changes things)_
+Rename, mute, hide or lock a track, or make it the captions track. One undo step. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -175,6 +185,7 @@ Rename, mute, hide or lock a track. One undo step. _(changes things)_
 | `muted` | boolean |  | Silence the track. |
 | `hidden` | boolean |  | Hide the track's pictures. |
 | `locked` | boolean |  | Protect the track from edits. |
+| `captions` | boolean |  | Make it the captions track (video tracks): its titles are the captions. |
 
 ### `track.move`
 
@@ -295,9 +306,20 @@ Copy clips to the end of their track. _(changes things)_
 | --- | --- | --- | --- |
 | `clipIds` | array | required | Clips to duplicate (ids or names). |
 
+### `clip.paste`
+
+Paste copies of clips: the earliest copy starts at time and the others keep their spacing and tracks. Whatever they land on is overwritten. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array |  | Clips in the project to copy (ids or names). |
+| `clips` | array |  | Clip objects as returned by clip.get (with trackId), e.g. clips deleted since (a cut). |
+| `time` | number |  | Where the earliest copy starts, in seconds. Defaults to the playhead. |
+| `trackId` | string |  | Put every copy on this track instead of each clip's own. |
+
 ### `clip.update`
 
-Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, speed, text style or solid colour. Only the given fields change. One undo step. _(changes things)_
+Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, speed, reverse, text style or solid colour. Only the given fields change. One undo step. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -312,9 +334,336 @@ Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, spe
 | `volume` | number |  | 0-4 (1 = unchanged). |
 | `fadeIn` | number |  | Fade-in length in seconds. |
 | `fadeOut` | number |  | Fade-out length in seconds. |
-| `speed` | number |  | 0.1-16; the clip gets shorter or longer on the timeline. |
+| `speed` | number |  | 0.1-16; the clip gets shorter or longer on the timeline. The sound keeps its pitch. |
+| `reverse` | boolean |  | Video and sound clips: play the same part of the media backwards. |
 | `style` | object |  | Text clips: style fields to change (see clip.addText). |
 | `color` | string |  | Solid clips: colour #rrggbb. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `clip.setKeyframes`
+
+Animate one property of a clip: replace its keyframes (times in seconds from the clip's start). Properties: x, y, position ([x, y]), scale, scaleX, scaleY, rotation, opacity, blur (pixels), volume, the effects brightness, contrast, saturation, temperature, tint, vignette, sharpen (see clip.setEffects); text clips also fontSize, color, letterSpacing. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `property` | string | required | The property to animate. |
+| `keyframes` | array | required | [{"time": 0, "value": 0}, {"time": 0.6, "value": 1, "easing": "easeOut"}] or [[0, 0], [0.6, 1, "easeOut"]]. A keyframe's easing shapes the move into it: linear (default), hold, ease, easeIn, easeOut, easeInOut, ease<In\|Out\|InOut><Sine\|Quad\|Cubic\|Quart\|Quint\|Expo\|Circ\|Back\|Elastic\|Bounce>, cubicBezier(x1,y1,x2,y2), spring(bounce 0-1). Empty removes the animation. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `clip.addKeyframe`
+
+Set one keyframe of a clip property at a timeline time, replacing one already there (what the window's keyframe buttons do). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `property` | string | required | x, y, scale, scaleX, scaleY, rotation, opacity, blur, volume, brightness, contrast, saturation, temperature, tint, vignette, sharpen, fontSize, color or letterSpacing. |
+| `time` | number |  | Timeline seconds (default: the playhead). |
+| `value` | any |  | The value (default: what the property is at that time). |
+| `easing` | string |  | How the value arrives here from the previous keyframe (default linear). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `clip.removeKeyframe`
+
+Remove a clip's keyframe at a timeline time, or every keyframe of a property (it then keeps its value at that time, or its own). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `property` | string | required | The animated property. |
+| `time` | number |  | Timeline seconds; omit to remove the property's whole animation. |
+
+### `clip.animate`
+
+Give clips a ready-made animation written as ordinary keyframes: entrances (fadeIn, riseIn, slideInLeft, popIn, zoomIn, spinIn, dropIn, blurIn…), exits (fadeOut, slideOutRight, popOut…) or over the whole clip (kenBurns, panLeft, pulse, float, wiggle, shake, spin). motion.presets lists them all. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array | required | Clips to animate (ids or names). |
+| `preset` | string | required | Preset name. |
+| `length` | number |  | Seconds the move takes (default 0.6; one cycle for repeating ones). |
+
+### `clip.setEffects`
+
+Colour and picture effects on clips: a ready-made look, corrections (brightness, contrast, saturation, temperature, tint), vignette, sharpen, a chroma key (green or blue screen) and a .cube LUT. Drawn in the preview and the export. Only the given fields change; animate the numeric ones with clip.setKeyframes. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array | required | Clips to change (ids or names). |
+| `look` | string |  | Start from a look (clip.looks): none, punchy, warm, cool, mono, faded, vintage, noir, teal, dreamy. The other fields given go on top. |
+| `brightness` | number |  | -1 to 1 (0 = unchanged). |
+| `contrast` | number |  | -1 (flat grey) to 1 (twice the contrast). |
+| `saturation` | number |  | -1 (black and white) to 1 (twice as colourful). |
+| `temperature` | number |  | -1 (cooler, blue) to 1 (warmer, orange). |
+| `tint` | number |  | -1 (greener) to 1 (more magenta). |
+| `vignette` | number |  | 0-1: darker corners. |
+| `sharpen` | number |  | 0-1. |
+| `chromaKey` | any |  | Key a colour out: true (a green screen), a colour #rrggbb (the screen's colour, best picked from the footage), {color, similarity, softness, spill} (0-1 each; similarity 0.5, softness 0.1, spill 0.5 by default), or false to remove it. |
+| `lut` | any |  | Absolute path of a 3D .cube LUT, {path, strength}, or null to remove it. |
+| `lutStrength` | number |  | 0-1: how much of the LUT shows (default 1). |
+| `reset` | boolean |  | Remove every effect first. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `clip.looks`
+
+The ready-made looks clip.setEffects applies, with their values. _(read only)_
+
+### `clip.freezeFrame`
+
+Hold the frame a clip shows at a time: the clip is split there and a still of that frame plays for the duration, pushing the rest of its track later. The still keeps the clip's position, size and effects. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `time` | number |  | Timeline time inside the clip (default: the playhead). |
+| `duration` | number |  | Seconds to hold the frame (default 2). |
+
+## transition
+
+### `transition.kinds`
+
+The transitions kimchi draws, with what each looks like. _(read only)_
+
+### `transition.list`
+
+Every transition in the project: the clip it leads into, the clip it leaves (on a cut), kind, length and where it plays. _(read only)_
+
+### `transition.set`
+
+Put a transition at the start of clips. On a cut (the clip before ends where this one starts) it is centred on the cut and both clips play on past it with their media beyond the cut (or hold their edge frame), so nothing moves on the timeline; with no clip right before, the clip transitions in over what is below it. The sound crossfades over the same span. Changes the kind or length of transitions already there. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array |  | The incoming clips (ids or names): each gets a transition at its start. |
+| `trackId` | string |  | Instead of clipIds: every cut on this track. |
+| `kind` | string |  | dissolve (default), dipToBlack, dipToWhite, wipeLeft, wipeRight, wipeUp, wipeDown, slideLeft, slideRight, slideUp, slideDown, pushLeft, pushRight, pushUp, pushDown, zoom, iris or blur. |
+| `duration` | number |  | Seconds (default 0.8). On a cut it can't be longer than the shorter clip; otherwise than half the clip. |
+| `easing` | string |  | How the progress moves (default easeInOutSine; any keyframe easing). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `transition.remove`
+
+Remove the transitions at the start of clips (or every one on a track). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array |  | Clips whose transition goes (ids or names). |
+| `trackId` | string |  | Instead of clipIds: every transition on this track. |
+
+## captions
+
+### `captions.list`
+
+The captions, by time: clip, start, end and words. Captions are titles on the captions track; edit one like any title (clip.update style.content, clip.trim, clip.delete). _(read only)_
+
+### `captions.models`
+
+The speech models captions.transcribe can use, their download size and whether they are on this computer. _(read only)_
+
+### `captions.status`
+
+The transcription running now, if any: stage (downloading the model, mixing, listening) and progress. _(read only)_
+
+### `captions.transcribe`
+
+Caption the cut by listening to it: the mixed sound (or one clip's) is transcribed by Whisper on this computer, split into readable captions (two lines at most) and put on the captions track as titles (the track is made if needed), replacing the captions in that span. One undo step. The model is downloaded the first time (150 MB to 1 GB); then the base model takes about a tenth of the sound's length. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string |  | Only this clip's sound (default: the whole mix). |
+| `from` | number |  | Start of the span in seconds (default 0). |
+| `to` | number |  | End of the span in seconds (default: the end of the cut). |
+| `language` | string |  | Language spoken: en, fr, es, de, ja… (default: detected). |
+| `model` | string |  | tiny, base (default) or small (captions.models). |
+| `maxChars` | integer |  | Longest caption line in characters (default 42). |
+| `replace` | boolean |  | Remove the captions already in the span (default true). |
+
+### `captions.cancel`
+
+Stop the running transcription. _(changes things)_
+
+### `captions.import`
+
+Read an SRT or WebVTT file onto the captions track. One undo step. _(changes things · permission: files)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | The .srt or .vtt file. |
+| `offset` | number |  | Seconds added to every time (default 0). |
+| `replace` | boolean |  | Remove the captions in the file's span first (default false). |
+
+### `captions.export`
+
+Write the captions to an SRT or WebVTT file. _(changes things · permission: files)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | Destination .srt or .vtt. |
+| `format` | string |  | srt or vtt (default: from the extension). |
+
+### `captions.add`
+
+Add one caption on the captions track, styled like the others. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `text` | string | required | The words; \n starts a second line. |
+| `start` | number |  | Timeline position in seconds. Defaults to the playhead. |
+| `duration` | number |  | Seconds (default 2.5). |
+
+### `captions.setStyle`
+
+Restyle every caption at once: text style fields (see clip.addText) and/or their height. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `style` | object |  | Text style fields to change, e.g. {"fontSize": 60, "background": null}. |
+| `y` | number |  | Vertical offset of the captions' centre from the canvas centre, project pixels (positive is down). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `captions.clear`
+
+Remove every caption. One undo step. _(changes things)_
+
+## motion
+
+### `motion.guide`
+
+How to make motion graphics and 3D with kimchi: the scene formats (2D layers, 3D objects, camera, lights), every property, keyframes and easings, text reveals, masks, effects, templates and presets, with examples. Read it before writing a scene. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `topic` | string |  | 2d, 3d, keyframes, templates or all (default). |
+
+### `motion.templates`
+
+Motion templates (lower third, title card, kinetic type, counter, bar chart, logo reveal, callout, quote, subscribe, aurora, wipe, 3D title, 3D logo spin, turntable, floating shapes) with the values each takes. _(read only)_
+
+### `motion.presets`
+
+The ready-made clip animations clip.animate applies. _(read only)_
+
+### `motion.add`
+
+Add a motion clip: 2D motion graphics (layers of shapes, paths, text, images) or a 3D scene (camera, lights, objects, extruded text, glTF models), drawn by kimchi in the preview and the export, every property animatable. Look at the result with project.renderFrame. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `scene` | object | required | The scene, as described by motion.guide. |
+| `start` | number |  | Timeline position in seconds. Defaults to the playhead. |
+| `duration` | number |  | Seconds on the timeline (default: the last keyframe + 1 s, at least 3). |
+| `trackId` | string |  | Track id or name. Defaults to the first free compatible track (a new one if none is free). |
+| `name` | string |  | Clip name (default: from the scene). |
+
+### `motion.addTemplate`
+
+Add a motion clip made from a template with your values (see motion.templates). The clip remembers them: motion.setTemplate changes them later. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `template` | string | required | Template id, e.g. lowerThird. |
+| `values` | object |  | Template values to change, e.g. {"title": "Grace Hopper"}. |
+| `start` | number |  | Timeline position in seconds. Defaults to the playhead. |
+| `duration` | number |  | Seconds (default: the template's). |
+| `trackId` | string |  | Track id or name. Defaults to the first free compatible track (a new one if none is free). |
+
+### `motion.get`
+
+A motion clip's scene as JSON, or one layer, object or light of it. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string |  | A layer, object or light id, or "camera". |
+
+### `motion.update`
+
+Replace a motion clip's whole scene. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `scene` | object | required | The new scene. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.setLayer`
+
+Add a layer (2D) or an object or light (3D) to a motion clip, or replace the one with the same id. New 2D layers go on top. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `layer` | object | required | The layer, object or light (with its id). |
+| `parent` | string |  | Put it inside this group (2D) or object (3D). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.removeLayer`
+
+Remove a layer, object or light from a motion clip. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | Its id. |
+
+### `motion.setKeyframes`
+
+Animate one property of a layer, object, light or the camera inside a motion clip: replace its keyframes (times in scene seconds). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A layer, object or light id, "camera", or "scene" (background, ambient). |
+| `property` | string | required | The property, e.g. x, opacity, trimEnd, reveal, rotation.y, position, fov. |
+| `keyframes` | array | required | [{"time": 0, "value": 0}, {"time": 0.6, "value": 1, "easing": "easeOut"}] or [[0, 0], [0.6, 1, "easeOut"]]. A keyframe's easing shapes the move into it: linear (default), hold, ease, easeIn, easeOut, easeInOut, ease<In\|Out\|InOut><Sine\|Quad\|Cubic\|Quart\|Quint\|Expo\|Circ\|Back\|Elastic\|Bounce>, cubicBezier(x1,y1,x2,y2), spring(bounce 0-1). Empty removes the animation. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.updateLayer`
+
+Change some properties of one layer, object, light, the camera or the scene ("scene": background, ambient) of a motion clip. A property that is animated gets a keyframe at that time instead; others change for the whole clip. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A layer, object or light id, "camera" or "scene". |
+| `props` | object | required | Properties and values, e.g. {"x": 120, "fill": "#ff5a36", "text": "Hi"} (any field of motion.guide; nested ones like stroke or material merge). |
+| `time` | number |  | Timeline seconds, for animated properties (default: the playhead). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.addKeyframe`
+
+Set one keyframe of a layer, object, light or camera property at a timeline time (replacing one already there). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A layer, object or light id, "camera" or "scene". |
+| `property` | string | required | The property, e.g. x, opacity, rotation.y, fov. |
+| `time` | number |  | Timeline seconds (default: the playhead). |
+| `value` | any |  | The value (default: what the property is at that time). |
+| `easing` | string |  | How the value arrives here from the previous keyframe (default linear). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.removeKeyframe`
+
+Remove a keyframe of a layer, object, light or camera property at a timeline time, or its whole animation (it then keeps its value at the playhead). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A layer, object or light id, "camera" or "scene". |
+| `property` | string | required | The animated property. |
+| `time` | number |  | Timeline seconds; omit to remove the property's whole animation. |
+
+### `motion.setTemplate`
+
+Re-make a template clip with new values (the others keep theirs). Edits made to its scene by hand are replaced. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `values` | object | required | Values to change. |
 | `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
 
 ## timeline
@@ -373,11 +722,11 @@ The undo and redo steps: which command made each one and who (window, agent, cli
 
 ### `history.undo`
 
-Undo the last step, whoever made it. _(changes things)_
+Undo the last step, whoever made it. Returns the command that made the step. _(changes things)_
 
 ### `history.redo`
 
-Redo the last undone step. _(changes things)_
+Redo the last undone step. Returns the command that made the step. _(changes things)_
 
 ### `history.checkpoint`
 
@@ -559,11 +908,15 @@ Remove finished, failed and cancelled jobs from the list. _(changes things)_
 
 ### `export.formats`
 
-Export formats and qualities. _(read only)_
+Export formats, qualities and encoder choices. _(read only)_
+
+### `export.encoders`
+
+The video encoders this computer uses per format: hardware ones (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API, Media Foundation) that passed a test encode, and the CPU ones. _(read only)_
 
 ### `export.start`
 
-Render the open project to a file through one ffmpeg graph (text is drawn the same as in the preview). Returns an export id; follow it with export.status, or pass wait. _(changes things · permission: files)_
+Render the open project to a file: every frame drawn as in the preview (titles, animation, motion graphics, 3D), encoded on the GPU or CPU with the mixed sound. Returns an export id; follow it with export.status, or pass wait. _(changes things · permission: files)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -575,6 +928,8 @@ Render the open project to a file through one ffmpeg graph (text is drawn the sa
 | `fps` | number |  | Output frame rate (default: the project's). |
 | `from` | number |  | Start of the range in seconds (default 0). |
 | `to` | number |  | End of the range in seconds (default: the end). |
+| `encoder` | string |  | auto (default: the GPU or media engine when there is one, redone on the CPU if it fails), hardware (GPU only; WebM may be AV1) or software (CPU only: slower, smallest files). |
+| `captions` | string |  | burn (default: in the picture), file (an .srt next to the video instead), both, or none. |
 | `wait` | boolean |  | Wait until the job finishes and return it (always true with --file). |
 
 ### `export.status`
@@ -697,7 +1052,7 @@ Select clips (or one media item) in the window. _(changes things · needs the wi
 
 ### `ui.showPanel`
 
-Open a panel or dialog: media, generate, text (left panel), agent, jobs, settings, export, palette; or home. _(changes things · needs the window)_
+Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette; or home. _(changes things · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |

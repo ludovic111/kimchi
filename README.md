@@ -27,11 +27,25 @@ rewritten from the ground up in Rust.
 
 **Editing**
 - Multi-track timeline: video, image, text, solid and audio clips
-- Split, trim, ripple delete, duplicate, cross-track moves, snapping, markers
-- Per-clip transform (position, scale, rotation, opacity, fit), speed, fades, volume
+- Split, trim, ripple delete, duplicate, copy / cut / paste, cross-track moves, snapping, markers
+- Rubber-band selection, ⌥-drag to copy, files dropped straight onto a track
+- The shortcuts editors expect: J / K / L shuttle, ↑ / ↓ to the previous / next cut, Q / W trim to the playhead; press ? for all of them
+- Per-clip transform (position, scale, rotation, opacity, blur, fit), speed (pitch kept), reverse, freeze frames, fades, volume
+- **Transitions** on cuts: dissolve, dip to black / white, wipes, slides, pushes, zoom, iris, blur; centred on the cut with the clips' media past it, the sound crossfading. Click the + on a cut, drag the badge's edges for the length
+- **Colour**: looks (punchy, warm, cool, mono, faded, vintage, noir, teal & orange, dreamy), brightness, contrast, saturation, warmth, tint, vignette, sharpen (all keyframable), green-screen chroma key, `.cube` LUTs
+- **Captions**: transcribe the cut on your computer (Whisper, nothing sent anywhere; the model downloads once), import and export SRT / WebVTT, edit them as titles, style them all at once; burned in or as an `.srt` beside the export
 - Live preview compositor, on-canvas move/scale handles
 - Snapshot undo/redo for every edit, autosave
-- Export to MP4 (H.264), HEVC, ProRes, WebM, GIF or audio-only, through one ffmpeg filter graph
+- Export to MP4 (H.264), HEVC, ProRes, WebM, GIF or audio-only
+
+**Animation, motion graphics and 3D** (drawn by kimchi, the same in the preview and the export)
+- **Keyframes on any clip**: position, scale, rotation, opacity, blur, volume, text size and colour, with easings (ease, back, elastic, bounce, cubic-bezier, spring). Toggle a keyframe per property at the playhead in the inspector, or drag on the canvas
+- **Presets**: fade, rise, slide, pop, zoom, focus in and out; Ken Burns, pan, pulse, float, shake, spin
+- **Motion clips**: 2D scenes of shapes, paths (with draw-on), text with letter/word/line reveals and counters, images, groups, masks, gradients, blur, shadows, glows and blend modes
+- **3D clips**: camera moves, lights with soft shadows, boxes, spheres, cylinders, tori, extruded 3D text, glTF models and picture cards, metallic/rough materials. On the GPU (Metal on Macs, Apple Silicon included; Vulkan or DirectX 12 elsewhere), on the CPU otherwise
+- **Templates**: lower third, title card, kinetic type, counter, bar chart, logo reveal, callout, quote, subscribe button, aurora background, wipe transition, 3D title, 3D logo spin, turntable, floating shapes; change their words and colours in the inspector
+- **Edit scenes by hand** in the inspector (pick a layer, object or the camera; keyframe its properties; add text, shapes, pictures, 3D objects and lights) or **ask the agent**: it writes the scene, then looks at the frames it made
+- Hardware encoding where the computer has it (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API), checked with a test encode and redone on the CPU if it fails; 4K, HEVC and ProRes sources decode in hardware
 
 **Generation, woven into the edit**
 - **Generate at the playhead.** A placeholder clip appears where the shot will go and turns into the result when it's done
@@ -106,8 +120,9 @@ kimchi hands cuts to [ryolune](https://lsuite.xyz/ryolune) to score them and tak
 
 ```
 crates/
-  kimchi-core      project model, edits, undo history (shared by every client), on-disk library
-  kimchi-media     ffprobe/ffmpeg: probing, previews, export graph, live preview stream, text rendering
+  kimchi-core      project model, edits, undo history (shared by every client), keyframes, motion scenes, templates
+  kimchi-media     ffmpeg probing, decoding and encoding; the compositor: text, 2D motion, 3D (GPU and CPU), colour, transitions
+  kimchi-captions  SRT / WebVTT, and speech to text with Whisper (candle, on the CPU)
   kimchi-gen       the generation harness: Provider trait, 15 providers, keys, job queue
   kimchi-control   the command registry, session, permissions, loopback bridge, lsuite discovery, updater
   kimchi-agent     the built-in agent (Claude Code, Codex, Anthropic, OpenAI, Ollama)
@@ -119,8 +134,9 @@ crates/
 
 - Every change is an `Edit` (plain data) applied by `kimchi-core`, behind a named command in `kimchi-control`.
   The window never mutates the project; it renders what the session holds.
-- The preview is rendered by the export's own ffmpeg graph (smaller, from the playhead), and text layers are drawn
-  in Rust for both, so what you see is what renders.
+- The preview and the export share one compositor (`kimchi-media/src/render`): ffmpeg decodes each clip and encodes
+  the result; every frame is put together in Rust (tiny-skia for pictures, text and 2D motion; wgpu or a CPU
+  rasteriser for 3D), so what you see is what renders.
 - Providers implement one trait (`info`, `models`, `check`, `generate`). The harness handles keys, concurrency (one job at a time on local GPUs), cancellation, downloads and progress events.
 - The interface follows the [lsuite design system](https://lsuite.xyz/design): chili coral, glass chrome over a
   tinted backdrop, solid work surfaces, Manrope and IBM Plex Mono, dark and light, tested contrast.

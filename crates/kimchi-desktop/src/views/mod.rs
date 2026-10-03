@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod agent_panel;
+pub mod captions_panel;
 pub mod dialogs;
 pub mod editor;
 pub mod generate;
@@ -12,6 +13,7 @@ pub mod inspector;
 pub mod jobs;
 pub mod left_panel;
 pub mod media_panel;
+pub mod motion_panel;
 pub mod overlays;
 pub mod preview;
 pub mod screenshot;

@@ -5,7 +5,7 @@ use kimchi_control::ToastKind;
 
 use crate::store::{ContextMenu, MenuEntry, StoreExt, Toast};
 use crate::theme::{ActiveTheme, size as sz};
-use crate::ui::{GlassExt, icon, kbd};
+use crate::ui::{GlassExt, icon, kbd, motion};
 
 pub fn context_menu(menu: ContextMenu, cx: &App) -> AnyElement {
     let t = cx.theme().clone();
@@ -42,11 +42,14 @@ pub fn context_menu(menu: ContextMenu, cx: &App) -> AnyElement {
                 .into_any_element()
         }
     });
+    // A new id per opening position, so each menu fades in where it was asked for.
+    let key = (f32::from(menu.position.x) as i32 as usize).wrapping_mul(10007) ^ f32::from(menu.position.y) as i32 as usize;
     deferred(
-        anchored().position(menu.position).snap_to_window_with_margin(px(8.)).child(
+        anchored().position(menu.position).snap_to_window_with_margin(px(8.)).child(motion::enter(
             div()
                 .id("context-menu")
                 .occlude()
+                .relative()
                 .min_w(px(220.))
                 .p(px(4.))
                 .rounded(px(sz::R_MD))
@@ -56,7 +59,10 @@ pub fn context_menu(menu: ContextMenu, cx: &App) -> AnyElement {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_down_out(|_, _, cx| cx.store().update(cx, |s, cx| s.close_menu(cx)))
                 .children(items),
-        ),
+            ("menu-in", key),
+            motion::FAST,
+            (0., -4.),
+        )),
     )
     .with_priority(2)
     .into_any_element()
@@ -79,8 +85,9 @@ pub fn toasts(list: Vec<Toast>, cx: &App) -> AnyElement {
                 ToastKind::Info => ("info", t.text_2),
             };
             let id = toast.id;
-            div()
+            let el = div()
                 .id(("toast", id as usize))
+                .relative()
                 .max_w(px(420.))
                 .flex()
                 .items_start()
@@ -93,7 +100,8 @@ pub fn toasts(list: Vec<Toast>, cx: &App) -> AnyElement {
                 .cursor_pointer()
                 .on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.dismiss(id, cx)))
                 .child(icon(ic).text_color(color).mt(px(2.)))
-                .child(div().text_size(px(sz::BASE)).font_weight(FontWeight::MEDIUM).child(toast.text))
+                .child(div().text_size(px(sz::BASE)).font_weight(FontWeight::MEDIUM).child(toast.text));
+            motion::enter(el, ("toast-in", id as usize), motion::BASE, (18., 0.))
         }))
         .into_any_element()
 }

@@ -1,7 +1,9 @@
 //! The inspector (right column, glass tier 1): what is selected, and every way to change it.
 //!
-//! - one clip: name, generation provenance, the AI actions, text style or solid colour,
-//!   transform, timing, sound and the source media;
+//! - one clip: name, generation provenance, the AI actions, text style or solid colour, a
+//!   motion clip's template values and scene, transform, animation (keyframes at the playhead,
+//!   easings, presets), colour effects, the transition in, timing (speed, reverse, freeze
+//!   frame), sound and the source media;
 //! - several clips: duplicate, delete, and "bridge" for two;
 //! - a media item picked in the media panel: poster, provenance, file facts, insert / reveal;
 //! - nothing: the project's canvas, frame rate and background, and the main shortcuts.
@@ -10,9 +12,12 @@
 //! sliders send a `coalesce` key while they move so a drag is one undo step.
 
 pub mod ai;
+pub mod animation;
 pub mod color;
+pub mod effects;
 pub mod fonts;
 pub mod format;
+pub mod scene_editor;
 pub mod slider;
 
 use std::path::PathBuf;
@@ -64,6 +69,13 @@ pub struct Inspector {
     line: Entity<Scrub>,
     width: Entity<Scrub>,
     height: Entity<Scrub>,
+    /// Fields of the template clip shown (built for each template clip).
+    template: animation::TemplateFields,
+    /// The layer, object or light picked in a motion clip's scene, and its fields.
+    scene_item: Option<(Id, String)>,
+    item_fields: scene_editor::ItemFields,
+    /// Colour, transition and speed controls.
+    fx: effects::EffectFields,
     _subs: Vec<Subscription>,
 }
 
@@ -71,9 +83,25 @@ pub struct Inspector {
 type ToParams = fn(f64) -> Value;
 
 impl Inspector {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
-        let mut subs = vec![cx.observe(&store, |_, _, cx| cx.notify())];
+        let mut subs = vec![
+            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&store, window, |this: &mut Self, _, e: &crate::store::StoreEvent, window, cx| {
+                if let crate::store::StoreEvent::EditText = e {
+                    crate::ui::input::focus(&this.content, window, cx);
+                    this.content.update(cx, |i, cx| i.select_all_text(cx));
+                }
+            }),
+        ];
+        // Animated values follow the playhead.
+        let playback = store.read(cx).playback.clone();
+        subs.push(cx.observe(&playback, |this: &mut Self, _, cx| {
+            let animated = this.single(cx).and_then(|id| this.store.read(cx).clip(id).map(Clip::is_animated)).unwrap_or(false);
+            if animated {
+                cx.notify();
+            }
+        }));
 
         // A scrub that updates the selected clip.
         let mut clip_scrub = |cx: &mut Context<Self>, s: Scrub, key: &'static str, to: ToParams| {
@@ -154,6 +182,7 @@ impl Inspector {
         let solid = color(cx, None, |c| json!({ "color": c }));
         let background = cx.new(|cx| ColorField::new(None, cx));
         subs.push(cx.subscribe(&background, |this: &mut Self, _, ch: &ColorChange, cx| this.set_settings(json!({ "background": ch.0.get(..7).unwrap_or(&ch.0) }), cx)));
+        let fx = effects::EffectFields::new(&mut subs, cx);
 
         Self {
             store,
@@ -180,6 +209,10 @@ impl Inspector {
             line,
             width,
             height,
+            template: Default::default(),
+            scene_item: None,
+            item_fields: Default::default(),
+            fx,
             _subs: subs,
         }
     }
@@ -195,6 +228,10 @@ impl Inspector {
     /// `clip.update` on the selected clip; while a control moves (`final_` false) the edits
     /// share a coalesce key, so the whole gesture is one undo step.
     fn update_clip(&mut self, mut params: Value, key: &str, final_: bool, cx: &mut Context<Self>) {
+        // An animated property gets a keyframe at the playhead instead.
+        if self.keyframe_instead(&params, key, final_, cx) {
+            return;
+        }
         let Some(id) = self.single(cx) else { return };
         params["clipId"] = json!(id);
         if !final_ {
@@ -215,11 +252,14 @@ impl Inspector {
             let n = clip.name.clone();
             self.name.update(cx, |i, cx| i.set_text(n, cx));
         }
-        let tf = &clip.transform;
+        // What the clip shows at the playhead (keyframes applied).
+        let playhead = self.store.read(cx).playback.read(cx).playhead.clamp(clip.start, clip.end());
+        let tf = &clip.placement_at(playhead);
+        let base_scale = kimchi_core::anim::number_at(&clip.keyframes, "scale", playhead - clip.start).unwrap_or(clip.transform.scale);
         let set = |e: &Entity<Scrub>, v: f64, cx: &mut Context<Self>| e.update(cx, |s, _| s.set_value(v));
         set(&self.x, tf.x, cx);
         set(&self.y, tf.y, cx);
-        set(&self.scale, tf.scale * 100.0, cx);
+        set(&self.scale, base_scale * 100.0, cx);
         set(&self.rotation, tf.rotation, cx);
         set(&self.speed, clip.speed, cx);
         let d = clip.duration;
@@ -232,9 +272,12 @@ impl Inspector {
             s.set_value(clip.fade_out)
         });
         self.opacity.update(cx, |s, _| s.set_value(tf.opacity));
-        self.volume.update(cx, |s, _| s.set_value(clip.volume));
-        match &clip.content {
-            ClipContent::Text { style } => {
+        let volume = clip.volume_at(playhead);
+        self.volume.update(cx, |s, _| s.set_value(volume));
+        self.sync_effects(clip, playhead, window, cx);
+        let shown_style = clip.text_at(playhead);
+        match (&clip.content, shown_style.as_ref()) {
+            (ClipContent::Text { .. }, Some(style)) => {
                 if changed || !self.content.read(cx).is_focused(window) {
                     let c = style.content.clone();
                     self.content.update(cx, |i, cx| i.set_text(c, cx));
@@ -249,7 +292,7 @@ impl Inspector {
                     self.text_box.update(cx, |f, cx| f.set_value(bg, window, cx));
                 }
             }
-            ClipContent::Solid { color } => self.solid.update(cx, |f, cx| f.set_value(color, window, cx)),
+            (ClipContent::Solid { color }, _) => self.solid.update(cx, |f, cx| f.set_value(color, window, cx)),
             _ => {}
         }
     }
@@ -263,11 +306,18 @@ impl Inspector {
         let asset = store.asset_of(clip).cloned();
         let track_kind = store.track_of(clip.id).map(|t| t.kind);
         let fps = project.settings.fps;
-        let kind = asset.as_ref().map(|a| kind_name(a.kind)).unwrap_or(match clip.content {
+        let kind = asset.as_ref().map(|a| kind_name(a.kind)).unwrap_or(match &clip.content {
             ClipContent::Text { .. } => "text",
             ClipContent::Solid { .. } => "solid",
             ClipContent::Pending { .. } => "generating",
             ClipContent::Media { .. } => "media",
+            ClipContent::Motion { scene, .. } => {
+                if scene.is_3d() {
+                    "3D"
+                } else {
+                    "motion"
+                }
+            }
         });
         let has_picture = matches!(clip.content, ClipContent::Media { .. }) && asset.as_ref().is_some_and(|a| a.kind != MediaKind::Audio);
         let has_sound = asset.as_ref().is_some_and(|a| a.kind == MediaKind::Audio || (a.kind == MediaKind::Video && a.meta.has_audio));
@@ -367,6 +417,17 @@ impl Inspector {
                     .into_any_element(),
             ),
             ClipContent::Media { .. } => {}
+            ClipContent::Motion { template, .. } => {
+                if template.is_some() {
+                    body.push(self.motion_section(clip, window, cx));
+                } else {
+                    self.clear_template();
+                }
+                body.push(self.scene_section(clip, window, cx));
+            }
+        }
+        if !matches!(clip.content, ClipContent::Motion { .. }) {
+            self.clear_template();
         }
 
         if !matches!(clip.content, ClipContent::Pending { .. }) && track_kind == Some(TrackKind::Video) {
@@ -412,7 +473,16 @@ impl Inspector {
             );
         }
 
+        if !matches!(clip.content, ClipContent::Pending { .. }) && track_kind == Some(TrackKind::Video) {
+            body.push(self.animation_section(clip, fps, cx));
+            body.push(self.color_section(clip, fps, cx));
+        }
+        if !matches!(clip.content, ClipContent::Pending { .. }) && (track_kind == Some(TrackKind::Video) || has_sound) {
+            body.push(self.transition_section(clip, project, cx));
+        }
+
         let speedable = matches!(clip.content, ClipContent::Media { .. }) && asset.as_ref().is_some_and(|a| a.kind != MediaKind::Image);
+        let store_playhead = self.store.read(cx).playback.read(cx).playhead;
         body.push(
             section(cx)
                 .child(caps("Timing", cx))
@@ -430,6 +500,7 @@ impl Inspector {
                         .child(div().text_color(t.text_3).child(short(clip.duration))),
                 )
                 .child(grid2().when(speedable, |d| d.child(self.speed.clone())).child(self.fade_in.clone()).child(self.fade_out.clone()))
+                .children(effects::speed_extras(clip, asset.as_ref().map(|a| a.kind), store_playhead, fps, cx))
                 .into_any_element(),
         );
 
@@ -578,15 +649,16 @@ impl Inspector {
                 .selected((fps - r).abs() < 0.01)
                 .on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.run("project.setSettings", json!({ "fps": r }), cx)))
         }));
-        let keys = [
-            ("Play / pause", "Space"),
-            ("Split", "S"),
-            ("Ripple delete", "⇧⌫"),
-            ("Generate", "⌘G"),
-            ("Command palette", "⌘K"),
-            ("Add a title", "T"),
-            ("Snapping", "N"),
-            ("Marker", "M"),
+        use crate::actions as act;
+        let keys: [(&str, &dyn gpui::Action); 8] = [
+            ("Play / pause", &act::PlayPause),
+            ("Split", &act::Split),
+            ("Copy / paste", &act::CopyClips),
+            ("Previous / next cut", &act::PrevEdit),
+            ("Generate", &act::FocusGenerate),
+            ("Command palette", &act::Palette),
+            ("Add a title", &act::AddText),
+            ("Undo", &act::Undo),
         ];
         let t = cx.theme().clone();
         let body = vec![
@@ -601,9 +673,22 @@ impl Inspector {
             section(cx)
                 .border_b_0()
                 .child(caps("Shortcuts", cx))
-                .children(keys.iter().map(|(what, k)| {
-                    div().flex().items_center().justify_between().text_size(px(sz::SM)).text_color(t.text_2).child(*what).child(kbd(*k, cx))
+                .children(keys.iter().map(|(what, a)| {
+                    let k = match *what {
+                        "Copy / paste" => format!("{} {}", act::keys_label("M-c"), act::keys_label("M-v")),
+                        "Previous / next cut" => "↑ ↓".to_string(),
+                        _ => act::hint(*a).unwrap_or_default().to_string(),
+                    };
+                    div().flex().items_center().justify_between().text_size(px(sz::SM)).text_color(t.text_2).child(*what).child(kbd(k, cx))
                 }))
+                .child(
+                    Button::new("all-shortcuts", "All shortcuts")
+                        .small()
+                        .ghost()
+                        .with_icon("keyboard")
+                        .tooltip(act::tip("Keyboard shortcuts", &act::ShowShortcuts))
+                        .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(crate::store::Dialog::Shortcuts, cx))),
+                )
                 .into_any_element(),
         ];
         vec![header("Project", None, cx).into_any_element(), scroll("inspector-project", body).into_any_element()]

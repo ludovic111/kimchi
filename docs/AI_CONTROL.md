@@ -245,12 +245,70 @@ Keys: each provider's key lives in the OS keychain, saved by the person in the a
 `STABILITY_API_KEY`, `BFL_API_KEY`, `TOGETHER_API_KEY`…). Local providers (ComfyUI, for one)
 need no key; `generate.setProvider` points them at another address.
 
+## Animation, motion graphics and 3D
+
+kimchi draws animation itself, the same in the preview and the export, and every part of it is a
+command: what an agent makes, a person can open in the inspector and change, and the other way round.
+`motion.guide` is the full reference (scene formats, every property, easings, reveals); read it before
+writing a scene.
+
+- **Any clip**: `clip.setKeyframes {clipId, property, keyframes}` (x, y, position, scale, scaleX, scaleY,
+  rotation, opacity, blur, volume; text: fontSize, color, letterSpacing), `clip.addKeyframe` /
+  `clip.removeKeyframe` at a time, or a ready-made `clip.animate {clipIds, preset}` (`motion.presets`).
+- **Templates**: `motion.templates` lists them with their values; `motion.addTemplate` adds one,
+  `motion.setTemplate` changes its values later.
+- **Your own scene**: `motion.add {scene}` with a 2D scene (layers) or a 3D one (camera, lights, objects);
+  `motion.get`, `motion.update`, `motion.setLayer`, `motion.removeLayer`, `motion.updateLayer` (some
+  properties of one layer: animated ones get a keyframe at that time) and `motion.setKeyframes` /
+  `motion.addKeyframe` / `motion.removeKeyframe` for one property.
+- **Look at it**: `project.renderFrame {times: [...]}` returns a PNG (several times give one labelled
+  sheet). Check entrances, overlaps and legibility, then fix what you see.
+
+```sh
+kimchi-cli motion.addTemplate --template lowerThird --values '{"title": "Grace Hopper", "subtitle": "Rear admiral"}' --start 4
+kimchi-cli clip.animate --clipIds '["Logo"]' --preset popIn
+kimchi-cli motion.add --start 10 --scene '{"type": "3d", "objects": [{"id": "logo", "type": "text", "text": "KIMCHI",
+  "material": {"color": "#ff5a36"}, "keyframes": {"rotation.y": [[0, -40], [1.5, 0, "easeOutBack"]]}}]}'
+kimchi-cli project.renderFrame --times '[10.2, 10.8, 11.5]'
+```
+
+3D draws on the GPU when there is one (Metal on Macs, Apple Silicon included; Vulkan or DirectX 12
+elsewhere) and on the CPU otherwise; `app.info` says which (`renderer3d`). `KIMCHI_GPU=0` forces the CPU.
+
+## Colour, transitions, speed and captions
+
+- **Colour**: `clip.setEffects {clipIds, look?, brightness, contrast, saturation, temperature, tint,
+  vignette, sharpen, chromaKey, lut, lutStrength, reset}`; only the fields given change. Corrections run
+  -1 to 1 (vignette and sharpen 0 to 1) and take keyframes like any clip property (`clip.setKeyframes
+  {property: "saturation"}`). `clip.looks` lists the looks. `chromaKey` takes `true`, the screen's colour
+  or `{color, similarity, softness, spill}`; `lut` the path of a 3D `.cube` file.
+- **Transitions**: a clip's transition is how it comes in at its start. `transition.set {clipIds | trackId,
+  kind, duration, easing}` (`trackId` puts one on every cut of a track); on a cut it is centred on the cut
+  and both clips play on past it, so nothing moves; the sound crossfades. `transition.kinds`,
+  `transition.list` (where each plays, and whether the clips made it shorter), `transition.remove`.
+- **Speed and time**: `clip.update {speed}` (0.1–16, the sound keeps its pitch), `clip.update {reverse: true}`
+  plays the same part of the media backwards, `clip.freezeFrame {clipId, time, duration}` holds a frame and
+  pushes the rest of the track later.
+- **Captions** are titles on the captions track. `captions.transcribe` listens to the mix (or `clipId`'s
+  sound) with Whisper on this computer and captions it (`language`, `model`: tiny / base / small;
+  the model downloads once, `captions.status` follows it). `captions.import` / `captions.export` read and
+  write SRT or WebVTT, `captions.add`, `captions.setStyle` (all at once), `captions.list`, `captions.clear`.
+  Edit one caption like any title (`clip.update {style: {content}}`, `clip.trim`).
+
+```sh
+kimchi-cli clip.setEffects --clipIds '["Interview"]' --look warm --contrast 0.2
+kimchi-cli transition.set --trackId "Video 1" --kind dissolve --duration 0.6
+kimchi-cli captions.transcribe --language en
+kimchi-cli export.start --path ~/Movies/cut.mp4 --captions both --wait
+```
+
 ## Export
 
-`export.start` renders the open project through one ffmpeg graph; text is drawn exactly as in the
-preview. Formats are `mp4` (default), `hevc`, `prores`, `webm`, `gif`, `audio` (AAC) and `wav`; qualities
+`export.start` renders the open project: the compositor draws every frame (exactly as in the
+preview) and ffmpeg encodes them with the mixed sound. Formats are `mp4` (default), `hevc`, `prores`, `webm`, `gif`, `audio` (AAC) and `wav`; qualities
 `draft`, `standard` (default) and `high` (`export.formats` lists them with their extensions).
-`width`, `height` and `fps` override the project's; `from` and `to` export a range.
+`width`, `height` and `fps` override the project's; `from` and `to` export a range. With captions,
+`captions` is `burn` (default, in the picture), `file` (an `.srt` beside the video instead), `both` or `none`.
 
 ```sh
 kimchi-cli export.start --path ~/Movies/cut.mp4 --quality high --wait
@@ -294,6 +352,7 @@ an agent), and the choice of which model runs the built-in agent. Agents never s
 | `KIMCHI_FFMPEG`, `KIMCHI_FFPROBE` | ffmpeg and ffprobe to use instead of the bundled or installed ones |
 | `KIMCHI_NO_UPDATE=1` | never check for updates |
 | `KIMCHI_WINDOW_SIZE` | the window's size when it opens, e.g. `2000x1250` (screenshots) |
+| `KIMCHI_GPU` | `0` draws 3D on the CPU; `any` accepts a software GPU adapter (default: a hardware GPU when there is one) |
 | `KIMCHI_KEYCHAIN` | `1` reads API keys from the OS keychain, `0` only from environment variables (default: on in release builds, off in debug builds) |
 | `RYOLUNE_CONTROL` | ryolune's control file, for the hand-offs (default `~/.ryolune/control.json`) |
 | `LSUITE_HOME` | where lsuite apps register (default `~/.lsuite`) |

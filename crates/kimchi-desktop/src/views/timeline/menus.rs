@@ -9,7 +9,7 @@ use serde_json::json;
 
 use super::body::TimelineBody;
 use super::geom;
-use crate::actions::{Delete, Duplicate, RippleDelete, Split};
+use crate::actions::{CopyClips, CutClips, Delete, Duplicate, RippleDelete, Split, TrimEnd, TrimStart};
 use crate::store::{ComposeRef, ComposeRequest, ComposeTarget, MenuEntry, MenuItem, StoreExt};
 
 fn run(name: &'static str, params: serde_json::Value) -> impl Fn(&mut gpui::Window, &mut App) + 'static {
@@ -40,10 +40,45 @@ pub fn clip_menu(_: &mut TimelineBody, id: Id, position: Point<Pixels>, cx: &mut
     let selected: Vec<Clip> = s.selected_clips().into_iter().cloned().collect();
     let locked = track.locked;
 
+    let inside = playhead > clip.start + 1e-6 && playhead < clip.end() - 1e-6;
     let mut items = vec![
-        MenuItem::new("Split at playhead", |w, cx| w.dispatch_action(Box::new(Split), cx)).icon("scissors").shortcut("S").entry(),
-        MenuItem::new("Duplicate", |w, cx| w.dispatch_action(Box::new(Duplicate), cx)).icon("copy").shortcut("⌘D").entry(),
+        MenuItem::new("Split at playhead", |w, cx| w.dispatch_action(Box::new(Split), cx)).icon("scissors").shortcut_of(&Split).disabled(!inside || locked).entry(),
+        MenuItem::new("Trim start to playhead", |w, cx| w.dispatch_action(Box::new(TrimStart), cx)).icon("arrow-right-to-line").shortcut_of(&TrimStart).disabled(!inside || locked).entry(),
+        MenuItem::new("Trim end to playhead", |w, cx| w.dispatch_action(Box::new(TrimEnd), cx)).icon("arrow-right-to-line").shortcut_of(&TrimEnd).disabled(!inside || locked).entry(),
+        MenuEntry::Separator,
+        MenuItem::new("Copy", |w, cx| w.dispatch_action(Box::new(CopyClips), cx)).icon("copy").shortcut_of(&CopyClips).entry(),
+        MenuItem::new("Cut", |w, cx| w.dispatch_action(Box::new(CutClips), cx)).icon("scissors").shortcut_of(&CutClips).disabled(locked).entry(),
+        MenuItem::new("Duplicate", |w, cx| w.dispatch_action(Box::new(Duplicate), cx)).icon("copy").shortcut_of(&Duplicate).entry(),
     ];
+    // Editing: the transition into the clip, playing backwards, holding a frame.
+    items.push(MenuEntry::Separator);
+    let pending = matches!(clip.content, ClipContent::Pending { .. });
+    if clip.transition.is_some() {
+        items.push(MenuItem::new("Remove transition", run("transition.remove", json!({ "clipIds": [id] }))).icon("blend").disabled(locked).entry());
+    } else {
+        let on_cut = ci > 0 && (track.clips[ci - 1].end() - clip.start).abs() <= kimchi_core::transition::CUT_TOLERANCE;
+        let label = match (track.kind, on_cut) {
+            (TrackKind::Audio, _) => "Crossfade in",
+            (_, true) => "Dissolve from the previous clip",
+            (_, false) => "Dissolve in",
+        };
+        items.push(MenuItem::new(label, run("transition.set", json!({ "clipIds": [id], "kind": "dissolve" }))).icon("blend").disabled(locked || pending).entry());
+    }
+    if asset.as_ref().is_some_and(|a| a.kind != MediaKind::Image) {
+        let mut item = MenuItem::new("Play backwards", run("clip.update", json!({ "clipId": id, "reverse": !clip.reverse }))).disabled(locked);
+        if clip.reverse {
+            item = item.icon("check");
+        }
+        items.push(item.entry());
+    }
+    let holdable = track.kind == TrackKind::Video && !pending && asset.as_ref().is_none_or(|a| a.kind == MediaKind::Video);
+    if holdable {
+        let at = playhead.clamp(clip.start, clip.end());
+        let item = MenuItem::new("Freeze frame here", move |_, cx| {
+            cx.store().update(cx, |s, cx| s.run_then("clip.freezeFrame", json!({ "clipId": id, "time": at }), cx, |s, v, cx| s.set_selection(crate::app::created(&v), cx)))
+        });
+        items.push(item.icon("snowflake").disabled(!inside || locked).entry());
+    }
     if picture {
         let inside = playhead.clamp(clip.start, clip.end());
         let (c1, c2, c3) = (clip.clone(), clip.clone(), clip.clone());
@@ -63,8 +98,8 @@ pub fn clip_menu(_: &mut TimelineBody, id: Id, position: Point<Pixels>, cx: &mut
         items.push(MenuItem::new("Bridge with AI", move |_, cx| bridge(&a, &b, fps, cx)).icon("waypoints").ai().entry());
     }
     items.push(MenuEntry::Separator);
-    items.push(MenuItem::new("Delete", |w, cx| w.dispatch_action(Box::new(Delete), cx)).icon("trash").shortcut("⌫").danger().disabled(locked).entry());
-    items.push(MenuItem::new("Ripple delete", |w, cx| w.dispatch_action(Box::new(RippleDelete), cx)).icon("wrap-text").shortcut("⇧⌫").danger().disabled(locked).entry());
+    items.push(MenuItem::new("Delete", |w, cx| w.dispatch_action(Box::new(Delete), cx)).icon("trash").shortcut_of(&Delete).danger().disabled(locked).entry());
+    items.push(MenuItem::new("Ripple delete", |w, cx| w.dispatch_action(Box::new(RippleDelete), cx)).icon("wrap-text").shortcut_of(&RippleDelete).danger().disabled(locked).entry());
     store.update(cx, |s, cx| s.open_menu(position, items, cx));
 }
 
@@ -78,6 +113,22 @@ pub fn lane_menu(_: &mut TimelineBody, index: usize, time: f64, position: Point<
     let audio = track.kind == TrackKind::Audio;
     let tid = track.id;
     let (l1, l2) = (label.clone(), label);
+    let clipboard = store.read(cx).clipboard.clips.clone();
+    // Clips copied from one track go on this one; from several, they keep their tracks.
+    let one_track = clipboard.windows(2).all(|w| w[0].0 == w[1].0);
+    let paste = MenuItem::new("Paste here", move |_, cx| {
+        let clips: Vec<serde_json::Value> = clipboard
+            .iter()
+            .map(|(track, c)| {
+                let mut v = json!(c);
+                v["trackId"] = json!(if one_track { tid } else { *track });
+                v
+            })
+            .collect();
+        cx.store().update(cx, |s, cx| s.run_then("clip.paste", json!({ "clips": clips, "time": time }), cx, |s, v, cx| s.set_selection(crate::app::created(&v), cx)));
+    })
+    .icon("clipboard-paste")
+    .disabled(store.read(cx).clipboard.clips.is_empty() || track.locked);
     let items = vec![
         MenuItem::new("Generate video here…", move |_, cx| {
             let target = ComposeTarget { track_id: Some(tid), start, duration: len, label: l1.clone() };
@@ -95,6 +146,8 @@ pub fn lane_menu(_: &mut TimelineBody, index: usize, time: f64, position: Point<
         .ai()
         .disabled(audio)
         .entry(),
+        MenuEntry::Separator,
+        paste.entry(),
         MenuEntry::Separator,
         MenuItem::new("Add text here", move |_, cx| {
             seek(cx, time);

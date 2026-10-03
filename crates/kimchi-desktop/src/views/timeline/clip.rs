@@ -1,6 +1,6 @@
-//! One clip on a lane: filmstrip or stills, waveform, text, solid colour or the
-//! placeholder of a generation in flight; fades, label, speed badge, trim and
-//! fade handles. Only the part of the clip near the viewport is drawn.
+//! One clip on a lane: filmstrip or stills, waveform, text, solid colour, a motion clip or the
+//! placeholder of a generation in flight; fades, keyframe marks, label, speed, reverse and effects
+//! badges, trim and fade handles. Only the part of the clip near the viewport is drawn.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,6 +29,7 @@ pub enum Kind {
     Text,
     Solid,
     Pending,
+    Motion,
 }
 
 pub fn kind(clip: &Clip, asset: Option<&Asset>) -> Kind {
@@ -41,7 +42,44 @@ pub fn kind(clip: &Clip, asset: Option<&Asset>) -> Kind {
         ClipContent::Text { .. } => Kind::Text,
         ClipContent::Solid { .. } => Kind::Solid,
         ClipContent::Pending { .. } => Kind::Pending,
+        ClipContent::Motion { .. } => Kind::Motion,
     }
+}
+
+/// Clip-local times (seconds from the clip's start) of the clip's own keyframes and, for a
+/// motion clip, of its scene's keyframes that fall inside it.
+pub fn key_times(clip: &Clip) -> (Vec<f64>, Vec<f64>) {
+    let mut own: Vec<f64> = clip.keyframes.values().flatten().map(|k| k.time).filter(|t| *t >= -1e-6 && *t <= clip.duration + 1e-6).collect();
+    own.sort_by(f64::total_cmp);
+    own.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+    let mut scene = vec![];
+    if let ClipContent::Motion { scene: sc, .. } = &clip.content {
+        let mut see = |k: &kimchi_core::Keyframes| {
+            for key in k.values().flatten() {
+                let local = (key.time - clip.in_point) / clip.speed.max(1e-3);
+                if (-1e-6..=clip.duration + 1e-6).contains(&local) {
+                    scene.push(local);
+                }
+            }
+        };
+        match sc {
+            kimchi_core::Scene::Flat(f) => {
+                see(&f.keyframes);
+                kimchi_core::motion::walk_layers(&f.layers, &mut |l| see(&l.keyframes));
+            }
+            kimchi_core::Scene::Space(f) => {
+                see(&f.keyframes);
+                see(&f.camera.keyframes);
+                for l in &f.lights {
+                    see(&l.keyframes);
+                }
+                kimchi_core::motion::walk_objects(&f.objects, &mut |o| see(&o.keyframes));
+            }
+        }
+        scene.sort_by(f64::total_cmp);
+        scene.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+    }
+    (own, scene)
 }
 
 /// Everything a clip needs to draw itself.
@@ -58,6 +96,8 @@ pub struct ClipView<'a> {
     pub h: f32,
     pub selected: bool,
     pub moving: bool,
+    /// The copy an ⌥-drag would drop (drawn over the original, not interactive).
+    pub ghost: bool,
     /// The track is muted or hidden.
     pub muted: bool,
     pub locked: bool,
@@ -94,12 +134,14 @@ impl ClipView<'_> {
                 _ => t.clip_video,
             },
             Kind::Pending => t.clip_generated,
+            Kind::Motion => t.clip_motion,
         };
         let id = c.id;
         let group: gpui::SharedString = format!("clip-{id}").into();
 
+        let el_id = if self.ghost { ElementId::NamedChild(std::sync::Arc::new(ElementId::Uuid(id)), "copy".into()) } else { ElementId::Uuid(id) };
         let mut el = div()
-            .id(ElementId::Uuid(id))
+            .id(el_id)
             .role(gpui::Role::Button)
             .aria_label(format!("{} clip, {:.1} s", c.name, c.duration))
             .group(group.clone())
@@ -113,7 +155,7 @@ impl ClipView<'_> {
             .when(!cut_l, |d| d.rounded_l(px(RADIUS)))
             .when(!cut_r, |d| d.rounded_r(px(RADIUS)))
             .when(self.muted, |d| d.opacity(0.45))
-            .when(self.moving, |d| d.opacity(0.85).shadow(t.glass_shadow()))
+            .when(self.moving || self.ghost, |d| d.opacity(0.85).shadow(t.glass_shadow()))
             .cursor(if self.locked { gpui::CursorStyle::Arrow } else { gpui::CursorStyle::PointingHand });
 
         // Pictures.
@@ -128,7 +170,9 @@ impl ClipView<'_> {
             let path = PathBuf::from(&strip.path);
             for i in first..last {
                 let left = i as f32 * tile_w;
-                let src = c.in_point + (left / wf) as f64 * span;
+                // A reversed clip shows its source from the end.
+                let along = (left / wf) as f64;
+                let src = c.in_point + (if c.reverse { 1. - along } else { along }) * span;
                 let idx = ((src / strip.interval.max(1e-6)).floor().max(0.) as u32).min(strip.frames.saturating_sub(1));
                 el = el.child(
                     div()
@@ -238,6 +282,49 @@ impl ClipView<'_> {
             );
         }
 
+        // Keyframes: diamonds along the bottom edge, the clip's own in the accent, a scene's dimmer.
+        let (own_keys, scene_keys) = key_times(c);
+        if (!own_keys.is_empty() || !scene_keys.is_empty()) && wf >= 12. {
+            let pps = self.pps as f32;
+            let (accent, quiet) = (t.accent, gpui::white().opacity(0.55));
+            let (own_x, scene_x): (Vec<f32>, Vec<f32>) = (
+                own_keys.iter().map(|k| *k as f32 * pps).collect(),
+                scene_keys.iter().map(|k| *k as f32 * pps).collect(),
+            );
+            el = el.child(
+                canvas(
+                    |_, _, _| (),
+                    move |b, _, window, _| {
+                        let o = b.origin;
+                        let y = h - 6.;
+                        let mut diamond = |x: f32, r: f32, color: gpui::Hsla| {
+                            if x + off < vis0 - 8. || x + off > vis1 + 8. {
+                                return;
+                            }
+                            let cx = x + off;
+                            let mut p = PathBuilder::fill();
+                            p.move_to(point(o.x + px(cx), o.y + px(y - r)));
+                            p.line_to(point(o.x + px(cx + r), o.y + px(y)));
+                            p.line_to(point(o.x + px(cx), o.y + px(y + r)));
+                            p.line_to(point(o.x + px(cx - r), o.y + px(y)));
+                            p.close();
+                            if let Ok(path) = p.build() {
+                                window.paint_path(path, color);
+                            }
+                        };
+                        for x in &scene_x {
+                            diamond(*x, 2.5, quiet);
+                        }
+                        for x in &own_x {
+                            diamond(*x, 3.5, accent);
+                        }
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            );
+        }
+
         // Generated media wears the accent along its top.
         if generated || k == Kind::Pending {
             el = el.child(div().absolute().top_0().left_0().right_0().h(px(2.)).bg(t.accent));
@@ -255,6 +342,7 @@ impl ClipView<'_> {
                 Kind::Text => Some("type"),
                 Kind::Solid => Some("square"),
                 Kind::Audio => Some("audio-lines"),
+                Kind::Motion => Some(if matches!(&c.content, ClipContent::Motion { scene, .. } if scene.is_3d()) { "box" } else { "shapes" }),
                 _ => None,
             };
             let fg = gpui::white();
@@ -284,6 +372,8 @@ impl ClipView<'_> {
                     .when_some(kind_icon, |d, i| d.child(icon(i).size(px(11.)).text_color(fg.opacity(0.8))))
                     .child(div().min_w_0().truncate().child(label))
                     .when_some(status, |d, s| d.child(div().flex_none().font_weight(gpui::FontWeight::MEDIUM).text_color(fg.opacity(0.7)).child(s)))
+                    .when(!c.effects.is_default(), |d| d.child(icon("palette").size(px(11.)).text_color(fg.opacity(0.8))))
+                    .when(c.reverse, |d| d.child(div().flex_none().font_family(MONO).text_size(px(10.)).text_color(hot).child("◀")))
                     .when((c.speed - 1.).abs() > 1e-6, |d| {
                         let s = format!("{:.2}", c.speed);
                         let s = s.trim_end_matches('0').trim_end_matches('.');
@@ -293,7 +383,7 @@ impl ClipView<'_> {
         }
 
         // Outline: the accent when selected or moving, a quiet ring otherwise; the agent's work in the accent ring.
-        let (ring, ring_w) = if self.selected || self.moving {
+        let (ring, ring_w) = if self.selected || self.moving || self.ghost {
             (t.accent, 2.)
         } else if self.agent {
             (t.accent_ring, 1.5)
@@ -312,7 +402,7 @@ impl ClipView<'_> {
                 .border_color(ring),
         );
 
-        if !self.locked {
+        if !self.locked && !self.ghost {
             el = self.handles(el, (vis0, vis1, off, wf, h), (cut_l, cut_r), (fade_in_w, fade_out_w), group, &t, cx);
         }
         Some(el)

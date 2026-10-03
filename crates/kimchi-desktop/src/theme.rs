@@ -115,6 +115,8 @@ pub struct Theme {
     pub clip_audio: Hsla,
     pub clip_text: Hsla,
     pub clip_generated: Hsla,
+    /// Motion graphics and 3D clips.
+    pub clip_motion: Hsla,
 }
 
 impl Global for Theme {}
@@ -193,6 +195,7 @@ impl Theme {
             clip_audio: parse_color(if mode == Mode::Dark { "#23362f" } else { "#cfe6dc" }),
             clip_text: parse_color(if mode == Mode::Dark { "#3a3045" } else { "#e2d8ee" }),
             clip_generated: kimchi(if mode == Mode::Dark { "800" } else { "200" }),
+            clip_motion: parse_color(if mode == Mode::Dark { "#20393d" } else { "#cde5e6" }),
         };
         if transparent {
             // GPUI can't blur what is behind an element, so floating tiers (menus, popovers,
@@ -274,6 +277,30 @@ pub fn os_reduces_transparency() -> bool {
             .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
     }
     #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// Whether the person asked the OS for less motion (animations then show their end state).
+pub fn os_reduces_motion() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("defaults")
+            .args(["read", "com.apple.universalaccess", "reduceMotion"])
+            .output()
+            .ok()
+            .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+            .output()
+            .ok()
+            .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "false")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         false
     }

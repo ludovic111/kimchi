@@ -7,10 +7,16 @@ use serde_json::json;
 use crate::store::{Dialog, Store, StoreExt};
 use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
-use crate::ui::{Button, GlassExt, drag, icon};
+use crate::actions::{self as act, tip};
+use crate::ui::{Button, GlassExt, drag, icon, motion};
 use crate::views::{agent_panel::AgentPanel, inspector::Inspector, jobs::JobsPopover, left_panel::LeftPanel, preview::PreviewView, timeline::Timeline};
 
 pub const TOPBAR_H: f32 = 52.;
+// Panel sizes to start with (and to go back to on a double-click on a divider).
+const LEFT_W: f32 = 340.;
+const RIGHT_W: f32 = 300.;
+const TIMELINE_H: f32 = 300.;
+const AGENT_W: f32 = 380.;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Splitter {
@@ -50,10 +56,10 @@ impl Editor {
             jobs: cx.new(|cx| JobsPopover::new(window, cx)),
             store,
             rename: None,
-            left_w: 340.,
-            right_w: 300.,
-            timeline_h: 300.,
-            agent_w: 380.,
+            left_w: LEFT_W,
+            right_w: RIGHT_W,
+            timeline_h: TIMELINE_H,
+            agent_w: AGENT_W,
             resizing: None,
             _sub: sub,
         }
@@ -118,7 +124,25 @@ impl Editor {
                     .bg(if active { t.accent } else { gpui::transparent_black() }),
             )
             .hover(move |s| s.bg(t.accent_soft))
-            .on_mouse_down(MouseButton::Left, cx.listener(move |this, e, _, cx| this.start_resize(which, e, cx)))
+            .tooltip(|_, cx| crate::ui::tooltip("Drag to resize · double-click to reset".into(), cx))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                if e.click_count == 2 {
+                    this.reset_size(which, cx);
+                } else {
+                    this.start_resize(which, e, cx);
+                }
+            }))
+    }
+
+    fn reset_size(&mut self, which: Splitter, cx: &mut Context<Self>) {
+        self.resizing = None;
+        match which {
+            Splitter::Left => self.left_w = LEFT_W,
+            Splitter::Right => self.right_w = RIGHT_W,
+            Splitter::Timeline => self.timeline_h = TIMELINE_H,
+            Splitter::Agent => self.agent_w = AGENT_W,
+        }
+        cx.notify();
     }
 
     fn start_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -251,8 +275,8 @@ impl Editor {
                         };
                         d.child(button)
                     })
-                    .child(Button::icon("undo", "undo-2", "Undo (⌘Z)").disabled(!can_undo).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("history.undo", json!({}), cx))))
-                    .child(Button::icon("redo", "redo-2", "Redo (⇧⌘Z)").disabled(!can_redo).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("history.redo", json!({}), cx))))
+                    .child(Button::icon("undo", "undo-2", tip("Undo", &act::Undo)).disabled(!can_undo).on_click(|_, _, cx| cx.store().update(cx, |s, cx| crate::app::undo_redo(s, true, cx))))
+                    .child(Button::icon("redo", "redo-2", tip("Redo", &act::Redo)).disabled(!can_redo).on_click(|_, _, cx| cx.store().update(cx, |s, cx| crate::app::undo_redo(s, false, cx))))
                     .child(div().w(px(1.)).h(px(18.)).mx(px(4.)).bg(t.line))
                     .child(
                         div()
@@ -275,7 +299,7 @@ impl Editor {
                             .when(jobs_open, |d| d.child(self.jobs.clone())),
                     )
                     .child(
-                        Button::icon("agent", "bot", "Agent (⌘J)")
+                        Button::icon("agent", "bot", tip("Agent", &act::ToggleAgent))
                             .selected(agent_open)
                             .on_click(|_, _, cx| {
                                 cx.store().update(cx, |s, cx| {
@@ -285,13 +309,19 @@ impl Editor {
                                 })
                             }),
                     )
-                    .child(Button::icon("palette", "command", "Command palette (⌘K)").on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Palette, cx))))
+                    .child(Button::icon("palette", "command", tip("Command palette", &act::Palette)).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Palette, cx))))
+                    .child(Button::icon("shortcuts", "keyboard", tip("Keyboard shortcuts", &act::ShowShortcuts)).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Shortcuts, cx))))
                     .child(
-                        Button::icon("settings", "key-round", "Models & keys")
-                            .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: Some("models".into()) }, cx))),
+                        // Until a provider is set up, models and keys are what settings are for.
+                        Button::icon("settings", "settings", tip("Settings", &act::OpenSettings)).on_click(|_, _, cx| {
+                            cx.store().update(cx, |s, cx| {
+                                let section = (!s.providers.iter().any(|p| p.ready)).then(|| "models".to_string());
+                                s.open_dialog(Dialog::Settings { section }, cx)
+                            })
+                        }),
                     )
                     .child(Button::icon("sponsor", "heart", "Support kimchi").on_click(|_, _, cx| cx.open_url(crate::app::SUPPORT_URL)))
-                    .child(Button::new("export", "Export").small().primary().with_icon("share").on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Export, cx)))),
+                    .child(Button::new("export", "Export").small().primary().with_icon("share").tooltip(tip("Export", &act::Export)).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Export, cx)))),
             )
     }
 }
@@ -335,7 +365,12 @@ impl Render for Editor {
                             .child(div().h(px(self.timeline_h)).flex_none().w_full().bg(t.bg_raised).child(self.timeline.clone())),
                     )
                     .when(agent_open, |d| {
-                        d.child(self.splitter(Splitter::Agent, cx)).child(div().w(px(self.agent_w)).flex_none().h_full().child(self.agent.clone().cached(full())))
+                        d.child(self.splitter(Splitter::Agent, cx)).child(motion::enter(
+                            div().relative().w(px(self.agent_w)).flex_none().h_full().child(self.agent.clone().cached(full())),
+                            "agent-in",
+                            motion::BASE,
+                            (24., 0.),
+                        ))
                     }),
             )
             .when(resizing, |d| d.child(drag::track(cx.entity(), Self::resize_move, Self::resize_end)))

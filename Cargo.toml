@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ludovic111/kimchi"
@@ -16,6 +16,7 @@ kimchi-gen = { path = "crates/kimchi-gen" }
 kimchi-control = { path = "crates/kimchi-control" }
 kimchi-agent = { path = "crates/kimchi-agent" }
 kimchi-cli = { path = "crates/kimchi-cli" }
+kimchi-captions = { path = "crates/kimchi-captions" }
 
 anyhow = "1"
 async-trait = "0.1"

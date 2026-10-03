@@ -20,6 +20,18 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         }
         "project.overview" => overview(s),
         "project.get" => Ok(json!(s.project()?)),
+        "project.renderFrame" => {
+            let p = s.project()?;
+            let times: Vec<f64> = match a.array("times") {
+                Some(list) => list.iter().map(|t| t.as_f64().ok_or("times are numbers of seconds")).collect::<Result<_, _>>()?,
+                None => vec![a.opt_f64("time").unwrap_or_else(|| s.ui_state().playhead)],
+            };
+            if times.is_empty() || times.len() > 16 {
+                return Err("Give between 1 and 16 times.".into());
+            }
+            let path = crate::commands::motion::render_png(s, &p, &times, a.opt_u32("width")).await?;
+            Ok(json!({ "path": path, "times": times, "duration": round(p.duration()) }))
+        }
         "project.create" => {
             let name = a.opt_str("name").map(str::trim).filter(|n| !n.is_empty()).unwrap_or("Untitled");
             let d = ProjectSettings::default();
@@ -221,6 +233,9 @@ fn overview(s: &Arc<Session>) -> CmdResult {
                     if let ClipContent::Pending { prompt, .. } = &c.content {
                         problems.push(format!("Clip \"{}\" is still generating (\"{prompt}\").", c.name));
                     }
+                    if let Some(lut) = c.effects.lut.as_ref().filter(|l| !std::path::Path::new(&l.path).is_file()) {
+                        problems.push(format!("Clip \"{}\" uses a LUT that is missing ({}): it is drawn without it.", c.name, lut.path));
+                    }
                     clip_summary(&p, c)
                 }).collect::<Vec<_>>(),
             })
@@ -291,9 +306,32 @@ pub fn clip_summary(p: &Project, c: &kimchi_core::Clip) -> Value {
             v["prompt"] = json!(prompt);
             v["model"] = json!(model_name);
         }
+        ClipContent::Motion { scene, template } => {
+            v["type"] = json!("motion");
+            v["scene"] = json!(if scene.is_3d() { "3d" } else { "2d" });
+            v["ids"] = json!(scene.ids());
+            if let Some(t) = template {
+                v["template"] = json!(t.id);
+            }
+            if c.in_point > 0.0 {
+                v["inPoint"] = json!(round(c.in_point));
+            }
+        }
+    }
+    if !c.keyframes.is_empty() {
+        v["animated"] = json!(c.keyframes.keys().collect::<Vec<_>>());
     }
     if c.speed != 1.0 {
         v["speed"] = json!(c.speed);
+    }
+    if c.reverse {
+        v["reverse"] = json!(true);
+    }
+    if !c.effects.is_default() {
+        v["effects"] = json!(c.effects);
+    }
+    if let Some(tr) = &c.transition {
+        v["transition"] = json!({ "kind": tr.kind, "duration": round(tr.duration) });
     }
     if c.volume != 1.0 {
         v["volume"] = json!(c.volume);

@@ -13,21 +13,10 @@ use kimchi_core::Project;
 use kimchi_media::preview::{AudioChunk, CHANNELS, Frame, PreviewStream, SAMPLE_RATE};
 use parking_lot::Mutex;
 
-/// Text layers for `project`, rasterised once per change (cached by content hash).
-fn overlays(session: &Session, project: &Project) -> kimchi_media::export::Overlays {
-    let dir = session.cache_dir(project.id).join("text");
-    kimchi_media::text::rasterize_overlays(project, &dir).unwrap_or_else(|e| {
-        tracing::warn!("text layers: {e}");
-        Default::default()
-    })
-}
-
 /// One composited frame at `time`. Runs on Tokio.
 pub async fn render(session: Arc<Session>, project: Arc<Project>, time: f64, width: u32, height: u32) -> Result<Frame, String> {
     let tools = session.tools()?;
-    let (s, p) = (session.clone(), project.clone());
-    let overlays = tokio::task::spawn_blocking(move || overlays(&s, &p)).await.map_err(|e| e.to_string())?;
-    kimchi_media::preview::render_frame(&tools, &project, &overlays, time, width, height).await.map_err(|e| e.to_string())
+    kimchi_media::preview::render_frame(&tools, &project, time, width, height).await.map_err(|e| e.to_string())
 }
 
 /// A frame as a GPUI image (BGRA).
@@ -50,10 +39,8 @@ pub async fn stream(
 ) -> Result<(), String> {
     use futures::SinkExt;
     let tools = session.tools()?;
-    let (s, p) = (session.clone(), project.clone());
-    let overlays = tokio::task::spawn_blocking(move || overlays(&s, &p)).await.map_err(|e| e.to_string())?;
     let fps = project.settings.fps.clamp(1.0, 30.0);
-    let mut stream = PreviewStream::start(&tools, &project, &overlays, from, width, height, fps).await.map_err(|e| e.to_string())?;
+    let mut stream = PreviewStream::start(&tools, &project, from, width, height, fps).await.map_err(|e| e.to_string())?;
     if let Some(mut rx) = stream.audio() {
         let audio = audio.clone();
         tokio::spawn(async move {

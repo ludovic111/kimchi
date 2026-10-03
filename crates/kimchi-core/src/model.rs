@@ -7,6 +7,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::anim::{KeyValue, Keyframes, number_at, value_at};
+use crate::effects::{EFFECT_PROPS, Effects};
+use crate::motion::{Scene, TemplateRef};
+use crate::transition::Transition;
+
 pub type Id = Uuid;
 
 pub fn new_id() -> Id {
@@ -192,13 +197,16 @@ pub struct Track {
     pub hidden: bool,
     #[serde(default)]
     pub locked: bool,
+    /// A video track whose titles are the captions (exported as subtitles too).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub captions: bool,
     /// Sorted by `start`, never overlapping.
     pub clips: Vec<Clip>,
 }
 
 impl Track {
     pub fn new(kind: TrackKind, name: impl Into<String>) -> Self {
-        Self { id: new_id(), kind, name: name.into(), muted: false, hidden: false, locked: false, clips: vec![] }
+        Self { id: new_id(), kind, name: name.into(), muted: false, hidden: false, locked: false, captions: false, clips: vec![] }
     }
 
     pub fn end(&self) -> f64 {
@@ -224,6 +232,9 @@ pub struct Clip {
     pub in_point: f64,
     #[serde(default = "one")]
     pub speed: f64,
+    /// Plays the source range backwards (the first frame on the timeline is the range's last).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reverse: bool,
     pub content: ClipContent,
     #[serde(default)]
     pub transform: Transform,
@@ -233,10 +244,23 @@ pub struct Clip {
     pub fade_in: f64,
     #[serde(default)]
     pub fade_out: f64,
+    /// Animated properties ([`CLIP_PROPS`]), times in seconds from the clip's start.
+    #[serde(default, skip_serializing_if = "Keyframes::is_empty")]
+    pub keyframes: Keyframes,
+    /// Colour corrections, vignette, sharpen, chroma key, LUT.
+    #[serde(default, skip_serializing_if = "Effects::is_default")]
+    pub effects: Effects,
+    /// How the clip comes in at its start (see [`crate::transition`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<Transition>,
 }
 
 fn one() -> f64 {
     1.0
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Clip {
@@ -248,11 +272,15 @@ impl Clip {
             duration,
             in_point: 0.0,
             speed: 1.0,
+            reverse: false,
             content,
             transform: Transform::default(),
             volume: 1.0,
             fade_in: 0.0,
             fade_out: 0.0,
+            keyframes: Keyframes::new(),
+            effects: Effects::default(),
+            transition: None,
         }
     }
 
@@ -271,9 +299,189 @@ impl Clip {
         }
     }
 
-    /// Source time (seconds into the media) shown at timeline time `t`.
+    /// Source time (seconds into the media) shown at timeline time `t`. Outside the clip (a
+    /// transition plays it on past its edges) the source continues the same way.
     pub fn source_time(&self, t: f64) -> f64 {
-        self.in_point + (t - self.start) * self.speed
+        let local = t - self.start;
+        if self.reverse { self.in_point + (self.duration - local) * self.speed } else { self.in_point + local * self.speed }
+    }
+
+    /// Source seconds the clip uses: `(in_point, in_point + duration × speed)`.
+    pub fn source_range(&self) -> (f64, f64) {
+        (self.in_point, self.in_point + self.duration * self.speed)
+    }
+
+    /// The part of the clip on the timeline between `a` and `b` (inside it), as a clip with the
+    /// same id: its in-point follows the source (backwards for reversed clips), keyframes stay
+    /// where they were on the timeline. Fades and transitions are left to the caller.
+    pub fn cut(&self, a: f64, b: f64) -> Clip {
+        let mut c = self.clone();
+        let (a, b) = (a.max(self.start), b.min(self.end()));
+        c.start = a;
+        c.duration = (b - a).max(0.0);
+        c.in_point = if self.reverse { self.source_time(b) } else { self.source_time(a) };
+        crate::anim::shift(&mut c.keyframes, -(a - self.start));
+        c
+    }
+
+    /// Source seconds available before the clip's first frame and after its last (how far
+    /// its start and end can be dragged out), for a source `len` seconds long.
+    pub fn room(&self, len: f64) -> (f64, f64) {
+        let (lo, hi) = self.source_range();
+        let (before, after) = ((lo / self.speed).max(0.0), ((len - hi) / self.speed).max(0.0));
+        if self.reverse { (after, before) } else { (before, after) }
+    }
+
+    /// Scene time a motion clip shows at timeline time `t` (like [`Self::source_time`]).
+    pub fn scene_time(&self, t: f64) -> f64 {
+        self.source_time(t)
+    }
+
+    /// The clip's effects at timeline time `t`, with their keyframes applied.
+    pub fn effects_at(&self, t: f64) -> Effects {
+        let mut e = self.effects.clone();
+        if self.keyframes.is_empty() {
+            return e;
+        }
+        let local = t - self.start;
+        for name in EFFECT_PROPS {
+            if let Some(v) = number_at(&self.keyframes, name, local) {
+                e.set(name, v);
+            }
+        }
+        e
+    }
+
+    /// Does anything about the clip change while it plays (keyframes, or a moving scene)?
+    pub fn is_animated(&self) -> bool {
+        !self.keyframes.is_empty() || matches!(self.content, ClipContent::Motion { .. })
+    }
+
+    /// Where the clip's picture is at timeline time `t`: the transform with keyframes applied.
+    pub fn placement_at(&self, t: f64) -> Placement {
+        let local = t - self.start;
+        let k = &self.keyframes;
+        let tf = &self.transform;
+        let get = |name: &str, base: f64| number_at(k, name, local).unwrap_or(base);
+        let (mut x, mut y) = (get("x", tf.x), get("y", tf.y));
+        if let Some(p) = k.get("position").and_then(|keys| value_at(keys, local)).and_then(|v| v.as_vec(2)) {
+            (x, y) = (p[0], p[1]);
+        }
+        Placement {
+            x,
+            y,
+            scale_x: get("scale", tf.scale) * get("scaleX", 1.0),
+            scale_y: get("scale", tf.scale) * get("scaleY", 1.0),
+            rotation: get("rotation", tf.rotation),
+            opacity: get("opacity", tf.opacity).clamp(0.0, 1.0),
+            blur: get("blur", 0.0).max(0.0),
+            fit: tf.fit,
+        }
+    }
+
+    /// Volume at timeline time `t` (keyframes on `volume`, else the clip's).
+    pub fn volume_at(&self, t: f64) -> f64 {
+        number_at(&self.keyframes, "volume", t - self.start).unwrap_or(self.volume).clamp(0.0, 4.0)
+    }
+
+    /// A text clip's style at timeline time `t`, with `fontSize`, `color` and `letterSpacing`
+    /// keyframes applied.
+    pub fn text_at(&self, t: f64) -> Option<TextStyle> {
+        let ClipContent::Text { style } = &self.content else { return None };
+        let mut style = style.clone();
+        let local = t - self.start;
+        if let Some(v) = number_at(&self.keyframes, "fontSize", local) {
+            style.font_size = v.max(0.0);
+        }
+        if let Some(v) = number_at(&self.keyframes, "letterSpacing", local) {
+            style.letter_spacing = v;
+        }
+        if let Some(KeyValue::Text(c)) = self.keyframes.get("color").and_then(|keys| value_at(keys, local)) {
+            style.color = c;
+        }
+        Some(style)
+    }
+
+    /// The scale reached anywhere in the clip (to decode pictures sharply enough).
+    pub fn max_scale(&self) -> f64 {
+        let mut m = self.transform.scale.max(0.0);
+        for name in ["scale", "scaleX", "scaleY"] {
+            for key in self.keyframes.get(name).into_iter().flatten() {
+                let v = key.value.as_vec(2).map_or(0.0, |v| v.into_iter().fold(0.0, f64::max));
+                let v = if name == "scale" { v } else { v * self.transform.scale };
+                m = m.max(v);
+            }
+        }
+        m
+    }
+}
+
+/// Clip properties that take keyframes. Picture clips: x, y, position ([x, y]), scale, scaleX,
+/// scaleY, rotation, opacity, blur, and the effects brightness, contrast, saturation,
+/// temperature, tint, vignette, sharpen. Sound: volume. Text clips also: fontSize, color,
+/// letterSpacing.
+pub const CLIP_PROPS: &[&str] = &[
+    "x",
+    "y",
+    "position",
+    "scale",
+    "scaleX",
+    "scaleY",
+    "rotation",
+    "opacity",
+    "blur",
+    "volume",
+    "fontSize",
+    "color",
+    "letterSpacing",
+    "brightness",
+    "contrast",
+    "saturation",
+    "temperature",
+    "tint",
+    "vignette",
+    "sharpen",
+];
+
+/// Checks that `name` can be keyframed on `content` and that `value` fits it.
+pub fn check_clip_key(content: &ClipContent, name: &str, value: &KeyValue) -> Result<(), String> {
+    let text_only = ["fontSize", "color", "letterSpacing"];
+    if !CLIP_PROPS.contains(&name) {
+        let hint = crate::closest(name, CLIP_PROPS).map(|c| format!(" Did you mean `{c}`?")).unwrap_or_default();
+        return Err(format!("Clips can't animate `{name}`.{hint} Clip properties: {}.", CLIP_PROPS.join(", ")));
+    }
+    if text_only.contains(&name) && !matches!(content, ClipContent::Text { .. }) {
+        return Err(format!("`{name}` is for text clips; for motion clips animate the layer inside the scene (motion.setKeyframes)."));
+    }
+    match name {
+        "color" => {
+            let c = value.as_str().ok_or("color takes a colour like \"#ffffff\"")?;
+            crate::motion::check_color(c, "color")
+        }
+        "position" => value.as_vec(2).map(|_| ()).ok_or_else(|| "position takes [x, y]".to_string()),
+        _ => value.as_f64().map(|_| ()).ok_or_else(|| format!("{name} takes a number")),
+    }
+}
+
+/// A picture clip's transform at one instant (keyframes applied).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placement {
+    pub x: f64,
+    pub y: f64,
+    /// `transform.scale` × `scaleX`/`scaleY`.
+    pub scale_x: f64,
+    pub scale_y: f64,
+    pub rotation: f64,
+    pub opacity: f64,
+    /// Gaussian blur radius in project pixels.
+    pub blur: f64,
+    pub fit: Fit,
+}
+
+impl Placement {
+    /// As a plain [`Transform`] (uniform scale: the larger of the two).
+    pub fn transform(&self) -> Transform {
+        Transform { x: self.x, y: self.y, scale: self.scale_x.max(self.scale_y), rotation: self.rotation, opacity: self.opacity, fit: self.fit }
     }
 }
 
@@ -285,6 +493,12 @@ pub enum ClipContent {
     Solid { color: String },
     /// A placeholder for media that is still being generated.
     Pending { job_id: String, kind: MediaKind, prompt: String, model_name: String },
+    /// Motion graphics or a 3D scene, drawn by kimchi (see [`crate::motion`]).
+    Motion {
+        scene: Scene,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        template: Option<TemplateRef>,
+    },
 }
 
 impl ClipContent {
@@ -444,6 +658,28 @@ impl Project {
 
     pub fn clips(&self) -> impl Iterator<Item = (&Track, &Clip)> {
         self.tracks.iter().flat_map(|t| t.clips.iter().map(move |c| (t, c)))
+    }
+
+    /// The captions track (the top-most one if there are several).
+    pub fn caption_track(&self) -> Option<&Track> {
+        self.tracks.iter().find(|t| t.captions)
+    }
+
+    /// Every caption, by time: (track, clip, words).
+    pub fn captions(&self) -> Vec<(&Track, &Clip, &str)> {
+        let mut out: Vec<(&Track, &Clip, &str)> = self
+            .tracks
+            .iter()
+            .filter(|t| t.captions)
+            .flat_map(|t| {
+                t.clips.iter().filter_map(move |c| match &c.content {
+                    ClipContent::Text { style } => Some((t, c, style.content.as_str())),
+                    _ => None,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.1.start.total_cmp(&b.1.start));
+        out
     }
 
     /// Next free name like "Video 3" for a new track of `kind`.

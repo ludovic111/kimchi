@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use kimchi_core::Project;
+use kimchi_media::EncoderChoice;
 use kimchi_media::export::{ExportFormat, ExportSettings, Quality};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -21,7 +22,27 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 { "id": "wav", "label": "Audio only (WAV)", "extension": "wav", "note": "Uncompressed 24-bit mix." },
             ],
             "qualities": ["draft", "standard", "high"],
+            "encoders": ["auto", "hardware", "software"],
         })),
+        "export.encoders" => {
+            let tools = s.tools()?;
+            let (hw, formats) = kimchi_media::export::encoders(&tools).await.map_err(err)?;
+            let named = |e: &Option<String>| e.as_ref().map(|e| json!({ "id": e, "label": kimchi_media::accel::label(e) }));
+            Ok(json!({
+                "hardware": hw.encoders.iter().map(|v| json!({
+                    "id": v.encoder.name,
+                    "label": v.encoder.api.label(),
+                    "codec": v.encoder.codec,
+                    "constantQuality": v.constant_quality,
+                })).collect::<Vec<_>>(),
+                "formats": formats.iter().map(|f| json!({
+                    "format": f.format,
+                    "auto": named(&f.auto),
+                    "hardware": named(&f.hardware),
+                    "software": named(&f.software),
+                })).collect::<Vec<_>>(),
+            }))
+        }
         "export.start" => {
             let settings = ExportSettings {
                 path: a.str("path")?.to_string(),
@@ -34,9 +55,28 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                     (None, None) => None,
                     (f, t) => Some((f.unwrap_or(0.0), t.unwrap_or(f64::MAX))),
                 },
+                encoder: encoder(a.opt_str("encoder").unwrap_or("auto"))?,
             };
-            let project = s.project()?;
+            let mut project = s.project()?;
+            // Captions: in the picture, in a file next to it, both or neither.
+            let captions = a.opt_str("captions").unwrap_or("burn");
+            let (burn, file) = match captions {
+                "burn" => (true, false),
+                "file" | "srt" | "sidecar" => (false, true),
+                "both" => (true, true),
+                "none" => (false, false),
+                other => return Err(format!("captions is burn, file, both or none, not \"{other}\"")),
+            };
+            if !burn {
+                for t in project.tracks.iter_mut().filter(|t| t.captions) {
+                    t.hidden = true;
+                }
+            }
+            let sidecar = if file && !settings.format.is_audio_only() { crate::commands::captions::sidecar(&project, std::path::Path::new(&settings.path))? } else { None };
             let id = start(s, project, settings)?;
+            if let Some(path) = &sidecar {
+                tracing::info!("captions written to {}", path.display());
+            }
             if a.bool_or("wait", false) || s.headless {
                 return Ok(json!(wait(s, &id).await?));
             }
@@ -70,6 +110,15 @@ pub fn format(f: &str) -> CmdResult<ExportFormat> {
     })
 }
 
+pub fn encoder(e: &str) -> CmdResult<EncoderChoice> {
+    Ok(match e {
+        "auto" => EncoderChoice::Auto,
+        "hardware" | "gpu" => EncoderChoice::Hardware,
+        "software" | "cpu" => EncoderChoice::Software,
+        other => return Err(format!("encoder is auto, hardware or software, not \"{other}\"")),
+    })
+}
+
 pub fn quality(q: &str) -> CmdResult<Quality> {
     Ok(match q {
         "draft" => Quality::Draft,
@@ -84,20 +133,23 @@ pub fn start(s: &Arc<Session>, project: Project, settings: ExportSettings) -> Cm
     let tools = s.tools()?;
     let id = uuid::Uuid::new_v4().to_string();
     let cancel = CancellationToken::new();
-    let status = ExportStatus { id: id.clone(), path: settings.path.clone(), progress: 0.0, done: false, error: None, started_at: chrono::Utc::now() };
+    let status = ExportStatus { id: id.clone(), path: settings.path.clone(), progress: 0.0, done: false, error: None, started_at: chrono::Utc::now(), encoder: None };
     s.add_export(status.clone(), cancel.clone());
     s.set_export(status.clone());
     let s2 = s.clone();
     s.runtime().spawn(async move {
-        let overlays_dir = s2.cache_dir(project.id).join("text");
+        let mut status = status;
+        // Which encoder it starts on (the GPU's, usually), shown while it runs.
+        if let Ok(encoder) = kimchi_media::export::planned_encoder(&tools, &project, &settings).await {
+            status.encoder = encoder;
+            s2.set_export(status.clone());
+        }
         let result = async {
-            let overlays = kimchi_media::text::rasterize_overlays(&project, &overlays_dir).map_err(err)?;
             let progress_session = s2.clone();
             let base = status.clone();
             kimchi_media::export::export(
                 &tools,
                 &project,
-                &overlays,
                 &settings,
                 move |p| progress_session.set_export(ExportStatus { progress: p, ..base.clone() }),
                 cancel,
@@ -107,7 +159,7 @@ pub fn start(s: &Arc<Session>, project: Project, settings: ExportSettings) -> Cm
         }
         .await;
         let end = match result {
-            Ok(()) => ExportStatus { progress: 1.0, done: true, ..status },
+            Ok(done) => ExportStatus { progress: 1.0, done: true, encoder: done.encoder, ..status },
             Err(e) => ExportStatus { done: true, error: Some(e), ..status },
         };
         s2.set_export(end);

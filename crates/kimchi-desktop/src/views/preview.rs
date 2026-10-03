@@ -1,7 +1,8 @@
-//! The preview: the composited frame at the playhead (rendered by the export
-//! graph, so it matches the render), playback with sound, pending generations
+//! The preview: the composited frame at the playhead (rendered by the export's
+//! compositor, so it matches the render), playback with sound, pending generations
 //! drawn over the frame, and on-canvas handles to move and scale the selected
-//! clip. The canvas is work, so it stays solid (never glass).
+//! clip (an animated clip gets a keyframe at the playhead). The canvas is work, so
+//! it stays solid (never glass).
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -14,12 +15,13 @@ use gpui::{
 };
 use kimchi_core::{Clip, ClipContent, Fit, Id, Project, TrackKind, Transform};
 use kimchi_media::preview::Frame;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::playback::Playback;
 use crate::preview::{AudioBuffer, AudioOut};
 use crate::store::{Store, StoreExt};
 use crate::theme::{ActiveTheme, MONO, size as sz};
+use crate::actions::{self as act, tip};
 use crate::ui::{Button, drag, icon, smpte};
 
 /// Largest frame the preview asks for (pixels, longest side).
@@ -76,7 +78,8 @@ fn box_of(p: &Project, clip: &Clip, t: &Transform) -> LayerBox {
             LayerBox { cx: w / 2.0 + t.x, cy: h / 2.0 + t.y, w: (m.width + pad * 2.0) * t.scale, h: (m.height + pad) * t.scale, rotation: t.rotation }
         }
         ClipContent::Pending { .. } => LayerBox { cx: w / 2.0, cy: h / 2.0, w, h, rotation: 0.0 },
-        ClipContent::Solid { .. } => fit_box(t, w, h, w, h),
+        // A motion scene is drawn on the whole canvas, then placed like a full-frame picture.
+        ClipContent::Solid { .. } | ClipContent::Motion { .. } => fit_box(t, w, h, w, h),
     }
 }
 
@@ -303,9 +306,10 @@ impl PreviewView {
         let mut out = vec![];
         for track in p.tracks.iter().rev().filter(|tr| tr.kind == TrackKind::Video && !tr.hidden) {
             for c in track.clips.iter().filter(|c| t >= c.start && t < c.end()) {
+                // Where the clip is at the playhead (keyframes applied).
                 let tf = match &self.live {
                     Some((id, tf)) if *id == c.id => tf.clone(),
-                    _ => c.transform.clone(),
+                    _ => c.placement_at(t).transform(),
                 };
                 out.push((c.clone(), track.locked, box_of(p, c, &tf)));
             }
@@ -334,17 +338,19 @@ impl PreviewView {
             }
         });
         if !locked {
-            self.begin_drag(clip, DragMode::Move, e.position, b, &p);
+            self.begin_drag(clip, DragMode::Move, e.position, b, &p, t);
         }
         cx.notify();
     }
 
-    fn begin_drag(&mut self, clip: Clip, mode: DragMode, at: Point<Pixels>, b: LayerBox, p: &Project) {
+    fn begin_drag(&mut self, clip: Clip, mode: DragMode, at: Point<Pixels>, b: LayerBox, p: &Project, playhead: f64) {
         let (stage, scale) = self.stage(p);
         let center = point(stage.origin.x + px(b.cx as f32 * scale), stage.origin.y + px(b.cy as f32 * scale));
         let d0 = ((at - center).magnitude() as f32).max(1.0);
-        self.drag = Some(CanvasDrag { clip: clip.id, mode, start: at, t0: clip.transform.clone(), center, d0 });
-        self.live = Some((clip.id, clip.transform));
+        // Start from where the clip is now, keyframes included.
+        let t0 = clip.placement_at(playhead).transform();
+        self.drag = Some(CanvasDrag { clip: clip.id, mode, start: at, t0: t0.clone(), center, d0 });
+        self.live = Some((clip.id, t0));
     }
 
     fn drag_move(&mut self, e: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -380,9 +386,42 @@ impl PreviewView {
         if let Some((id, t)) = self.live.clone()
             && (t.x != d.t0.x || t.y != d.t0.y || t.scale != d.t0.scale)
         {
-            let params = json!({ "clipId": id, "x": t.x, "y": t.y, "scale": t.scale });
-            self.store.update(cx, |s, cx| {
-                s.run_then("clip.update", params, cx, |_, _, _| {});
+            // An animated property gets a keyframe at the playhead; a still one changes.
+            let animated = self.store.read(cx).clip(id).map(|c| c.keyframes.clone()).unwrap_or_default();
+            let playhead = self.playback.read(cx).playhead;
+            let key = |name: &str, value: Value| json!({ "command": "clip.addKeyframe", "params": { "clipId": id, "property": name, "time": playhead, "value": value } });
+            let mut commands = vec![];
+            let mut still = serde_json::Map::new();
+            if t.x != d.t0.x || t.y != d.t0.y {
+                if animated.contains_key("position") {
+                    commands.push(key("position", json!([t.x, t.y])));
+                } else {
+                    for (name, v) in [("x", t.x), ("y", t.y)] {
+                        if animated.contains_key(name) {
+                            commands.push(key(name, json!(v)));
+                        } else {
+                            still.insert(name.into(), json!(v));
+                        }
+                    }
+                }
+            }
+            if t.scale != d.t0.scale {
+                if animated.contains_key("scale") {
+                    commands.push(key("scale", json!(t.scale)));
+                } else {
+                    still.insert("scale".into(), json!(t.scale));
+                }
+            }
+            if !still.is_empty() {
+                still.insert("clipId".into(), json!(id));
+                commands.push(json!({ "command": "clip.update", "params": Value::Object(still) }));
+            }
+            self.store.update(cx, |s, cx| match commands.len() {
+                1 => {
+                    let c = commands.remove(0);
+                    s.run_then(c["command"].as_str().unwrap_or("clip.update"), c["params"].clone(), cx, |_, _, _| {});
+                }
+                _ => s.run_then("project.batch", json!({ "commands": commands, "label": "Move clip" }), cx, |_, _, _| {}),
             });
             // Keep the live transform until the project reflects it (avoids a jump back).
             self.live = Some((id, t));
@@ -408,7 +447,7 @@ impl PreviewView {
         let pb = self.playback.read(cx);
         let s = self.store.read(cx);
         let fps = s.fps();
-        let (now, total, playing, looping) = (pb.playhead, s.duration(), pb.playing, pb.looping);
+        let (now, total, playing, looping, shuttle) = (pb.playhead, s.duration(), pb.moving(), pb.looping, pb.shuttle);
         let scale_pct = s.project.as_ref().map(|p| (self.stage(p).1 * 100.0).round() as i32).unwrap_or(100);
         let pb_entity = self.playback.clone();
         let seek = move |time: f64| {
@@ -439,15 +478,16 @@ impl PreviewView {
                     .font_family(MONO)
                     .text_size(px(sz::SM))
                     .child(div().text_color(t.text).child(smpte(now, fps)))
-                    .child(div().text_color(t.text_3).child(format!("/ {}", smpte(total, fps)))),
+                    .child(div().text_color(t.text_3).child(format!("/ {}", smpte(total, fps))))
+                    .when(shuttle != 0., |d| d.child(div().text_color(t.accent_text).child(crate::views::timeline::rate_label(shuttle)))),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(2.))
-                    .child(Button::icon("tp-start", "skip-back", "Start (Home)").on_click(seek(0.0)))
-                    .child(Button::icon("tp-prev", "step-back", "Previous frame (←)").on_click(step(-1.0)))
+                    .child(Button::icon("tp-start", "skip-back", tip("Go to start", &act::GoToStart)).on_click(seek(0.0)))
+                    .child(Button::icon("tp-prev", "step-back", tip("Previous frame", &act::StepBack)).on_click(step(-1.0)))
                     .child(
                         div()
                             .id("tp-play")
@@ -461,12 +501,12 @@ impl PreviewView {
                             .text_color(t.text_on_accent)
                             .cursor_pointer()
                             .hover(|s| s.bg(t.accent_hover))
-                            .tooltip(|_, cx| crate::ui::tooltip("Play / pause (Space)".into(), cx))
+                            .tooltip(move |_, cx| crate::ui::tooltip(tip(if playing { "Pause" } else { "Play" }, &act::PlayPause), cx))
                             .on_click(move |_, _, cx| pb_toggle.update(cx, |p, cx| p.toggle(cx)))
                             .child(icon(if playing { "pause" } else { "play" }).size(px(16.)).text_color(t.text_on_accent)),
                     )
-                    .child(Button::icon("tp-next", "step-forward", "Next frame (→)").on_click(step(1.0)))
-                    .child(Button::icon("tp-end", "skip-forward", "End (End)").on_click(seek(total))),
+                    .child(Button::icon("tp-next", "step-forward", tip("Next frame", &act::StepForward)).on_click(step(1.0)))
+                    .child(Button::icon("tp-end", "skip-forward", tip("Go to end", &act::GoToEnd)).on_click(seek(total))),
             )
             .child(
                 div()
@@ -475,7 +515,7 @@ impl PreviewView {
                     .justify_end()
                     .items_center()
                     .gap(px(8.))
-                    .child(Button::icon("tp-loop", "repeat", "Loop").selected(looping).on_click(move |_, _, cx| {
+                    .child(Button::icon("tp-loop", "repeat", tip(if looping { "Loop: on" } else { "Loop: off" }, &act::ToggleLoop)).selected(looping).on_click(move |_, _, cx| {
                         pb_loop.update(cx, |p, cx| {
                             p.looping = !p.looping;
                             cx.notify();
@@ -503,6 +543,7 @@ impl Render for PreviewView {
         let playhead = self.playback.read(cx).playhead;
         let viewport = self.viewport.clone();
         let entity = cx.entity();
+        let accent = t.accent;
 
         let stage = project.as_ref().map(|p| {
             let (b, scale) = self.stage(p);
@@ -564,7 +605,8 @@ impl Render for PreviewView {
                             .cursor(if (hx + hy) as i32 % 2 == 0 { gpui::CursorStyle::ResizeUpLeftDownRight } else { gpui::CursorStyle::ResizeUpRightDownLeft })
                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
                                 cx.stop_propagation();
-                                this.begin_drag(clip.clone(), DragMode::Scale, e.position, lb, &p);
+                                let playhead = this.playback.read(cx).playhead;
+                                this.begin_drag(clip.clone(), DragMode::Scale, e.position, lb, &p, playhead);
                                 cx.notify();
                             })),
                     );
@@ -586,6 +628,12 @@ impl Render for PreviewView {
                     .relative()
                     .overflow_hidden()
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+                    // Media dropped on the picture goes on the timeline at the playhead.
+                    .drag_over::<crate::views::timeline::dnd::MediaDrag>(move |st, _, _, _| st.border_2().border_color(accent))
+                    .on_drop::<crate::views::timeline::dnd::MediaDrag>(|d, _, cx| {
+                        let asset = d.asset_id;
+                        cx.store().update(cx, |s, cx| s.run_then("clip.insertMedia", json!({ "assetId": asset }), cx, |s, v, cx| s.set_selection(crate::app::created(&v), cx)));
+                    })
                     .child(
                         canvas(
                             move |bounds, _, cx| {

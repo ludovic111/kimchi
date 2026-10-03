@@ -38,6 +38,13 @@ pub struct ClipMove {
     pub start: f64,
 }
 
+/// A clip and the track it goes on (paste).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TrackClip {
+    pub track_id: Id,
+    pub clip: Clip,
+}
+
 /// Partial update for a clip. `None` fields are left untouched.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ClipPatch {
@@ -47,8 +54,23 @@ pub struct ClipPatch {
     pub fade_in: Option<f64>,
     pub fade_out: Option<f64>,
     pub speed: Option<f64>,
+    #[serde(default)]
+    pub reverse: Option<bool>,
     pub text: Option<TextStyle>,
     pub color: Option<String>,
+    /// Replaces every keyframe of the clip.
+    #[serde(default)]
+    pub keyframes: Option<crate::anim::Keyframes>,
+    /// Motion clips: the new scene (and the template that made it, if any).
+    #[serde(default)]
+    pub scene: Option<crate::motion::Scene>,
+    #[serde(default)]
+    pub template: Option<Option<crate::motion::TemplateRef>>,
+    #[serde(default)]
+    pub effects: Option<crate::effects::Effects>,
+    /// `Some(None)` removes the transition.
+    #[serde(default)]
+    pub transition: Option<Option<crate::transition::Transition>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -57,6 +79,9 @@ pub struct TrackPatch {
     pub muted: Option<bool>,
     pub hidden: Option<bool>,
     pub locked: Option<bool>,
+    /// Makes it (or stops it being) a captions track (video tracks only).
+    #[serde(default)]
+    pub captions: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -88,6 +113,8 @@ pub enum Edit {
     Split { time: f64, clip_ids: Option<Vec<Id>> },
     DeleteClips { clip_ids: Vec<Id>, ripple: bool },
     DuplicateClips { clip_ids: Vec<Id> },
+    /// Places copies of clips (new ids) where given; what they land on is overwritten.
+    PasteClips { clips: Vec<TrackClip> },
     UpdateClip { clip_id: Id, patch: ClipPatch },
     /// Closes the empty space at `time` on a track by pulling later clips left.
     CloseGap { track_id: Id, time: f64 },
@@ -177,6 +204,12 @@ impl Project {
                 if let Some(v) = patch.locked {
                     t.locked = v;
                 }
+                if let Some(v) = patch.captions {
+                    if v && t.kind != TrackKind::Video {
+                        return Err(EditError::Invalid("captions go on a video track".into()));
+                    }
+                    t.captions = v;
+                }
             }
             Edit::MoveTrack { track_id, index } => {
                 let from = self.tracks.iter().position(|t| t.id == *track_id).ok_or(EditError::TrackNotFound(*track_id))?;
@@ -227,6 +260,32 @@ impl Project {
                     copy.start = self.tracks[ti].end();
                     out.created_clips.push(copy.id);
                     place(&mut self.tracks[ti], copy, &self.assets);
+                }
+            }
+            Edit::PasteClips { clips } => {
+                // Check everything first so a paste lands whole or not at all.
+                for c in clips {
+                    let t = self.track(c.track_id).ok_or(EditError::TrackNotFound(c.track_id))?;
+                    if t.locked {
+                        return Err(EditError::Locked);
+                    }
+                    if let Some(a) = c.clip.asset_id()
+                        && self.asset(a).is_none()
+                    {
+                        return Err(EditError::AssetNotFound(a));
+                    }
+                    if !t.accepts(&c.clip.content, &self.assets) {
+                        return Err(EditError::Invalid("that clip can't go on this track".into()));
+                    }
+                }
+                for c in clips {
+                    let mut copy = c.clip.clone();
+                    copy.id = new_id();
+                    copy.start = copy.start.max(0.0);
+                    copy.duration = copy.duration.max(MIN_CLIP);
+                    out.created_clips.push(copy.id);
+                    let i = self.tracks.iter().position(|t| t.id == c.track_id).expect("checked above");
+                    place(&mut self.tracks[i], copy, &self.assets);
                 }
             }
             Edit::UpdateClip { clip_id, patch } => self.update_clip(*clip_id, patch)?,
@@ -299,7 +358,7 @@ impl Project {
         let free = |t: &Track| !t.locked && t.kind == kind && t.clips.iter().all(|c| c.end() <= clip.start + 1e-9 || c.start >= clip.end() - 1e-9);
         // Footage goes on the lowest free video track (closest to the base layer);
         // titles go on the highest so nothing above can cover them.
-        let overlay = matches!(clip.content, ClipContent::Text { .. });
+        let overlay = matches!(clip.content, ClipContent::Text { .. } | ClipContent::Motion { .. });
         let found = match kind {
             TrackKind::Video if overlay => self.tracks.iter().position(free),
             TrackKind::Video => self.tracks.iter().rposition(free),
@@ -359,24 +418,30 @@ impl Project {
         let prev_end = if ci > 0 { track.clips[ci - 1].end() } else { 0.0 };
         let next_start = track.clips.get(ci + 1).map(|c| c.start).unwrap_or(f64::INFINITY);
         let c = &mut track.clips[ci];
+        // Source seconds the edges can be dragged out by (unbounded for stills, titles…).
+        let (before, after) = source_len.map_or((f64::INFINITY, f64::INFINITY), |len| c.room(len));
+        let (forward, speed) = (!c.reverse, c.speed);
         match edge {
             Edge::Start => {
-                let mut lo = prev_end;
-                if source_len.is_some() {
-                    lo = lo.max(c.start - c.in_point / c.speed);
-                }
+                let lo = prev_end.max(c.start - before);
                 let new_start = time.clamp(lo, c.end() - MIN_CLIP);
                 let delta = new_start - c.start;
-                c.in_point = (c.in_point + delta * c.speed).max(0.0);
+                // Forward clips lose (or gain) source at the head; reversed ones at the tail.
+                if forward {
+                    c.in_point = (c.in_point + delta * speed).max(0.0);
+                }
                 c.start = new_start;
                 c.duration -= delta;
+                // Keyframes stay where they were on the timeline.
+                crate::anim::shift(&mut c.keyframes, -delta);
             }
             Edge::End => {
-                let mut hi = next_start;
-                if let Some(len) = source_len {
-                    hi = hi.min(c.start + (len - c.in_point) / c.speed);
-                }
+                let hi = next_start.min(c.end() + after);
                 let new_end = time.clamp(c.start + MIN_CLIP, hi.max(c.start + MIN_CLIP));
+                let delta = new_end - c.end();
+                if !forward {
+                    c.in_point = (c.in_point - delta * speed).max(0.0);
+                }
                 c.duration = new_end - c.start;
             }
         }
@@ -396,7 +461,7 @@ impl Project {
         }
         let right = split_right(c, time);
         let left = &mut self.tracks[ti].clips[ci];
-        left.duration = time - left.start;
+        *left = left_part(left, time);
         left.fade_out = 0.0;
         clamp_fades(left);
         let id = right.id;
@@ -465,6 +530,22 @@ impl Project {
                 c.duration = c.duration.min((len - c.in_point) / speed);
             }
         }
+        if let Some(reverse) = p.reverse {
+            if reverse && source_len.is_none() {
+                return Err(EditError::Invalid("only video and sound clips can play backwards".into()));
+            }
+            // Same source range, played the other way.
+            c.reverse = reverse;
+        }
+        if let Some(effects) = &p.effects {
+            c.effects = effects.clone().clamped();
+        }
+        if let Some(tr) = &p.transition {
+            c.transition = tr.clone().map(|mut tr| {
+                tr.duration = tr.duration.clamp(MIN_CLIP, 30.0);
+                tr
+            });
+        }
         if let Some(style) = &p.text {
             match &mut c.content {
                 ClipContent::Text { style: s } => *s = style.clone(),
@@ -475,6 +556,23 @@ impl Project {
             match &mut c.content {
                 ClipContent::Solid { color: s } => *s = color.clone(),
                 _ => return Err(EditError::Invalid("not a solid clip".into())),
+            }
+        }
+        if let Some(keys) = &p.keyframes {
+            let mut keys = keys.clone();
+            crate::anim::normalize(&mut keys);
+            c.keyframes = keys;
+        }
+        if let Some(new_scene) = &p.scene {
+            match &mut c.content {
+                ClipContent::Motion { scene, .. } => *scene = new_scene.clone(),
+                _ => return Err(EditError::Invalid("not a motion clip".into())),
+            }
+        }
+        if let Some(new_template) = &p.template {
+            match &mut c.content {
+                ClipContent::Motion { template, .. } => *template = new_template.clone(),
+                _ => return Err(EditError::Invalid("not a motion clip".into())),
             }
         }
         clamp_fades(c);
@@ -489,15 +587,24 @@ fn clamp_fades(c: &mut Clip) {
     c.fade_out = c.fade_out.clamp(0.0, c.duration - c.fade_in);
 }
 
+/// The part of `c` after `time`, as a new clip (no fade in, no transition: it starts on a cut
+/// inside the old clip).
 fn split_right(c: &Clip, time: f64) -> Clip {
-    let mut right = c.clone();
+    let mut right = c.cut(time, c.end());
     right.id = new_id();
-    right.start = time;
-    right.duration = c.end() - time;
-    right.in_point = c.source_time(time);
     right.fade_in = 0.0;
+    right.transition = None;
     clamp_fades(&mut right);
     right
+}
+
+/// The part of `c` before `time` (same id).
+fn left_part(c: &Clip, time: f64) -> Clip {
+    let mut left = c.cut(c.start, time);
+    // Keyframes are relative to the start, which hasn't moved.
+    left.keyframes = c.keyframes.clone();
+    clamp_fades(&mut left);
+    left
 }
 
 /// Inserts `clip` into `track`, overwriting whatever was underneath it.
@@ -511,17 +618,10 @@ pub fn place(track: &mut Track, clip: Clip, assets: &[Asset]) {
         } else if c.start >= s - 1e-9 && c.end() <= e + 1e-9 {
             // Fully covered: gone.
         } else if c.start < s && c.end() > e {
-            let right = split_right(&c, e);
-            let mut left = c;
-            left.duration = s - left.start;
-            clamp_fades(&mut left);
-            keep.push(left);
-            keep.push(right);
+            keep.push(left_part(&c, s));
+            keep.push(split_right(&c, e));
         } else if c.start < s {
-            let mut left = c;
-            left.duration = s - left.start;
-            clamp_fades(&mut left);
-            keep.push(left);
+            keep.push(left_part(&c, s));
         } else {
             keep.push(split_right(&c, e));
         }

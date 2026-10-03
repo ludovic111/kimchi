@@ -106,7 +106,7 @@ impl GeneratePanel {
             .min_w_0()
             .child(bounds_probe(self.picker_anchor.clone()))
             .child(trigger)
-            .when(self.picker_open, |d| d.child(div().absolute().left_0().top(relative(1.)).child(deferred(anchored().snap_to_window_with_margin(px(8.)).child(self.picker_popover(model, cx))).with_priority(3))))
+            .when(self.picker_open, |d| d.child(div().absolute().left_0().top(relative(1.)).child(deferred(anchored().snap_to_window_with_margin(px(8.)).child(crate::ui::motion::enter(div().relative().child(self.picker_popover(model, cx)), "picker-in", crate::ui::motion::FAST, (0., -4.)))).with_priority(3))))
             .into_any_element()
     }
 

@@ -1,17 +1,20 @@
-//! The left column: media, generate and text, as tabs on glass tier 1.
+//! The left column: media, generate, text, motion and captions, as tabs on glass tier 1. The
+//! open tab shows its name; the others only their icon (and the name in a tooltip).
 
 use gpui::{Context, Entity, Render, Subscription, Window, div, prelude::*, px};
 
 use crate::store::{LeftTab, Store, StoreExt};
 use crate::theme::{ActiveTheme, size as sz};
-use crate::ui::{GlassExt, icon};
-use crate::views::{generate_panel::GeneratePanel, media_panel::MediaPanel, text_panel::TextPanel};
+use crate::ui::{GlassExt, icon, motion};
+use crate::views::{captions_panel::CaptionsPanel, generate_panel::GeneratePanel, media_panel::MediaPanel, motion_panel::MotionPanel, text_panel::TextPanel};
 
 pub struct LeftPanel {
     store: Entity<Store>,
     pub media: Entity<MediaPanel>,
     pub generate: Entity<GeneratePanel>,
     pub text: Entity<TextPanel>,
+    pub motion: Entity<MotionPanel>,
+    pub captions: Entity<CaptionsPanel>,
     _sub: Subscription,
 }
 
@@ -23,6 +26,8 @@ impl LeftPanel {
             media: cx.new(|cx| MediaPanel::new(window, cx)),
             generate: cx.new(|cx| GeneratePanel::new(window, cx)),
             text: cx.new(|cx| TextPanel::new(window, cx)),
+            motion: cx.new(|cx| MotionPanel::new(window, cx)),
+            captions: cx.new(|cx| CaptionsPanel::new(window, cx)),
             store,
             _sub: sub,
         }
@@ -34,11 +39,12 @@ impl Render for LeftPanel {
         let t = cx.theme().clone();
         let tab = self.store.read(cx).left_tab;
         let active_jobs = self.store.read(cx).jobs.iter().filter(|j| !j.status.is_done()).count();
-        let tab_button = |id: &'static str, label: &'static str, ic: &'static str, which: LeftTab, badge: Option<usize>| {
+        let tab_button = |id: &'static str, label: &'static str, ic: &'static str, which: LeftTab, badge: Option<usize>, action: fn() -> Box<dyn gpui::Action>| {
             let selected = tab == which;
             div()
                 .id(id)
-                .flex_1()
+                .when(selected, |d| d.flex_1().px(px(8.)))
+                .when(!selected, |d| d.flex_none().w(px(36.)))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -49,8 +55,9 @@ impl Render for LeftPanel {
                 .text_size(px(sz::BASE))
                 .when(selected, |d| d.bg(t.accent_soft).text_color(t.accent_text))
                 .when(!selected, |d| d.text_color(t.text_2).hover(|s| s.bg(t.hover)))
+                .tooltip(move |_, cx| crate::ui::tooltip(crate::actions::tip(label, &*action()), cx))
                 .child(icon(ic))
-                .child(label)
+                .when(selected, |d| d.child(label))
                 .when_some(badge.filter(|n| *n > 0), |d, n| {
                     d.child(div().px(px(5.)).rounded_full().bg(t.accent).text_color(t.text_on_accent).text_size(px(10.)).child(n.to_string()))
                 })
@@ -71,14 +78,23 @@ impl Render for LeftPanel {
                     .p(px(8.))
                     .border_b_1()
                     .border_color(t.line)
-                    .child(tab_button("tab-media", "Media", "film", LeftTab::Media, None))
-                    .child(tab_button("tab-generate", "Generate", "sparkles", LeftTab::Generate, Some(active_jobs)))
-                    .child(tab_button("tab-text", "Text", "type", LeftTab::Text, None)),
+                    .child(tab_button("tab-media", "Media", "film", LeftTab::Media, None, || Box::new(crate::actions::ShowMedia)))
+                    .child(tab_button("tab-generate", "Generate", "sparkles", LeftTab::Generate, Some(active_jobs), || Box::new(crate::actions::ShowGenerate)))
+                    .child(tab_button("tab-text", "Text", "type", LeftTab::Text, None, || Box::new(crate::actions::ShowText)))
+                    .child(tab_button("tab-motion", "Motion", "shapes", LeftTab::Motion, None, || Box::new(crate::actions::ShowMotion)))
+                    .child(tab_button("tab-captions", "Captions", "captions", LeftTab::Captions, None, || Box::new(crate::actions::ShowCaptions))),
             )
-            .child(div().flex_1().min_h_0().child(match tab {
-                LeftTab::Media => self.media.clone().into_any_element(),
-                LeftTab::Generate => self.generate.clone().into_any_element(),
-                LeftTab::Text => self.text.clone().into_any_element(),
-            }))
+            // A new id per tab, so switching fades the new one in.
+            .child(motion::fade(
+                div().flex_1().min_h_0().child(match tab {
+                    LeftTab::Media => self.media.clone().into_any_element(),
+                    LeftTab::Generate => self.generate.clone().into_any_element(),
+                    LeftTab::Text => self.text.clone().into_any_element(),
+                    LeftTab::Motion => self.motion.clone().into_any_element(),
+                    LeftTab::Captions => self.captions.clone().into_any_element(),
+                }),
+                gpui::ElementId::Name(tab.as_str().into()),
+                motion::FAST,
+            ))
     }
 }

@@ -41,9 +41,10 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 muted: a.opt_bool("muted"),
                 hidden: a.opt_bool("hidden"),
                 locked: a.opt_bool("locked"),
+                captions: a.opt_bool("captions"),
             };
             s.apply(cx.label(), cx.source, &Edit::UpdateTrack { track_id: id, patch }, None)?;
-            Ok(json!(s.read(|ed| ed.project().track(id).map(|t| json!({ "id": t.id, "name": t.name, "muted": t.muted, "hidden": t.hidden, "locked": t.locked })))?))
+            Ok(json!(s.read(|ed| ed.project().track(id).map(|t| json!({ "id": t.id, "name": t.name, "muted": t.muted, "hidden": t.hidden, "locked": t.locked, "captions": t.captions })))?))
         }
         "track.move" => {
             let id = resolve::track(&s.project()?, a.str("trackId")?)?;

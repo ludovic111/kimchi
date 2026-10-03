@@ -7,7 +7,12 @@ use crate::session::{CmdResult, Session};
 
 pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
     match cx.spec.name {
-        "app.info" => Ok(info(s)),
+        "app.info" => {
+            let mut v = info(s);
+            // Which 3D renderer draws motion clips (starts it, so not part of `info`).
+            v["renderer3d"] = json!(tokio::task::spawn_blocking(kimchi_media::render::Renderer::engine).await.map_err(crate::session::err)?);
+            Ok(v)
+        }
         "app.commands" => match a.opt_str("command") {
             Some(name) => registry::spec(name).map(registry::describe).ok_or_else(|| format!("Unknown command `{name}`.")),
             None => Ok(json!(registry::commands().iter().map(registry::describe).collect::<Vec<_>>())),

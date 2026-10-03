@@ -1,19 +1,19 @@
-//! The live preview: the timeline composited by the export compiler, so what the window shows
-//! is exactly what an export renders (same graph, only a range and a smaller size).
+//! The live preview: frames from the same compositor as the export ([`crate::render`]), so what
+//! the window shows is exactly what renders, only smaller.
 //!
-//! [`render_frame`] draws one frame for scrubbing; [`PreviewStream`] plays from a point,
-//! decoding pictures and sound in two ffmpeg processes that run ahead of the clock with a small
-//! bounded buffer. Speakers are the caller's business: the stream only hands out PCM.
+//! [`render_frame`] draws one frame for scrubbing; [`PreviewStream`] plays from a point: the
+//! compositor runs ahead of the clock on a worker thread (each playing video decoded by its own
+//! ffmpeg), and the sound is mixed by one ffmpeg graph, both with small bounded buffers.
+//! Speakers are the caller's business: the stream only hands out PCM.
 //!
 //! Sources are read through each asset's `proxy` when it exists on disk, and clips whose media
 //! is missing are left out rather than failing the preview (an export reports them instead).
 //!
-//! Costs and limits (Apple M-series, 640×360): one [`render_frame`] is one ffmpeg run, about
-//! 40–120 ms depending on how far the sources must decode from their previous keyframe, so
-//! scrubbing should drop requests while one is in flight. A stream renders typical projects (a
-//! few layers of 1080p H.264, stills, text) several times faster than real time; long-GOP or
-//! 4K sources without proxies, or many simultaneous layers, can fall behind, and the caller then
-//! sees frames arrive late (their `pts` says when they belong).
+//! Costs: one [`render_frame`] decodes every visible video at that time, in parallel (40–120 ms
+//! depending on how far a source must decode from its previous keyframe), so scrubbing should
+//! drop requests while one is in flight. Stills, titles and 3D devices are kept between frames.
+//! When a stream falls behind (many 4K layers without proxies, heavy 3D on the CPU) frames
+//! arrive late; their `pts` says when they belong.
 
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,8 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::export::{self, ExportFormat, ExportSettings, Overlays, PREVIEW_SAMPLE_RATE, Quality, Sink};
+use crate::export::{self, ExportFormat, ExportSettings, PREVIEW_SAMPLE_RATE, Quality, Sink};
+use crate::render::Renderer;
 use crate::{Caps, MediaError, MediaResult, Tools, process};
 
 /// Sample rate of [`AudioChunk`]s.
@@ -77,15 +78,8 @@ pub struct AudioChunk {
 /// The frame of the timeline shown at `time`, `width`×`height` (rounded down to even numbers;
 /// pass the project's aspect ratio). `time` is snapped to the project's frame grid, so this is the
 /// frame an export would contain. Past the end, or on an empty timeline, returns the background
-/// colour without running ffmpeg.
-pub async fn render_frame(
-    tools: &Tools,
-    project: &Project,
-    overlays: &Overlays,
-    time: f64,
-    width: u32,
-    height: u32,
-) -> MediaResult<Frame> {
+/// colour without decoding anything.
+pub async fn render_frame(tools: &Tools, project: &Project, time: f64, width: u32, height: u32) -> MediaResult<Frame> {
     let (width, height) = (even(width), even(height));
     let fps = project.settings.fps.clamp(1.0, 240.0);
     let end = project.duration();
@@ -93,22 +87,14 @@ pub async fn render_frame(
     if time >= end || end <= 1e-6 {
         return Ok(Frame::solid(width, height, &project.settings.background));
     }
-    // One frame long; a frame closer than 1 ms to the end starts that much earlier.
-    let from = time.min(end - 1e-3).max(0.0);
-    let (project, overlays) = playable(project, overlays);
-    let caps = Caps::detect(tools).await?;
-    let st = settings(width, height, fps, (from, from + 1.0 / fps));
-    let (plan, _) = export::compile(&project, &overlays, &st, &caps, Sink::Frames)?;
-    let script = Script::write(&plan.graph).await?;
-    let mut args = head();
-    args.extend(plan.body(script.path(), &caps));
-    args.extend(["-frames:v", "1", "-"].map(String::from));
-    let out = process::output(&tools.ffmpeg, &args).await?;
-    let len = width as usize * height as usize * 4;
-    if out.len() < len {
-        return Err(MediaError::Ffmpeg(format!("expected a {width}x{height} frame, got {} bytes", out.len())));
-    }
-    Ok(Frame { width, height, rgba: out[..len].to_vec() })
+    let (tools, project) = (tools.clone(), project.clone());
+    tokio::task::spawn_blocking(move || {
+        let mut r = Renderer::new(&tools, &project, width, height, fps);
+        let p = r.still(time)?;
+        Ok(Frame { width, height, rgba: crate::render::to_rgba(p) })
+    })
+    .await
+    .map_err(|e| MediaError::Io(std::io::Error::other(e)))?
 }
 
 /// Playback from a point to the end of the timeline: frames in order, and the mixed sound.
@@ -138,7 +124,6 @@ impl PreviewStream {
     pub async fn start(
         tools: &Tools,
         project: &Project,
-        overlays: &Overlays,
         from: f64,
         width: u32,
         height: u32,
@@ -161,46 +146,28 @@ impl PreviewStream {
             stream.duration = 0.0;
             return Ok(stream);
         }
-        let (project, overlays) = playable(project, overlays);
+        let project = crate::render::playable(project);
         let caps = Caps::detect(tools).await?;
         let st = settings(width, height, fps, (from, end));
 
-        let (plan, _) = export::compile(&project, &overlays, &st, &caps, Sink::Frames)?;
-        let script = Script::write(&plan.graph).await?;
-        let mut args = head();
-        args.extend(plan.body(script.path(), &caps));
-        args.push("-".into());
-        let mut child = process::spawn(&tools.ffmpeg, &args, true)?;
         let (tx, rx) = mpsc::channel(FRAMES_AHEAD);
         stream.frames = rx;
-        stream.tasks.push(tokio::spawn(async move {
-            let _script = script; // removed once ffmpeg is done with it
-            let stderr = process::collect_stderr(&mut child);
-            let mut stdout = child.stdout.take().expect("piped stdout");
-            let len = width as usize * height as usize * 4;
-            let mut n = 0u64;
-            loop {
-                let mut rgba = vec![0u8; len];
-                match stdout.read_exact(&mut rgba).await {
-                    Ok(_) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                    Err(e) => {
-                        let _ = tx.send(Err(e.into())).await;
-                        return;
-                    }
-                }
+        let (t2, p2) = (tools.clone(), project.clone());
+        let decode_caps = caps.clone();
+        stream.tasks.push(tokio::task::spawn_blocking(move || {
+            let mut r = Renderer::new(&t2, &p2, width, height, fps).with_hardware_decoding(decode_caps);
+            let frames = ((end - from) * fps - 1e-6).ceil().max(0.0) as u64;
+            for n in 0..frames {
                 let pts = from + n as f64 / fps;
-                if tx.send(Ok((pts, Frame { width, height, rgba }))).await.is_err() {
-                    return; // the stream was dropped: `child` is killed on drop
+                let frame = r.frame(pts).map(|p| (pts, Frame { width, height, rgba: crate::render::to_rgba(p) }));
+                let failed = frame.is_err();
+                if tx.blocking_send(frame).is_err() || failed {
+                    return; // the stream was dropped
                 }
-                n += 1;
-            }
-            if let Err(e) = finish(child, stderr).await {
-                let _ = tx.send(Err(e)).await;
             }
         }));
 
-        let (plan, audible) = export::compile(&project, &overlays, &st, &caps, Sink::Samples)?;
+        let (plan, audible) = export::compile(&project, &st, &caps, Sink::Samples)?;
         if audible > 0 {
             let script = Script::write(&plan.graph).await?;
             let mut args = head();
@@ -315,21 +282,8 @@ fn settings(width: u32, height: u32, fps: f64, range: (f64, f64)) -> ExportSetti
         height: Some(height),
         fps: Some(fps),
         range: Some(range),
+        encoder: Default::default(),
     }
-}
-
-/// The project as the preview reads it: proxies where they exist, and without the assets or
-/// overlays whose files are gone (their clips are skipped instead of failing the whole frame).
-fn playable(project: &Project, overlays: &Overlays) -> (Project, Overlays) {
-    let mut project = project.clone();
-    project.assets.retain_mut(|a| {
-        if let Some(proxy) = a.proxy.as_deref().filter(|p| Path::new(p).is_file()) {
-            a.path = proxy.to_string();
-        }
-        Path::new(&a.path).is_file()
-    });
-    let overlays = overlays.iter().filter(|(_, p)| p.is_file()).map(|(k, v)| (*k, v.clone())).collect();
-    (project, overlays)
 }
 
 /// Long graphs go through a temporary file, removed on drop.

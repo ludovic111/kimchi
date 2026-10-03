@@ -1,5 +1,6 @@
-//! A horizontal slider (opacity, volume): click or drag anywhere on the track; the arrow keys
-//! nudge it when it has focus.
+//! A horizontal slider (opacity, volume, effects): click or drag anywhere on the track; the arrow
+//! keys nudge it when it has focus. A slider with a neutral value (`neutral`) fills from it
+//! (signed effects fill from the middle) and goes back to it on a double-click.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -17,6 +18,8 @@ use crate::ui::scrub::ScrubChange;
 pub struct Slider {
     pub min: f64,
     pub max: f64,
+    /// Where the fill starts and what a double-click resets to.
+    neutral: Option<f64>,
     value: f64,
     dragging: bool,
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -27,7 +30,12 @@ impl EventEmitter<ScrubChange> for Slider {}
 
 impl Slider {
     pub fn new(min: f64, max: f64, cx: &mut Context<Self>) -> Self {
-        Self { min, max, value: min, dragging: false, bounds: Rc::default(), focus: cx.focus_handle() }
+        Self { min, max, neutral: None, value: min, dragging: false, bounds: Rc::default(), focus: cx.focus_handle() }
+    }
+
+    pub fn neutral(mut self, v: f64) -> Self {
+        self.neutral = Some(v);
+        self
     }
 
     /// Shows `v` (from the project) unless a drag is in progress.
@@ -56,6 +64,10 @@ impl Slider {
 
     fn down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
+        if let (Some(n), 2) = (self.neutral, e.click_count) {
+            self.set(n, true, cx);
+            return;
+        }
         self.dragging = true;
         let v = self.at(e.position.x);
         self.set(v, false, cx);
@@ -96,7 +108,10 @@ impl Slider {
 impl gpui::Render for Slider {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
-        let f = if self.max > self.min { ((self.value - self.min) / (self.max - self.min)).clamp(0.0, 1.0) as f32 } else { 0.0 };
+        let frac = |v: f64| if self.max > self.min { ((v - self.min) / (self.max - self.min)).clamp(0.0, 1.0) as f32 } else { 0.0 };
+        let f = frac(self.value);
+        let from = frac(self.neutral.unwrap_or(self.min));
+        let (fill0, fill1) = (from.min(f), from.max(f));
         let focused = self.focus.is_focused(window);
         let bounds = self.bounds.clone();
         div()
@@ -122,7 +137,7 @@ impl gpui::Render for Slider {
                     .h(px(4.))
                     .rounded_full()
                     .bg(t.line_strong)
-                    .child(div().absolute().left_0().top_0().h_full().w(relative(f)).rounded_full().bg(t.accent))
+                    .child(div().absolute().left(relative(fill0)).top_0().h_full().w(relative(fill1 - fill0)).rounded_full().bg(t.accent))
                     .child(
                         canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {}).absolute().inset_0(),
                     )

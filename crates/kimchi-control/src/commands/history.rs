@@ -20,14 +20,15 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             if !done {
                 return Err("Nothing to undo.".into());
             }
-            state(s)
+            // The step just undone is now the next redo.
+            stepped(s, |ed| ed.redo_steps().first().cloned())
         }
         "history.redo" => {
             let done = s.edit(cx.label(), cx.source, |ed| Ok(ed.redo()))?;
             if !done {
                 return Err("Nothing to redo.".into());
             }
-            state(s)
+            stepped(s, |ed| ed.undo_steps().last().cloned())
         }
         "history.checkpoint" => {
             let id = s.edit(cx.label(), cx.source, |ed| Ok(ed.checkpoint()))?;
@@ -46,6 +47,14 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         }
         _ => Err(crate::commands::unhandled(cx)),
     }
+}
+
+/// The history state and the step that was undone or redone (`step`: the command that made it).
+fn stepped(s: &Session, step: impl FnOnce(&kimchi_core::Editor) -> Option<kimchi_core::history::StepInfo>) -> CmdResult {
+    s.read(|ed| {
+        let info = step(ed).unwrap_or_default();
+        json!({ "canUndo": ed.can_undo(), "canRedo": ed.can_redo(), "step": info.label, "source": info.source })
+    })
 }
 
 fn state(s: &Session) -> CmdResult {

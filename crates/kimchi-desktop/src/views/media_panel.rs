@@ -219,6 +219,33 @@ impl MediaPanel {
                         .child(icon(kind_icon).size(px(10.)).text_color(t.text))
                         .when_some(a.meta.duration.filter(|_| a.kind != MediaKind::Image), |d, dur| d.child(div().font_family(MONO).child(short(dur)))),
                 )
+                // Shown on hover: one click puts it on the timeline at the playhead.
+                .child({
+                    let id = a.id;
+                    div()
+                        .id("media-add")
+                        .absolute()
+                        .right(px(5.))
+                        .bottom(px(5.))
+                        .size(px(24.))
+                        .rounded_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(t.accent)
+                        .text_color(t.text_on_accent)
+                        .shadow(t.glass_shadow())
+                        .opacity(0.)
+                        .group_hover("media-tile", |s| s.opacity(1.))
+                        .hover(|s| s.bg(t.accent_hover))
+                        .tooltip(|_, cx| crate::ui::tooltip("Add at the playhead (or double-click)".into(), cx))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            insert_at_playhead(id, cx);
+                        })
+                        .child(icon("plus").size(px(14.)).text_color(t.text_on_accent))
+                })
                 .when(a.is_generated(), |d| {
                     d.child(
                         div()
@@ -395,7 +422,7 @@ impl Render for MediaPanel {
                         cx.notify();
                     })),
             )
-            .child(Button::new("media-import", "Import").small().with_icon("import").tooltip("Import files (⌘I)").on_click(|_, _, cx| crate::app::import_dialog(cx)));
+            .child(Button::new("media-import", "Import").small().with_icon("import").tooltip(crate::actions::tip("Import files", &crate::actions::Import)).on_click(|_, _, cx| crate::app::import_dialog(cx)));
 
         let filters = div().flex().flex_wrap().gap(px(2.)).px(px(PAD)).pb(px(8.)).children(Filter::ALL.iter().map(|&(f, label)| {
             let on = self.filter == f;

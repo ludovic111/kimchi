@@ -116,6 +116,9 @@ pub struct ExportStatus {
     #[serde(default)]
     pub error: Option<String>,
     pub started_at: DateTime<Utc>,
+    /// The ffmpeg video encoder (`h264_videotoolbox`, `libx264`…); the CPU's after a fallback.
+    #[serde(default)]
+    pub encoder: Option<String>,
 }
 
 /// What the window shows. The window pushes it with [`Session::set_ui_state`];
@@ -131,7 +134,7 @@ pub struct UiState {
     pub selected_asset: Option<Id>,
     /// Timeline zoom in pixels per second.
     pub zoom: f64,
-    /// `media`, `generate` or `text`.
+    /// `media`, `generate`, `text` or `motion`.
     pub left_tab: String,
     /// Open side panels (`agent`, `jobs`…) and dialogs (`settings`, `export`, `palette`).
     pub open: Vec<String>,

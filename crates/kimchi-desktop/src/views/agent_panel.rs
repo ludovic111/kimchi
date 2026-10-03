@@ -423,7 +423,7 @@ impl AgentPanel {
             .child(div().flex_1())
             .child(Button::icon("agent-new", "plus", "New conversation").disabled(self.active.is_some() || self.items.is_empty()).on_click(cx.listener(|this, _, _, cx| this.new_conversation(cx))))
             .child(Button::icon("agent-settings", "shield-check", "Agent settings and permissions").on_click(|_, _, cx| Self::open_agent_settings(cx)))
-            .child(Button::icon("agent-close", "x", "Close (⌘J)").on_click(|_, _, cx| {
+            .child(Button::icon("agent-close", "x", crate::actions::tip("Close", &crate::actions::ToggleAgent)).on_click(|_, _, cx| {
                 cx.store().update(cx, |s, cx| {
                     s.agent_open = false;
                     s.sync_ui(cx);
@@ -634,7 +634,7 @@ impl AgentPanel {
                         .gap(px(6.))
                         .px(px(8.))
                         .pb(px(6.))
-                        .child(div().flex_1().text_size(px(sz::XS)).text_color(t.text_2).child(if running { "Running. Stop keeps finished edits." } else { "⌘↵ to send" }))
+                        .child(div().flex_1().text_size(px(sz::XS)).text_color(t.text_2).child(if running { "Running. Stop keeps finished edits.".to_string() } else { format!("{} to send", crate::actions::keys_label("M-enter")) }))
                         .child(if running {
                             Button::icon("agent-stop", "square", "Stop").color(t.danger).on_click(cx.listener(|this, _, _, cx| this.stop(cx))).into_any_element()
                         } else {
@@ -647,7 +647,7 @@ impl AgentPanel {
                                 .justify_center()
                                 .bg(t.accent)
                                 .text_color(t.text_on_accent)
-                                .tooltip(|_, cx| crate::ui::tooltip("Send (⌘↵)".into(), cx))
+                                .tooltip(|_, cx| crate::ui::tooltip(format!("Send ({})", crate::actions::keys_label("M-enter")).into(), cx))
                                 .child(icon("arrow-up").size(px(15.)).text_color(t.text_on_accent))
                                 .when(empty, |d| d.opacity(0.35).cursor_not_allowed())
                                 .when(!empty, |d| d.cursor_pointer().hover(|s| s.bg(t.accent_hover)).on_click(cx.listener(|this, _, _, cx| this.send(cx))))

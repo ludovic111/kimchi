@@ -1,11 +1,14 @@
 //! The tracks: ruler, track headers, lanes and clips, with every pointer
-//! interaction on them (scrub, select, move, trim, fades, drops from the media
-//! panel, scroll, zoom, menus). It is drawn as a cached view, so playback does
+//! interaction on them (scrub, select, rubber-band select, move, ⌥-drag copy,
+//! trim, fades, drops from the media panel and the desktop, scroll, zoom, menus). It is drawn as a cached view, so playback does
 //! not re-render it: the playhead is painted over it by [`super::Timeline`].
 //!
 //! Drags preview locally and end in one registry command (`clip.moveMany`,
-//! `clip.trim`, `clip.update`, `track.move`) with a coalesce key; the preview
+//! `clip.trim`, `clip.update`, `transition.set`, `track.move`) with a coalesce key; the preview
 //! stays until the session announces the changed project, so nothing jumps.
+//! Transitions draw over the clips ([`transitions`]).
+
+mod transitions;
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -36,9 +39,13 @@ const AGENT_MARK: Duration = Duration::from_secs(60);
 
 enum Drag {
     Scrub { points: Vec<f64> },
+    /// Rubber band from empty lane space: (time, content y) where it began and where it is.
+    Marquee { from: (f64, f32), to: (f64, f32), x0: Pixels, additive: bool, base: Vec<Id>, started: bool },
     Move(MoveDrag),
     Trim { clip: Id, start_edge: bool, points: Vec<f64>, time: Option<f64> },
     Fade { clip: Id, out: bool, value: Option<f64> },
+    /// A transition's edge: its incoming clip, the cut it is centred on (or where it starts).
+    Transition { clip: Id, cut: Option<f64>, start: f64, value: Option<f64> },
     Track { id: Id, from: usize, to: usize, y0: Pixels, started: bool },
 }
 
@@ -54,14 +61,17 @@ struct MoveDrag {
     dt: f64,
     shift: isize,
     points: Vec<f64>,
+    /// ⌥ held: drop copies, leave the originals.
+    copy: bool,
 }
 
 /// What a drag shows before the project has changed.
 #[derive(Clone)]
 enum Preview {
-    Move { ids: Vec<Id>, dt: f64, shift: isize },
+    Move { ids: Vec<Id>, dt: f64, shift: isize, copy: bool },
     Trim { clip: Id, start_edge: bool, time: f64 },
     Fade { clip: Id, out: bool, value: f64 },
+    Transition { clip: Id, duration: f64 },
 }
 
 /// Where dragged media would land.
@@ -233,7 +243,7 @@ impl TimelineBody {
     fn on_wheel(&mut self, e: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
         let d = e.delta.pixel_delta(px(20.));
         let (dx, dy) = (f32::from(d.x) as f64, f32::from(d.y));
-        if e.modifiers.control || e.modifiers.platform {
+        if e.modifiers.control || e.modifiers.platform || e.modifiers.alt {
             let pps = self.pps(cx);
             self.zoom_to(pps * (dy as f64 * 0.01).exp(), Some(e.position.x), cx);
         } else if e.modifiers.shift {
@@ -254,8 +264,8 @@ impl TimelineBody {
 
     // ---- pointer -------------------------------------------------------------
 
-    /// Ruler or empty lane: move the playhead, and follow the pointer.
-    fn scrub_down(&mut self, e: &MouseDownEvent, clear: bool, cx: &mut Context<Self>) {
+    /// The ruler or the playhead line: move the playhead, and follow the pointer.
+    fn scrub_down(&mut self, e: &MouseDownEvent, cx: &mut Context<Self>) {
         if std::mem::take(&mut self.consumed) {
             return;
         }
@@ -263,9 +273,6 @@ impl TimelineBody {
             return;
         }
         let points = self.store.read(cx).project.as_ref().map(|p| geom::snap_points(p, &[], None)).unwrap_or_default();
-        if clear {
-            self.store.update(cx, |s, cx| s.clear_selection(cx));
-        }
         let t = self.time_at(e.position.x, cx);
         self.playback.update(cx, |p, cx| {
             p.pause(cx);
@@ -275,12 +282,57 @@ impl TimelineBody {
         cx.notify();
     }
 
+    /// Empty lane space: grabbing the playhead line scrubs; anything else starts a rubber band
+    /// (a plain click, without dragging, moves the playhead there and clears the selection).
+    fn lanes_down(&mut self, e: &MouseDownEvent, cx: &mut Context<Self>) {
+        // A clip, handle or marker took it.
+        if std::mem::take(&mut self.consumed) || self.store.read(cx).project.is_none() {
+            return;
+        }
+        let head = self.playhead(cx) * self.pps(cx) - self.scroll_x;
+        let x = f32::from(e.position.x - self.lanes.get().origin.x) as f64;
+        if (x - head).abs() <= 5. {
+            return self.scrub_down(e, cx);
+        }
+        let additive = e.modifiers.shift || e.modifiers.platform || e.modifiers.control;
+        let base = if additive { self.store.read(cx).selection.clone() } else { vec![] };
+        let at = (self.time_at(e.position.x, cx), self.content_y(e.position.y));
+        self.drag = Some(Drag::Marquee { from: at, to: at, x0: e.position.x, additive, base, started: false });
+        cx.notify();
+    }
+
+    /// Clips the rubber band touches.
+    fn in_band(&self, p: &Project, (t0, y0): (f64, f32), (t1, y1): (f64, f32)) -> Vec<Id> {
+        let (ta, tb) = (t0.min(t1), t0.max(t1));
+        let (ya, yb) = (y0.min(y1), y0.max(y1));
+        let rows = geom::rows(&p.tracks);
+        let mut out = vec![];
+        for (i, track) in p.tracks.iter().enumerate() {
+            let (top, bottom) = (rows.tops[i] + 2., rows.tops[i] + 2. + track_h(track.kind));
+            if bottom < ya || top > yb {
+                continue;
+            }
+            out.extend(track.clips.iter().filter(|c| c.end() > ta && c.start < tb).map(|c| c.id));
+        }
+        out
+    }
+
     pub fn clip_down(&mut self, id: Id, e: &MouseDownEvent, cx: &mut Context<Self>) {
         // A trim or fade handle inside the clip already took it.
         if self.consumed {
             return;
         }
         self.consumed = true;
+        if e.click_count == 2 {
+            // A title: straight to its words.
+            if matches!(self.store.read(cx).clip(id).map(|c| &c.content), Some(kimchi_core::ClipContent::Text { .. })) {
+                self.store.update(cx, |s, cx| {
+                    s.select(id, false, cx);
+                    cx.emit(crate::store::StoreEvent::EditText);
+                });
+                return;
+            }
+        }
         let additive = e.modifiers.shift || e.modifiers.platform || e.modifiers.control;
         let selected = self.store.read(cx).selection.contains(&id);
         if !selected || additive {
@@ -308,12 +360,16 @@ impl TimelineBody {
             started: false,
             dt: 0.,
             shift: 0,
+            copy: e.modifiers.alt,
         }));
         cx.notify();
     }
 
     pub fn edge_down(&mut self, id: Id, start_edge: bool, _: &MouseDownEvent, cx: &mut Context<Self>) {
-        self.consumed = true;
+        // A transition badge or "+" drawn over the edge took it.
+        if std::mem::replace(&mut self.consumed, true) {
+            return;
+        }
         self.store.update(cx, |s, cx| s.select(id, false, cx));
         let Some(p) = self.store.read(cx).project.clone() else { return };
         let playhead = self.playhead(cx);
@@ -322,7 +378,9 @@ impl TimelineBody {
     }
 
     pub fn fade_down(&mut self, id: Id, out: bool, _: &MouseDownEvent, cx: &mut Context<Self>) {
-        self.consumed = true;
+        if std::mem::replace(&mut self.consumed, true) {
+            return;
+        }
         self.store.update(cx, |s, cx| s.select(id, false, cx));
         self.drag = Some(Drag::Fade { clip: id, out, value: None });
         cx.notify();
@@ -351,7 +409,26 @@ impl TimelineBody {
                 self.playback.update(cx, |p, cx| p.seek(t, cx));
                 return;
             }
+            Some(Drag::Marquee { from, to, x0, base, started, .. }) => {
+                let Some(p) = project else { return };
+                if !*started && f32::from(e.position.x - *x0).abs() < 4. && (cy - from.1).abs() < 4. {
+                    return;
+                }
+                *started = true;
+                *to = (time, cy);
+                let (from, to, base) = (*from, *to, base.clone());
+                let mut sel = base;
+                for id in self.in_band(&p, from, to) {
+                    if !sel.contains(&id) {
+                        sel.push(id);
+                    }
+                }
+                if self.store.read(cx).selection != sel {
+                    self.store.update(cx, |s, cx| s.set_selection(sel, cx));
+                }
+            }
             Some(Drag::Move(m)) => {
+                m.copy = e.modifiers.alt;
                 let Some(p) = project else { return };
                 let rows = geom::rows(&p.tracks);
                 let over = geom::row_at(&p.tracks, &rows, cy);
@@ -376,6 +453,9 @@ impl TimelineBody {
                 let v = if *out { c.end() - time } else { time - c.start };
                 let other = if *out { c.fade_in } else { c.fade_out };
                 *value = Some(v.clamp(0., (c.duration - other).max(0.)));
+            }
+            Some(Drag::Transition { cut, start, value, .. }) => {
+                *value = Some(Self::transition_len(*cut, *start, time));
             }
             Some(Drag::Track { to, y0, started, .. }) => {
                 let Some(p) = project else { return };
@@ -402,6 +482,35 @@ impl TimelineBody {
         };
         match drag {
             Drag::Scrub { .. } => {}
+            Drag::Marquee { from, additive, started: false, .. } => {
+                // Just a click: move the playhead there.
+                if !additive {
+                    self.store.update(cx, |s, cx| s.clear_selection(cx));
+                }
+                self.playback.update(cx, |pb, cx| {
+                    pb.pause(cx);
+                    pb.seek(from.0, cx);
+                });
+            }
+            Drag::Marquee { .. } => {}
+            Drag::Move(m) if m.copy && m.started => {
+                // ⌥-drag: copies land where the clips were dropped; the originals stay.
+                let mut clips = vec![];
+                for (ti, t) in p.tracks.iter().enumerate() {
+                    for c in t.clips.iter().filter(|c| m.ids.contains(&c.id)) {
+                        let dest = usize::try_from(ti as isize + m.shift).ok().and_then(|i| p.tracks.get(i)).filter(|d| d.kind == t.kind && !d.locked).unwrap_or(t);
+                        let mut v = json!(c);
+                        v["trackId"] = json!(dest.id);
+                        v["start"] = json!((c.start + m.dt).max(0.));
+                        clips.push(v);
+                    }
+                }
+                let time = clips.iter().filter_map(|v| v["start"].as_f64()).fold(f64::INFINITY, f64::min);
+                if !clips.is_empty() {
+                    let preview = Preview::Move { ids: m.ids, dt: m.dt, shift: m.shift, copy: true };
+                    self.commit_then(preview, &p, "clip.paste", json!({ "clips": clips, "time": time }), cx, |s, v, cx| s.set_selection(crate::app::created(&v), cx));
+                }
+            }
             Drag::Move(m) => {
                 if m.started && (m.dt.abs() > 1e-6 || m.shift != 0) {
                     let mut moves = vec![];
@@ -411,7 +520,7 @@ impl TimelineBody {
                             moves.push(json!({ "clipId": c.id, "trackId": dest.id, "start": (c.start + m.dt).max(0.) }));
                         }
                     }
-                    self.commit(Preview::Move { ids: m.ids, dt: m.dt, shift: m.shift }, &p, "clip.moveMany", json!({ "moves": moves, "coalesce": key }), cx);
+                    self.commit(Preview::Move { ids: m.ids, dt: m.dt, shift: m.shift, copy: false }, &p, "clip.moveMany", json!({ "moves": moves, "coalesce": key }), cx);
                 }
             }
             Drag::Trim { clip, start_edge, time: Some(time), .. } => {
@@ -421,6 +530,9 @@ impl TimelineBody {
             Drag::Fade { clip, out, value: Some(value) } => {
                 let field = if out { "fadeOut" } else { "fadeIn" };
                 self.commit(Preview::Fade { clip, out, value }, &p, "clip.update", json!({ "clipId": clip, field: value, "coalesce": key }), cx);
+            }
+            Drag::Transition { clip, value: Some(duration), .. } => {
+                self.commit(Preview::Transition { clip, duration }, &p, "transition.set", json!({ "clipIds": [clip], "duration": duration, "coalesce": key }), cx);
             }
             Drag::Track { id, from, to, started: true, .. } => {
                 let index = if to > from { to - 1 } else { to };
@@ -435,14 +547,21 @@ impl TimelineBody {
 
     /// Runs the command a drag ends in, keeping its preview until the project changes.
     fn commit(&mut self, preview: Preview, p: &Arc<Project>, name: &str, params: Value, cx: &mut Context<Self>) {
+        self.commit_then(preview, p, name, params, cx, |_, _, _| {});
+    }
+
+    fn commit_then(&mut self, preview: Preview, p: &Arc<Project>, name: &str, params: Value, cx: &mut Context<Self>, then: impl FnOnce(&mut Store, Value, &mut Context<Store>) + 'static) {
         self.committed = Some((preview, project_key(p)));
         let task = self.store.update(cx, |s, cx| s.call(name, params, cx));
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
-                if let Err(e) = result {
-                    this.committed = None;
-                    this.store.update(cx, |s, cx| s.error(e, cx));
+                match result {
+                    Ok(v) => this.store.update(cx, |s, cx| then(s, v, cx)),
+                    Err(e) => {
+                        this.committed = None;
+                        this.store.update(cx, |s, cx| s.error(e, cx));
+                    }
                 }
                 cx.notify();
             })
@@ -453,9 +572,10 @@ impl TimelineBody {
 
     fn preview(&self, p: &Arc<Project>) -> Option<Preview> {
         match &self.drag {
-            Some(Drag::Move(m)) if m.started => Some(Preview::Move { ids: m.ids.clone(), dt: m.dt, shift: m.shift }),
+            Some(Drag::Move(m)) if m.started => Some(Preview::Move { ids: m.ids.clone(), dt: m.dt, shift: m.shift, copy: m.copy }),
             Some(Drag::Trim { clip, start_edge, time: Some(t), .. }) => Some(Preview::Trim { clip: *clip, start_edge: *start_edge, time: *t }),
             Some(Drag::Fade { clip, out, value: Some(v) }) => Some(Preview::Fade { clip: *clip, out: *out, value: *v }),
+            Some(Drag::Transition { clip, value: Some(v), .. }) => Some(Preview::Transition { clip: *clip, duration: *v }),
             _ => self.committed.as_ref().filter(|(_, k)| *k == project_key(p)).map(|(pr, _)| pr.clone()),
         }
     }
@@ -500,6 +620,52 @@ impl TimelineBody {
             params["trackId"] = json!(t);
         }
         self.store.update(cx, |s, cx| s.run_then("clip.insertMedia", params, cx, |s, v, cx| s.set_selection(crate::app::created(&v), cx)));
+    }
+
+    // ---- files dropped from the desktop -------------------------------------------
+
+    fn files_move(&mut self, e: &gpui::DragMoveEvent<gpui::ExternalPaths>, cx: &mut Context<Self>) {
+        let pos = e.event.position;
+        let b = self.lanes.get();
+        let hint = (|| {
+            if !b.contains(&pos) {
+                return None;
+            }
+            let p = self.store.read(cx).project.clone()?;
+            let rows = geom::rows(&p.tracks);
+            let row = geom::row_at(&p.tracks, &rows, self.content_y(pos.y));
+            let points = geom::snap_points(&p, &[], Some(self.playhead(cx)));
+            let t = self.time_at(pos.x, cx);
+            let time = if self.store.read(cx).snapping { geom::snap_time(t, &points, self.pps(cx)).0 } else { t };
+            Some(DropHint { row: row.filter(|r| !p.tracks[*r].locked), time, len: 0., ok: true })
+        })();
+        if hint != self.drop {
+            self.drop = hint;
+            cx.notify();
+        }
+    }
+
+    /// Files from the desktop: imported, and placed one after the other where they were dropped.
+    fn files_dropped(&mut self, paths: &gpui::ExternalPaths, cx: &mut Context<Self>) {
+        let hint = self.drop.take();
+        cx.notify();
+        let list: Vec<String> = paths.paths().iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let Some(p) = self.store.read(cx).project.clone() else { return };
+        if list.is_empty() {
+            return;
+        }
+        let time = hint.as_ref().map(|h| h.time).unwrap_or_else(|| self.playhead(cx));
+        let mut params = json!({ "paths": list, "place": true, "start": time });
+        if let Some(r) = hint.and_then(|h| h.row) {
+            params["trackId"] = json!(p.tracks[r].id);
+        }
+        self.store.update(cx, |s, cx| {
+            s.dropping = false;
+            s.run_then("media.import", params, cx, |s, v, cx| {
+                let n = v["media"].as_array().map(Vec::len).unwrap_or(0);
+                s.toast(kimchi_control::ToastKind::Success, format!("Imported and placed {}", crate::app::count(n, "file")), cx);
+            });
+        });
     }
 
     // ---- renaming ------------------------------------------------------------
@@ -634,7 +800,7 @@ impl TimelineBody {
                     .relative()
                     .overflow_hidden()
                     .cursor_text()
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, e, _, cx| this.scrub_down(e, false, cx)))
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, e, _, cx| this.scrub_down(e, cx)))
                     .children(ticks.into_iter().map(|tk| {
                         let x = (tk.t * pps - self.scroll_x) as f32;
                         div()
@@ -748,7 +914,7 @@ impl TimelineBody {
                         .rounded_r(px(sz::R_SM))
                         .cursor_grab()
                         .hover(|s| s.bg(t.hover))
-                        .child(icon(if track.kind == TrackKind::Video { "film" } else { "audio-lines" }).text_color(t.text_3))
+                        .child(icon(if track.captions { "captions" } else if track.kind == TrackKind::Video { "film" } else { "audio-lines" }).text_color(if track.captions { t.accent_text } else { t.text_3 }))
                         .child(name_el)
                         .child(crate::ui::stop(
                             div()
@@ -806,22 +972,27 @@ impl TimelineBody {
             })
             .collect();
 
-        // Clips, the moving ones last so they draw on top.
-        let mut items = vec![];
-        let mut on_top = vec![];
+        // What to draw: each clip as shown (a drag may have moved or trimmed it), on which row;
+        // an ⌥-drag draws the originals in place and their copies where they would land.
+        let mut draws: Vec<(usize, std::borrow::Cow<kimchi_core::Clip>, usize, bool, bool)> = vec![];
         for (ti, track) in p.tracks.iter().enumerate() {
             for clip in &track.clips {
                 let mut shown = std::borrow::Cow::Borrowed(clip);
                 let mut row = ti;
                 let mut moving = false;
                 match &preview {
-                    Some(Preview::Move { ids, dt, shift }) if ids.contains(&clip.id) => {
-                        shown.to_mut().start = (clip.start + dt).max(0.);
+                    Some(Preview::Move { ids, dt, shift, copy }) if ids.contains(&clip.id) => {
+                        let mut moved = clip.clone();
+                        moved.start = (clip.start + dt).max(0.);
                         let dest = ti as isize + shift;
-                        if dest >= 0 && (dest as usize) < p.tracks.len() && p.tracks[dest as usize].kind == track.kind && !p.tracks[dest as usize].locked {
-                            row = dest as usize;
+                        let to = if dest >= 0 && (dest as usize) < p.tracks.len() && p.tracks[dest as usize].kind == track.kind && !p.tracks[dest as usize].locked { dest as usize } else { ti };
+                        if *copy {
+                            draws.push((ti, std::borrow::Cow::Owned(moved), to, true, true));
+                        } else {
+                            shown = std::borrow::Cow::Owned(moved);
+                            row = to;
+                            moving = self.drag.is_some();
                         }
-                        moving = self.drag.is_some();
                     }
                     Some(Preview::Trim { clip: id, start_edge, time }) if *id == clip.id => {
                         shown = std::borrow::Cow::Owned(geom::trimmed(track, clip, &p.assets, *start_edge, *time));
@@ -835,48 +1006,61 @@ impl TimelineBody {
                     }
                     _ => {}
                 }
-                let h = track_h(p.tracks[row].kind);
-                if !visible_row(rows.tops[row], h) {
-                    continue;
-                }
-                let (x, w) = (shown.start * pps, shown.duration * pps);
-                if x + w < scroll_x - 64. || x > scroll_x + view_w + 64. {
-                    continue;
-                }
-                let asset = shown.asset_id().and_then(|a| p.asset(a));
-                let peaks = asset.and_then(|a| a.waveform.as_ref()).map(|w| w.path.clone()).and_then(|path| self.peaks_for(&path, cx));
-                let job = match &shown.content {
-                    kimchi_core::ClipContent::Pending { job_id, .. } => jobs.iter().find(|j| &j.id == job_id),
-                    _ => None,
-                };
-                let id = clip.id;
-                let view = ClipView {
-                    clip: &shown,
-                    asset,
-                    job,
-                    pps,
-                    scroll_x,
-                    view_w,
-                    top: rows.tops[row] - scroll_y + 2.,
-                    h,
-                    selected: selection.contains(&id),
-                    moving,
-                    muted: track.muted || track.hidden,
-                    locked: track.locked,
-                    agent: self.agent.marked.contains_key(&id),
-                    peaks,
-                };
-                let Some(el) = view.render(cx) else { continue };
-                let el = el
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, e, _, cx| this.clip_down(id, e, cx)))
-                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        cx.stop_propagation();
-                        menus::clip_menu(this, id, e.position, cx);
-                    }));
-                if moving || selection.contains(&id) { on_top.push(el) } else { items.push(el) }
+                draws.push((ti, shown, row, moving, false));
             }
         }
+        // Moving clips, copies and the selection last, so they draw on top.
+        let mut items = vec![];
+        let mut on_top = vec![];
+        for (ti, shown, row, moving, ghost) in draws {
+            let track = &p.tracks[ti];
+            let h = track_h(p.tracks[row].kind);
+            if !visible_row(rows.tops[row], h) {
+                continue;
+            }
+            let (x, w) = (shown.start * pps, shown.duration * pps);
+            if x + w < scroll_x - 64. || x > scroll_x + view_w + 64. {
+                continue;
+            }
+            let asset = shown.asset_id().and_then(|a| p.asset(a));
+            let peaks = asset.and_then(|a| a.waveform.as_ref()).map(|w| w.path.clone()).and_then(|path| self.peaks_for(&path, cx));
+            let job = match &shown.content {
+                kimchi_core::ClipContent::Pending { job_id, .. } => jobs.iter().find(|j| &j.id == job_id),
+                _ => None,
+            };
+            let id = shown.id;
+            let view = ClipView {
+                clip: &shown,
+                asset,
+                job,
+                pps,
+                scroll_x,
+                view_w,
+                top: rows.tops[row] - scroll_y + 2.,
+                h,
+                selected: selection.contains(&id) && !ghost,
+                moving,
+                ghost,
+                muted: track.muted || track.hidden,
+                locked: track.locked,
+                agent: self.agent.marked.contains_key(&id),
+                peaks,
+            };
+            let Some(el) = view.render(cx) else { continue };
+            if ghost {
+                on_top.push(el);
+                continue;
+            }
+            let el = el
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, e, _, cx| this.clip_down(id, e, cx)))
+                .on_mouse_down(MouseButton::Right, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    menus::clip_menu(this, id, e.position, cx);
+                }));
+            if moving || selection.contains(&id) { on_top.push(el) } else { items.push(el) }
+        }
         items.extend(on_top);
+        let transition_els = self.transitions(p, rows, preview.as_ref(), cx);
 
         let drop_el = self.drop.clone().filter(|_| cx.has_active_drag()).map(|d| {
             let (top, h) = match d.row {
@@ -887,7 +1071,7 @@ impl TimelineBody {
                 .absolute()
                 .left(px((d.time * pps - scroll_x) as f32))
                 .top(px(top - scroll_y))
-                .w(px((d.len * pps) as f32))
+                .w(px(((d.len * pps) as f32).max(3.)))
                 .h(px(h))
                 .rounded(px(sz::R_SM + 1.))
                 .border_2()
@@ -895,6 +1079,14 @@ impl TimelineBody {
                 .when(!d.ok, |e| e.bg(t.danger.opacity(0.10)).border_color(t.danger.opacity(0.6)))
         });
         let guide = self.guide.map(|g| div().absolute().top_0().bottom_0().left(px((g * pps - scroll_x) as f32)).w(px(1.)).bg(t.text.opacity(0.7)));
+        let band = match &self.drag {
+            Some(Drag::Marquee { from, to, started: true, .. }) => {
+                let (x0, x1) = ((from.0.min(to.0) * pps - scroll_x) as f32, (from.0.max(to.0) * pps - scroll_x) as f32);
+                let (y0, y1) = (from.1.min(to.1) - scroll_y, from.1.max(to.1) - scroll_y);
+                Some(div().absolute().left(px(x0)).top(px(y0)).w(px(x1 - x0)).h(px(y1 - y0)).rounded(px(3.)).border_1().border_color(t.accent).bg(t.accent_soft.opacity(0.5)))
+            }
+            _ => None,
+        };
 
         let measure = {
             let cell = self.lanes.clone();
@@ -925,12 +1117,14 @@ impl TimelineBody {
             .h_full()
             .relative()
             .overflow_hidden()
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, e, _, cx| this.scrub_down(e, true, cx)))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, e, _, cx| this.lanes_down(e, cx)))
             .child(measure)
             .children(lane_els)
             .children(items)
+            .children(transition_els)
             .children(drop_el)
             .children(guide)
+            .children(band)
             .when(p.tracks.iter().all(|t| t.clips.is_empty()), |d| {
                 d.child(
                     div()
@@ -942,7 +1136,7 @@ impl TimelineBody {
                         .justify_center()
                         .text_size(px(sz::SM))
                         .text_color(t.text_3)
-                        .child("Drag media here, generate a shot, or press T for a title"),
+                        .child("Drag media or files here, generate a shot, or press T for a title"),
                 )
             })
             .into_any_element()
@@ -1002,7 +1196,8 @@ impl Render for TimelineBody {
         });
         let dragging = self.drag.is_some();
         let cursor = match &self.drag {
-            Some(Drag::Trim { .. }) | Some(Drag::Fade { .. }) => Some(gpui::CursorStyle::ResizeLeftRight),
+            Some(Drag::Trim { .. }) | Some(Drag::Fade { .. }) | Some(Drag::Transition { .. }) => Some(gpui::CursorStyle::ResizeLeftRight),
+            Some(Drag::Move(m)) if m.copy && m.started => Some(gpui::CursorStyle::DragCopy),
             Some(Drag::Track { started: true, .. }) => Some(gpui::CursorStyle::ClosedHand),
             _ => None,
         };
@@ -1021,6 +1216,8 @@ impl Render for TimelineBody {
             .on_pinch(cx.listener(Self::on_pinch))
             .on_drag_move::<MediaDrag>(cx.listener(|this, e, _, cx| this.drop_move(e, cx)))
             .on_drop::<MediaDrag>(cx.listener(|this, d, _, cx| this.dropped(d, cx)))
+            .on_drag_move::<gpui::ExternalPaths>(cx.listener(|this, e, _, cx| this.files_move(e, cx)))
+            .on_drop::<gpui::ExternalPaths>(cx.listener(|this, paths, _, cx| this.files_dropped(paths, cx)))
             .child(ruler)
             .children(main)
             .when(dragging, |d| d.child(drag::track(cx.entity(), Self::drag_move, Self::drag_up)))

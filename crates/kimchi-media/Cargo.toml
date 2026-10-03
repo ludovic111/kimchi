@@ -1,6 +1,6 @@
 [package]
 name = "kimchi-media"
-description = "ffmpeg-backed probing, previews and export for kimchi, and the text rasteriser"
+description = "ffmpeg-backed probing and export for kimchi, and its compositor: text, motion graphics and 3D"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +15,12 @@ tiny-skia.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+# 3D: meshes, models, the CPU rasteriser and the GPU renderer (Metal / Vulkan / DirectX 12).
+gltf = { version = "1", default-features = false, features = ["import", "utils", "names"] }
+lyon_tessellation = "1"
+pollster = "0.4"
+rayon = "1"
+wgpu = "29"
 
 [dev-dependencies]
 chrono.workspace = true

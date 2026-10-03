@@ -1,5 +1,5 @@
-//! Export: format, size, frame rate, range and quality, a destination from the save panel, then
-//! `export.start`. Progress comes from the store's export list (the session's events), so an
+//! Export: format, size, frame rate, range, quality and encoder (GPU or CPU, from
+//! `export.encoders`), a destination from the save panel, then `export.start`. Progress comes from the store's export list (the session's events), so an
 //! export started by the agent or the CLI shows here too, and closing the dialog doesn't stop it.
 
 use std::path::{Path, PathBuf};
@@ -45,6 +45,12 @@ pub struct ExportDialog {
     store: Entity<Store>,
     format: usize,
     quality: &'static str,
+    /// auto, hardware or software.
+    encoder: &'static str,
+    /// `export.encoders`: what each format is encoded with here; `None` until it answers.
+    encoders: Option<Value>,
+    /// Captions: "burn", "file", "both" or "none".
+    captions: &'static str,
     size: Size,
     /// `None`: the project's frame rate.
     fps: Option<u32>,
@@ -85,6 +91,9 @@ impl ExportDialog {
             store,
             format: 0,
             quality: "standard",
+            encoder: "auto",
+            encoders: None,
+            captions: "burn",
             size: Size::Project,
             fps: None,
             range: Range::Whole,
@@ -113,6 +122,32 @@ impl ExportDialog {
             self.range = Range::Whole;
         }
         window.focus(&self.focus, cx);
+        if self.encoders.is_none() {
+            // The first time, this tries each hardware encoder on a few frames (about a second).
+            let task = self.store.update(cx, |s, cx| s.call("export.encoders", json!({}), cx));
+            cx.spawn(async move |this, cx| {
+                let found = task.await.ok();
+                this.update(cx, |this, cx| {
+                    this.encoders = found;
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
+    /// Whether the format has a video encoder to choose (not sound only, not GIF).
+    fn has_encoder_choice(&self) -> bool {
+        !matches!(FORMATS[self.format].0, "audio" | "gif")
+    }
+
+    /// `{ id, label }` of the encoder `choice` gives the chosen format; `Some(Null)` when there is
+    /// none, `None` while `export.encoders` hasn't answered.
+    fn encoder_for(&self, choice: &str) -> Option<Value> {
+        let formats = self.encoders.as_ref()?["formats"].as_array()?;
+        let id = FORMATS[self.format].0;
+        Some(formats.iter().find(|f| f["format"] == id).map(|f| f[choice].clone()).unwrap_or(Value::Null))
     }
 
     /// Start and end of the selected clips.
@@ -158,7 +193,8 @@ impl ExportDialog {
     fn can_start(&self, cx: &App) -> bool {
         let d = self.store.read(cx).duration();
         let range_ok = self.span(cx).is_none_or(|(a, b)| b > a + 0.01);
-        !self.preparing && d > 0.0 && range_ok
+        let encoder_ok = !self.has_encoder_choice() || self.encoder_for(self.encoder).is_none_or(|e| !e.is_null());
+        !self.preparing && d > 0.0 && range_ok && encoder_ok
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
@@ -169,6 +205,12 @@ impl ExportDialog {
         let (id, _, ext, _) = FORMATS[self.format];
         let (w, h) = self.dims(cx);
         let mut params = json!({ "format": id, "quality": self.quality });
+        if !project.captions().is_empty() {
+            params["captions"] = json!(self.captions);
+        }
+        if self.has_encoder_choice() {
+            params["encoder"] = json!(self.encoder);
+        }
         if self.size != Size::Project && id != "audio" {
             params["width"] = json!(w);
             params["height"] = json!(h);
@@ -285,6 +327,7 @@ impl ExportDialog {
         let w2 = weak.clone();
         let w3 = weak.clone();
         let w4 = weak.clone();
+        let w5 = weak.clone();
         let size = segmented(
             "export-size",
             vec![(Size::Project, format!("{pw}×{ph}").into()), (Size::P720, "720p".into()), (Size::P1080, "1080p".into()), (Size::P2160, "4K".into())],
@@ -342,6 +385,49 @@ impl ExportDialog {
             },
             cx,
         );
+        let encoder = segmented(
+            "export-encoder",
+            vec![("auto", "Auto".into()), ("hardware", "GPU".into()), ("software", "CPU".into())],
+            self.encoder,
+            move |v, _, cx| {
+                w5.update(cx, |this, cx| {
+                    this.encoder = v;
+                    cx.notify();
+                })
+                .ok();
+            },
+            cx,
+        );
+        let has_captions = self.store.read(cx).project.as_ref().is_some_and(|p| !p.captions().is_empty());
+        let w6 = cx.entity().downgrade();
+        let captions = segmented(
+            "export-captions",
+            vec![("burn", "In the picture".into()), ("file", ".srt file".into()), ("both", "Both".into()), ("none", "Off".into())],
+            self.captions,
+            move |v, _, cx| {
+                w6.update(cx, |this, cx| {
+                    this.captions = v;
+                    cx.notify();
+                })
+                .ok();
+            },
+            cx,
+        );
+        // What the choice means on this computer.
+        let (note, warn) = match self.encoder_for(self.encoder) {
+            None => ("Checking this computer's encoders…".to_string(), false),
+            Some(Value::Null) if self.encoder == "hardware" => (format!("No GPU encoder for {} on this computer.", FORMATS[self.format].1), true),
+            Some(Value::Null) => ("No encoder for this format in this ffmpeg build.".to_string(), true),
+            Some(e) => {
+                let label = e["label"].as_str().unwrap_or_default();
+                let on_gpu = self.encoder_for("hardware").is_some_and(|h| h["id"] == e["id"]);
+                match (self.encoder, on_gpu) {
+                    ("auto", true) => (format!("{label}, on the GPU · the CPU takes over if it fails"), false),
+                    ("auto", false) => (format!("{label} · no GPU encoder for this format here"), false),
+                    _ => (label.to_string(), false),
+                }
+            }
+        };
         let bad_range = self.range == Range::Custom && self.to.read(cx).value() <= self.from.read(cx).value() + 0.01;
         div()
             .flex()
@@ -366,6 +452,17 @@ impl ExportDialog {
                 d.child(div().pl(px(112.)).font_family(MONO).text_size(px(sz::XS)).text_color(t.text_2).child(format!("{} → {} ({})", crate::ui::timecode(a), crate::ui::timecode(b), short(b - a))))
             })
             .child(row("Quality", quality.into_any_element()))
+            .when(self.has_encoder_choice(), |d| {
+                d.child(row("Encoder", encoder.into_any_element())).child(
+                    div()
+                        .id("export-encoder-note")
+                        .pl(px(112.))
+                        .text_size(px(sz::XS))
+                        .text_color(if warn { t.warning } else { t.text_2 })
+                        .child(note),
+                )
+            })
+            .when(has_captions && !audio, |d| d.child(row("Captions", captions.into_any_element())))
             .into_any_element()
     }
 
@@ -414,6 +511,9 @@ impl ExportDialog {
                 .into_any_element();
         }
         let pct = (e.progress.clamp(0.0, 1.0) * 100.0).round();
+        let encoder = e.encoder.as_deref().map(|id| {
+            div().text_size(px(sz::XS)).text_color(t.text_2).child(format!("Encoding with {}", kimchi_media::accel::label(id)))
+        });
         base.child(
             div()
                 .flex()
@@ -435,6 +535,7 @@ impl ExportDialog {
                 .child(div().h_full().w(relative(e.progress.clamp(0.0, 1.0) as f32)).rounded_full().bg(t.accent)),
         )
         .child(path)
+        .children(encoder)
         .into_any_element()
     }
 
@@ -533,7 +634,7 @@ impl Render for ExportDialog {
 }
 
 /// Where the save panel opens: ~/Movies, else home.
-fn default_dir() -> PathBuf {
+pub fn default_dir() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
     let movies = home.join("Movies");
     if Path::new(&movies).is_dir() { movies } else { home }
