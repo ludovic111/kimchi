@@ -200,6 +200,8 @@ pub struct Store {
     pub library: Vec<ProjectSummary>,
     pub jobs: Vec<Job>,
     pub exports: Vec<ExportStatus>,
+    /// Motion clips being rendered ahead (`motion.render`).
+    pub renders: Vec<kimchi_control::renders::RenderStatus>,
     pub providers: Vec<ProviderStatus>,
     pub models: Vec<ModelInfo>,
     pub models_loading: bool,
@@ -273,6 +275,7 @@ impl Store {
             library: vec![],
             jobs: session.harness.jobs(),
             exports: session.exports(),
+            renders: session.renders(),
             providers: vec![],
             models: vec![],
             models_loading: false,
@@ -374,6 +377,10 @@ impl Store {
                 Some(e) => *e = export,
                 None => self.exports.push(export),
             },
+            Event::Render { render } => match self.renders.iter_mut().find(|e| e.id == render.id) {
+                Some(e) => *e = render,
+                None => self.renders.push(render),
+            },
             Event::Toast { kind, text } => self.toast(kind, text, cx),
             Event::Command { record } => {
                 if record.source != Source::Window {
@@ -399,6 +406,7 @@ impl Store {
         self.refresh_project();
         self.jobs = self.session.harness.jobs();
         self.exports = self.session.exports();
+        self.renders = self.session.renders();
         self.settings = self.session.settings();
         self.refresh_providers(cx);
         self.library = self.session.library.list();
