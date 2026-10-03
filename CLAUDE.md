@@ -55,7 +55,7 @@ Rules that keep it working:
   `import -window <id>` (ImageMagick; `ui.screenshot` is macOS-only) and clicks with `xdotool`. UI tests run the real views headless (`crates/kimchi-desktop/src/tests.rs`,
   `views/timeline/tests.rs`).
 
-## lsuite (notes updated 2026-10-02)
+## lsuite (notes updated 2026-10-03)
 
 kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
@@ -81,7 +81,7 @@ kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is
       ryolune's bridge.
 - [x] Support links go to `https://lsuite.xyz/kimchi/support`.
 
-## Animation, motion graphics and 3D (2026-10-02, not released yet)
+## Animation, motion graphics and 3D (released in 0.5.0, 2026-10-03)
 
 Keyframes with easings on every clip, presets, motion clips (2D layers and 3D scenes), 15 templates,
 `motion.*` commands, `motion.guide`, `project.renderFrame`, the MCP prompts `motion-design` and
@@ -96,7 +96,7 @@ objects, lights). The compositor replaced the ffmpeg overlay graph. Linux: `gpui
       ~5 frames/s at 1080p. The preview (≤ 1280 px) keeps up.
 - [ ] Not done: dragging motion layers on the canvas (only clips), audio waveform for volume keyframes.
 
-## Transitions, colour, speed and captions (2026-10-03, not released yet)
+## Transitions, colour, speed and captions (released in 0.5.0, 2026-10-03)
 
 Built on `t3code/verify-prs` (motion + shortcuts + export fixes). Transitions live on the incoming
 clip (`Clip.transition`), centred on a cut with both clips playing past it (no overlap on the track,
@@ -108,7 +108,7 @@ picture or on the layer. `Clip.reverse` plays the source range backwards (chunke
 / Timing extras, timeline transition badges (drag edges, right-click kinds) and + on cuts, the
 Captions tab (⌘5), a Captions row in the export dialog.
 
-- [ ] Look at all of it on the Mac (Linux screenshots come back blank): inspector sections, badges,
+- [ ] Look at all of it on the Mac (on Linux, `ui.screenshot` comes back blank but `vscreen shot` works): inspector sections, badges,
       the Captions tab, transitions and colour in the preview.
 - [ ] Whisper runs on the CPU (base: ~5 s for 11 s of speech on the 4-core Linux box, release); Metal
       through candle would be faster on Apple Silicon.
@@ -117,15 +117,17 @@ Captions tab (⌘5), a Captions row in the export dialog.
 
 ## Next session
 
-kimchi 0.4.0 (the GPUI app) is released (2026-10-02): notarized macOS for Apple Silicon and Intel,
-Windows and Linux; 0.1.x installs update to it. The lsuite page and STANDARD.md's kimchi column are
-up to date.
+kimchi 0.5.0 is released (2026-10-03): keyframes, motion graphics and 3D, transitions, colour,
+reverse and freeze frames, local captions, GPU export; notarized macOS for Apple Silicon and Intel,
+Windows and Linux. The lsuite page (New in 0.5, new captures) and STANDARD.md's kimchi column
+(122 commands) are up to date.
 
 - [ ] A pass with real mouse input in the running app: clicks, drags and typing are covered by GPUI
       UI tests and the app was driven through `kimchi-cli`, but nobody has used the window by hand yet.
 - [ ] Windows builds were produced by CI but never launched. Linux: launched on Xvfb (2026-10-02),
       which found the missing `gpui` x11/wayland features; not yet on a real Linux desktop.
 - [ ] Codex as an agent provider: run one real turn once Codex is installed.
-- [ ] Each release: update `../lsuite/kimchi/index.html` (what changed, screenshots with
-      `KIMCHI_WINDOW_SIZE=2000x1250` and `kimchi-cli ui.screenshot`, saved as WebP in
-      `../lsuite/assets/img/kimchi/`, dark and `-light`).
+- [ ] Each release: update `../lsuite/kimchi/index.html` (what changed, and screenshots saved as
+      WebP in `../lsuite/assets/img/kimchi/`, dark and `-light`). On Linux take them with `vscreen`
+      (`vscreen size 2000x1250`, `KIMCHI_WINDOW_SIZE=2000x1250`, `vscreen shot`); the steps are in
+      `../lsuite/README.md`, "Updating an app's page". On the Mac, `kimchi-cli ui.screenshot`.
