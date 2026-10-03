@@ -20,13 +20,20 @@
 //! Timing matches the old ffmpeg graph: a clip shows from half a frame before its start to half a
 //! frame before its end, and fades are linear in opacity.
 
+pub(crate) mod effects2d;
 pub(crate) mod flat;
 pub mod grade;
+pub(crate) mod masks;
 pub(crate) mod mix;
+pub(crate) mod noise;
 pub(crate) mod paint;
+pub(crate) mod particles2d;
+pub(crate) mod shapeops;
 pub(crate) mod source;
 pub mod space;
+pub(crate) mod textfx;
 
+pub use flat::{hit_test, layer_bounds, layer_transform};
 pub use space::Quality;
 
 use std::collections::{HashMap, HashSet};
@@ -212,13 +219,13 @@ impl Renderer {
         match scene {
             Scene::Flat(s) => {
                 let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
-                let (sx, quality) = (self.sx, self.quality);
+                let (sx, quality, frame) = (self.sx, self.quality, 1.0 / self.fps);
                 let shown = match comp.and_then(|c| s.composition(c)) {
                     Some(c) => kimchi_core::Scene2d { background: c.background.clone(), layers: c.layers.clone(), compositions: s.compositions.clone(), ..s.clone() },
                     None => s.clone(),
                 };
                 let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
-                let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality };
+                let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame };
                 flat::draw(&mut canvas, &shown, t, base, &mut fx);
             }
             Scene::Space(s) => {
@@ -381,9 +388,9 @@ impl Renderer {
                     match &scene {
                         Scene::Flat(s) => {
                             let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
-                            let (sx, quality) = (self.sx, self.quality);
+                            let (sx, quality, frame) = (self.sx, self.quality, 1.0 / self.fps);
                             let mut pics = ScenePictures { r: self, clip: clip.id, streaming, used };
-                            let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality };
+                            let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame };
                             flat::draw(target, s, st, base, &mut fx);
                         }
                         Scene::Space(s) => {
