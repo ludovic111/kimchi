@@ -66,6 +66,24 @@ async fn clients_share_one_undo_history() {
     assert_eq!(s.project().unwrap().clips().count(), 0);
 }
 
+/// What models send in place of JSON (Codex writes arrays of JSON text) is read as meant; arrays
+/// say what their items are.
+#[tokio::test(flavor = "multi_thread")]
+async fn json_written_as_text_is_understood() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Mcp, "project.create", json!({})).await;
+    let b = ok(&s, Source::Mcp, "project.batch", json!({ "commands": ["{\"command\": \"clip.addText\", \"params\": {\"text\": \"A\", \"start\": 0}}"] })).await;
+    assert_eq!(b["results"].as_array().unwrap().len(), 1, "{b}");
+    ok(&s, Source::Mcp, "clip.addText", json!({ "text": "B", "start": "4", "style": "{\"fontSize\": 40}" })).await;
+    assert_eq!(ok(&s, Source::Mcp, "clip.get", json!({ "clipId": "B" })).await["start"], 4.0);
+    ok(&s, Source::Mcp, "clip.delete", json!({ "clipIds": "B" })).await;
+    let e = registry::call(&s, Source::Mcp, "project.renderFrame", json!({ "times": ["soon"] })).await.unwrap_err();
+    assert!(e.contains("`times[0]` should be a number"), "{e}");
+    let schema = registry::input_schema(registry::spec("clip.delete").unwrap());
+    assert_eq!(schema["properties"]["clipIds"]["items"], json!({ "type": "string" }));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn names_work_like_ids_and_mistakes_are_explained() {
     let dir = tempfile::tempdir().unwrap();
@@ -476,6 +494,9 @@ async fn effects_transitions_and_freeze_frames() {
         let clips = ok(&s, Source::Agent, "clip.list", json!({ "trackId": "Video 1" })).await;
         let starts: Vec<f64> = clips.as_array().unwrap().iter().map(|c| c["start"].as_f64().unwrap()).collect();
         assert_eq!(starts, vec![0.0, 1.0, 3.0, 5.0]);
+        // The still in the media list says what it is.
+        let media = ok(&s, Source::Agent, "media.list", json!({})).await;
+        assert!(media.as_array().unwrap().iter().any(|m| m["name"].as_str().is_some_and(|n| n.ends_with("· frame at 1.00 s"))), "{media}");
         ok(&s, Source::Agent, "history.undo", json!({})).await;
         assert_eq!(ok(&s, Source::Agent, "clip.list", json!({ "trackId": "Video 1" })).await.as_array().unwrap().len(), 2);
     }

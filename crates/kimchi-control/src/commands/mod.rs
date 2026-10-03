@@ -50,7 +50,7 @@ pub static SPECS: &[Spec] = &[
     query("project.get", "The complete open project as JSON (the project file format).", &[]),
     query("project.renderFrame", "Render what the timeline shows at a time (or a labelled contact sheet of several times) to a PNG and return its path, to look at a result: animations, motion graphics, 3D, the whole cut.", &[
         opt("time", Number, "Timeline seconds (default: the playhead)."),
-        opt("times", Array, "Several times in seconds: one image with a frame per time, labelled (up to 16)."),
+        opt("times", Array, "Several times in seconds: one image with a frame per time, labelled (up to 16).").of(Number),
         opt("width", Integer, "Width of each frame in pixels (default 960, or 480 in a sheet)."),
     ]),
     edit("project.create", "Create a project in the library and open it, replacing the open one.", &[
@@ -77,7 +77,7 @@ pub static SPECS: &[Spec] = &[
     ]),
     edit("project.saveAs", "Write a copy of the open project to a .json file (the project file format).", &[req("path", String, "Destination .json file.")]).perm(Perm::Files),
     edit("project.batch", "Run several commands as one undo step. With atomic (the default) a failing command rolls back the ones before it.", &[
-        req("commands", Array, "Array of {\"command\": \"clip.update\", \"params\": {…}}."),
+        req("commands", Array, "Array of {\"command\": \"clip.update\", \"params\": {…}}.").of(Object),
         opt("atomic", Boolean, "Roll everything back if one command fails (default true)."),
         opt("label", String, "Name of the undo step (default \"batch\")."),
     ]),
@@ -85,7 +85,7 @@ pub static SPECS: &[Spec] = &[
     query("media.list", "List the open project's media (imported and generated) with kind, length, size, previews and generation details.", &[]),
     query("media.get", "One media item in full, including how it was generated (prompt, model, seed, inputs).", &[ASSET_ID]),
     edit("media.import", "Import media files (video, image, audio) into the open project. Thumbnails, filmstrips, waveforms and proxies are made in the background. With place, each file is also put on the timeline, one after the other.", &[
-        req("paths", Array, "Absolute paths of the files to import."),
+        req("paths", Array, "Absolute paths of the files to import.").of(String),
         opt("place", Boolean, "Also put each file on the timeline (default false)."),
         OPT_TRACK,
         START,
@@ -133,7 +133,7 @@ pub static SPECS: &[Spec] = &[
         opt("trackId", String, "Destination track."),
         crate::registry::COALESCE,
     ]),
-    edit("clip.moveMany", "Move several clips at once, as one undo step.", &[req("moves", Array, "Array of {clipId, start, trackId?}."), crate::registry::COALESCE]),
+    edit("clip.moveMany", "Move several clips at once, as one undo step.", &[req("moves", Array, "Array of {clipId, start, trackId?}.").of(Object), crate::registry::COALESCE]),
     edit("clip.trim", "Move one edge of a clip to a timeline time, like dragging it. Bounded by the neighbours and the source length.", &[
         CLIP_ID,
         req("edge", String, "\"start\" or \"end\"."),
@@ -142,16 +142,16 @@ pub static SPECS: &[Spec] = &[
     ]),
     edit("clip.split", "Split clips at a time. Without clipIds, every clip under that time on unlocked tracks (or the selection in the window).", &[
         opt("time", Number, "Timeline time in seconds. Defaults to the playhead."),
-        opt("clipIds", Array, "Clips to split (ids or names)."),
+        opt("clipIds", Array, "Clips to split (ids or names).").of(String),
     ]),
-    edit("clip.delete", "Delete clips. With ripple, later clips on the same track move left to close the gap.", &[
-        req("clipIds", Array, "Clips to delete (ids or names)."),
+    edit("clip.delete", "Delete clips. With ripple, later clips on the same track move left to close the gap. Returns the clips as they were (removed), which clip.paste takes back: a cut.", &[
+        req("clipIds", Array, "Clips to delete (ids or names).").of(String),
         opt("ripple", Boolean, "Close the gap (default false)."),
     ]),
-    edit("clip.duplicate", "Copy clips to the end of their track.", &[req("clipIds", Array, "Clips to duplicate (ids or names).")]),
+    edit("clip.duplicate", "Copy clips to the end of their track.", &[req("clipIds", Array, "Clips to duplicate (ids or names).").of(String)]),
     edit("clip.paste", "Paste copies of clips: the earliest copy starts at time and the others keep their spacing and tracks. Whatever they land on is overwritten. One undo step.", &[
-        opt("clipIds", Array, "Clips in the project to copy (ids or names)."),
-        opt("clips", Array, "Clip objects as returned by clip.get (with trackId), e.g. clips deleted since (a cut)."),
+        opt("clipIds", Array, "Clips in the project to copy (ids or names).").of(String),
+        opt("clips", Array, "Clip objects as returned by clip.get (with trackId), e.g. clips deleted since (a cut).").of(Object),
         opt("time", Number, "Where the earliest copy starts, in seconds. Defaults to the playhead."),
         opt("trackId", String, "Put every copy on this track instead of each clip's own."),
     ]),
@@ -193,12 +193,12 @@ pub static SPECS: &[Spec] = &[
         opt("time", Number, "Timeline seconds; omit to remove the property's whole animation."),
     ]),
     edit("clip.animate", "Give clips a ready-made animation written as ordinary keyframes: entrances (fadeIn, riseIn, slideInLeft, popIn, zoomIn, spinIn, dropIn, blurIn…), exits (fadeOut, slideOutRight, popOut…) or over the whole clip (kenBurns, panLeft, pulse, float, wiggle, shake, spin). motion.presets lists them all. One undo step.", &[
-        req("clipIds", Array, "Clips to animate (ids or names)."),
+        req("clipIds", Array, "Clips to animate (ids or names).").of(String),
         req("preset", String, "Preset name."),
         opt("length", Number, "Seconds the move takes (default 0.6; one cycle for repeating ones)."),
     ]),
     edit("clip.setEffects", "Colour and picture effects on clips: a ready-made look, corrections (brightness, contrast, saturation, temperature, tint), vignette, sharpen, a chroma key (green or blue screen) and a .cube LUT. Drawn in the preview and the export. Only the given fields change; animate the numeric ones with clip.setKeyframes. One undo step.", &[
-        req("clipIds", Array, "Clips to change (ids or names)."),
+        req("clipIds", Array, "Clips to change (ids or names).").of(String),
         opt("look", String, "Start from a look (clip.looks): none, punchy, warm, cool, mono, faded, vintage, noir, teal, dreamy. The other fields given go on top."),
         opt("brightness", Number, "-1 to 1 (0 = unchanged)."),
         opt("contrast", Number, "-1 (flat grey) to 1 (twice the contrast)."),
@@ -223,7 +223,7 @@ pub static SPECS: &[Spec] = &[
     query("transition.kinds", "The transitions kimchi draws, with what each looks like.", &[]),
     query("transition.list", "Every transition in the project: the clip it leads into, the clip it leaves (on a cut), kind, length and where it plays.", &[]),
     edit("transition.set", "Put a transition at the start of clips. On a cut (the clip before ends where this one starts) it is centred on the cut and both clips play on past it with their media beyond the cut (or hold their edge frame), so nothing moves on the timeline; with no clip right before, the clip transitions in over what is below it. The sound crossfades over the same span. Changes the kind or length of transitions already there. One undo step.", &[
-        opt("clipIds", Array, "The incoming clips (ids or names): each gets a transition at its start."),
+        opt("clipIds", Array, "The incoming clips (ids or names): each gets a transition at its start.").of(String),
         opt("trackId", String, "Instead of clipIds: every cut on this track."),
         opt("kind", String, "dissolve (default), dipToBlack, dipToWhite, wipeLeft, wipeRight, wipeUp, wipeDown, slideLeft, slideRight, slideUp, slideDown, pushLeft, pushRight, pushUp, pushDown, zoom, iris or blur."),
         opt("duration", Number, "Seconds (default 0.8). On a cut it can't be longer than the shorter clip; otherwise than half the clip."),
@@ -231,7 +231,7 @@ pub static SPECS: &[Spec] = &[
         crate::registry::COALESCE,
     ]),
     edit("transition.remove", "Remove the transitions at the start of clips (or every one on a track). One undo step.", &[
-        opt("clipIds", Array, "Clips whose transition goes (ids or names)."),
+        opt("clipIds", Array, "Clips whose transition goes (ids or names).").of(String),
         opt("trackId", String, "Instead of clipIds: every transition on this track."),
     ]),
     // ---- captions ---------------------------------------------------------
@@ -367,7 +367,7 @@ pub static SPECS: &[Spec] = &[
         opt("task", String, "text_to_image, image_to_image, text_to_video or image_to_video. Defaults from video and the images given."),
         opt("video", Boolean, "Make a video rather than an image (when task is omitted)."),
         opt("negativePrompt", String, "What to avoid, for models that take it."),
-        opt("images", Array, "Input images: [{role: reference|start_frame|end_frame, path?, assetId?, clipId?, time?}]. A clip gives the frame it shows at time."),
+        opt("images", Array, "Input images: [{role: reference|start_frame|end_frame, path?, assetId?, clipId?, time?}]. A clip gives the frame it shows at time.").of(Object),
         opt("aspectRatio", String, "\"16:9\", \"9:16\", \"1:1\"… Defaults to the project's."),
         DURATION,
         opt("resolution", String, "\"720p\", \"1080p\"… when the model offers several."),
