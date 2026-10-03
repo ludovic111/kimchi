@@ -293,8 +293,30 @@ pub fn is_thing(scene: &Scene, key: &str) -> bool {
 
 /// Its keyframes (a copy), for `"scene"` too.
 pub fn keyframes(scene: &Scene, id: &str) -> Option<Keyframes> {
-    let mut copy = scene.clone();
-    copy.keyframes_mut(id).map(|k| k.clone())
+    match scene {
+        Scene::Flat(s) if id == "scene" => Some(s.keyframes.clone()),
+        Scene::Flat(s) => s.find_layer(id).map(|l| l.keyframes.clone()),
+        Scene::Space(s) => match id {
+            "scene" => Some(s.keyframes.clone()),
+            "camera" => Some(s.camera.keyframes.clone()),
+            _ => s
+                .cameras
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.keyframes.clone())
+                .or_else(|| s.lights.iter().find(|l| l.id == id).map(|l| l.keyframes.clone()))
+                .or_else(|| find_object(&s.objects, id).map(|o| o.keyframes.clone())),
+        },
+    }
+}
+
+/// Animatable property names of one thing (without copying the scene for layers and objects).
+pub fn prop_names(scene: &Scene, id: &str) -> Vec<String> {
+    match scene {
+        Scene::Flat(s) if id != "scene" => s.find_layer(id).map(|l| l.prop_names()).unwrap_or_default(),
+        Scene::Space(s) if !matches!(id, "scene" | "camera") && find_object(&s.objects, id).is_some() => find_object(&s.objects, id).map(|o| o.prop_names()).unwrap_or_default(),
+        _ => scene.prop_names(id),
+    }
 }
 
 /// A property at scene time `t` with keyframes applied (vector keyframes read through `x.y`

@@ -65,9 +65,11 @@ impl Popover {
                 let me = cx.entity();
                 let first = this.popover.as_ref().and_then(|p| p.choices(this, me, cx).into_iter().find(|c| p.matches(c)));
                 this.popover = None;
+                window.focus(&this.focus, cx);
                 cx.notify();
+                // After this update: the choice reads the Studio.
                 if let Some(c) = first {
-                    (c.run)(window, cx);
+                    window.defer(cx, move |window, cx| (c.run)(window, cx));
                 }
             }
             InputEvent::Cancel => {
@@ -247,7 +249,7 @@ fn add_3d(st: &Studio, studio: &Entity<Studio>, parent: Option<String>, cx: &App
     }
     {
         let (studio, parent) = (studio.clone(), parent.clone());
-        out.push(choice("Other", "Model from a file… (.glb, .gltf, .obj, .stl)", "package", move |_, cx| {
+        out.push(choice("Other", "Model from a file… (glTF, OBJ, STL)", "package", move |_, cx| {
             let rx = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Add model".into()) });
             let (studio, parent) = (studio.clone(), parent.clone());
             cx.spawn(async move |cx| {

@@ -132,6 +132,16 @@ impl Outliner {
         cx.notify();
     }
 
+    /// A click on a row (tests).
+    #[cfg(test)]
+    pub fn click(&mut self, key: &str, additive: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = self.rows(cx).into_iter().find(|r| r.key == key) else { panic!("no row {key}") };
+        let mut e = MouseDownEvent { button: MouseButton::Left, position: Point::default(), modifiers: Default::default(), click_count: 1, first_mouse: false };
+        e.modifiers.shift = additive;
+        self.row_down(&row, &e, window, cx);
+        self.drag = None;
+    }
+
     fn drag_move(&mut self, e: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         let rows = self.rows(cx);
         let top = self.scroll.bounds().origin.y;

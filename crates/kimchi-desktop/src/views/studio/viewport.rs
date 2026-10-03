@@ -161,6 +161,8 @@ pub struct Viewport {
     hover_edge: Option<(u32, u32)>,
     pen: Vec<PenPoint>,
     mouse: [f64; 2],
+    /// The display's pixels per point (pictures are rendered for it).
+    scale: f32,
     _subs: Vec<Subscription>,
 }
 
@@ -196,6 +198,7 @@ impl Viewport {
             hover_edge: None,
             pen: vec![],
             mouse: [0.0; 2],
+            scale: 2.0,
             _subs: subs,
         }
     }
@@ -265,7 +268,7 @@ impl Viewport {
         if f32::from(b.size.width) < 8.0 {
             return None;
         }
-        let scale = 2.0;
+        let scale = self.scale as f64;
         let k = if self.fast { 0.5 } else { 1.0 };
         match scene {
             Scene::Space(s) => {
@@ -1903,6 +1906,7 @@ impl Render for Viewport {
         for old in self.garbage.drain(..) {
             let _ = window.drop_image(old);
         }
+        self.scale = window.scale_factor().clamp(1.0, 3.0);
         let t = cx.theme().clone();
         let bounds = self.bounds.clone();
         let entity = cx.entity();

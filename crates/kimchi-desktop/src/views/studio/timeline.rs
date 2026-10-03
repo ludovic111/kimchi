@@ -69,6 +69,8 @@ pub struct StudioTimeline {
     drag: Option<TDrag>,
     /// Graph editor: the value range shown (fitted when `None`).
     range: Option<(f64, f64)>,
+    /// Dope sheet: pixels scrolled down.
+    scroll_y: f32,
     _subs: Vec<Subscription>,
 }
 
@@ -77,7 +79,7 @@ impl StudioTimeline {
         let store = cx.store();
         let playback = store.read(cx).playback.clone();
         let subs = vec![cx.observe(&studio, |_, _, cx| cx.notify()), cx.observe(&store, |_, _, cx| cx.notify()), cx.observe(&playback, |_, _, cx| cx.notify())];
-        Self { studio, bounds: Rc::new(std::cell::Cell::new(Bounds::default())), drag: None, range: None, _subs: subs }
+        Self { studio, bounds: Rc::new(std::cell::Cell::new(Bounds::default())), drag: None, range: None, scroll_y: 0., _subs: subs }
     }
 
     /// Scene seconds the area shows: the clip's.
@@ -237,6 +239,17 @@ impl StudioTimeline {
     }
 
     fn drag_end(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.finish_drag(cx);
+    }
+
+    /// Moves the selected keys by `dt` scene seconds, as a drag in the dope sheet does.
+    #[cfg(test)]
+    pub fn drag_keys_by(&mut self, dt: f64, cx: &mut Context<Self>) {
+        self.drag = Some(TDrag::Keys { t0: 0.0, dt, moved: true });
+        self.finish_drag(cx);
+    }
+
+    fn finish_drag(&mut self, cx: &mut Context<Self>) {
         let Some(d) = self.drag.take() else { return };
         cx.notify();
         let Some((clip, scene)) = self.studio.read(cx).clip_scene(cx) else { return };
@@ -274,7 +287,7 @@ impl StudioTimeline {
                 let (y0, y1) = (from.1.min(to.1), from.1.max(to.1));
                 let mut picked = vec![];
                 for (i, r) in rows.iter().enumerate() {
-                    let top = by as f32 + RULER_H + i as f32 * ROW_H;
+                    let top = by as f32 + RULER_H + i as f32 * ROW_H - self.scroll_y;
                     if top + ROW_H < y0 || top > y1 {
                         continue;
                     }
@@ -617,6 +630,7 @@ impl Render for StudioTimeline {
                 names = names.child(div().p(px(10.)).text_size(px(sz::XS)).text_color(t.text_3).child("Select an animated thing to see its curves."));
             }
         } else {
+            let mut list = div().mt(px(-self.scroll_y)).flex().flex_col();
             for row in &rows {
                 let open = st.expanded.contains(&row.id);
                 let is_item = row.property.is_none();
@@ -661,8 +675,9 @@ impl Render for StudioTimeline {
                             s3.update(cx, |s, cx| s.select(&id3, add, cx))
                         })
                     });
-                names = names.child(el);
+                list = list.child(el);
             }
+            names = names.child(div().flex_1().min_h_0().overflow_hidden().child(list));
             if rows.is_empty() {
                 names = names.child(div().p(px(10.)).text_size(px(sz::XS)).text_color(t.text_3).line_height(px(sz::XS * 1.4)).child("Nothing is animated yet. Select something and press I, or click a diamond in Properties."));
             }
@@ -736,7 +751,10 @@ impl Render for StudioTimeline {
             }
         } else {
             for (i, row) in rows.iter().enumerate() {
-                let y = by + RULER_H as f64 + i as f64 * ROW_H as f64 + ROW_H as f64 / 2.0;
+                let y = by + RULER_H as f64 + i as f64 * ROW_H as f64 + ROW_H as f64 / 2.0 - self.scroll_y as f64;
+                if y < by + RULER_H as f64 {
+                    continue;
+                }
                 for tt in &row.times {
                     let refs = Self::keys_at(&scene, row, *tt);
                     let sel = !refs.is_empty() && refs.iter().all(|k| selected_keys.contains(k));
@@ -763,6 +781,7 @@ impl Render for StudioTimeline {
         };
         let ticks_x: Vec<f64> = ticks.iter().map(|(x, _)| *x).collect();
         let rows2 = rows.clone();
+        let scroll = self.scroll_y;
         let painter = canvas(
             move |b, _, cx| {
                 if bounds.get() != b {
@@ -780,7 +799,10 @@ impl Render for StudioTimeline {
                 }
                 if !show_graph {
                     for i in 0..rows2.len() {
-                        let y = oy + RULER_H as f64 + (i + 1) as f64 * ROW_H as f64;
+                        let y = oy + RULER_H as f64 + (i + 1) as f64 * ROW_H as f64 - scroll as f64;
+                        if y <= oy + RULER_H as f64 {
+                            continue;
+                        }
                         paint_line(window, &[(ox, y), (ox + w, y)], line.opacity(0.5), 1.0);
                     }
                 }
@@ -819,7 +841,10 @@ impl Render for StudioTimeline {
             for (i, row) in rows.iter().enumerate() {
                 for tt in &row.times {
                     let x = x_of(*tt) - ox;
-                    let y = RULER_H + i as f32 * ROW_H;
+                    let y = RULER_H + i as f32 * ROW_H - self.scroll_y;
+                    if y < RULER_H - 4. {
+                        continue;
+                    }
                     let (row2, tt2) = (row.clone(), *tt);
                     let (row3, tt3) = (row.clone(), *tt);
                     hits.push(
@@ -879,8 +904,15 @@ impl Render for StudioTimeline {
                 }
             }))
             .on_scroll_wheel(cx.listener(|this, e: &gpui::ScrollWheelEvent, _, cx| {
-                // Graph: zoom the values around the middle.
+                // Dope sheet: scroll the rows. Graph: zoom the values around the middle.
                 if !this.studio.read(cx).show_graph {
+                    let Some((_, scene)) = this.studio.read(cx).clip_scene(cx) else { return };
+                    let n = this.rows(&scene, cx).len() as f32;
+                    let (_, _, _, h) = this.track_box();
+                    let max = (n * ROW_H + RULER_H - h as f32 + 8.).max(0.);
+                    let dy = f32::from(e.delta.pixel_delta(px(16.)).y);
+                    this.scroll_y = (this.scroll_y - dy).clamp(0., max);
+                    cx.notify();
                     return;
                 }
                 let Some((_, scene)) = this.studio.read(cx).clip_scene(cx) else { return };

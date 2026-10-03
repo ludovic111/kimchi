@@ -162,7 +162,7 @@ impl Properties {
     fn ctx(&self, clip: kimchi_core::Id, scene: &Scene, id: &str, target: Tk, scope: String, json: Value, cx: &App) -> FieldCtx {
         let st = self.studio.read(cx);
         let t = st.scene_time(cx);
-        let mut anim: HashSet<String> = scene.prop_names(id).into_iter().collect();
+        let mut anim: HashSet<String> = model::prop_names(scene, id).into_iter().collect();
         // A vector animatable as a whole is animatable by component too.
         for base in ["position", "rotation", "scale", "target", "direction", "size"] {
             if anim.contains(base) {
@@ -171,7 +171,18 @@ impl Properties {
                 }
             }
         }
-        FieldCtx { clip, id: id.to_string(), target, scope, scene: scene.clone(), t, playhead: st.playhead(cx), keys: model::keyframes(scene, id).unwrap_or_default(), anim, json }
+        FieldCtx {
+            clip,
+            id: id.to_string(),
+            target,
+            scope,
+            scene: std::rc::Rc::new(scene.clone()),
+            t,
+            playhead: st.playhead(cx),
+            keys: std::rc::Rc::new(model::keyframes(scene, id).unwrap_or_default()),
+            anim: std::rc::Rc::new(anim),
+            json: std::rc::Rc::new(json),
+        }
     }
 
     fn section(title: &str, body: Vec<AnyElement>, cx: &App) -> AnyElement {
@@ -711,7 +722,7 @@ impl Properties {
             out.push(div().flex().flex_col().gap(px(4.)).px(px(12.)).py(px(8.)).border_b_1().border_color(t.line).children(body).into_any_element());
         }
         // Add one.
-        let names: Vec<String> = scene.prop_names(key).into_iter().filter(|n| !json.get("expressions").and_then(|e| e.get(n)).is_some()).collect();
+        let names: Vec<String> = model::prop_names(scene, key).into_iter().filter(|n| !json.get("expressions").and_then(|e| e.get(n)).is_some()).collect();
         let this = cx.entity();
         out.push(div().px(px(12.)).py(px(10.)).child(super::fields::dropdown("expr-add", "Add an expression to…".into(), move |_| {
             names

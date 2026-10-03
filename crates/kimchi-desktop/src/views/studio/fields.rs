@@ -4,6 +4,7 @@
 //! panel (by thing and property); every change is a command (drags fold into one undo step).
 
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use gpui::{AnyElement, App, Context, Entity, SharedString, Window, div, prelude::*, px};
 use kimchi_core::{Id, KeyValue, Keyframes, Scene};
@@ -44,15 +45,15 @@ pub struct FieldCtx {
     pub target: Tk,
     /// The widgets' cache prefix.
     pub scope: String,
-    pub scene: Scene,
+    pub scene: Rc<Scene>,
     /// Scene time and timeline time.
     pub t: f64,
     pub playhead: f64,
-    pub keys: Keyframes,
+    pub keys: Rc<Keyframes>,
     /// Animatable property names of the thing.
-    pub anim: HashSet<String>,
+    pub anim: Rc<HashSet<String>>,
     /// What is read for settings (the thing's, material's or composition's JSON).
-    pub json: Value,
+    pub json: Rc<Value>,
 }
 
 /// Vectors whose components are keyframed one by one (`position.x`).
@@ -67,7 +68,7 @@ impl FieldCtx {
     /// default.
     pub fn read(&self, f: &F) -> Value {
         let from_json = || {
-            let mut v = &self.json;
+            let mut v: &Value = &self.json;
             for part in f.name.split('.') {
                 v = v.get(part)?;
             }
@@ -152,7 +153,7 @@ impl Properties {
                 json!({ "clipId": clip, "id": c.id, "props": { name: v }, "time": c.playhead })
             }
             Tk::Material(id) => {
-                let mut m = c.json.clone();
+                let mut m = (*c.json).clone();
                 set_path(&mut m, name, v);
                 m["id"] = json!(id);
                 json!({ "clipId": clip, "material": m })
@@ -480,7 +481,7 @@ impl Properties {
                 }
             }
             Fk::Sibling => {
-                if let Scene::Flat(s) = &c.scene
+                if let Scene::Flat(s) = &*c.scene
                     && let Some(list) = s.siblings(&c.id)
                 {
                     out.extend(list.iter().filter(|l| l.id != c.id).map(|l| (json!(l.id), l.id.clone())));
@@ -488,13 +489,13 @@ impl Properties {
             }
             Fk::Composition => {
                 out.clear();
-                if let Scene::Flat(s) = &c.scene {
+                if let Scene::Flat(s) = &*c.scene {
                     out.extend(s.compositions.iter().map(|k| (json!(k.id), k.id.clone())));
                 }
             }
             Fk::Camera => {
                 out.clear();
-                if let Scene::Space(s) = &c.scene {
+                if let Scene::Space(s) = &*c.scene {
                     out.push((json!("camera"), "camera".into()));
                     out.extend(s.cameras.iter().map(|k| (json!(k.id), k.id.clone())));
                 }
