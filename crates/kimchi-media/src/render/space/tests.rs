@@ -526,6 +526,23 @@ fn the_floor_grid_shows_its_axes_and_hides_behind_things() {
 }
 
 #[test]
+fn the_grid_shows_on_a_floor_at_its_height() {
+    // A floor plane at y = 0 is where the grid is: seen low, nearly edge on, the grid must not
+    // flicker away into it.
+    let opts = ViewOptions { grid: true, ..Default::default() };
+    let view = ViewCamera { position: [6.0, 1.0, 7.0], target: [0.0, 0.8, 0.0], ..Default::default() };
+    let draw = |objects: serde_json::Value| {
+        let s = scene(json!({"background": "#000000", "objects": objects}));
+        viewport::render_view(&mut Space::cpu(), &s, 0.0, 1.0 / 30.0, 320, 180, &mut None_, Some(&view), &opts).unwrap()
+    };
+    let floor = json!([{"id": "floor", "type": "plane", "width": 20, "height": 20, "rotation": [-90, 0, 0], "material": {"color": "#000000", "unlit": true}}]);
+    let (bare, on) = (draw(json!([])), draw(floor));
+    dump("grid-on-floor", &on);
+    let lit = |p: &Pixmap| p.pixels().iter().filter(|c| c.red() > 20 || c.green() > 20).count();
+    assert!(lit(&on) * 10 > lit(&bare) * 8, "grid on the floor: {} pixels, {} without it", lit(&on), lit(&bare));
+}
+
+#[test]
 fn selection_outlines_edit_wires_and_helpers() {
     let s = json!({"background": "#000000", "lights": [{"id": "sun", "type": "directional"}, {"id": "spot", "type": "spot", "position": [-2, 3, 1]}],
         "cameras": [{"id": "side", "position": [4, 1, 0]}],

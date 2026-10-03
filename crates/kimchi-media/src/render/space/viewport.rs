@@ -345,11 +345,15 @@ fn grid(img: &mut Pixmap, f: &Frame3d, depth: &[f32]) {
         for x in 0..w {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
             let Some((gx, gz, dist, grazing)) = hit(px, py) else { continue };
-            if depth.get(y * w + x).is_some_and(|&d| d < dist * 0.999) {
+            let next = [hit(px + 1.0, py), hit(px, py + 1.0)];
+            // Hidden behind things, not behind a floor of their own at the grid's height: the
+            // depth is the nearest of the pixel's samples, which on a floor seen at a grazing
+            // angle is well in front of the pixel's centre.
+            let across = next.iter().flatten().map(|n| (n.2 - dist).abs()).fold(0.0f32, f32::max);
+            if depth.get(y * w + x).is_some_and(|&d| d < dist * 0.998 - across) {
                 continue;
             }
             // How much each floor coordinate changes across this pixel (lines stay a pixel wide).
-            let next = [hit(px + 1.0, py), hit(px, py + 1.0)];
             let (mut wx, mut wz) = (1e-6f32, 1e-6f32);
             for n in next.iter().flatten() {
                 wx += (n.0 - gx).abs();
