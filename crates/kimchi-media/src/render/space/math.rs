@@ -210,8 +210,8 @@ impl M4 {
         // Row-major copy, Gauss-Jordan in f64 for precision.
         let mut a = [[0.0f64; 8]; 4];
         for (r, row) in a.iter_mut().enumerate() {
-            for c in 0..4 {
-                row[c] = self.0[c][r] as f64;
+            for (v, col) in row.iter_mut().zip(&self.0) {
+                *v = col[r] as f64;
             }
             row[4 + r] = 1.0;
         }
@@ -225,12 +225,13 @@ impl M4 {
             for v in a[col].iter_mut() {
                 *v *= k;
             }
-            for r in 0..4 {
+            let pivot_row = a[col];
+            for (r, row) in a.iter_mut().enumerate() {
                 if r != col {
-                    let f = a[r][col];
+                    let f = row[col];
                     if f != 0.0 {
-                        for c in 0..8 {
-                            a[r][c] -= f * a[col][c];
+                        for (v, p) in row.iter_mut().zip(pivot_row) {
+                            *v -= f * p;
                         }
                     }
                 }

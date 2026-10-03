@@ -339,10 +339,14 @@ enum Engine {
 pub struct Space {
     engine: Engine,
     faceted: HashMap<usize, (Arc<Mesh>, Arc<Mesh>)>,
-    textures: HashMap<(usize, u32, u32), (Arc<Pixmap>, Arc<Texture>)>,
+    /// Pictures made into textures, by the picture (kept alive alongside, so its address isn't reused).
+    textures: HashMap<PictureKey, (Arc<Pixmap>, Arc<Texture>)>,
     /// How scenes are evaluated (the frame rate of the clip being drawn).
     eval: EvalOptions,
 }
+
+/// A picture's address and size.
+type PictureKey = (usize, u32, u32);
 
 /// The one 3D renderer of the process (one GPU device, shared by the preview and exports).
 pub fn shared() -> &'static std::sync::Mutex<Space> {

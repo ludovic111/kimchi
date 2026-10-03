@@ -156,7 +156,7 @@ fn ambient_occlusion(f: &Frame3d, hdr: &mut Hdr) {
             }
             let (t, b) = (n.perpendicular(), n.cross(n.perpendicular()));
             // A different turn of the sample pattern per pixel of a 4×4 block (blurred away below).
-            let turn = ((x % 4) * 4 + (y % 4)) as f32 * 0.392_7;
+            let turn = ((x % 4) * 4 + (y % 4)) as f32 * std::f32::consts::FRAC_PI_8;
             let mut hidden = 0.0;
             for i in 0..samples {
                 let k = (i as f32 + 0.5) / samples as f32;

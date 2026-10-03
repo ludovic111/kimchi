@@ -643,8 +643,8 @@ impl Gpu {
                 for x in 0..w_ {
                     let a = px(x, y, 3).clamp(0.0, 1.0);
                     let o = &mut out[(y * w_ + x) * 4..(y * w_ + x) * 4 + 4];
-                    for k in 0..3 {
-                        o[k] = (px(x, y, k).clamp(0.0, a) * 255.0).round() as u8;
+                    for (k, v) in o.iter_mut().take(3).enumerate() {
+                        *v = (px(x, y, k).clamp(0.0, a) * 255.0).round() as u8;
                     }
                     o[3] = (a * 255.0).round() as u8;
                 }

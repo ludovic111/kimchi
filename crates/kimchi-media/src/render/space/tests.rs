@@ -205,7 +205,7 @@ fn spot_lights_cast_soft_shadows() {
     dump("spot-shadow", &hard);
     // The floor beside the box, where its shadow falls.
     let row = |p: &Pixmap| (0..160).map(|x| rgba(p, x, 46)[0] as f64).collect::<Vec<_>>();
-    let (with, without) = (row(&hard), row(&unshadowed));
+    let with = row(&hard);
     let darker = hard.pixels().iter().zip(unshadowed.pixels()).filter(|(a, b)| a.red() as i32 + 20 < b.red() as i32).count();
     assert!(darker > 5, "the box shadows the floor ({darker} pixels darker)");
     // A bigger bulb blurs the shadow's edge: fewer pixels change abruptly.
@@ -608,4 +608,12 @@ fn gpu_matches_cpu() {
     dump("gpu-post", &g);
     dump("cpu-post", &c);
     assert!(mean_diff(&g, &c) < 6.0, "post: {}", mean_diff(&g, &c));
+    // The Studio's overlays over the GPU's picture and depth.
+    let s = scene(json!({"background": "#202020", "objects": [{"id": "b", "type": "box", "size": 1.5}]}));
+    let opts = ViewOptions { grid: true, selected: vec!["b".into()], edit: Some("b".into()), ..Default::default() };
+    let view = ViewCamera::default();
+    let g = viewport::render_view(&mut gpu, &s, 0.0, 1.0 / 30.0, 160, 90, &mut None_, Some(&view), &opts).unwrap();
+    let c = viewport::render_view(&mut Space::cpu(), &s, 0.0, 1.0 / 30.0, 160, 90, &mut None_, Some(&view), &opts).unwrap();
+    dump("gpu-studio", &g);
+    assert!(mean_diff(&g, &c) < 6.0, "studio: {}", mean_diff(&g, &c));
 }

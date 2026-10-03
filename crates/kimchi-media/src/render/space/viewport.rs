@@ -348,29 +348,32 @@ fn grid(img: &mut Pixmap, f: &Frame3d, depth: &[f32]) {
             if depth.get(y * w + x).is_some_and(|&d| d < dist * 0.999) {
                 continue;
             }
-            // World size of this pixel on the floor.
-            let fp = [hit(px + 1.0, py), hit(px, py + 1.0)]
-                .iter()
-                .flatten()
-                .map(|n| (n.0 - gx).abs().max((n.1 - gz).abs()))
-                .fold(1e-6f32, f32::max);
-            let line = |c: f32, s: f32| -> f32 {
+            // How much each floor coordinate changes across this pixel (lines stay a pixel wide).
+            let next = [hit(px + 1.0, py), hit(px, py + 1.0)];
+            let (mut wx, mut wz) = (1e-6f32, 1e-6f32);
+            for n in next.iter().flatten() {
+                wx += (n.0 - gx).abs();
+                wz += (n.1 - gz).abs();
+            }
+            let fp = wx.max(wz);
+            // Lines where x (or z) is a multiple of `s`.
+            let line = |c: f32, s: f32, w: f32| -> f32 {
                 let d = ((c / s + 0.5).rem_euclid(1.0) - 0.5).abs() * s;
-                (1.0 - d / fp).clamp(0.0, 1.0)
+                (1.0 - d / w).clamp(0.0, 1.0)
             };
             // Spacing: the finest power of ten that keeps lines a few pixels apart.
             let s1 = 10f32.powf((fp * 6.0).log10().ceil()).max(1.0);
             let fade1 = (1.0 - fp * 12.0 / s1).clamp(0.0, 1.0);
             let s2 = s1 * 10.0;
-            let minor = line(gx, s1).max(line(gz, s1)) * fade1 * 0.32;
-            let major = line(gx, s2).max(line(gz, s2)) * 0.55;
+            let minor = line(gx, s1, wx).max(line(gz, s1, wz)) * fade1 * 0.32;
+            let major = line(gx, s2, wx).max(line(gz, s2, wz)) * 0.55;
             let far = (1.0 - dist / reach).clamp(0.0, 1.0) * (grazing / 0.08).min(1.0);
             let a = minor.max(major) * far;
             let px = &mut row[x * 4..x * 4 + 4];
             blend(px, [150, 150, 156], a);
             // The axes through the origin.
-            let ax = (1.0 - gz.abs() / (fp * 1.2)).clamp(0.0, 1.0) * far;
-            let az = (1.0 - gx.abs() / (fp * 1.2)).clamp(0.0, 1.0) * far;
+            let ax = (1.0 - gz.abs() / (wz * 1.2)).clamp(0.0, 1.0) * far;
+            let az = (1.0 - gx.abs() / (wx * 1.2)).clamp(0.0, 1.0) * far;
             blend(px, [230, 70, 70], ax * 0.9);
             blend(px, [110, 200, 80], az * 0.9);
         }
@@ -546,14 +549,15 @@ fn edit_overlay(img: &mut Pixmap, f: &Frame3d, depth: &[f32], poly: &PolyMesh, m
 
 /// Lights and cameras as small wire icons.
 fn helpers(img: &mut Pixmap, f: &Frame3d, scene: &Scene3d, t: f64, through: bool) {
+    type Lines = Vec<([f32; 2], [f32; 2])>;
     let mut light_lines = vec![];
-    let mut push = |lines: &mut Vec<([f32; 2], [f32; 2])>, a: V3, b: V3| {
+    let mut push = |lines: &mut Lines, a: V3, b: V3| {
         if let Some((sa, sb, ..)) = segment(f, a, b) {
             lines.push((sa, sb));
         }
     };
     // A small circle around a point, facing the camera.
-    let ring = |lines: &mut Vec<([f32; 2], [f32; 2])>, c: V3, r: f32, push: &mut dyn FnMut(&mut Vec<([f32; 2], [f32; 2])>, V3, V3)| {
+    let ring = |lines: &mut Lines, c: V3, r: f32, push: &mut dyn FnMut(&mut Lines, V3, V3)| {
         let (x, y) = (f.camera.right * r, f.camera.up * r);
         for k in 0..16 {
             let (a0, a1) = (k as f32 / 16.0 * std::f32::consts::TAU, (k + 1) as f32 / 16.0 * std::f32::consts::TAU);

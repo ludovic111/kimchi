@@ -258,10 +258,10 @@ pub(crate) fn items(
         }
         let c = [srgb_f((p.color.0[0] / 255.0) as f32), srgb_f((p.color.0[1] / 255.0) as f32), srgb_f((p.color.0[2] / 255.0) as f32)];
         let mut m = mat.clone();
-        for k in 0..3 {
-            m.base[k] = if tint { c[k] * mat.base[k] } else { c[k] };
+        for (k, ck) in c.iter().enumerate() {
+            m.base[k] = if tint { ck * mat.base[k] } else { *ck };
             // A glowing material glows in each particle's colour.
-            m.emissive[k] = mat.emissive[k] * c[k];
+            m.emissive[k] = mat.emissive[k] * ck;
         }
         m.base[3] = alpha * mat.base[3];
         let to_camera = if camera.ortho { -camera.forward } else { (camera.eye - pos).norm() };
@@ -309,7 +309,7 @@ mod tests {
     fn little_meshes_are_closed_and_sized() {
         for k in ["sphere", "cube", "tetra"] {
             let m = little(k);
-            assert!(!m.index.is_empty() && m.index.len() % 3 == 0);
+            assert!(!m.index.is_empty() && m.index.len().is_multiple_of(3));
             let (lo, hi) = m.bounds();
             assert!(hi.0 <= 0.5 + 1e-4 && lo.0 >= -0.5 - 1e-4, "{k}: {lo:?} {hi:?}");
         }
