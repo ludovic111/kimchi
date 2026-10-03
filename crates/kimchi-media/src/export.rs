@@ -151,7 +151,7 @@ async fn run(
         let (tx, mut rx) = tokio::sync::mpsc::channel::<MediaResult<Vec<u8>>>(3);
         let (tools, project) = (tools.clone(), project.clone());
         let render = tokio::task::spawn_blocking(move || {
-            let mut r = crate::render::Renderer::new(&tools, &project, video.width, video.height, video.fps);
+            let mut r = crate::render::Renderer::for_export(&tools, &project, video.width, video.height, video.fps);
             for n in 0..video.frames {
                 let t = video.from + n as f64 / video.fps;
                 let frame = r.frame(t).map(crate::render::to_rgba);

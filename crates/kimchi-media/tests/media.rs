@@ -379,3 +379,35 @@ async fn cancels_and_reports_errors() {
     }
     assert!(!Path::new(&st.path).exists());
 }
+
+#[tokio::test]
+async fn exports_originals_and_rejects_missing_or_broken_pictures() {
+    let Some(tools) = tools() else { return };
+    let fx = fixtures(&tools);
+    let original = fx.root.join("original.mp4");
+    let preview = fx.root.join("preview.mp4");
+    for (path, color) in [(&original, "red"), (&preview, "blue")] {
+        ff(&tools, &["-f", "lavfi", "-i", &format!("color=c={color}:s=64x64:r=10:d=0.3"), "-an", path.to_str().unwrap()]);
+    }
+    let mut a = asset(MediaKind::Video, &original, probe(&tools, &original).await.unwrap().meta);
+    a.proxy = Some(preview.to_string_lossy().into());
+    let mut p = Project::new("originals", ProjectSettings { width: 64, height: 64, fps: 10.0, ..Default::default() });
+    p.tracks = vec![Track { clips: vec![Clip::new("picture", 0.0, 0.3, ClipContent::Media { asset_id: a.id })], ..Track::new(TrackKind::Video, "Video") }];
+    p.assets = vec![a];
+    let st = settings(&fx, "original-export.mp4", ExportFormat::Mp4);
+    export(&tools, &p, &st, |_| {}, CancellationToken::new()).await.unwrap();
+    let pixels = Command::new(&tools.ffmpeg).args(["-v", "error", "-i", &st.path, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).output().unwrap();
+    assert!(pixels.status.success());
+    assert!(pixels.stdout[0] > 200 && pixels.stdout[2] < 30, "export must use the red original, not the blue proxy");
+    let frame = kimchi_media::preview::render_frame(&tools, &p, 0.0, 64, 64).await.unwrap();
+    assert!(frame.pixel(32, 32)[2] > 200, "preview should still use the proxy");
+    p.assets[0].path = fx.root.join("missing.mp4").to_string_lossy().into();
+    let missing = settings(&fx, "missing-export.mp4", ExportFormat::Mp4);
+    let err = export(&tools, &p, &missing, |_| {}, CancellationToken::new()).await.unwrap_err();
+    assert!(err.to_string().contains("missing media"), "{err}");
+    assert!(!Path::new(&missing.path).exists());
+    let broken = fx.root.join("broken.mp4");
+    std::fs::write(&broken, b"broken").unwrap();
+    p.assets[0].path = broken.to_string_lossy().into();
+    assert!(export(&tools, &p, &missing, |_| {}, CancellationToken::new()).await.is_err());
+}

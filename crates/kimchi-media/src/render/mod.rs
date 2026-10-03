@@ -43,6 +43,7 @@ pub struct Renderer {
     width: u32,
     height: u32,
     fps: f64,
+    strict: bool,
     /// Output pixels per project pixel.
     sx: f32,
     sy: f32,
@@ -82,7 +83,16 @@ impl Renderer {
     /// Media are read through their proxies when those exist.
     pub fn new(tools: &Tools, project: &Project, width: u32, height: u32, fps: f64) -> Self {
         let (width, height) = (even(width), even(height));
-        let project = playable(project);
+        Self::with_project(tools, playable(project), width, height, fps, false)
+    }
+
+    /// Render original media and report failures instead of omitting clips.
+    pub fn for_export(tools: &Tools, project: &Project, width: u32, height: u32, fps: f64) -> Self {
+        Self::with_project(tools, project.clone(), width, height, fps, true)
+    }
+
+    fn with_project(tools: &Tools, project: Project, width: u32, height: u32, fps: f64, strict: bool) -> Self {
+        let (width, height) = (even(width), even(height));
         let ps = &project.settings;
         Self {
             tools: tools.clone(),
@@ -92,6 +102,7 @@ impl Renderer {
             width,
             height,
             fps: if fps.is_finite() && fps > 0.0 { fps } else { 30.0 },
+            strict,
             streams: HashMap::new(),
             grabbed: HashMap::new(),
         }
@@ -155,6 +166,9 @@ impl Renderer {
         let mut used = HashSet::new();
         for clip in self.visible_clips(t) {
             if let Err(e) = self.draw_clip(&mut canvas, &clip, t, streaming, &mut used) {
+                if self.strict {
+                    return Err(e);
+                }
                 tracing::warn!(clip = %clip.name, "skipped in this frame: {e}");
             }
         }
@@ -184,7 +198,10 @@ impl Renderer {
                 Ok(())
             }
             ClipContent::Media { asset_id } => {
-                let Some(asset) = self.project.asset(*asset_id).cloned() else { return Ok(()) };
+                let asset = self.project.asset(*asset_id).cloned().ok_or_else(|| crate::MediaError::Unsupported(format!("missing asset {asset_id}")))?;
+                if !Path::new(&asset.path).is_file() {
+                    return Err(crate::MediaError::Unsupported(format!("missing media file {}", asset.path)));
+                }
                 let (dw, dh) = self.decode_size(clip, asset.meta.width, asset.meta.height);
                 let pic = match asset.kind {
                     MediaKind::Image => self.still_image(Path::new(&asset.path), dw, dh)?,
