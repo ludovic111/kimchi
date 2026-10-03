@@ -1306,6 +1306,17 @@ fn check_object_keys(v: &Value) -> Result<(), String> {
     };
     let allowed: Vec<&str> = OBJECT_KEYS.iter().chain(own.iter()).copied().collect();
     check_keys(v, &allowed, &format!("{kind} \"{id}\""))?;
+    // One number for a rotation turns the object round all three axes at once, which nobody
+    // means (a turn around y is [0, 45, 0]); stored scenes still read it as before.
+    let lone = |r: Option<&Value>| r.is_some_and(Value::is_number);
+    let keyed = v.get("keyframes").and_then(|k| k.get("rotation")).and_then(Value::as_array).is_some_and(|ks| {
+        ks.iter().any(|k| lone(k.get(1)) || lone(k.get("value")))
+    });
+    if lone(v.get("rotation")) || keyed {
+        return Err(format!(
+            "object \"{id}\": rotation is [x, y, z] degrees (one number would turn it round every axis); for a turn around y write [0, 45, 0], or animate rotation.y"
+        ));
+    }
     if let Some(m) = v.get("material").filter(|m| m.is_object()) {
         check_keys(m, MATERIAL_KEYS, &format!("the material of \"{id}\""))?;
     }
@@ -1476,6 +1487,9 @@ mod tests {
         let e = err(json!({"layers": [{"id": "a", "type": "rect"}, {"id": "g", "type": "group", "layers": [
             {"id": "sparks", "type": "particles", "emitterSize": 600}]}]}));
         assert!(e.contains("(at layers › \"g\" › layers › \"sparks\" › emitterSize)"), "{e}");
+        for cube in [json!({"id": "c", "type": "box", "rotation": 45}), json!({"id": "c", "type": "box", "keyframes": {"rotation": [[0, 0], [1, 90]]}})] {
+            assert!(err(json!({"type": "3d", "objects": [cube]})).contains("[0, 45, 0]"));
+        }
         let e = err(json!({"type": "3d", "objects": [{"id": "cube", "type": "box", "position": "up"}]}));
         assert!(e.contains("(at objects › \"cube\" › position)"), "{e}");
         let mut s = Scene::from_json(&json!({"type": "3d", "objects": [{"id": "cube", "type": "box"}]})).unwrap();
