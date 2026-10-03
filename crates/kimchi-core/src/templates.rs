@@ -1108,10 +1108,10 @@ fn glitch_title(v: &Values, c: &Ctx) -> Value {
              ],
              "keyframes": {
                 "opacity": [k(0.0, 0.0, "hold"), k(0.1, 1.0, "hold"), k(0.18, 0.0, "hold"), k(0.26, 1.0, "hold"), k(d - 0.3, 1.0, "linear"), k(d, 0.0, "easeIn")],
-                "effects.glitch.amount": [k(0.0, 0.9, "linear"), k(0.6, 0.0, "easeOut"), k(d * 0.55, 0.0, "hold"), k(d * 0.55 + 0.08, 0.8, "linear"), k(d * 0.55 + 0.35, 0.0, "easeOut")],
-                "effects.split.amount": [k(0.0, 18.0, "linear"), k(0.7, 2.0, "easeOut"), k(d * 0.55, 2.0, "hold"), k(d * 0.55 + 0.08, 22.0, "linear"), k(d * 0.55 + 0.4, 2.0, "easeOut")]
+                "effects.glitch.amount": [k(0.0, 0.9, "linear"), k(0.6, 0.0, "easeOut"), k(d * 0.48, 0.0, "hold"), k(d * 0.48 + 0.08, 0.8, "linear"), k(d * 0.48 + 0.35, 0.0, "easeOut")],
+                "effects.split.amount": [k(0.0, 18.0, "linear"), k(0.7, 2.0, "easeOut"), k(d * 0.48, 2.0, "hold"), k(d * 0.48 + 0.08, 22.0, "linear"), k(d * 0.48 + 0.4, 2.0, "easeOut")]
              }},
-            {"id": "lines", "type": "adjustment", "effects": [{"id": "scan", "type": "scanlines", "spacing": 4, "amount": 0.25, "speed": 40}, {"id": "grain", "type": "noise", "amount": 0.08}]}
+            {"id": "lines", "type": "adjustment", "effects": [{"id": "scan", "type": "scanlines", "spacing": c.height / 135.0, "amount": 0.35, "speed": 40}, {"id": "grain", "type": "noise", "amount": 0.08}]}
         ]
     });
     if let Some(bg) = v.opt("background") {
@@ -1220,7 +1220,7 @@ fn liquid_background(v: &Values, c: &Ctx) -> Value {
 fn product_shot(v: &Values, c: &Ctx) -> Value {
     let d = c.duration;
     let mut scene = json!({
-        "camera": {"target": [0, 0.9, 0], "fov": 32, "fStop": 2.8,
+        "camera": {"target": [0, 0.95, 0], "fov": 34, "fStop": 2.8,
                    "constraints": [{"id": "orbit", "type": "followPath", "path": "orbit", "progress": 0, "align": false}],
                    "keyframes": {"constraints.orbit.progress": [k(0.0, -0.08, "linear"), k(d, 0.12, "easeInOutSine")]}},
         "environment": {"type": "gradient", "top": "#fbf8f3", "horizon": "#e9e4dc", "bottom": "#8d877e", "strength": 1.1},
@@ -1233,7 +1233,7 @@ fn product_shot(v: &Values, c: &Ctx) -> Value {
             {"id": "marble", "color": "#f2efe9", "roughness": 0.25, "pattern": {"type": "marble", "color": "#f4f1ec", "color2": "#8e8478", "scale": 1.5, "turbulence": 5}}
         ],
         "objects": [
-            {"id": "orbit", "type": "curve", "closed": true, "points": [[0, 1.6, 5.2], [5.2, 1.6, 0], [0, 1.6, -5.2], [-5.2, 1.6, 0]], "hidden": true},
+            {"id": "orbit", "type": "curve", "closed": true, "points": [[0, 1.7, 6.2], [6.2, 1.7, 0], [0, 1.7, -6.2], [-6.2, 1.7, 0]], "hidden": true},
             {"id": "pedestal", "type": "cylinder", "radius": 1.3, "height": 0.6, "position": [0, -0.3, 0], "material": "marble",
              "modifiers": [{"id": "bevel", "type": "bevel", "width": 0.04, "segments": 3}]},
             {"id": "bottle", "type": "lathe", "segments": 64, "position": [0, 0, 0], "material": "glass",
@@ -1260,7 +1260,7 @@ fn logo_extrude(v: &Values, c: &Ctx) -> Value {
     let mut scene = json!({
         "camera": {"position": [0, 0.3, 9], "target": [0, 0, 0], "fov": 34,
                    "keyframes": {"position": [k(0.0, json!([1.6, 0.9, 10.5]), "linear"), k(d, json!([0, 0.2, 7.2]), "easeOutCubic")]}},
-        "environment": {"type": "gradient", "top": "#2a2a35", "horizon": "#111117", "bottom": "#050507", "strength": 0.8},
+        "environment": {"type": "gradient", "top": "#ffffff", "horizon": "#6e6a78", "bottom": "#121216", "strength": 1.3},
         "materials": [{"id": "gold", "color": v.s("color"), "metallic": 1, "roughness": 0.22, "clearcoat": 0.3}],
         "lights": [
             {"id": "key", "type": "directional", "direction": [-0.5, -0.6, -0.8], "intensity": 1.2},
@@ -1272,7 +1272,7 @@ fn logo_extrude(v: &Values, c: &Ctx) -> Value {
              "keyframes": {"rotation.y": [k(0.0, -35.0, "linear"), k(1.8, 0.0, "easeOutCubic"), k(d, 8.0, "linear")],
                            "scale": [k(0.0, 0.6, "linear"), k(1.2, 1.0, "easeOutBack")], "opacity": [k(0.0, 0.0, "linear"), k(0.3, 1.0, "linear")]}}
         ],
-        "render": {"bloom": 0.6, "bloomThreshold": 0.9, "toneMapping": "filmic"}
+        "render": {"bloom": 0.35, "bloomThreshold": 1.1, "toneMapping": "filmic"}
     });
     if let Some(bg) = v.opt("background") {
         scene["background"] = json!(bg);
