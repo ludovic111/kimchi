@@ -443,7 +443,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             })?;
             Ok(json!({ "live": ids }))
         }
-        "motion.convertToMesh" | "motion.applyModifier" | "motion.editMesh" => super::motion_mesh::run(s, cx, a).await,
+        "motion.convertToMesh" | "motion.applyModifier" | "motion.editMesh" => Box::pin(super::motion_mesh::run(s, cx, a)).await,
         _ => Err(crate::commands::unhandled(cx)),
     }
 }

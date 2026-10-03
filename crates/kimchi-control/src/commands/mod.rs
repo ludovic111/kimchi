@@ -676,22 +676,24 @@ pub static SPECS: &[Spec] = &[
 
 /// Runs the handler for a validated command.
 pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
+    // Each family's handler is boxed: their futures are large (big matches), and on the
+    // stack of a 2 MB thread (tests, tokio workers in debug builds) they overflow it.
     match cx.spec.family() {
-        "project" => project::run(s, cx, a).await,
-        "media" => media::run(s, cx, a).await,
-        "track" => track::run(s, cx, a).await,
-        "motion" => motion::run(s, cx, a).await,
-        "clip" => clip::run(s, cx, a).await,
-        "transition" => transition::run(s, cx, a).await,
-        "captions" => captions::run(s, cx, a).await,
-        "timeline" => timeline::run(s, cx, a).await,
-        "history" => history::run(s, cx, a).await,
-        "generate" => generate::run(s, cx, a).await,
-        "export" => export::run(s, cx, a).await,
-        "handoff" => handoff::run(s, cx, a).await,
-        "app" => app::run(s, cx, a).await,
-        "agent" => agent::run(s, cx, a).await,
-        "ui" => ui::run(s, cx, a).await,
+        "project" => Box::pin(project::run(s, cx, a)).await,
+        "media" => Box::pin(media::run(s, cx, a)).await,
+        "track" => Box::pin(track::run(s, cx, a)).await,
+        "motion" => Box::pin(motion::run(s, cx, a)).await,
+        "clip" => Box::pin(clip::run(s, cx, a)).await,
+        "transition" => Box::pin(transition::run(s, cx, a)).await,
+        "captions" => Box::pin(captions::run(s, cx, a)).await,
+        "timeline" => Box::pin(timeline::run(s, cx, a)).await,
+        "history" => Box::pin(history::run(s, cx, a)).await,
+        "generate" => Box::pin(generate::run(s, cx, a)).await,
+        "export" => Box::pin(export::run(s, cx, a)).await,
+        "handoff" => Box::pin(handoff::run(s, cx, a)).await,
+        "app" => Box::pin(app::run(s, cx, a)).await,
+        "agent" => Box::pin(agent::run(s, cx, a)).await,
+        "ui" => Box::pin(ui::run(s, cx, a)).await,
         _ => Err(unhandled(cx)),
     }
 }

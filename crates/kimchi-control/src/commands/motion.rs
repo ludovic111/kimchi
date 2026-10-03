@@ -184,7 +184,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             }
             set_scene(s, cx, &a, clip.id, scene, Some(tref))
         }
-        _ => crate::commands::motion_edit::run(s, cx, a).await,
+        _ => Box::pin(crate::commands::motion_edit::run(s, cx, a)).await,
     }
 }
 
