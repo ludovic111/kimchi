@@ -180,8 +180,8 @@ rotation, opacity, fill, blur, tracking, skew, amount. **Text on a path**: `"pat
 small things are born from the layer's (object's) position and fly, fall, swirl and fade.
 `rate` per second and/or `burst` at `emitFrom`; `emitUntil`; `lifetime` (+ `lifetimeRandom`);
 `emitter` point, line, rect/box, circle/disc, ring, sphere (`emitterSize`); `direction`,
-`spread` (degrees), `speed` (+ `speedRandom`), `gravity`, `drag`, `turbulence`; `size`,
-`sizeEnd`, `sizeRandom`, `spin`, `spinRandom`; `color`, `colorEnd`, `colors` (each picks one:
+`spread` (degrees), `speed` (+ `speedRandom`), `gravity`, `drag`, `turbulence`; `size`
+(diameter), `sizeEnd` (a multiple of `size` at the end of life: 0 shrinks away, 2 doubles), `sizeRandom`, `spin`, `spinRandom`; `color`, `colorEnd`, `colors` (each picks one:
 confetti); `fadeIn`/`fadeOut` (share of life); `shape` 2D circle, square, triangle, star, spark,
 image / 3D sphere, cube, tetra, spark, image (`asset`); `trail` (default true: particles stay
 where they were born when the emitter moves); `prewarm`; `seed`. Units: pixels in 2D (y down),

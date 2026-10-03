@@ -86,9 +86,9 @@ impl Scene {
             }
         }
         let scene = if three {
-            Scene::Space(serde_json::from_value(body).map_err(|e| format!("3D scene: {e}"))?)
+            Scene::Space(serde_json::from_value(body.clone()).map_err(|e| format!("3D scene: {e}{}", where_bad(&body, |v| serde_json::from_value::<Scene3d>(v).is_ok())))?)
         } else {
-            Scene::Flat(serde_json::from_value(body).map_err(|e| format!("2D scene: {e}"))?)
+            Scene::Flat(serde_json::from_value(body.clone()).map_err(|e| format!("2D scene: {e}{}", where_bad(&body, |v| serde_json::from_value::<Scene2d>(v).is_ok())))?)
         };
         let mut scene = scene;
         scene.normalize();
@@ -1141,6 +1141,81 @@ fn check_color_opt(c: &Option<String>, what: &str) -> Result<(), String> {
     c.as_deref().map_or(Ok(()), |c| check_color(c, what))
 }
 
+/// Where in `body` a value of the wrong type is (serde's own errors don't say): the deepest
+/// field or list item whose removal lets `ok` accept the scene, as ` (at layers › "card" ›
+/// width)`, or nothing when no single removal does.
+fn where_bad(body: &Value, ok: impl Fn(Value) -> bool) -> String {
+    fn remove(v: &mut Value, path: &[Seg]) {
+        let Some((last, up)) = path.split_last() else { return };
+        let mut at = v;
+        for s in up {
+            at = match (s, at) {
+                (Seg::Key(k), Value::Object(o)) => match o.get_mut(k) {
+                    Some(x) => x,
+                    None => return,
+                },
+                (Seg::Index(i, _), Value::Array(a)) => match a.get_mut(*i) {
+                    Some(x) => x,
+                    None => return,
+                },
+                _ => return,
+            };
+        }
+        match (last, at) {
+            (Seg::Key(k), Value::Object(o)) => {
+                o.remove(k);
+            }
+            (Seg::Index(i, _), Value::Array(a)) if *i < a.len() => {
+                a.remove(*i);
+            }
+            _ => {}
+        }
+    }
+    #[derive(Clone)]
+    enum Seg {
+        Key(String),
+        Index(usize, Option<String>),
+    }
+    let mut path: Vec<Seg> = vec![];
+    let mut node = body;
+    // Each step tries the children of the node reached so far; a few thousand parses at most.
+    let mut budget = 4000usize;
+    'down: loop {
+        let children: Vec<(Seg, &Value)> = match node {
+            Value::Object(o) => o.iter().map(|(k, v)| (Seg::Key(k.clone()), v)).collect(),
+            Value::Array(a) => a.iter().enumerate().map(|(i, v)| (Seg::Index(i, v.get("id").and_then(Value::as_str).map(str::to_string)), v)).collect(),
+            _ => break,
+        };
+        for (seg, child) in children {
+            if budget == 0 {
+                break 'down;
+            }
+            budget -= 1;
+            let mut trial = body.clone();
+            path.push(seg);
+            remove(&mut trial, &path);
+            if ok(trial) {
+                node = child;
+                continue 'down;
+            }
+            path.pop();
+        }
+        break;
+    }
+    if path.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = path
+        .iter()
+        .map(|s| match s {
+            Seg::Key(k) => k.clone(),
+            Seg::Index(_, Some(id)) => format!("\"{id}\""),
+            Seg::Index(i, None) => format!("item {}", i + 1),
+        })
+        .collect();
+    format!(" (at {})", parts.join(" › "))
+}
+
 fn check_keys(v: &Value, allowed: &[&str], what: &str) -> Result<(), String> {
     let Some(o) = v.as_object() else { return Ok(()) };
     for k in o.keys() {
@@ -1395,6 +1470,12 @@ mod tests {
         assert!(err(json!({"layers": [{"id": "a", "type": "rect", "keyframes": {"x": [[0, 0], [1, 5, "boing"]]}}]})).contains("easing"));
         assert!(err(json!({"layers": [{"id": "a", "type": "rect", "mask": "b"}]})).contains("isn't a layer"));
         assert!(err(json!({"layers": [{"id": "p", "type": "path", "d": "M 0 0 Q"}]})).contains("path data"));
+        // A value of the wrong type says where it is.
+        let e = err(json!({"layers": [{"id": "a", "type": "rect"}, {"id": "g", "type": "group", "layers": [
+            {"id": "sparks", "type": "particles", "emitterSize": 600}]}]}));
+        assert!(e.contains("(at layers › \"g\" › layers › \"sparks\" › emitterSize)"), "{e}");
+        let e = err(json!({"type": "3d", "objects": [{"id": "cube", "type": "box", "position": "up"}]}));
+        assert!(e.contains("(at objects › \"cube\" › position)"), "{e}");
     }
 
     #[test]
