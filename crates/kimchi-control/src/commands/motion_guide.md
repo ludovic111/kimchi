@@ -218,14 +218,16 @@ move at once (1 = one by one, larger = smoother wave); `distance` the travel of 
 World units, y up. The camera looks from `position` at `target` (`fov` vertical degrees,
 `roll` degrees). Without `lights`, a key light and a fill light are used. `ambient` (0–1, default
 0.25) and `ambientColor` light everything softly from a sky above and a ground below; metals
-reflect them. `shadows` (default true): the strongest directional light casts soft shadows.
-`fog` (default true): with a background, distant things fade into it (a soft horizon).
+reflect them. `shadows` (default true): the strongest directional light, spot lights and area
+lights cast soft shadows. `fog` (default true): with a background, distant things fade into it (a soft horizon).
 
 **Lights**: `{id, type: "directional"|"point"|"spot"|"area", color, intensity, direction (where
 it shines towards), position (point, spot, area), range (point and spot: distance where it fades
 out, 0 = never), angle (spot: the cone's full angle, default 45), blend (spot: soft edge 0–1),
 size (area: [width, height]; point/spot: bulb radius; sun: softness), castShadows, hidden}`.
-Shadows come from the main directional light and spot lights (soft ones grow with `size`).
+Shadows come from the main directional light and spot and area lights (four at most; softer as
+`size` grows); point lights cast none in the standard engine (the path tracer shadows every
+light).
 
 **Cameras**: the main `camera` (id `camera`) and more in `"cameras": [{"id": "close", "position":
 …, "target": …}]`; `"activeCamera": "close"` picks the one filming, and scene keyframes
