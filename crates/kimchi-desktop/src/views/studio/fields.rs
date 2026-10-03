@@ -380,11 +380,12 @@ impl Properties {
                 let on = value.as_bool().unwrap_or_else(|| value.as_f64().is_some_and(|n| n >= 0.5));
                 let cc = c.clone();
                 let this = cx.entity();
-                let sw = switch(SharedString::from(format!("b-{key}")), f.label, on, move |v, _, cx| {
+                let sw = switch(SharedString::from(format!("b-{key}")), "", on, move |v, _, cx| {
                     let cc = cc.clone();
                     this.update(cx, |p, cx| p.write(&cc, name, json!(v), true, cx))
                 }, cx);
-                div().min_h(px(26.)).flex().items_center().child(div().flex_1().child(sw)).child(div().w(px(26.))).into_any_element()
+                // Like every other row: the label on the left, the switch at the end.
+                Self::row(f.label, div().flex().justify_end().child(sw).into_any_element(), div().w(px(22.)).into_any_element(), cx)
             }
             Fk::Choice(options) => {
                 let current = value.as_str().unwrap_or("").to_string();

@@ -161,6 +161,10 @@ pub struct Viewport {
     hover_edge: Option<(u32, u32)>,
     pen: Vec<PenPoint>,
     mouse: [f64; 2],
+    /// A path-traced picture refining: its stop flag and the task showing its pictures.
+    refiner: Option<(Arc<std::sync::atomic::AtomicBool>, Task<()>)>,
+    /// Samples per pixel so far, of how many (the Rendered view of the path tracer).
+    samples: Option<(u32, u32)>,
     /// The display's pixels per point (pictures are rendered for it).
     scale: f32,
     _subs: Vec<Subscription>,
@@ -198,6 +202,8 @@ impl Viewport {
             hover_edge: None,
             pen: vec![],
             mouse: [0.0; 2],
+            refiner: None,
+            samples: None,
             scale: 2.0,
             _subs: subs,
         }
@@ -250,6 +256,10 @@ impl Viewport {
         let Some(req) = self.request(cx) else { return };
         if self.shown.as_ref() == Some(&req) {
             return;
+        }
+        // Something changed: a path-traced picture still refining stops.
+        if let Some((cancel, _)) = self.refiner.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         if self.rendering.is_some() {
             self.stale = true;
@@ -311,6 +321,11 @@ impl Viewport {
 
     fn render_picture(&mut self, req: Request, cx: &mut Context<Self>) {
         let Some(project) = self.store.read(cx).project.clone() else { return };
+        let path_traced = matches!(model::motion_clip(&project, req.clip), Some((_, Scene::Space(s))) if s.render.path_traced());
+        if req.opts.shading == kimchi_media::render::space::viewport::Shading::Rendered && path_traced && !self.fast {
+            self.refine(req, project, cx);
+            return;
+        }
         let session = self.store.read(cx).session.clone();
         let tools = session.tools_if_found().unwrap_or_else(|| kimchi_media::Tools { ffmpeg: "ffmpeg".into(), ffprobe: "ffprobe".into() });
         let fps = project.settings.fps;
@@ -335,6 +350,64 @@ impl Viewport {
             })
             .ok();
         }));
+    }
+
+    /// The "Rendered" view of a path-traced scene: a first picture with a few samples, better
+    /// ones as more come in, until the scene's samples are all in or the view changes.
+    fn refine(&mut self, req: Request, project: Arc<Project>, cx: &mut Context<Self>) {
+        let session = self.store.read(cx).session.clone();
+        let tools = session.tools_if_found().unwrap_or_else(|| kimchi_media::Tools { ffmpeg: "ffmpeg".into(), ffprobe: "ffprobe".into() });
+        let fps = project.settings.fps;
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Result<(Arc<RenderImage>, u32, u32), String>>();
+        let (r, stop) = (req.clone(), cancel.clone());
+        cx.background_spawn(async move {
+            // Half the view's pixels: the path tracer is slow, and the picture refines anyway.
+            let mut renderer = kimchi_media::render::Renderer::new(&tools, &project, (r.w / 2).max(16), (r.h / 2).max(16), fps);
+            let mut p = match renderer.refining_view(r.clip, r.t, r.view.as_ref()) {
+                Ok(Some(p)) => p,
+                Ok(None) => return,
+                Err(e) => {
+                    let _ = tx.unbounded_send(Err(e.to_string()));
+                    return;
+                }
+            };
+            let mut step = 1;
+            while !p.done() && !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                p.add(step.min(p.target() - p.samples()));
+                let pic = to_image(p.picture());
+                if tx.unbounded_send(pic.map(|i| (i, p.samples(), p.target()))).is_err() {
+                    break;
+                }
+                step = (step * 2).min(16);
+            }
+        })
+        .detach();
+        self.shown = Some(req);
+        let task = cx.spawn(async move |this, cx| {
+            use futures::StreamExt;
+            while let Some(r) = rx.next().await {
+                let ok = this
+                    .update(cx, |this, cx| {
+                        match r {
+                            Ok((img, n, of)) => {
+                                if let Some(old) = this.image.replace(img) {
+                                    this.garbage.push(old);
+                                }
+                                this.samples = Some((n, of));
+                                this.error = None;
+                            }
+                            Err(e) => this.error = Some(e),
+                        }
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !ok {
+                    break;
+                }
+            }
+        });
+        self.refiner = Some((cancel, task));
     }
 
     /// While the pointer works the view, pictures come at half size; full size once it rests.
@@ -1668,6 +1741,11 @@ impl View2 {
 fn draw(tools: &kimchi_media::Tools, project: &Project, req: &Request, fps: f64) -> Result<Arc<RenderImage>, String> {
     let mut r = kimchi_media::render::Renderer::new(tools, project, req.w, req.h, fps);
     let pix = r.scene_view(req.clip, req.t, req.view.as_ref(), &req.opts, req.comp.as_deref()).map_err(|e| e.to_string())?;
+    to_image(pix)
+}
+
+/// A rendered picture (premultiplied RGBA) as a GPUI image.
+fn to_image(pix: kimchi_media::tiny_skia::Pixmap) -> Result<Arc<RenderImage>, String> {
     let (w, h) = (pix.width(), pix.height());
     let mut data = pix.take();
     for px in data.chunks_exact_mut(4) {
@@ -1917,11 +1995,14 @@ impl Render for Viewport {
                 let b = self.sizes();
                 let (bx, by) = (f32::from(b.origin.x) as f64, f32::from(b.origin.y) as f64);
                 let st = self.studio.read(cx);
-                let label = if st.through_camera {
+                let mut label = if st.through_camera {
                     format!("Camera · {}", s.active_camera_at(*tt))
                 } else {
                     format!("User {}", if st.view.ortho { "orthographic" } else { "perspective" })
                 };
+                if let (Some((n, of)), true) = (self.samples, self.refiner.is_some()) {
+                    label.push_str(&format!(" · path traced {n}/{of}"));
+                }
                 (self.marks3(s, sc, *tt, p, cx), Some((v.x - bx, v.y - by, v.w, v.h)), label)
             }
             Some((p, _, Scene::Flat(s), tt)) => {
