@@ -449,27 +449,48 @@ fn lerp(a: &Corner, b: &Corner, t: f32) -> Corner {
     }
 }
 
-/// Keeps the part of a triangle in front of the near plane (clip z ≥ 0).
+/// How far past the picture's edges (in picture widths and heights, from its centre) triangles
+/// are kept: beyond, they are clipped, so no corner lands thousands of pictures away (a floor
+/// clipped at the near plane right next to the eye) where `f32` can't place the pixels near
+/// the horizon any more and holes open up.
+const GUARD: f32 = 4.0;
+
+/// Keeps the part of a triangle in front of the near plane (clip z ≥ 0) and inside the guard
+/// band around the picture.
 fn clip_near(c: &[Corner]) -> Vec<Vec<Corner>> {
-    let inside = |v: &Corner| v.clip[2] >= 0.0 && v.clip[3] > 1e-6;
-    if c.iter().all(inside) {
+    // Signed distances to each plane: inside when ≥ 0.
+    let planes: [fn(&[f32; 4]) -> f32; 5] = [
+        |p| p[2],
+        |p| GUARD * p[3] - p[0],
+        |p| GUARD * p[3] + p[0],
+        |p| GUARD * p[3] - p[1],
+        |p| GUARD * p[3] + p[1],
+    ];
+    let inside_all = |v: &Corner| v.clip[3] > 1e-6 && planes.iter().all(|d| d(&v.clip) >= 0.0);
+    if c.iter().all(inside_all) {
         return vec![c.to_vec()];
     }
-    if !c.iter().any(inside) {
-        return vec![];
-    }
-    let mut out = vec![];
-    for i in 0..c.len() {
-        let (a, b) = (&c[i], &c[(i + 1) % c.len()]);
-        if inside(a) {
-            out.push(*a);
+    let mut poly = c.to_vec();
+    for d in planes {
+        if poly.len() < 3 {
+            return vec![];
         }
-        if inside(a) != inside(b) {
-            let t = a.clip[2] / (a.clip[2] - b.clip[2]);
-            out.push(lerp(a, b, t.clamp(0.0, 1.0)));
+        let mut out = Vec::with_capacity(poly.len() + 2);
+        for i in 0..poly.len() {
+            let (a, b) = (&poly[i], &poly[(i + 1) % poly.len()]);
+            let (da, db) = (d(&a.clip), d(&b.clip));
+            if da >= 0.0 {
+                out.push(*a);
+            }
+            if (da >= 0.0) != (db >= 0.0) {
+                let t = da / (da - db);
+                out.push(lerp(a, b, t.clamp(0.0, 1.0)));
+            }
         }
+        poly = out;
     }
-    if out.len() >= 3 { vec![out] } else { vec![] }
+    // In front of the near plane, w is positive (the projection keeps it ≥ the near distance).
+    if poly.len() >= 3 && poly.iter().all(|v| v.clip[3] > 1e-6) { vec![poly] } else { vec![] }
 }
 
 fn screen(item: u32, c: [&Corner; 3], w: usize, h: usize, dpdu: V3, dpdv: V3) -> Option<Tri> {

@@ -617,3 +617,25 @@ fn gpu_matches_cpu() {
     dump("gpu-studio", &g);
     assert!(mean_diff(&g, &c) < 6.0, "studio: {}", mean_diff(&g, &c));
 }
+
+#[test]
+fn a_big_floor_running_behind_the_camera_has_no_holes() {
+    // The floor's corners behind the camera are clipped at the near plane; what is left reaches
+    // far off screen, and every pixel of it up to the horizon must be drawn.
+    let v = json!({"background": "#ff00ff", "fog": false, "shadows": false,
+        "camera": {"position": [6, 4, 8], "target": [0, 1, 0], "fov": 40},
+        "objects": [{"id": "floor", "type": "plane", "width": 30, "height": 30, "rotation": [-90, 0, 0], "material": {"color": "#40a040", "unlit": true}}]});
+    let p = Space::cpu().render(&scene(v), 0.0, 640, 360, &mut None_, Quality::Preview).unwrap();
+    dump("big-floor", &p);
+    // Below the floor's far edges (the highest is about a third of the way down) it is all floor.
+    let mut holes = 0;
+    for y in 150..360 {
+        for x in 0..640 {
+            let c = rgba(&p, x, y);
+            if c[0] > 128 && c[2] > 128 {
+                holes += 1;
+            }
+        }
+    }
+    assert_eq!(holes, 0, "pixels of the background showing through the floor");
+}
