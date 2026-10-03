@@ -534,7 +534,7 @@ How to make motion graphics and 3D with kimchi: the scene formats (2D layers, 3D
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `topic` | string |  | 2d, 3d, keyframes, templates or all (default). |
+| `topic` | string |  | 2d, 3d, keyframes, templates, expressions, modelling, particles, rendering or all (default). |
 
 ### `motion.templates`
 
@@ -665,6 +665,228 @@ Re-make a template clip with new values (the others keep theirs). Edits made to 
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `values` | object | required | Values to change. |
 | `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.stackTypes`
+
+The building blocks a scene's things can stack, with every parameter, its range and default: 3D modifiers (subdivision, mirror, array, bevel, boolean, twist…), constraints (lookAt, followPath…) and material patterns; 2D effects (blur, glow, colour, distortions…), shape operators (repeater, zig zag…), masks and text animators. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `family` | string |  | modifiers, constraints, pattern, effects, operators, masks, animators or editOps (mesh operations; default: all). |
+
+### `motion.setStackItem`
+
+Add a modifier or constraint (3D object, light, camera), or an effect, operator, mask or text animator (2D layer), or replace the one with the same id. Items run in order; animate a parameter with motion.setKeyframes property "<field>.<itemId>.<param>". One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The layer, object, light or camera. |
+| `field` | string | required | modifiers, constraints, effects, operators, masks or animators. |
+| `item` | object | required | {"type": "blur", "radius": 12} (see motion.stackTypes); with an id it replaces that item. |
+| `index` | integer |  | Position in the stack for a new item (default: last). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.removeStackItem`
+
+Remove a modifier, constraint, effect, operator, mask or text animator. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The layer, object, light or camera. |
+| `field` | string | required | modifiers, constraints, effects, operators, masks or animators. |
+| `itemId` | string | required | The item's id. |
+
+### `motion.moveStackItem`
+
+Change where a modifier, constraint, effect, operator, mask or animator runs in its stack. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The layer, object, light or camera. |
+| `field` | string | required | modifiers, constraints, effects, operators, masks or animators. |
+| `itemId` | string | required | The item's id. |
+| `index` | integer | required | New position (0 = first). |
+
+### `motion.setExpression`
+
+Drive a property with a formula evaluated every frame (After Effects expressions, Blender drivers): "time * 90", "wiggle(2, 30)", "value + sin(time * 4) * 20", "prop('ball', 'x') + 100", "loopOut('pingpong')". motion.guide topic expressions lists the language. Empty removes it. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A layer, object, light or camera id. |
+| `property` | string | required | The property, e.g. rotation, x, opacity, rotation.y, effects.blur.radius. |
+| `expression` | string |  | The formula; empty or omitted removes it. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.setMaterial`
+
+Add or replace a shared material in a 3D scene (objects use it with "material": "<id>"). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `material` | object | required | {"id": "gold", "color": "#e8b04a", "metallic": 1, "roughness": 0.25} (fields as an object's material: color, metallic, roughness, emissive, emissiveIntensity, opacity, transmission, ior, clearcoat, texture, pattern, textureScale, flat, unlit). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.removeMaterial`
+
+Remove a shared material; objects that used it keep a copy of it as their own. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `materialId` | string | required | The material's id. |
+
+### `motion.setComposition`
+
+Add or change a composition of a 2D scene (After Effects' precomp: layers with their own time and canvas, shown by comp layers). Without layers, the composition's layers stay as they are. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `composition` | object | required | {"id": "card", "width": 800, "height": 400, "duration": 3, "background": null, "layers": [...]}. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.removeComposition`
+
+Remove a composition (no comp layer may still show it). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `compositionId` | string | required | The composition's id. |
+
+### `motion.precompose`
+
+Move layers of a 2D scene into a new composition and put one comp layer showing it where they were (After Effects' Pre-compose). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `ids` | array | required | The layers (siblings in the same list). |
+| `compositionId` | string | required | The new composition's id (also the comp layer's). |
+
+### `motion.moveLayer`
+
+Reorder a layer (2D: later draws on top) or object (3D), or move it into a group, composition (2D) or another object (3D, it then moves with it). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The layer or object. |
+| `parent` | string |  | A group or composition (2D) or object (3D) to move it into; "" = the top level. Omit to stay in the same list. |
+| `index` | integer |  | Position in its list (0 = first, drawn first in 2D). Default: last. |
+
+### `motion.duplicateLayer`
+
+Copy a layer, object or light (with its children) next to itself under a new id. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | What to copy. |
+| `newId` | string |  | The copy's id (default: the id with a number). |
+
+### `motion.convertToMesh`
+
+Turn a 3D object's shape (box, sphere, cylinder, extruded text or path, lathe, curve…) into an editable mesh, optionally with its modifiers applied. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The object. |
+| `applyModifiers` | boolean |  | Bake the modifier stack into the mesh (default false: modifiers stay). |
+
+### `motion.applyModifier`
+
+Bake a modifier (or the whole stack) into an object's mesh, like Blender's Apply; the object becomes a mesh. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The object. |
+| `modifierId` | string |  | One modifier (applied with the ones before it); omit for all. |
+
+### `motion.editMesh`
+
+Model a mesh object like Blender's edit mode: extrude, inset, bevel, subdivide, loop cut, delete, merge, fill, bridge, flip, move/rotate/scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap. Selections are vertex and/or face indices (motion.get shows them) or helpers. Returns the new selection. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A mesh object (motion.convertToMesh makes one from any shape). |
+| `op` | string | required | The operation: extrude, extrudeIndividual, inset, bevel, subdivide, loopCut, delete, dissolve, merge, fill, bridge, flip, recalcNormals, translate (or move), rotate, scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap. |
+| `vertices` | array |  | Selected vertex indices. |
+| `faces` | array |  | Selected face indices. |
+| `select` | object |  | Instead of indices: {"all": true}, {"facing": [0, 1, 0], "angle": 30}, {"inside": [[x0,y0,z0],[x1,y1,z1]]}, {"edgeLoop": [v0, v1]}, {"edgeRing": [v0, v1]}; add "linked": true to grow to everything connected. |
+| `params` | object |  | The operation's values, e.g. {"distance": 0.5} (extrude), {"thickness": 0.1, "depth": 0} (inset), {"width": 0.05, "segments": 2} (bevel), {"cuts": 1} (subdivide, loopCut), {"what": "faces"} (delete), {"offset": [0, 1, 0]} (translate), {"angle": [0, 45, 0], "pivot": [0,0,0]} (rotate), {"factor": [1,2,1]} (scale), {"axis": "x"} (mirror), {"angle": 360, "steps": 12, "axis": [0,1,0]} (spin), {"method": "box"} (unwrap). motion.stackTypes {"family": "editOps"} lists every operation's values. |
+
+### `motion.view`
+
+Render a motion clip's scene alone, the way the Studio shows it, to a PNG: a 3D scene from any angle (an axis, or a free view) with the floor grid and selection, or through its camera; a 2D scene or one of its compositions. For looking at a 3D scene from another side. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `time` | number |  | Timeline seconds (default: the playhead). |
+| `axis` | string |  | front, back, left, right, top or bottom: look along that axis at the scene. |
+| `view` | object |  | A free view: {"position": [x,y,z], "target": [x,y,z], "fov": 40, "ortho": false, "orthoSize": 6}. |
+| `throughCamera` | boolean |  | Through the scene's active camera (default true without axis or view). |
+| `shading` | string |  | solid, material (default) or rendered (the final engine). |
+| `grid` | boolean |  | Floor grid (default true off-camera). |
+| `selected` | array |  | Ids drawn with a selection outline. |
+| `composition` | string |  | 2D: show this composition instead of the scene. |
+| `width` | integer |  | Picture width (default 960). |
+
+### `motion.shiftKeyframes`
+
+Move keyframes of a layer, object, light or camera in time (the dope sheet's drag): all of them, one property's, or those at some times. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | A layer, object, light or camera id, "camera" or "scene". |
+| `by` | number | required | Seconds to move them (negative = earlier). |
+| `property` | string |  | Only this property (default: every one). |
+| `times` | array |  | Only the keyframes at these timeline times (seconds). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `motion.render`
+
+Render motion clips ahead at full quality (the 3D engine and samples the scene asks for, motion blur…) into a file the timeline then plays: smooth playback and fast exports for heavy scenes. A clip that isn't rendered is drawn live (quick in the preview, full quality in the export). Editing the scene afterwards makes the render out of date: the clip is drawn live again until it is rendered again. Returns render ids; follow them with motion.renderStatus, or pass wait. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array | required | Motion clips (ids or names). |
+| `wait` | boolean |  | Wait until the job finishes and return it (always true with --file). |
+
+### `motion.renderStatus`
+
+Renders running and finished, with progress; and each motion clip's state: live, rendered or outdated. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `renderId` | string |  | One render. |
+
+### `motion.cancelRender`
+
+Stop a render; the clip stays as it was. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `renderId` | string | required | Render id from motion.render or motion.renderStatus. |
+
+### `motion.unrender`
+
+Go back to drawing motion clips live (forget their rendered frames). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array | required | Motion clips (ids or names). |
 
 ## timeline
 
