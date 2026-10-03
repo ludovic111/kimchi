@@ -363,21 +363,45 @@ fn motion_blur(l: &Layer, list: &[Layer], place: Place, cx: &Cx, fx: &mut Flat, 
 /// Puts a layer's picture (drawn with a `pad` margin) onto the target: its old-style shadow and
 /// glow under it, then the picture with its opacity and blend mode.
 fn composite(target: &mut Pixmap, pic: &Pixmap, l: &Layer, opacity: f32, pad: u32, k: f32) {
-    let back = -(pad as f32);
+    // Only the part with ink, and what its shadow and glow reach from it, is worth tinting,
+    // blurring and blending: a small layer's picture is mostly empty (dozens of glowing dots
+    // used to cost a whole canvas each).
+    let Some(ink) = effects2d::ink(pic) else { return };
+    let mut reach = 2.0f32;
+    if let Some(s) = &l.shadow {
+        reach = reach.max((s.x.abs().max(s.y.abs()) + s.blur * 3.0) as f32 * k + 2.0);
+    }
+    if let Some(g) = &l.glow {
+        reach = reach.max(g.radius as f32 * k * 3.0 + 2.0);
+    }
+    let roi = ink.grow(reach, pic);
+    let cropped = (roi.w() * roi.h() * 2 < pic.width() as usize * pic.height() as usize)
+        .then(|| tiny_skia::IntRect::from_xywh(roi.x0 as i32, roi.y0 as i32, roi.w() as u32, roi.h() as u32).and_then(|r| pic.clone_rect(r)))
+        .flatten();
+    let (pic, ox, oy) = match &cropped {
+        Some(c) => (c, roi.x0 as f32, roi.y0 as f32),
+        None => (pic, 0.0, 0.0),
+    };
+    let (back_x, back_y) = (ox - pad as f32, oy - pad as f32);
+    composite_at(target, pic, l, opacity, (back_x, back_y), k);
+}
+
+/// [`composite`] of a picture whose top left corner goes at `back` on the target.
+fn composite_at(target: &mut Pixmap, pic: &Pixmap, l: &Layer, opacity: f32, (back_x, back_y): (f32, f32), k: f32) {
     if let Some(s) = &l.shadow {
         let mut sh = paint::tinted(pic, with_alpha(color(&s.color), opacity), 1.0);
         paint::blur(&mut sh, s.blur as f32 * k);
-        let at = Transform::from_translate(back + s.x as f32 * k, back + s.y as f32 * k);
+        let at = Transform::from_translate(back_x + s.x as f32 * k, back_y + s.y as f32 * k);
         target.draw_pixmap(0, 0, sh.as_ref(), &PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() }, at, None);
     }
     if let Some(g) = &l.glow {
         let mut gl = paint::tinted(pic, color(&g.color), (g.strength * l.opacity) as f32);
         paint::blur(&mut gl, g.radius as f32 * k);
         let paint = PixmapPaint { blend_mode: BlendMode::Plus, ..PixmapPaint::default() };
-        target.draw_pixmap(0, 0, gl.as_ref(), &paint, Transform::from_translate(back, back), None);
+        target.draw_pixmap(0, 0, gl.as_ref(), &paint, Transform::from_translate(back_x, back_y), None);
     }
     let paint = PixmapPaint { opacity, blend_mode: paint::blend(l.blend), quality: tiny_skia::FilterQuality::Nearest };
-    target.draw_pixmap(0, 0, pic.as_ref(), &paint, Transform::from_translate(back, back), None);
+    target.draw_pixmap(0, 0, pic.as_ref(), &paint, Transform::from_translate(back_x, back_y), None);
 }
 
 /// How much of each pixel a track matte lets through (0–1).
