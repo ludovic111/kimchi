@@ -222,14 +222,9 @@ impl Renderer {
                 flat::draw(&mut canvas, &shown, t, base, &mut fx);
             }
             Scene::Space(s) => {
-                let shown = match view {
-                    Some(v) if !opts.through_camera => v.apply(s),
-                    _ => s.clone(),
-                };
-                let quality = if opts.shading == space::viewport::Shading::Rendered { Quality::Final } else { Quality::Preview };
                 let (width, height) = (self.width, self.height);
                 let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
-                let img = lock(space::shared()).render(&shown, t, width, height, &mut pics, quality)?;
+                let img = space::viewport::render_view(&mut lock(space::shared()), s, t, width, height, &mut pics, view, opts)?;
                 draw_picture(&mut canvas, &img, Transform::identity(), 1.0);
             }
         }
@@ -388,8 +383,10 @@ impl Renderer {
                         }
                         Scene::Space(s) => {
                             let (width, height, quality) = (self.width, self.height, self.quality);
+                            // Scene seconds one output frame lasts (for motion blur).
+                            let frame = clip.scene_time(t + 1.0 / self.fps) - st;
                             let mut pics = ScenePictures { r: self, clip: clip.id, streaming, used };
-                            let img = lock(space::shared()).render(s, st, width, height, &mut pics, quality)?;
+                            let img = lock(space::shared()).render_frame(s, st, frame, width, height, &mut pics, quality)?;
                             draw_picture(target, &img, Transform::identity(), 1.0);
                         }
                     }
