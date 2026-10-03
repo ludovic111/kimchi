@@ -459,6 +459,19 @@ fn parents_carry_their_children() {
 }
 
 #[test]
+fn trimmed_strokes_keep_their_dashes() {
+    // A line from x = −80 to 80 drawn half on (trimEnd 0.5) with 10 px dashes: dashes on the
+    // left half, nothing on the right.
+    let p = render(json!({"layers": [{"id": "l", "type": "path", "d": "M-80 0 L80 0", "closed": false, "trimEnd": 0.5,
+        "stroke": {"color": "#ffffff", "width": 4, "cap": "butt", "dash": [10, 10]}}]}), 0.0);
+    dump("trim-dash", &p);
+    let on: Vec<bool> = (20..100).map(|x| alpha(&p, x, 50) > 128).collect();
+    let flips = on.windows(2).filter(|w| w[0] != w[1]).count();
+    assert!(flips >= 6, "dashed: {on:?}");
+    assert!((100..200).all(|x| alpha(&p, x, 50) == 0), "trimmed off on the right");
+}
+
+#[test]
 fn compositions_have_their_own_time() {
     let base = |comp_layer: serde_json::Value| {
         json!({"compositions": [{"id": "c", "width": 200, "height": 100, "duration": 1, "layers": [

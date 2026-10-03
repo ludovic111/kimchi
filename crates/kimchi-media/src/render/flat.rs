@@ -568,17 +568,27 @@ fn stroke(target: &mut Pixmap, path: &Path, l: &Layer, s: &kimchi_core::motion::
     if s.width <= 0.0 {
         return;
     }
-    let dash = match paint::trim_dash(path, l.trim_start, l.trim_end, l.trim_offset) {
-        Some(None) => return,
-        Some(Some(d)) => Some(d),
-        None if s.dash.len() >= 2 => {
+    let own = (s.dash.len() >= 2)
+        .then(|| {
             let mut arr: Vec<f32> = s.dash.iter().map(|v| v.max(0.0) as f32).collect();
             if arr.len() % 2 == 1 {
                 arr.extend(arr.clone());
             }
             tiny_skia::StrokeDash::new(arr, s.dash_offset as f32)
+        })
+        .flatten();
+    // Trimming is a dash of its own: with dashes too, the path is cut to the trimmed part first
+    // and the dashes run along that (they used to be dropped).
+    let trimmed;
+    let (path, dash) = match (paint::trim_dash(path, l.trim_start, l.trim_end, l.trim_offset), own) {
+        (Some(None), _) => return,
+        (Some(Some(t)), None) => (path, Some(t)),
+        (Some(Some(t)), Some(d)) => {
+            let Some(p) = path.dash(&t, 1.0) else { return };
+            trimmed = p;
+            (&trimmed, Some(d))
         }
-        None => None,
+        (None, d) => (path, d),
     };
     let stroke = Stroke {
         width: s.width as f32,
