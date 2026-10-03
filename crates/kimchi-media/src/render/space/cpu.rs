@@ -289,8 +289,11 @@ fn lit(m: &ShadowMap, p: V3, n: V3, f: &Frame3d) -> f32 {
     let ndl = n.dot(to_light).abs().max(0.05);
     let slope = ((1.0 - ndl * ndl).sqrt() / ndl).min(8.0);
     let reach = if taps > 1 { texel * slope * step * taps as f32 } else { 0.0 };
+    // The sun's map is orthographic: depths are distances, so its bias is in world units too,
+    // a few texels' worth on slanted surfaces (not a share of its depth range, which on a big
+    // scene let light through recesses a hand deep and left their shadows speckled).
     let mine = if m.res.ortho {
-        q.2 - 0.002 - reach / (m.res.far - m.res.near).max(1e-6)
+        q.2 - (texel * (1.0 + slope) * 1.5 + reach) / (m.res.far - m.res.near).max(1e-6)
     } else {
         m.res.distance(q.2) * 0.995 - texel * (1.0 + slope) * 2.0 - reach
     };

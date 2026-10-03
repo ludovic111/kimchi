@@ -140,6 +140,29 @@ fn objects_cast_shadows_on_a_floor() {
     assert!(under(&on) < under(&off) * 3 / 4, "shadow darkens the floor: {} vs {}", under(&on), under(&off));
 }
 
+#[test]
+fn small_overhangs_shadow_in_big_scenes() {
+    // A thin ledge sticking out a tenth of a unit from a wall, in a scene with a big floor (the
+    // sun's shadow map covers many units): the band of wall under it is in shadow, evenly.
+    let v = |shadows: bool| {
+        json!({"background": "#000000", "shadows": shadows, "fog": false,
+            "camera": {"position": [0, 1.44, 3], "target": [0, 1.44, 0], "fov": 20},
+            "lights": [{"id": "sun", "type": "directional", "direction": [0, -1, -1]}],
+            "objects": [
+                {"id": "floor", "type": "plane", "width": 30, "height": 30, "rotation": [-90, 0, 0]},
+                {"id": "wall", "type": "plane", "width": 2, "height": 2, "position": [0, 1, 0], "material": {"color": "#ffffff", "roughness": 1}},
+                {"id": "ledge", "type": "box", "size": [2, 0.02, 0.1], "position": [0, 1.5, 0.05], "material": {"color": "#ffffff", "roughness": 1}}
+            ]})
+    };
+    let draw = |s: bool| Space::cpu().render(&scene(v(s)), 0.0, 320, 180, &mut None_, Quality::Preview).unwrap();
+    let (on, off) = (draw(true), draw(false));
+    dump("ledge-shadow", &on);
+    let band = mean(&on, 60, 86, 260, 95);
+    let lit = mean(&on, 60, 120, 260, 170);
+    assert!(mean(&off, 60, 86, 260, 95) > lit * 0.9, "without shadows the band is as lit as the wall below");
+    assert!(band < lit * 0.6, "the ledge shadows the wall under it: {band:.0} vs {lit:.0}");
+}
+
 /// The standard look is unchanged: no exposure, standard tone mapping encode like before.
 #[test]
 fn standard_tone_mapping_is_the_shoulder() {

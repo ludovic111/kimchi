@@ -315,7 +315,7 @@ fn shadow_lit(li: i32, world: vec3<f32>, n: vec3<f32>) -> f32 {
     }
     var mine: f32;
     if (ortho) {
-        mine = q.z - 0.002 - reach / max(s.p.w - s.p.z, 1e-6);
+        mine = q.z - (texel * (1.0 + slope) * 1.5 + reach) / max(s.p.w - s.p.z, 1e-6);
     } else {
         mine = shadow_distance(s, q.z) * 0.995 - texel * (1.0 + slope) * 2.0 - reach;
     }
