@@ -198,6 +198,7 @@ impl Properties {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn scrub(&mut self, key: &str, label: &str, step: f64, decimals: usize, min: f64, max: f64, on: impl Fn(&mut Self, f64, bool, &mut Context<Self>) + 'static, cx: &mut Context<Self>) -> Entity<Scrub> {
         self.used.insert(key.to_string());
         if let Some(Widget::Scrub(e, _)) = self.widgets.get(key) {
@@ -226,6 +227,7 @@ impl Properties {
     }
 
     /// A text field: `live` sends while typing, else when done (Enter or leaving it).
+    #[allow(clippy::too_many_arguments)]
     pub fn text(&mut self, key: &str, lines: usize, mono: bool, live: bool, placeholder: &str, on: impl Fn(&mut Self, String, bool, &mut Context<Self>) + 'static, cx: &mut Context<Self>) -> Entity<TextInput> {
         self.used.insert(key.to_string());
         if let Some(Widget::Text(e, _)) = self.widgets.get(key) {

@@ -330,7 +330,7 @@ pub fn layer_style(kind: &str) -> Vec<Section> {
     let mut out = vec![];
     if !matches!(kind, "group" | "null" | "adjustment" | "comp" | "image" | "particles") {
         out.push(sec("Fill and outline", vec![
-            f("fill", "Fill", Fk::Color, if kind == "text" { "\"#ffffff\"" } else { "\"#ffffff\"" }),
+            f("fill", "Fill", Fk::Color, "\"#ffffff\""),
             f("strokeColor", "Outline", Fk::Color, "\"#ffffff\""),
             f("strokeWidth", "Outline width", Fk::Num(0.5, 1, 0.0, 1000.0), "0"),
             f("stroke.cap", "Line ends", Fk::Choice(&["butt", "round", "square"]), "\"round\""),

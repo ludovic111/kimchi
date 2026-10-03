@@ -119,12 +119,12 @@ pub fn parts(f: &Frame, kind: Kind, view: &View3) -> Vec<Part> {
                 out.push(Part { handle: Handle::Axis(i), points: head, color: AXIS_COLORS[i], closed: true, fill: true });
             }
             if kind == Kind::Grab {
-                for i in 0..3 {
+                for (i, &color) in AXIS_COLORS.iter().enumerate() {
                     let (a, b) = (f.axes[(i + 1) % 3], f.axes[(i + 2) % 3]);
                     let q = |u: f64, v: f64| at(math::add(math::scale(a, u * len), math::scale(b, v * len)));
                     let pts: Option<Vec<[f64; 2]>> = [q(0.25, 0.25), q(0.45, 0.25), q(0.45, 0.45), q(0.25, 0.45)].into_iter().collect();
                     if let Some(pts) = pts {
-                        out.push(Part { handle: Handle::Plane(i), points: pts, color: AXIS_COLORS[i], closed: true, fill: true });
+                        out.push(Part { handle: Handle::Plane(i), points: pts, color, closed: true, fill: true });
                     }
                 }
             }

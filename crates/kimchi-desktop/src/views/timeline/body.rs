@@ -1038,7 +1038,7 @@ impl TimelineBody {
                 _ => None,
             };
             let id = shown.id;
-            let render = crate::views::studio::render_state::state(self.store.read(cx), &p, &shown);
+            let render = crate::views::studio::render_state::state(self.store.read(cx), p, &shown);
             let view = ClipView {
                 clip: &shown,
                 asset,

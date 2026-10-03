@@ -159,6 +159,7 @@ impl Properties {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn ctx(&self, clip: kimchi_core::Id, scene: &Scene, id: &str, target: Tk, scope: String, json: Value, cx: &App) -> FieldCtx {
         let st = self.studio.read(cx);
         let t = st.scene_time(cx);

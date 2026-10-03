@@ -562,8 +562,7 @@ impl Viewport {
                     "y" => 1,
                     _ => 2,
                 };
-                if let (Some(sess), Some((p, _, Scene::Space(s), t))) = (self.session.as_ref().map(|_| ()), self.scene(cx)) {
-                    let _ = sess;
+                if let (true, Some((p, _, Scene::Space(s), t))) = (self.session.is_some(), self.scene(cx)) {
                     let view = self.view3(&s, t, &p, cx);
                     let local = self.studio.read(cx).local;
                     let sess = self.session.as_mut().expect("checked");
@@ -1155,7 +1154,7 @@ impl Viewport {
     }
 
     /// The selected layer's box handles on screen: (handle, position).
-    fn handles2(&self, s: &Scene2d, v: &View2, t: f64, cx: &App) -> Option<(Vec<[f64; 2]>, Vec<(LayerOp, [f64; 2])>, [f64; 2])> {
+    fn handles2(&self, s: &Scene2d, v: &View2, t: f64, cx: &App) -> Option<Handles2> {
         let st = self.studio.read(cx);
         let id = st.active()?;
         let corners = model::layer_corners(s, st.composition.as_deref(), t, id, v.project)?;
@@ -1722,6 +1721,9 @@ thread_local! {
     pub static LAST: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
+/// The selected layer's box on screen: its corners, its handles, its anchor point.
+type Handles2 = (Vec<[f64; 2]>, Vec<(LayerOp, [f64; 2])>, [f64; 2]);
+
 /// The 2D canvas on screen.
 #[derive(Clone, Copy, Debug)]
 struct View2 {
@@ -1733,10 +1735,10 @@ struct View2 {
 }
 
 impl View2 {
-    fn to_screen(&self, p: [f64; 2]) -> [f64; 2] {
+    fn to_screen(self, p: [f64; 2]) -> [f64; 2] {
         [self.cx + p[0] * self.zoom, self.cy + p[1] * self.zoom]
     }
-    fn to_canvas(&self, s: [f64; 2]) -> [f64; 2] {
+    fn to_canvas(self, s: [f64; 2]) -> [f64; 2] {
         [(s[0] - self.cx) / self.zoom, (s[1] - self.cy) / self.zoom]
     }
 }
@@ -1752,7 +1754,7 @@ fn draw(tools: &kimchi_media::Tools, project: &Project, req: &Request, fps: f64)
 fn to_image(pix: kimchi_media::tiny_skia::Pixmap) -> Result<Arc<RenderImage>, String> {
     let (w, h) = (pix.width(), pix.height());
     let mut data = pix.take();
-    for px in data.chunks_exact_mut(4) {
+    for px in data.as_chunks_mut::<4>().0 {
         // Premultiplied → straight, then BGRA for GPUI.
         let a = px[3] as u32;
         if a > 0 && a < 255 {
