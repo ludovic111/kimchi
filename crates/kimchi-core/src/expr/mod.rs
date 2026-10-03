@@ -23,6 +23,7 @@ mod run;
 mod tests;
 
 pub use guide::GUIDE;
+pub use run::fmt_num as format_number;
 
 /// The longest formula accepted, in bytes.
 pub const MAX_LEN: usize = 8000;

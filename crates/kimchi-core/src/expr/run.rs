@@ -81,7 +81,7 @@ impl Val {
 }
 
 /// A number as people write it: `3`, `0.25`, `-1.5` (at most 6 decimals).
-pub(super) fn fmt_num(n: f64) -> String {
+pub fn fmt_num(n: f64) -> String {
     if n.is_nan() {
         return "NaN".into();
     }

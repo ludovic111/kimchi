@@ -35,6 +35,7 @@ pub mod stack;
 
 pub use flat::*;
 pub use space::*;
+pub use eval::{EvalOptions, Evaluated3d, MAX_PROP_DEPTH};
 pub use stack::{Animator, Constraint, Effect, Mask, Modifier, Operator, Pattern};
 
 /// Formulas by property name (`{"rotation": "time * 90", "x": "wiggle(2, 30)"}`).

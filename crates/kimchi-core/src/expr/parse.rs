@@ -8,6 +8,10 @@ use super::{MAX_LEN, Program, place};
 /// How deep brackets and calls may nest (keeps the reader and the runner off deep recursion).
 const MAX_DEPTH: u32 = 64;
 
+/// How many operations may sit inside each other once read (`1 + 1 + 1 …` is a chain the runner
+/// walks one level per `+`).
+const MAX_HEIGHT: usize = 256;
+
 // ---------------------------------------------------------------------------------------------
 // The tree
 
@@ -395,7 +399,27 @@ pub(super) fn program(src: &str) -> Result<Program, String> {
         Some(Stmt::Let(..)) => return Err("the formula ends with `let …`; end it with the value, like `let a = time * 2; a + 1`".into()),
         None => return Err("the formula is empty".into()),
     }
+    if body.iter().any(|s| match s {
+        Stmt::Let(_, n) | Stmt::Expr(n) => taller(n, MAX_HEIGHT),
+    }) {
+        return Err(format!("the formula chains more than {MAX_HEIGHT} operations inside each other; split it into steps with `let`"));
+    }
     Ok(Program { src: Arc::from(src), body, slots: p.locals.len() })
+}
+
+/// Is the tree under `n` more than `limit` levels tall? (Stops looking once it is.)
+fn taller(n: &Node, limit: usize) -> bool {
+    if limit == 0 {
+        return true;
+    }
+    let l = limit - 1;
+    match n {
+        Node::Num(_) | Node::Str(_) | Node::Bool(_) | Node::Var(..) | Node::Local(_) => false,
+        Node::Neg(a) | Node::Not(a) | Node::Axis(a, ..) => taller(a, l),
+        Node::Bin(_, a, b, _) | Node::And(a, b) | Node::Or(a, b) | Node::Index(a, b, _) => taller(a, l) || taller(b, l),
+        Node::Cond(a, b, c) => taller(a, l) || taller(b, l) || taller(c, l),
+        Node::Array(items) | Node::Call(_, items, _) => items.iter().any(|i| taller(i, l)),
+    }
 }
 
 impl<'s> Parser<'s> {

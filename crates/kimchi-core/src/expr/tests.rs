@@ -218,6 +218,9 @@ fn errors_explain_and_point() {
     let deep = format!("{}1{}", "(".repeat(200), ")".repeat(200));
     assert!(err(&deep).contains("nests too deeply"));
     assert!(err(&"1+".repeat(5000)).contains("too long"));
+    let chain = format!("1{}", "+1".repeat(600));
+    assert!(err(&chain).contains("more than 256 operations"), "a long chain is refused before it runs");
+    assert_eq!(n(&format!("1{}", "+1".repeat(200))), 201.0);
     assert!(check("time * 90").is_ok());
     assert!(check("wiggle(2, 30) + loopOut('pingpong')").is_ok());
 }
