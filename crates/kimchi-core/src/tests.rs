@@ -132,6 +132,8 @@ fn slider_drags_coalesce() {
     for v in [0.5, 0.6, 0.7] {
         ed.apply(&Edit::UpdateClip { clip_id: id, patch: ClipPatch { volume: Some(v), ..Default::default() } }, Some("vol")).unwrap();
     }
+    // The slider's final value, the same as the last one, adds no step.
+    ed.apply(&Edit::UpdateClip { clip_id: id, patch: ClipPatch { volume: Some(0.7), ..Default::default() } }, None).unwrap();
     assert!(ed.undo());
     assert_eq!(ed.project().clip(id).unwrap().volume, 1.0);
     assert!(!ed.can_undo());

@@ -124,9 +124,13 @@ impl Editor {
 
         let before = self.project.clone();
         let out = self.project.apply(edit)?;
+        // `apply` stamps `updated_at`; an edit that changed nothing else (a slider's final value,
+        // the same as its last) is no step.
+        self.project.updated_at = before.updated_at;
         if before == self.project {
             return Ok(out);
         }
+        self.project.updated_at = chrono::Utc::now();
         self.record(before, coalesce);
         Ok(out)
     }

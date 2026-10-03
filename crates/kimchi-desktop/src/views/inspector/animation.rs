@@ -72,6 +72,7 @@ impl Inspector {
             "scale" => params.get("scale").cloned(),
             "fontSize" | "letterSpacing" => params.get("style").and_then(|st| st.get(key)).cloned(),
             "color" => params.get("style").and_then(|st| st.get("color")).cloned(),
+            fx if kimchi_core::effects::EFFECT_PROPS.contains(&fx) => params.get(fx).cloned(),
             _ => None,
         };
         let (Some(value), true) = (value, clip.keyframes.contains_key(key)) else { return false };

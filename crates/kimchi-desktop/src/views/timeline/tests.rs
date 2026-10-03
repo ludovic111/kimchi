@@ -201,7 +201,10 @@ fn the_clip_menu_has_edits_but_no_frame_actions_for_titles(cx: &mut TestAppConte
     cx.simulate_mouse_down(point(b.origin.x + px(60.), b.origin.y + px(30.)), MouseButton::Right, Modifiers::default());
     cx.run_until_parked();
     let labels: Vec<String> = menu(cx, None).into_iter().map(|(l, _)| l).collect();
-    assert_eq!(labels, vec!["Split at playhead", "Trim start to playhead", "Trim end to playhead", "Copy", "Cut", "Duplicate", "Delete", "Ripple delete"]);
+    assert_eq!(
+        labels,
+        vec!["Split at playhead", "Trim start to playhead", "Trim end to playhead", "Copy", "Cut", "Duplicate", "Dissolve in", "Freeze frame here", "Delete", "Ripple delete"]
+    );
 }
 
 #[gpui::test]
@@ -333,4 +336,52 @@ fn alt_dragging_a_clip_copies_it(cx: &mut TestAppContext) {
     let starts: Vec<f64> = p.tracks[0].clips.iter().map(|c| c.start).collect();
     assert_eq!(starts, vec![0., 5., 9.]);
     assert_eq!(p.tracks[0].clips[0].id, original, "the original didn't move");
+}
+
+/// B moved against A: a cut at 2 s.
+fn cut(f: &Fixture, cx: &mut VisualTestContext) -> kimchi_core::Id {
+    let b = f.project().tracks[0].clips[1].id;
+    f.call("clip.move", json!({ "clipId": b, "start": 2 }));
+    f.settle(cx, |p| p.tracks[0].clips[1].start == 2.);
+    b
+}
+
+#[gpui::test]
+fn the_plus_on_a_cut_adds_a_dissolve(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    let b = cut(&f, cx);
+    let l = lanes(&view, cx);
+    // The cut is at x 120; the "+" sits mid-row, over both clips' trim edges.
+    cx.simulate_mouse_down(point(l.origin.x + px(120.), l.origin.y + px(35.)), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(point(l.origin.x + px(120.), l.origin.y + px(35.)), MouseButton::Left, Modifiers::default());
+    let p = f.settle(cx, |p| p.tracks[0].clips[1].transition.is_some());
+    let tr = p.tracks[0].clips[1].transition.clone().expect("a transition on the cut");
+    assert_eq!(tr.kind, kimchi_core::TransitionKind::Dissolve);
+    assert_eq!((p.tracks[0].clips[0].end(), p.tracks[0].clips[1].start), (2., 2.), "nothing was trimmed");
+    assert_eq!(cx.update(|_, cx| cx.store().read(cx).selection.clone()), vec![b]);
+}
+
+#[gpui::test]
+fn dragging_a_transition_edge_sets_its_length(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    let b = cut(&f, cx);
+    f.call("transition.set", json!({ "clipIds": [b], "kind": "wipeLeft", "duration": 1 }));
+    f.settle(cx, |p| p.tracks[0].clips[1].transition.is_some());
+    cx.run_until_parked();
+    let l = lanes(&view, cx);
+    // The badge spans 1.5–2.5 s (x 90–150); its right edge dragged to 2.75 s makes it 1.5 s long.
+    let from = point(l.origin.x + px(147.), l.origin.y + px(35.));
+    drag(cx, from, point(l.origin.x + px(165.), from.y), Modifiers::default());
+    let p = f.settle(cx, |p| p.tracks[0].clips[1].transition.as_ref().is_some_and(|t| (t.duration - 1.5).abs() < 0.02));
+    let tr = p.tracks[0].clips[1].transition.clone().unwrap();
+    assert!((tr.duration - 1.5).abs() < 0.02, "1.5 s, got {}", tr.duration);
+    assert_eq!(tr.kind, kimchi_core::TransitionKind::WipeLeft, "the kind stayed");
+    assert_eq!(p.tracks[0].clips[1].start, 2., "the clip didn't move");
+    // Right-click: the kinds, then removing it.
+    cx.simulate_mouse_down(point(l.origin.x + px(120.), l.origin.y + px(35.)), MouseButton::Right, Modifiers::default());
+    cx.run_until_parked();
+    let items = menu(cx, Some("Remove transition"));
+    assert!(items.iter().any(|(l, _)| l == "Iris") && items.len() == kimchi_core::transition::KINDS.len() + 1, "{items:?}");
+    let p = f.settle(cx, |p| p.tracks[0].clips[1].transition.is_none());
+    assert!(p.tracks[0].clips[1].transition.is_none());
 }

@@ -299,3 +299,21 @@ fn undo_says_what_it_undid(cx: &mut TestAppContext) {
     let toasts: Vec<String> = cx.update(|_, cx| cx.store().read(cx).toasts.iter().map(|t| t.text.to_string()).collect());
     assert!(toasts.iter().any(|t| t == "Undid new title"), "{toasts:?}");
 }
+
+/// A person grades the selected clip with the inspector's slider: one undo step for the drag.
+#[gpui::test]
+fn the_colour_sliders_grade_the_clip_in_one_step(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    let id = select_the_clip(&f, cx);
+    let inspector = cx.update(|_, cx| view.read(cx).editor().read(cx).inspector.clone());
+    let slider = cx.update(|_, cx| inspector.read(cx).effect_slider("contrast")).expect("a contrast slider");
+    for (v, final_) in [(0.1, false), (0.4, false), (0.4, true)] {
+        cx.update(|_, cx| slider.update(cx, |_, cx| cx.emit(crate::ui::scrub::ScrubChange { value: v, final_ })));
+        f.settle(cx, |p| p.clip(id).is_some_and(|c| (c.effects.contrast - v).abs() < 1e-9));
+    }
+    let p = f.settle(cx, |p| p.clip(id).is_some_and(|c| (c.effects.contrast - 0.4).abs() < 1e-9));
+    assert!((p.clip(id).unwrap().effects.contrast - 0.4).abs() < 1e-9);
+    let steps = f.call("history.list", json!({}));
+    let graded: Vec<&Value> = steps["undo"].as_array().unwrap().iter().filter(|s| s["label"] == "clip.setEffects").collect();
+    assert_eq!(graded.len(), 1, "the drag is one step: {steps}");
+}

@@ -2,7 +2,8 @@
 //!
 //! - one clip: name, generation provenance, the AI actions, text style or solid colour, a
 //!   motion clip's template values and scene, transform, animation (keyframes at the playhead,
-//!   easings, presets), timing, sound and the source media;
+//!   easings, presets), colour effects, the transition in, timing (speed, reverse, freeze
+//!   frame), sound and the source media;
 //! - several clips: duplicate, delete, and "bridge" for two;
 //! - a media item picked in the media panel: poster, provenance, file facts, insert / reveal;
 //! - nothing: the project's canvas, frame rate and background, and the main shortcuts.
@@ -13,6 +14,7 @@
 pub mod ai;
 pub mod animation;
 pub mod color;
+pub mod effects;
 pub mod fonts;
 pub mod format;
 pub mod scene_editor;
@@ -72,6 +74,8 @@ pub struct Inspector {
     /// The layer, object or light picked in a motion clip's scene, and its fields.
     scene_item: Option<(Id, String)>,
     item_fields: scene_editor::ItemFields,
+    /// Colour, transition and speed controls.
+    fx: effects::EffectFields,
     _subs: Vec<Subscription>,
 }
 
@@ -178,6 +182,7 @@ impl Inspector {
         let solid = color(cx, None, |c| json!({ "color": c }));
         let background = cx.new(|cx| ColorField::new(None, cx));
         subs.push(cx.subscribe(&background, |this: &mut Self, _, ch: &ColorChange, cx| this.set_settings(json!({ "background": ch.0.get(..7).unwrap_or(&ch.0) }), cx)));
+        let fx = effects::EffectFields::new(&mut subs, cx);
 
         Self {
             store,
@@ -207,6 +212,7 @@ impl Inspector {
             template: Default::default(),
             scene_item: None,
             item_fields: Default::default(),
+            fx,
             _subs: subs,
         }
     }
@@ -268,6 +274,7 @@ impl Inspector {
         self.opacity.update(cx, |s, _| s.set_value(tf.opacity));
         let volume = clip.volume_at(playhead);
         self.volume.update(cx, |s, _| s.set_value(volume));
+        self.sync_effects(clip, playhead, window, cx);
         let shown_style = clip.text_at(playhead);
         match (&clip.content, shown_style.as_ref()) {
             (ClipContent::Text { .. }, Some(style)) => {
@@ -468,9 +475,14 @@ impl Inspector {
 
         if !matches!(clip.content, ClipContent::Pending { .. }) && track_kind == Some(TrackKind::Video) {
             body.push(self.animation_section(clip, fps, cx));
+            body.push(self.color_section(clip, fps, cx));
+        }
+        if !matches!(clip.content, ClipContent::Pending { .. }) && (track_kind == Some(TrackKind::Video) || has_sound) {
+            body.push(self.transition_section(clip, project, cx));
         }
 
         let speedable = matches!(clip.content, ClipContent::Media { .. }) && asset.as_ref().is_some_and(|a| a.kind != MediaKind::Image);
+        let store_playhead = self.store.read(cx).playback.read(cx).playhead;
         body.push(
             section(cx)
                 .child(caps("Timing", cx))
@@ -488,6 +500,7 @@ impl Inspector {
                         .child(div().text_color(t.text_3).child(short(clip.duration))),
                 )
                 .child(grid2().when(speedable, |d| d.child(self.speed.clone())).child(self.fade_in.clone()).child(self.fade_out.clone()))
+                .children(effects::speed_extras(clip, asset.as_ref().map(|a| a.kind), store_playhead, fps, cx))
                 .into_any_element(),
         );
 

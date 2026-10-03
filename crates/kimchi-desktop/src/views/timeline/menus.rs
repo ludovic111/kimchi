@@ -50,6 +50,35 @@ pub fn clip_menu(_: &mut TimelineBody, id: Id, position: Point<Pixels>, cx: &mut
         MenuItem::new("Cut", |w, cx| w.dispatch_action(Box::new(CutClips), cx)).icon("scissors").shortcut_of(&CutClips).disabled(locked).entry(),
         MenuItem::new("Duplicate", |w, cx| w.dispatch_action(Box::new(Duplicate), cx)).icon("copy").shortcut_of(&Duplicate).entry(),
     ];
+    // Editing: the transition into the clip, playing backwards, holding a frame.
+    items.push(MenuEntry::Separator);
+    let pending = matches!(clip.content, ClipContent::Pending { .. });
+    if clip.transition.is_some() {
+        items.push(MenuItem::new("Remove transition", run("transition.remove", json!({ "clipIds": [id] }))).icon("blend").disabled(locked).entry());
+    } else {
+        let on_cut = ci > 0 && (track.clips[ci - 1].end() - clip.start).abs() <= kimchi_core::transition::CUT_TOLERANCE;
+        let label = match (track.kind, on_cut) {
+            (TrackKind::Audio, _) => "Crossfade in",
+            (_, true) => "Dissolve from the previous clip",
+            (_, false) => "Dissolve in",
+        };
+        items.push(MenuItem::new(label, run("transition.set", json!({ "clipIds": [id], "kind": "dissolve" }))).icon("blend").disabled(locked || pending).entry());
+    }
+    if asset.as_ref().is_some_and(|a| a.kind != MediaKind::Image) {
+        let mut item = MenuItem::new("Play backwards", run("clip.update", json!({ "clipId": id, "reverse": !clip.reverse }))).disabled(locked);
+        if clip.reverse {
+            item = item.icon("check");
+        }
+        items.push(item.entry());
+    }
+    let holdable = track.kind == TrackKind::Video && !pending && asset.as_ref().is_none_or(|a| a.kind == MediaKind::Video);
+    if holdable {
+        let at = playhead.clamp(clip.start, clip.end());
+        let item = MenuItem::new("Freeze frame here", move |_, cx| {
+            cx.store().update(cx, |s, cx| s.run_then("clip.freezeFrame", json!({ "clipId": id, "time": at }), cx, |s, v, cx| s.set_selection(crate::app::created(&v), cx)))
+        });
+        items.push(item.icon("snowflake").disabled(!inside || locked).entry());
+    }
     if picture {
         let inside = playhead.clamp(clip.start, clip.end());
         let (c1, c2, c3) = (clip.clone(), clip.clone(), clip.clone());

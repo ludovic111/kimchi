@@ -4,8 +4,11 @@
 //! not re-render it: the playhead is painted over it by [`super::Timeline`].
 //!
 //! Drags preview locally and end in one registry command (`clip.moveMany`,
-//! `clip.trim`, `clip.update`, `track.move`) with a coalesce key; the preview
+//! `clip.trim`, `clip.update`, `transition.set`, `track.move`) with a coalesce key; the preview
 //! stays until the session announces the changed project, so nothing jumps.
+//! Transitions draw over the clips ([`transitions`]).
+
+mod transitions;
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -41,6 +44,8 @@ enum Drag {
     Move(MoveDrag),
     Trim { clip: Id, start_edge: bool, points: Vec<f64>, time: Option<f64> },
     Fade { clip: Id, out: bool, value: Option<f64> },
+    /// A transition's edge: its incoming clip, the cut it is centred on (or where it starts).
+    Transition { clip: Id, cut: Option<f64>, start: f64, value: Option<f64> },
     Track { id: Id, from: usize, to: usize, y0: Pixels, started: bool },
 }
 
@@ -66,6 +71,7 @@ enum Preview {
     Move { ids: Vec<Id>, dt: f64, shift: isize, copy: bool },
     Trim { clip: Id, start_edge: bool, time: f64 },
     Fade { clip: Id, out: bool, value: f64 },
+    Transition { clip: Id, duration: f64 },
 }
 
 /// Where dragged media would land.
@@ -360,7 +366,10 @@ impl TimelineBody {
     }
 
     pub fn edge_down(&mut self, id: Id, start_edge: bool, _: &MouseDownEvent, cx: &mut Context<Self>) {
-        self.consumed = true;
+        // A transition badge or "+" drawn over the edge took it.
+        if std::mem::replace(&mut self.consumed, true) {
+            return;
+        }
         self.store.update(cx, |s, cx| s.select(id, false, cx));
         let Some(p) = self.store.read(cx).project.clone() else { return };
         let playhead = self.playhead(cx);
@@ -369,7 +378,9 @@ impl TimelineBody {
     }
 
     pub fn fade_down(&mut self, id: Id, out: bool, _: &MouseDownEvent, cx: &mut Context<Self>) {
-        self.consumed = true;
+        if std::mem::replace(&mut self.consumed, true) {
+            return;
+        }
         self.store.update(cx, |s, cx| s.select(id, false, cx));
         self.drag = Some(Drag::Fade { clip: id, out, value: None });
         cx.notify();
@@ -442,6 +453,9 @@ impl TimelineBody {
                 let v = if *out { c.end() - time } else { time - c.start };
                 let other = if *out { c.fade_in } else { c.fade_out };
                 *value = Some(v.clamp(0., (c.duration - other).max(0.)));
+            }
+            Some(Drag::Transition { cut, start, value, .. }) => {
+                *value = Some(Self::transition_len(*cut, *start, time));
             }
             Some(Drag::Track { to, y0, started, .. }) => {
                 let Some(p) = project else { return };
@@ -517,6 +531,9 @@ impl TimelineBody {
                 let field = if out { "fadeOut" } else { "fadeIn" };
                 self.commit(Preview::Fade { clip, out, value }, &p, "clip.update", json!({ "clipId": clip, field: value, "coalesce": key }), cx);
             }
+            Drag::Transition { clip, value: Some(duration), .. } => {
+                self.commit(Preview::Transition { clip, duration }, &p, "transition.set", json!({ "clipIds": [clip], "duration": duration, "coalesce": key }), cx);
+            }
             Drag::Track { id, from, to, started: true, .. } => {
                 let index = if to > from { to - 1 } else { to };
                 if index != from {
@@ -558,6 +575,7 @@ impl TimelineBody {
             Some(Drag::Move(m)) if m.started => Some(Preview::Move { ids: m.ids.clone(), dt: m.dt, shift: m.shift, copy: m.copy }),
             Some(Drag::Trim { clip, start_edge, time: Some(t), .. }) => Some(Preview::Trim { clip: *clip, start_edge: *start_edge, time: *t }),
             Some(Drag::Fade { clip, out, value: Some(v) }) => Some(Preview::Fade { clip: *clip, out: *out, value: *v }),
+            Some(Drag::Transition { clip, value: Some(v), .. }) => Some(Preview::Transition { clip: *clip, duration: *v }),
             _ => self.committed.as_ref().filter(|(_, k)| *k == project_key(p)).map(|(pr, _)| pr.clone()),
         }
     }
@@ -1042,6 +1060,7 @@ impl TimelineBody {
             if moving || selection.contains(&id) { on_top.push(el) } else { items.push(el) }
         }
         items.extend(on_top);
+        let transition_els = self.transitions(p, rows, preview.as_ref(), cx);
 
         let drop_el = self.drop.clone().filter(|_| cx.has_active_drag()).map(|d| {
             let (top, h) = match d.row {
@@ -1102,6 +1121,7 @@ impl TimelineBody {
             .child(measure)
             .children(lane_els)
             .children(items)
+            .children(transition_els)
             .children(drop_el)
             .children(guide)
             .children(band)
@@ -1176,7 +1196,7 @@ impl Render for TimelineBody {
         });
         let dragging = self.drag.is_some();
         let cursor = match &self.drag {
-            Some(Drag::Trim { .. }) | Some(Drag::Fade { .. }) => Some(gpui::CursorStyle::ResizeLeftRight),
+            Some(Drag::Trim { .. }) | Some(Drag::Fade { .. }) | Some(Drag::Transition { .. }) => Some(gpui::CursorStyle::ResizeLeftRight),
             Some(Drag::Move(m)) if m.copy && m.started => Some(gpui::CursorStyle::DragCopy),
             Some(Drag::Track { started: true, .. }) => Some(gpui::CursorStyle::ClosedHand),
             _ => None,

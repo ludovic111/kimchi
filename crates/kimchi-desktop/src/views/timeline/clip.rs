@@ -1,6 +1,6 @@
 //! One clip on a lane: filmstrip or stills, waveform, text, solid colour, a motion clip or the
-//! placeholder of a generation in flight; fades, keyframe marks, label, speed badge, trim and
-//! fade handles. Only the part of the clip near the viewport is drawn.
+//! placeholder of a generation in flight; fades, keyframe marks, label, speed, reverse and effects
+//! badges, trim and fade handles. Only the part of the clip near the viewport is drawn.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -170,7 +170,9 @@ impl ClipView<'_> {
             let path = PathBuf::from(&strip.path);
             for i in first..last {
                 let left = i as f32 * tile_w;
-                let src = c.in_point + (left / wf) as f64 * span;
+                // A reversed clip shows its source from the end.
+                let along = (left / wf) as f64;
+                let src = c.in_point + (if c.reverse { 1. - along } else { along }) * span;
                 let idx = ((src / strip.interval.max(1e-6)).floor().max(0.) as u32).min(strip.frames.saturating_sub(1));
                 el = el.child(
                     div()
@@ -370,6 +372,8 @@ impl ClipView<'_> {
                     .when_some(kind_icon, |d, i| d.child(icon(i).size(px(11.)).text_color(fg.opacity(0.8))))
                     .child(div().min_w_0().truncate().child(label))
                     .when_some(status, |d, s| d.child(div().flex_none().font_weight(gpui::FontWeight::MEDIUM).text_color(fg.opacity(0.7)).child(s)))
+                    .when(!c.effects.is_default(), |d| d.child(icon("palette").size(px(11.)).text_color(fg.opacity(0.8))))
+                    .when(c.reverse, |d| d.child(div().flex_none().font_family(MONO).text_size(px(10.)).text_color(hot).child("◀")))
                     .when((c.speed - 1.).abs() > 1e-6, |d| {
                         let s = format!("{:.2}", c.speed);
                         let s = s.trim_end_matches('0').trim_end_matches('.');
