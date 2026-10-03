@@ -10,7 +10,7 @@ use crate::registry::{Args, Ctx};
 use crate::resolve;
 use crate::session::{CmdResult, Session};
 
-pub const PANELS: &[&str] = &["media", "generate", "text", "motion", "agent", "jobs", "settings", "export", "palette", "home"];
+pub const PANELS: &[&str] = &["media", "generate", "text", "motion", "captions", "agent", "jobs", "settings", "export", "palette", "home"];
 
 pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
     match cx.spec.name {

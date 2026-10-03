@@ -319,11 +319,12 @@ pub fn speed_extras(clip: &Clip, kind: Option<MediaKind>, playhead: f64, fps: f6
         let speed = clip.speed;
         out = out.child(div().flex().gap(px(4.)).children(SPEEDS.iter().map(|&v| {
             let label = format!("{}×", if v < 1.0 { format!("{v}") } else { format!("{}", v as u32) });
-            Button::new(SharedString::from(format!("speed-{v}")), label)
+            let b = Button::new(SharedString::from(format!("speed-{v}")), label)
                 .small()
                 .selected((speed - v).abs() < 1e-6)
                 .full_width()
-                .on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.run("clip.update", json!({ "clipId": id, "speed": v }), cx)))
+                .on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.run("clip.update", json!({ "clipId": id, "speed": v }), cx)));
+            div().flex_1().min_w_0().child(b)
         })));
         let reverse = clip.reverse;
         out = out.child(switch(
