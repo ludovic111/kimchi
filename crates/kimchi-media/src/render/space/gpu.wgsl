@@ -307,11 +307,17 @@ fn shadow_lit(li: i32, world: vec3<f32>, n: vec3<f32>) -> f32 {
         taps = 2;
         step = radius / 2.0;
     }
+    let ndl = max(abs(dot(n, to_light)), 0.05);
+    let slope = min(sqrt(1.0 - ndl * ndl) / ndl, 8.0);
+    var reach = 0.0;
+    if (taps > 1) {
+        reach = texel * slope * step * f32(taps);
+    }
     var mine: f32;
     if (ortho) {
-        mine = q.z - 0.002;
+        mine = q.z - 0.002 - reach / max(s.p.w - s.p.z, 1e-6);
     } else {
-        mine = shadow_distance(s, q.z) * 0.995;
+        mine = shadow_distance(s, q.z) * 0.995 - texel * (1.0 + slope) * 2.0 - reach;
     }
     let last = i32(size) - 1;
     var sum = 0.0;

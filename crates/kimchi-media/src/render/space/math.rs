@@ -32,10 +32,6 @@ impl V3 {
     pub(crate) fn min(self, o: V3) -> V3 {
         V3(self.0.min(o.0), self.1.min(o.1), self.2.min(o.2))
     }
-    /// Component by component.
-    pub(crate) fn mul(self, o: V3) -> V3 {
-        V3(self.0 * o.0, self.1 * o.1, self.2 * o.2)
-    }
     pub(crate) fn of(a: [f32; 3]) -> V3 {
         V3(a[0], a[1], a[2])
     }

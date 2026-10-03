@@ -379,3 +379,4 @@ fn gaussian(src: &[[f32; 3]], w: usize, h: usize, sigma: f32) -> Vec<[f32; 3]> {
     });
     out
 }
+

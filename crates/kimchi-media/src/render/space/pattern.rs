@@ -328,8 +328,8 @@ mod tests {
     fn every_pattern_bakes_with_both_colours() {
         for spec in PATTERNS {
             let p = pattern(serde_json::json!({"type": spec.name, "color": "#ff0000", "color2": "#0000ff", "bump": 1}));
-            let b = bake(&p, 64).unwrap_or_else(|| panic!("{} bakes", spec.name));
-            assert_eq!((b.color.width, b.color.height), (64, 64));
+            let b = bake(&p, 256).unwrap_or_else(|| panic!("{} bakes", spec.name));
+            assert_eq!((b.color.width, b.color.height), (256, 256));
             let reds = b.color.rgba.as_chunks::<4>().0.iter().filter(|c| c[0] > 128 && c[2] < 128).count();
             let blues = b.color.rgba.as_chunks::<4>().0.iter().filter(|c| c[2] > 128 && c[0] < 128).count();
             assert!(reds > 0 && blues > 0, "{}: {reds} red, {blues} blue texels", spec.name);

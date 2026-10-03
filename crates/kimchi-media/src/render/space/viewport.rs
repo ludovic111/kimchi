@@ -197,7 +197,11 @@ const CAMERA: [u8; 3] = [210, 210, 214];
 /// through the scene's camera, shaded as `opts.shading` asks, with the overlays it asks for
 /// (floor grid, selection outlines, the edited mesh's edges and vertices, light and camera icons).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn render_view(space: &mut Space, scene: &Scene3d, t: f64, width: u32, height: u32, pics: &mut dyn Pictures, view: Option<&ViewCamera>, opts: &ViewOptions) -> MediaResult<Pixmap> {
+///
+/// `frame` is how many scene seconds one output frame lasts (motion blur in rendered shading,
+/// the frame rate expressions see).
+pub(crate) fn render_view(space: &mut Space, scene: &Scene3d, t: f64, frame: f64, width: u32, height: u32, pics: &mut dyn Pictures, view: Option<&ViewCamera>, opts: &ViewOptions) -> MediaResult<Pixmap> {
+    space.set_frame(frame);
     let shown = match view {
         Some(v) if !opts.through_camera => v.apply(scene),
         _ => scene.clone(),
@@ -207,7 +211,7 @@ pub(crate) fn render_view(space: &mut Space, scene: &Scene3d, t: f64, width: u32
         Shading::Rendered => {
             // The final engine (the path tracer when the scene uses it); depth for the overlays
             // from a quick pass.
-            let img = space.render(&shown, t, width, height, pics, Quality::Final)?;
+            let img = space.render_frame(&shown, t, frame, width, height, pics, Quality::Final)?;
             let frame = space.frame(&shown, t, width, height, pics, Quality::Preview);
             let depth = if overlays { super::cpu::depth(&frame) } else { vec![] };
             (img, frame, depth)

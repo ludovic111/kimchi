@@ -283,7 +283,17 @@ fn lit(m: &ShadowMap, p: V3, n: V3, f: &Frame3d) -> f32 {
     let texel = if m.res.ortho { m.res.extent / size } else { 2.0 * m.res.distance(q.2) * m.res.extent / size };
     let radius = (m.res.softness / texel.max(1e-6)).clamp(0.0, 12.0);
     let (taps, step) = if radius <= 1.0 { (1i32, 1.0f32) } else { (2, radius / 2.0) };
-    let mine = if m.res.ortho { q.2 - 0.002 } else { m.res.distance(q.2) * 0.995 };
+    // Perspective maps compare distances, with a bias that grows with the texel size and how
+    // slanted the surface is to the light (no acne on grazing floors); wide filters reach
+    // further across a slanted surface, so they need more.
+    let ndl = n.dot(to_light).abs().max(0.05);
+    let slope = ((1.0 - ndl * ndl).sqrt() / ndl).min(8.0);
+    let reach = if taps > 1 { texel * slope * step * taps as f32 } else { 0.0 };
+    let mine = if m.res.ortho {
+        q.2 - 0.002 - reach / (m.res.far - m.res.near).max(1e-6)
+    } else {
+        m.res.distance(q.2) * 0.995 - texel * (1.0 + slope) * 2.0 - reach
+    };
     let mut sum = 0.0;
     for dy in -taps..=taps {
         for dx in -taps..=taps {

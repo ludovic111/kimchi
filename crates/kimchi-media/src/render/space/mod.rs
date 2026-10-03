@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use kimchi_core::anim::value_at;
-use kimchi_core::motion::{Object3d, Scene3d, Shape3d, walk_objects};
+use kimchi_core::motion::{EvalOptions, Object3d, Scene3d, Shape3d, walk_objects};
 use tiny_skia::Pixmap;
 
 use self::math::{M4, V3};
@@ -240,6 +240,7 @@ pub(crate) struct Env {
 /// The camera a frame is filmed with.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CameraRes {
+    #[allow(dead_code)] // for the path tracer
     pub view: M4,
     pub proj: M4,
     pub eye: V3,
@@ -339,6 +340,8 @@ pub struct Space {
     engine: Engine,
     faceted: HashMap<usize, (Arc<Mesh>, Arc<Mesh>)>,
     textures: HashMap<(usize, u32, u32), (Arc<Pixmap>, Arc<Texture>)>,
+    /// How scenes are evaluated (the frame rate of the clip being drawn).
+    eval: EvalOptions,
 }
 
 /// The one 3D renderer of the process (one GPU device, shared by the preview and exports).
@@ -371,12 +374,12 @@ impl Space {
                 }
             }
         };
-        Space { engine, faceted: HashMap::new(), textures: HashMap::new() }
+        Space { engine, faceted: HashMap::new(), textures: HashMap::new(), eval: EvalOptions::default() }
     }
 
     /// A CPU-only renderer.
     pub fn cpu() -> Space {
-        Space { engine: Engine::Cpu, faceted: HashMap::new(), textures: HashMap::new() }
+        Space { engine: Engine::Cpu, faceted: HashMap::new(), textures: HashMap::new(), eval: EvalOptions::default() }
     }
 
     pub fn describe(&self) -> String {
@@ -398,6 +401,7 @@ impl Space {
     /// otherwise the same as [`Space::render`].
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_frame(&mut self, scene: &Scene3d, t: f64, frame: f64, width: u32, height: u32, pics: &mut dyn Pictures, quality: Quality) -> MediaResult<Pixmap> {
+        self.set_frame(frame);
         let shutter = scene.render.motion_blur.clamp(0.0, 4.0) * frame.abs();
         if quality != Quality::Final || shutter <= 1e-9 || !shutter.is_finite() {
             return self.render(scene, t, width, height, pics, quality);
@@ -414,6 +418,13 @@ impl Space {
         let out: Vec<u8> = acc.iter().map(|v| (v / n as f32).round().clamp(0.0, 255.0) as u8).collect();
         Pixmap::from_vec(out, tiny_skia::IntSize::from_wh(width.max(1), height.max(1)).ok_or_else(|| crate::MediaError::Unsupported("empty frame".into()))?)
             .ok_or_else(|| crate::MediaError::Unsupported("bad frame".into()))
+    }
+
+    /// Expressions see the frame rate one output frame of `frame` scene seconds makes.
+    pub(crate) fn set_frame(&mut self, frame: f64) {
+        if frame.is_finite() && frame.abs() > 1e-6 {
+            self.eval.fps = (1.0 / frame.abs()).clamp(1.0, 1000.0);
+        }
     }
 
     /// Draws a frame on the GPU (falling back to the CPU for good if it fails), camera effects
@@ -459,8 +470,11 @@ impl Space {
         let (width, height) = (width.max(1), height.max(1));
         let aspect = width as f32 / height as f32;
 
+        // The whole scene at `t` at once: keyframes, expressions, constraints.
+        let eval = self.eval;
+        let solved = scene.evaluate_at(t, &eval);
         // The camera's place and axes (its projection waits for the scene's depth range).
-        let cam = scene.camera_at(t);
+        let cam = solved.camera;
         let eye = V3::from(cam.position.0);
         let target = V3::from(cam.target.0);
         let fwd = (target - eye).norm();
@@ -507,8 +521,8 @@ impl Space {
                 LightRes::sun(V3(0.8, -0.3, -0.5).norm(), [0.35, 0.38, 0.45]),
             ]
         } else {
-            scene
-                .lights_at(t)
+            solved
+                .lights
                 .into_iter()
                 .map(|l| {
                     let c = linear_of(&l.color);
@@ -546,7 +560,7 @@ impl Space {
         lights.truncate(gpu::MAX_LIGHTS);
 
         // Objects, where they are, and what they are drawn with.
-        let objects: Vec<Object3d> = scene.objects_at(t);
+        let objects: Vec<Object3d> = solved.objects;
         let world = world_matrices(&objects);
         let mut items = vec![];
         {
@@ -568,7 +582,7 @@ impl Space {
             }
             let far = (dmax * 1.05 + 0.01).max(0.1);
             let near = if dmin > 0.0 { (dmin * 0.9).max(far * 1e-5) } else { (far * 1e-4).max(1e-3) };
-            camera.near = near.min(far * 0.5);
+            camera.near = near.min(far * 0.99);
             camera.far = far;
         }
         camera.proj = if ortho {
@@ -604,7 +618,7 @@ impl Space {
             spots.sort_by(|a, b| lum(b.1.color).total_cmp(&lum(a.1.color)));
             let (lo, hi) = bounds(&items);
             for (i, l) in spots.into_iter().take(4 - shadows.len()) {
-                let half = if l.kind == LightKind::Spot { l.cos_outer.clamp(-1.0, 1.0).acos().min(1.4) + 0.05 } else { 75f32.to_radians() };
+                let half = if l.kind == LightKind::Spot { l.cos_outer.clamp(-1.0, 1.0).acos().min(1.4) + 0.05 } else { 65f32.to_radians() };
                 let up = if l.dir.1.abs() > 0.99 { V3(0.0, 0.0, 1.0) } else { V3(0.0, 1.0, 0.0) };
                 let lview = M4::look_at(l.v, l.v + l.dir, up);
                 let far = corners(lo, hi).iter().map(|c| (*c - l.v).len()).fold(0.1f32, f32::max) * 1.05;
@@ -810,7 +824,7 @@ impl Collect<'_, '_> {
                 }
             }
             Shape3d::Particles(sys) => {
-                let origin = particles::Origin::new(self.scene, &o.id);
+                let origin = particles::Origin::new(self.scene, &o.id, self.space.eval);
                 let image = match (sys.shape.as_deref(), &sys.asset) {
                     (Some("image"), Some(a)) => self.space.texture(self.pics, a, self.t),
                     _ => None,

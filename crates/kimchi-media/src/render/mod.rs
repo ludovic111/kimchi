@@ -259,8 +259,9 @@ impl Renderer {
             }
             Scene::Space(s) => {
                 let (width, height) = (self.width, self.height);
+                let frame = clip.speed.abs().max(1e-6) / self.fps;
                 let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
-                let img = space::viewport::render_view(&mut lock(space::shared()), s, t, width, height, &mut pics, view, opts)?;
+                let img = space::viewport::render_view(&mut lock(space::shared()), s, t, frame, width, height, &mut pics, view, opts)?;
                 draw_picture(&mut canvas, &img, Transform::identity(), 1.0);
             }
         }

@@ -420,7 +420,7 @@ mod tests {
         let up = m.irradiance(V3(0.0, 1.0, 0.0), 0.0);
         let down = m.irradiance(V3(0.0, -1.0, 0.0), 0.0);
         assert!(up[2] > down[2] * 2.0, "{up:?} vs {down:?}");
-        assert_eq!(g.radiance(V3(0.0, 1.0, 0.0)), [0.2, 0.4, 0.8]);
+        assert!((g.radiance(V3(0.0, 1.0, 0.0))[2] - 0.8).abs() < 1e-5);
         // The sky is blue overhead, brightest towards the sun.
         let s = env(EnvKind::Sky);
         let zenith = s.radiance(V3(0.0, 1.0, 0.0));

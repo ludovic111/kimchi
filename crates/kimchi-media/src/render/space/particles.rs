@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock};
 
 use kimchi_core::anim::value_at;
 use kimchi_core::motion::particles::ParticleSystem;
-use kimchi_core::motion::{Object3d, Scene3d};
+use kimchi_core::motion::{EvalOptions, Object3d, Scene3d};
 
 use super::math::{M4, V3};
 use super::mesh::Mesh;
@@ -121,11 +121,12 @@ pub(crate) struct Origin<'a> {
     id: String,
     chain: Vec<&'a Object3d>,
     full: bool,
+    opts: EvalOptions,
     memo: RefCell<HashMap<i64, [f64; 3]>>,
 }
 
 impl<'a> Origin<'a> {
-    pub(crate) fn new(scene: &'a Scene3d, id: &str) -> Origin<'a> {
+    pub(crate) fn new(scene: &'a Scene3d, id: &str, opts: EvalOptions) -> Origin<'a> {
         let mut chain = vec![];
         fn find<'b>(objects: &'b [Object3d], id: &str, chain: &mut Vec<&'b Object3d>) -> bool {
             for o in objects {
@@ -139,7 +140,7 @@ impl<'a> Origin<'a> {
         }
         find(&scene.objects, id, &mut chain);
         let full = chain.iter().any(|o| !o.constraints.is_empty() || !o.expressions.is_empty());
-        Origin { scene, id: id.to_string(), chain, full, memo: RefCell::new(HashMap::new()) }
+        Origin { scene, id: id.to_string(), chain, full, opts, memo: RefCell::new(HashMap::new()) }
     }
 
     pub(crate) fn at(&self, t: f64) -> [f64; 3] {
@@ -165,7 +166,7 @@ impl<'a> Origin<'a> {
             return *p;
         }
         let t = k as f64 / 60.0;
-        let objects = self.scene.objects_at(t);
+        let objects = self.scene.objects_at_with(t, &self.opts);
         let p = world_of(&objects, &self.id, M4::I).map_or([0.0; 3], |m| {
             let o = m.origin();
             [o.0 as f64, o.1 as f64, o.2 as f64]
@@ -322,7 +323,7 @@ mod tests {
                          "children": [{"id": "e", "type": "particles", "keyframes": {"x": [[0, 0], [1, 2]]}}]}]
         }))
         .unwrap();
-        let o = Origin::new(&scene, "e");
+        let o = Origin::new(&scene, "e", EvalOptions::default());
         assert!(!o.full);
         let at = o.at(0.5);
         assert!((at[0] - 1.0).abs() < 1e-6 && (at[1] - 1.0).abs() < 1e-6, "{at:?}");
