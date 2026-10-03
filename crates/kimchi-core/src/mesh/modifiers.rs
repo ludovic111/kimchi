@@ -388,16 +388,14 @@ fn eigen3(mut m: [[f64; 3]; 3]) -> ([f64; 3], [V3; 3]) {
             let c = 1.0 / (t * t + 1.0).sqrt();
             let s = t * c;
             // m ← Jᵀ m J with J the rotation in the p–q plane.
-            for k in 0..3 {
-                let (mkp, mkq) = (m[k][p], m[k][q]);
-                m[k][p] = c * mkp - s * mkq;
-                m[k][q] = s * mkp + c * mkq;
+            for row in m.iter_mut() {
+                let (mkp, mkq) = (row[p], row[q]);
+                row[p] = c * mkp - s * mkq;
+                row[q] = s * mkp + c * mkq;
             }
-            for k in 0..3 {
-                let (mpk, mqk) = (m[p][k], m[q][k]);
-                m[p][k] = c * mpk - s * mqk;
-                m[q][k] = s * mpk + c * mqk;
-            }
+            let (rp, rq) = (m[p], m[q]);
+            m[p] = std::array::from_fn(|k| c * rp[k] - s * rq[k]);
+            m[q] = std::array::from_fn(|k| s * rp[k] + c * rq[k]);
             for row in v.iter_mut() {
                 let (a, b) = (row[p], row[q]);
                 row[p] = c * a - s * b;
@@ -704,4 +702,32 @@ fn build(mut mesh: PolyMesh, m: &Modifier) -> PolyMesh {
     mesh.retain_faces(|f| keep[f]);
     mesh.compact();
     mesh
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eigen3_finds_the_axes() {
+        // A symmetric matrix built from known axes and values comes apart again.
+        let x = norm([1.0, 1.0, 0.0]);
+        let z = norm(cross(x, norm([1.0, -1.0, 0.5])));
+        let axes = [x, norm(cross(z, x)), z];
+        let values = [3.0, 1.0, 0.25];
+        let mut m = [[0.0; 3]; 3];
+        for (a, l) in axes.iter().zip(values) {
+            for (r, row) in m.iter_mut().enumerate() {
+                for (c, v) in row.iter_mut().enumerate() {
+                    *v += l * a[r] * a[c];
+                }
+            }
+        }
+        let (got, vecs) = eigen3(m);
+        for (a, l) in axes.iter().zip(values) {
+            let k = (0..3).min_by(|&i, &j| (got[i] - l).abs().total_cmp(&(got[j] - l).abs())).unwrap();
+            assert!((got[k] - l).abs() < 1e-9, "{got:?}");
+            assert!((dot(vecs[k], *a).abs() - 1.0).abs() < 1e-9, "axis {a:?} vs {:?}", vecs[k]);
+        }
+    }
 }

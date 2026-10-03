@@ -325,6 +325,8 @@ pub fn boolean(a: &PolyMesh, b: &PolyMesh, op: BoolOp) -> PolyMesh {
 /// vertex into the edge it lies on.
 fn close_t_junctions(m: &mut PolyMesh, tol: f64) {
     use std::collections::HashMap;
+    /// Per edge of a face: the vertices to put into it, by where along it they are.
+    type EdgeInserts = HashMap<(u32, u32), Vec<(f64, u32)>>;
     // A split can uncover another; a few rounds are plenty.
     for _ in 0..4 {
         let open: Vec<(u32, u32, usize)> = m.edges().into_iter().filter(|e| e.faces.len() == 1).map(|e| (e.a, e.b, e.faces[0])).collect();
@@ -339,7 +341,7 @@ fn close_t_junctions(m: &mut PolyMesh, tol: f64) {
             return;
         }
         // Per face: the vertices to put into each of its edges, in order along it.
-        let mut into: HashMap<usize, HashMap<(u32, u32), Vec<(f64, u32)>>> = HashMap::new();
+        let mut into: HashMap<usize, EdgeInserts> = HashMap::new();
         for &(a, b, f) in &open {
             let (pa, pb) = (m.positions[a as usize], m.positions[b as usize]);
             let d = sub(pb, pa);
