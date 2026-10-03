@@ -306,24 +306,118 @@ pub(crate) fn vertex_normals(m: &PolyMesh) -> Vec<V3> {
     out.into_iter().map(norm).collect()
 }
 
+/// For each vertex, the move (per unit of thickness) that puts it one unit from the plane of
+/// every face around it, as near as can be: on flat and smooth parts its normal, on an edge or a
+/// corner where the offset faces meet (a cube's corner moves by [1, 1, 1]). The faces' normals
+/// are grouped by direction (within about 11°) and each direction counts once, so a sliver
+/// left by a boolean counts as much as a big face; least squares over them, and in directions
+/// they barely constrain (along an edge, across faces less than about 25° apart) the vertex
+/// normal decides. No move is longer than three units. (Pushing along the averaged normal alone
+/// went out through the other side of sharp edges: a bowl cut by a boolean grew spikes.)
+fn even_offsets(mesh: &PolyMesh) -> Vec<V3> {
+    let normals = vertex_normals(mesh);
+    let n = mesh.positions.len();
+    let mut around: Vec<Vec<V3>> = vec![vec![]; n];
+    for (fi, f) in mesh.faces.iter().enumerate() {
+        let fnorm = mesh.face_normal(fi);
+        if !finite(fnorm) || len(fnorm) < 0.5 {
+            continue;
+        }
+        for &v in f {
+            let groups = &mut around[v as usize];
+            match groups.iter_mut().find(|g| dot(norm(**g), fnorm) > 0.98) {
+                Some(g) => *g = add(*g, fnorm),
+                None => groups.push(fnorm),
+            }
+        }
+    }
+    (0..n)
+        .map(|v| {
+            let nv = normals[v];
+            if !finite(nv) || len(nv) < 0.5 || around[v].is_empty() {
+                return nv;
+            }
+            let mut a = [[0.0f64; 3]; 3];
+            let mut b = [0.0f64; 3];
+            for g in &around[v] {
+                let g = norm(*g);
+                for r in 0..3 {
+                    for c in 0..3 {
+                        a[r][c] += g[r] * g[c];
+                    }
+                    b[r] += g[r];
+                }
+            }
+            let (values, vectors) = eigen3(a);
+            let top = values.iter().cloned().fold(0.0, f64::max);
+            if top <= 0.0 {
+                return nv;
+            }
+            // In the eigenbasis each well-constrained part comes from the faces, the rest from
+            // the normal.
+            let mut d = [0.0; 3];
+            for k in 0..3 {
+                let e = vectors[k];
+                let part = if values[k] > top * 0.05 { dot(e, b) / values[k] } else { dot(e, nv) };
+                d = mad(d, e, part);
+            }
+            if !finite(d) {
+                return nv;
+            }
+            let l = len(d);
+            if l > 3.0 { scale(d, 3.0 / l) } else { d }
+        })
+        .collect()
+}
+
+/// Eigenvalues and unit eigenvectors of a symmetric 3×3 matrix (Jacobi rotations).
+fn eigen3(mut m: [[f64; 3]; 3]) -> ([f64; 3], [V3; 3]) {
+    let mut v = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    for _ in 0..32 {
+        let off = m[0][1].abs() + m[0][2].abs() + m[1][2].abs();
+        if off < 1e-15 * (m[0][0].abs() + m[1][1].abs() + m[2][2].abs()).max(1e-300) {
+            break;
+        }
+        for (p, q) in [(0, 1), (0, 2), (1, 2)] {
+            if m[p][q].abs() < 1e-300 {
+                continue;
+            }
+            let theta = (m[q][q] - m[p][p]) / (2.0 * m[p][q]);
+            let t = theta.signum().max(0.0) * 2.0 - 1.0;
+            let t = t / (theta.abs() + (theta * theta + 1.0).sqrt());
+            let c = 1.0 / (t * t + 1.0).sqrt();
+            let s = t * c;
+            // m ← Jᵀ m J with J the rotation in the p–q plane.
+            for k in 0..3 {
+                let (mkp, mkq) = (m[k][p], m[k][q]);
+                m[k][p] = c * mkp - s * mkq;
+                m[k][q] = s * mkp + c * mkq;
+            }
+            for k in 0..3 {
+                let (mpk, mqk) = (m[p][k], m[q][k]);
+                m[p][k] = c * mpk - s * mqk;
+                m[q][k] = s * mpk + c * mqk;
+            }
+            for row in v.iter_mut() {
+                let (a, b) = (row[p], row[q]);
+                row[p] = c * a - s * b;
+                row[q] = s * a + c * b;
+            }
+        }
+    }
+    let col = |k: usize| [v[0][k], v[1][k], v[2][k]];
+    ([m[0][0], m[1][1], m[2][2]], [col(0), col(1), col(2)])
+}
+
 fn solidify(mesh: PolyMesh, thickness: f64, rim: bool) -> PolyMesh {
     if mesh.faces.len() * 3 > MAX_FACES || thickness == 0.0 {
         return mesh;
     }
-    let normals = vertex_normals(&mesh);
-    // Even thickness: corners push further so flat parts stay `thickness` apart.
-    let mut push = vec![1.0f64; mesh.positions.len()];
-    for (fi, f) in mesh.faces.iter().enumerate() {
-        let n = mesh.face_normal(fi);
-        for &v in f {
-            let c = dot(n, normals[v as usize]).abs().max(1.0 / 3.0);
-            push[v as usize] = push[v as usize].max(1.0 / c);
-        }
-    }
+    let offsets = even_offsets(&mesh);
     let nv = mesh.positions.len() as u32;
     let mut out = mesh.clone();
     for (i, p) in mesh.positions.iter().enumerate() {
-        out.positions.push(mad(*p, normals[i], -thickness * push[i]));
+        out.positions.push(mad(*p, offsets[i], -thickness));
     }
     for (fi, f) in mesh.faces.iter().enumerate() {
         let inner: Vec<u32> = f.iter().rev().map(|v| v + nv).collect();

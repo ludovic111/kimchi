@@ -449,6 +449,24 @@ fn boolean_of_two_boxes() {
 }
 
 #[test]
+fn solidify_after_a_boolean_stays_even() {
+    // A ball with a bite taken out, then given a thickness either way: the rim's corners move to
+    // where the offset surfaces meet, not off along a normal that belongs to neither side.
+    let ball = shape_mesh(&Shape3d::Sphere { radius: 0.8, segments: 32.0 }).unwrap();
+    let mut bite = shape_mesh(&Shape3d::Sphere { radius: 0.75, segments: 32.0 }).unwrap();
+    for p in &mut bite.positions {
+        *p = add(*p, [0.5, 0.5, 0.5]);
+    }
+    let cut = super::csg::boolean(&ball, &bite, super::csg::BoolOp::Difference);
+    let n = cut.positions.len();
+    for t in [0.1, -0.1] {
+        let shell = run(&cut, "solidify", json!({"thickness": t}), 0.0);
+        let worst = shell.positions.iter().skip(n).zip(&cut.positions).map(|(p, q)| len(sub(*p, *q))).fold(0.0, f64::max);
+        assert!(worst < 0.1 * 2.2, "a vertex moved {worst} for a thickness of {t}");
+    }
+}
+
+#[test]
 fn explode_build_and_disabled() {
     let s = shape_mesh(&Shape3d::Icosphere { radius: 1.0, detail: 1.0 }).unwrap();
     let still = run(&s, "explode", json!({"progress": 0}), 0.0);
