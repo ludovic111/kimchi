@@ -50,6 +50,24 @@ pub fn clip_menu(_: &mut TimelineBody, id: Id, position: Point<Pixels>, cx: &mut
         MenuItem::new("Cut", |w, cx| w.dispatch_action(Box::new(CutClips), cx)).icon("scissors").shortcut_of(&CutClips).disabled(locked).entry(),
         MenuItem::new("Duplicate", |w, cx| w.dispatch_action(Box::new(Duplicate), cx)).icon("copy").shortcut_of(&Duplicate).entry(),
     ];
+    // A motion clip: the Studio, and rendering it ahead.
+    if matches!(clip.content, ClipContent::Motion { .. }) {
+        items.push(MenuEntry::Separator);
+        items.push(MenuItem::new("Open in the Studio", move |_, cx| cx.store().update(cx, |s, cx| s.open_studio(id, cx))).icon("box").shortcut_of(&crate::actions::OpenStudio).entry());
+        match crate::views::studio::render_state::state(s, &p, &clip) {
+            Some(crate::views::studio::render_state::RenderState::Rendering(_, render)) => {
+                items.push(MenuItem::new("Cancel render", run("motion.cancelRender", json!({ "renderId": render }))).icon("x").entry());
+            }
+            Some(st) => {
+                let again = matches!(st, crate::views::studio::render_state::RenderState::Rendered(_));
+                items.push(MenuItem::new(if again { "Render again" } else { "Render now" }, run("motion.render", json!({ "clipIds": [id] }))).icon("clapperboard").entry());
+                if !matches!(st, crate::views::studio::render_state::RenderState::Live) {
+                    items.push(MenuItem::new("Go live (forget the render)", run("motion.unrender", json!({ "clipIds": [id] }))).icon("radio").entry());
+                }
+            }
+            None => {}
+        }
+    }
     // Editing: the transition into the clip, playing backwards, holding a frame.
     items.push(MenuEntry::Separator);
     let pending = matches!(clip.content, ClipContent::Pending { .. });

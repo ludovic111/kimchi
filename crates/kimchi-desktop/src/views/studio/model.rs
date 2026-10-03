@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use kimchi_core::motion::{Layer, LayerKind, Object3d, Scene2d, Scene3d, Shape3d, find_layer, find_object, walk_layers, walk_objects};
+use kimchi_core::motion::{Layer, LayerKind, Object3d, Scene2d, Scene3d, Shape3d, find_object, walk_objects};
 use kimchi_core::{Clip, ClipContent, KeyValue, Keyframes, Project, Scene};
 
 use super::math::{self, Affine, M4, V3};
@@ -280,6 +280,12 @@ pub fn item(scene: &Scene, key: &str) -> Option<Item> {
     }
 }
 
+/// The active key and what it names.
+pub fn active_item(scene: &Scene, key: Option<&str>) -> Option<(String, Item)> {
+    let k = key?;
+    item(scene, k).map(|i| (k.to_string(), i))
+}
+
 /// Things that can be keyframed and transformed (not the scene, materials, compositions).
 pub fn is_thing(scene: &Scene, key: &str) -> bool {
     matches!(item(scene, key), Some(Item::Camera | Item::Light | Item::Object(_) | Item::Layer(_)))
@@ -313,13 +319,6 @@ pub fn value_at(scene: &Scene, id: &str, name: &str, t: f64) -> Option<KeyValue>
             }
             find_object(&s.objects, id).map(|o| o.at(t)).and_then(|o| o.get(name))
         }
-    }
-}
-
-pub fn number_at(scene: &Scene, id: &str, name: &str, t: f64) -> Option<f64> {
-    match value_at(scene, id, name, t)? {
-        KeyValue::Vector(v) => v.first().copied(),
-        v => v.as_f64(),
     }
 }
 
@@ -386,9 +385,8 @@ pub fn worlds(s: &Scene3d, t: f64) -> HashMap<String, M4> {
     for l in s.lights_at(t) {
         out.insert(l.id.clone(), math::translate(l.position.0));
     }
-    for l in s.lights.iter().filter(|l| !out.contains_key(&l.id)) {
-        out.insert(l.id.clone(), math::translate(l.at(t).position.0));
-    }
+    let hidden: Vec<(String, M4)> = s.lights.iter().filter(|l| !out.contains_key(&l.id)).map(|l| (l.id.clone(), math::translate(l.at(t).position.0))).collect();
+    out.extend(hidden);
     let cams = std::iter::once(("camera".to_string(), s.camera.at(t))).chain(s.cameras.iter().map(|c| (c.id.clone(), c.at(t))));
     for (id, c) in cams {
         out.insert(id, look_at(c.position.0, c.target.0));
@@ -476,8 +474,14 @@ pub fn corners(lo: V3, hi: V3) -> [V3; 8] {
     out
 }
 
-/// An object's box in world space at `t` (its children's too for groups).
-pub fn world_bounds(s: &Scene3d, worlds: &HashMap<String, M4>, id: &str) -> Option<(V3, V3)> {
+/// An object's box in world space at `t` (the drawn mesh, modifiers applied; children's too
+/// for groups), or a small box around a light or camera.
+pub fn world_bounds(s: &Scene3d, worlds: &HashMap<String, M4>, t: f64, id: &str) -> Option<(V3, V3)> {
+    if find_object(&s.objects, id).is_some()
+        && let Some(b) = kimchi_media::render::space::viewport::object_bounds(s, t, id)
+    {
+        return Some(b);
+    }
     if let Some(o) = find_object(&s.objects, id) {
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
@@ -565,78 +569,6 @@ pub fn view_layers<'a>(s: &'a Scene2d, comp: Option<&str>) -> &'a [Layer] {
     }
 }
 
-/// A layer's own box in its pixels (from its anchor's origin, the layer's centre).
-pub fn layer_local_bounds(l: &Layer, s: &Scene2d, project: (f64, f64)) -> [f64; 4] {
-    let b = |w: f64, h: f64| [-w / 2.0, -h / 2.0, w / 2.0, h / 2.0];
-    match &l.kind {
-        LayerKind::Rect { width, height, .. } | LayerKind::Ellipse { width, height } => b(*width, *height),
-        LayerKind::Polygon { radius, .. } | LayerKind::Star { radius, .. } => b(radius * 2.0, radius * 2.0),
-        LayerKind::Text(t) => {
-            let shown = t.shown();
-            let chars = shown.lines().map(|l| l.chars().count()).max().unwrap_or(1).max(1) as f64;
-            let lines = shown.lines().count().max(1) as f64;
-            let w = t.font_size * 0.56 * chars + t.letter_spacing * chars;
-            let h = t.font_size * t.line_height * lines;
-            match t.align {
-                kimchi_core::TextAlign::Left => [0.0, -h / 2.0, w, h / 2.0],
-                kimchi_core::TextAlign::Right => [-w, -h / 2.0, 0.0, h / 2.0],
-                kimchi_core::TextAlign::Center => b(w, h),
-            }
-        }
-        LayerKind::Image { width, height, .. } => {
-            let (w, h) = match (width, height) {
-                (Some(w), Some(h)) => (*w, *h),
-                (Some(w), None) => (*w, w * 9.0 / 16.0),
-                (None, Some(h)) => (h * 16.0 / 9.0, *h),
-                (None, None) => (640.0, 360.0),
-            };
-            b(w, h)
-        }
-        LayerKind::Path { d, points, .. } => {
-            let mut pts: Vec<[f64; 2]> = points.clone();
-            if let Ok(segs) = kimchi_core::path::parse(d) {
-                for seg in segs {
-                    match seg {
-                        kimchi_core::path::Seg::Move(p) | kimchi_core::path::Seg::Line(p) => pts.push(p),
-                        kimchi_core::path::Seg::Quad(a, p) => pts.extend([a, p]),
-                        kimchi_core::path::Seg::Cubic(a, b2, p) => pts.extend([a, b2, p]),
-                        kimchi_core::path::Seg::Close => {}
-                    }
-                }
-            }
-            if pts.is_empty() {
-                return b(100.0, 100.0);
-            }
-            let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-            for p in pts {
-                lo = [lo[0].min(p[0]), lo[1].min(p[1])];
-                hi = [hi[0].max(p[0]), hi[1].max(p[1])];
-            }
-            [lo[0], lo[1], hi[0].max(lo[0] + 1.0), hi[1].max(lo[1] + 1.0)]
-        }
-        LayerKind::Group { layers } => {
-            let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-            for c in layers {
-                let r = layer_local_bounds(c, s, project);
-                let m = own_affine(c);
-                for p in [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]] {
-                    let q = math::aff_apply(&m, p);
-                    lo = [lo[0].min(q[0]), lo[1].min(q[1])];
-                    hi = [hi[0].max(q[0]), hi[1].max(q[1])];
-                }
-            }
-            if lo[0] > hi[0] { b(40.0, 40.0) } else { [lo[0], lo[1], hi[0], hi[1]] }
-        }
-        LayerKind::Null {} => b(24.0, 24.0),
-        LayerKind::Adjustment {} => b(project.0, project.1),
-        LayerKind::Comp { comp, .. } => {
-            let (w, h) = canvas_size(s, Some(comp), project);
-            b(w, h)
-        }
-        LayerKind::Particles(_) => b(60.0, 60.0),
-    }
-}
-
 /// A layer's own transform (position, rotation, skew, scale, anchor).
 pub fn own_affine(l: &Layer) -> Affine {
     math::layer_affine(l.x, l.y, l.rotation, l.skew_x, l.scale * l.scale_x, l.scale * l.scale_y, l.anchor_x, l.anchor_y)
@@ -666,52 +598,20 @@ pub fn layer_world(s: &Scene2d, comp: Option<&str>, t: f64, id: &str) -> Option<
         })
     }
     let list: Vec<Layer> = view_layers(s, comp).iter().map(|l| l.at(t)).collect();
-    look(&list, id, math::AFFINE_ID)
+    let (layer, ours) = look(&list, id, math::AFFINE_ID)?;
+    // The engine's transform has expressions applied: what is drawn.
+    Some((layer, kimchi_media::render::layer_transform(s, t, comp, id).unwrap_or(ours)))
 }
 
-/// A layer's four corners (top left, top right, bottom right, bottom left) on the view's canvas.
-pub fn layer_corners(s: &Scene2d, comp: Option<&str>, t: f64, id: &str, project: (f64, f64)) -> Option<[[f64; 2]; 4]> {
-    let (l, m) = layer_world(s, comp, t, id)?;
-    let r = layer_local_bounds(&l, s, project);
-    Some([[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]].map(|p| math::aff_apply(&m, p)))
+/// A layer's four corners (top left, top right, bottom right, bottom left) on the view's canvas
+/// (the 2D engine's: expressions, parents and groups included).
+pub fn layer_corners(s: &Scene2d, comp: Option<&str>, t: f64, id: &str, _project: (f64, f64)) -> Option<[[f64; 2]; 4]> {
+    kimchi_media::render::layer_bounds(s, t, comp, id)
 }
 
 /// The topmost visible layer under `point` (project pixels from the canvas centre).
-pub fn hit2d(s: &Scene2d, comp: Option<&str>, t: f64, point: [f64; 2], project: (f64, f64)) -> Option<String> {
-    let mut ids = vec![];
-    walk_layers(view_layers(s, comp), &mut |l| {
-        if l.visible_at(t) && !matches!(l.kind, LayerKind::Group { .. } | LayerKind::Adjustment {}) {
-            ids.push(l.id.clone());
-        }
-    });
-    // Later in the walk = drawn later (on top) within a list; good enough to pick the top one.
-    ids.into_iter().rev().find(|id| layer_corners(s, comp, t, id, project).is_some_and(|c| math::in_polygon(point, &c)))
-}
-
-/// The list (group or composition id, "" for the top level) holding a 2D layer.
-pub fn parent2d(s: &Scene2d, id: &str) -> Option<String> {
-    fn look(list: &[Layer], parent: &str, id: &str) -> Option<String> {
-        for l in list {
-            if l.id == id {
-                return Some(parent.to_string());
-            }
-            if let LayerKind::Group { layers } = &l.kind
-                && let Some(p) = look(layers, &l.id, id)
-            {
-                return Some(p);
-            }
-        }
-        None
-    }
-    look(&s.layers, "", id).or_else(|| s.compositions.iter().find_map(|c| look(&c.layers, &c.id, id)))
-}
-
-/// Which composition (if any) a layer lives in.
-pub fn composition_of(s: &Scene2d, id: &str) -> Option<String> {
-    if find_layer(&s.layers, id).is_some() {
-        return None;
-    }
-    s.compositions.iter().find(|c| find_layer(&c.layers, id).is_some()).map(|c| c.id.clone())
+pub fn hit2d(s: &Scene2d, comp: Option<&str>, t: f64, point: [f64; 2], _project: (f64, f64)) -> Option<String> {
+    kimchi_media::render::hit_test(s, t, comp, point)
 }
 
 #[cfg(test)]
@@ -757,8 +657,8 @@ mod tests {
         assert_eq!(pick3d(sp, &w, 0.0, [2.0, 0.0, 5.0], [0.0, 0.0, -1.0]).as_deref(), Some("box"));
         assert_eq!(pick3d(sp, &w, 0.0, [2.0, 1.0, 5.0], [0.0, 0.0, -1.0]).as_deref(), Some("ball"));
         assert!(pick3d(sp, &w, 0.0, [-3.0, 0.0, 5.0], [0.0, 0.0, -1.0]).is_none());
-        let (lo, hi) = world_bounds(sp, &w, "box").unwrap();
-        assert!(lo[0] < 1.6 && hi[1] > 1.4, "children count: {lo:?} {hi:?}");
+        let (lo, hi) = world_bounds(sp, &w, 0.0, "box").unwrap();
+        assert!((lo[0] - 1.5).abs() < 1e-3 && (hi[0] - 2.5).abs() < 1e-3, "the drawn box: {lo:?} {hi:?}");
     }
 
     #[test]

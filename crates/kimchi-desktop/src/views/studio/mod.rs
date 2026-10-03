@@ -13,9 +13,11 @@ pub mod math;
 pub mod model;
 
 mod fields;
+mod gizmo;
 mod menus;
 mod outliner;
 mod properties;
+pub mod render_state;
 mod specs;
 mod timeline;
 mod toolbar;
@@ -232,6 +234,9 @@ pub struct Studio {
     pub keys: Vec<KeyRef>,
     pub playing: bool,
     _play: Option<Task<()>>,
+    /// Space is held: a drag pans the view; let go without a drag, it plays.
+    pub space_down: bool,
+    pub space_panned: bool,
     pub popover: Option<Popover>,
     sender: Sender,
     drag_n: u64,
@@ -284,6 +289,8 @@ impl Studio {
             keys: vec![],
             playing: false,
             _play: None,
+            space_down: false,
+            space_panned: false,
             popover: None,
             sender: Sender::default(),
             drag_n: 0,
@@ -378,8 +385,16 @@ impl Studio {
         if self.clip.is_none() {
             return;
         }
+        // A tool in progress is put back first (it needs the clip).
+        if self.viewport.read(cx).busy() {
+            let me = cx.entity();
+            self.viewport_soon(cx, move |v, cx| {
+                v.cancel_modal(cx);
+                cx.defer(move |cx| me.update(cx, |s, cx| s.close(cx)));
+            });
+            return;
+        }
         self.stop(cx);
-        self.viewport.update(cx, |v, cx| v.cancel_modal(cx));
         self.clip = None;
         self.popover = None;
         self.store.update(cx, |s, cx| s.set_studio_state(None, cx));
@@ -622,7 +637,7 @@ impl Studio {
             return;
         }
         let Some(active) = self.active().map(str::to_string) else {
-            self.flash("Select a mesh object, then press Tab to edit it.", cx);
+            flash("Select a mesh object, then press Tab to edit it.", cx);
             return;
         };
         match model::item(&scene, &active) {
@@ -637,7 +652,7 @@ impl Studio {
                     let _ = this.set_mode(Mode::Edit, cx);
                 });
             }
-            _ => self.flash("Only mesh objects have an edit mode.", cx),
+            _ => flash("Only mesh objects have an edit mode.", cx),
         }
     }
 
@@ -681,7 +696,7 @@ impl Studio {
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
         for o in &s.objects {
-            if let Some((a, b)) = model::world_bounds(s, &w, &o.id) {
+            if let Some((a, b)) = model::world_bounds(s, &w, t, &o.id) {
                 for i in 0..3 {
                     lo[i] = lo[i].min(a[i]);
                     hi[i] = hi[i].max(b[i]);
@@ -703,7 +718,7 @@ impl Studio {
                 let mut lo = [f64::INFINITY; 3];
                 let mut hi = [f64::NEG_INFINITY; 3];
                 for k in &self.selection {
-                    if let Some((a, b)) = model::world_bounds(s, &w, k) {
+                    if let Some((a, b)) = model::world_bounds(s, &w, t, k) {
                         for i in 0..3 {
                             lo[i] = lo[i].min(a[i]);
                             hi[i] = hi[i].max(b[i]);
@@ -724,7 +739,7 @@ impl Studio {
     // ---- running commands -------------------------------------------------------------------
 
     pub fn run(&self, name: &str, params: Value, cx: &mut App) {
-        self.store.update(cx, |s, cx| s.run(name, params, cx));
+        run(name, params, cx);
     }
 
     /// Runs a command; `then` gets its answer on the Studio (errors become toasts).
@@ -743,7 +758,7 @@ impl Studio {
 
     /// A command's answer, errors included (for fields that show them inline).
     pub fn call(&self, name: &str, params: Value, cx: &mut App) -> Task<CmdResult> {
-        self.store.update(cx, |s, cx| s.call(name, params, cx))
+        call(name, params, cx)
     }
 
     /// A fresh coalesce key: every edit sent during one drag folds into one undo step.
@@ -782,19 +797,6 @@ impl Studio {
             .ok();
         })
         .detach();
-    }
-
-    pub fn flash(&self, text: impl Into<gpui::SharedString>, cx: &mut App) {
-        let text = text.into();
-        self.store.update(cx, |s, cx| s.flash(text, cx));
-    }
-
-    /// Moves the playhead to scene time `st`.
-    pub fn seek_scene(&self, st: f64, cx: &mut App) {
-        let Some((c, _)) = self.clip_scene(cx) else { return };
-        let t = model::timeline_time(&c, st);
-        let pb = self.store.read(cx).playback.clone();
-        pb.update(cx, |p, cx| p.seek(t, cx));
     }
 
     // ---- playback (the clip, looping) ---------------------------------------------------------
@@ -918,7 +920,10 @@ impl Studio {
             cx.notify();
             return;
         }
-        if self.viewport.update(cx, |v, cx| v.escape(window, cx)) {
+        if self.viewport.read(cx).escapable() {
+            self.viewport_later(window, cx, |v, w, cx| {
+                v.escape(w, cx);
+            });
             return;
         }
         if self.mode == Mode::Edit {
@@ -928,14 +933,41 @@ impl Studio {
         self.close(cx);
     }
 
-    fn with_viewport(&mut self, window: &mut Window, cx: &mut Context<Self>, f: impl FnOnce(&mut Viewport, &mut Window, &mut Context<Viewport>)) {
+    fn with_viewport(&mut self, window: &mut Window, cx: &mut Context<Self>, f: impl FnOnce(&mut Viewport, &mut Window, &mut Context<Viewport>) + 'static) {
         self.area = Area::Viewport;
-        self.viewport.update(cx, |v, cx| f(v, window, cx));
+        self.viewport_later(window, cx, f);
+    }
+
+    /// Runs `f` on the viewport once the Studio is done updating (the viewport reads the Studio).
+    pub fn viewport_later(&self, window: &Window, cx: &mut App, f: impl FnOnce(&mut Viewport, &mut Window, &mut Context<Viewport>) + 'static) {
+        let vp = self.viewport.clone();
+        window.defer(cx, move |window, cx| vp.update(cx, |v, cx| f(v, window, cx)));
+    }
+
+    /// The same without a window.
+    pub fn viewport_soon(&self, cx: &mut App, f: impl FnOnce(&mut Viewport, &mut Context<Viewport>) + 'static) {
+        let vp = self.viewport.clone();
+        cx.defer(move |cx| vp.update(cx, |v, cx| f(v, cx)));
     }
 
     fn register_actions(&self, el: gpui::Div, cx: &mut Context<Self>) -> gpui::Div {
         el.on_action(cx.listener(Self::on_escape))
-            .on_action(cx.listener(|this, _: &StudioPlay, _, cx| this.toggle_play(cx)))
+            .on_action(cx.listener(|this, _: &StudioPlay, _, cx| {
+                // Played when the key comes up without a drag (Space-drag pans, like After Effects).
+                if !this.space_down {
+                    this.space_down = true;
+                    this.space_panned = false;
+                }
+                cx.notify();
+            }))
+            .on_key_up(cx.listener(|this, e: &gpui::KeyUpEvent, _, cx| {
+                if e.keystroke.key == "space" && this.space_down {
+                    this.space_down = false;
+                    if !this.space_panned {
+                        this.toggle_play(cx);
+                    }
+                }
+            }))
             .on_action(cx.listener(|this, _: &StudioGrab, w, cx| this.with_viewport(w, cx, |v, w, cx| v.key_grab(w, cx))))
             .on_action(cx.listener(|this, _: &StudioRotate, w, cx| this.with_viewport(w, cx, |v, w, cx| v.start_modal(viewport::ModalKind::Rotate, w, cx))))
             .on_action(cx.listener(|this, _: &StudioScale, w, cx| this.with_viewport(w, cx, |v, w, cx| v.start_modal(viewport::ModalKind::Scale, w, cx))))
@@ -1021,15 +1053,11 @@ impl Studio {
         if !self.is_3d(cx) {
             return;
         }
-        let ctrl = self.viewport.read(cx).ctrl_held;
-        let view = match (n, ctrl) {
-            (1, false) => "front",
-            (1, true) => "back",
-            (3, false) => "right",
-            (3, true) => "left",
-            (7, false) => "top",
-            (7, true) => "bottom",
-            (0, _) => "camera",
+        let view = match n {
+            1 => "front",
+            3 => "right",
+            7 => "top",
+            0 => "camera",
             _ => return,
         };
         let _ = self.set_view(view, cx);
@@ -1042,7 +1070,7 @@ impl Studio {
             return;
         }
         self.tool = tool;
-        self.viewport.update(cx, |v, cx| v.tool_changed(cx));
+        self.viewport_soon(cx, |v, cx| v.tool_changed(cx));
         self.changed(cx);
     }
 
@@ -1123,7 +1151,7 @@ impl Studio {
                     this.set_selection(sel, cx);
                     // Then move them, like Blender's Shift+D.
                     if this.is_3d(cx) {
-                        this.viewport.update(cx, |v, cx| v.start_modal_now(viewport::ModalKind::Grab, cx));
+                        this.viewport_soon(cx, |v, cx| v.start_modal_now(viewport::ModalKind::Grab, cx));
                     }
                 }
             });
@@ -1132,11 +1160,12 @@ impl Studio {
 
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
         if self.mode == Mode::Edit {
-            self.viewport.update(cx, |v, cx| v.toggle_all_mesh(cx));
+            self.viewport_soon(cx, |v, cx| v.toggle_all_mesh(cx));
             return;
         }
         if self.area == Area::Timeline {
-            self.timeline.update(cx, |t, cx| t.select_all_keys(cx));
+            let tl = self.timeline.clone();
+            cx.defer(move |cx| tl.update(cx, |t, cx| t.select_all_keys(cx)));
             return;
         }
         let Some((_, scene)) = self.clip_scene(cx) else { return };
@@ -1185,7 +1214,7 @@ impl Studio {
             }
         }
         if commands.is_empty() {
-            self.flash("Select something to keyframe.", cx);
+            flash("Select something to keyframe.", cx);
             return;
         }
         self.run("project.batch", json!({ "commands": commands, "label": "Insert keyframes" }), cx);
@@ -1220,9 +1249,34 @@ impl Studio {
     }
 }
 
+/// Runs a command as the window (errors become toasts).
+pub fn run(name: &str, params: Value, cx: &mut App) {
+    cx.store().update(cx, |s, cx| s.run(name, params, cx));
+}
+
+/// A command's answer, errors included.
+pub fn call(name: &str, params: Value, cx: &mut App) -> Task<CmdResult> {
+    cx.store().update(cx, |s, cx| s.call(name, params, cx))
+}
+
+/// A passing status line.
+pub fn flash(text: impl Into<gpui::SharedString>, cx: &mut App) {
+    let text = text.into();
+    cx.store().update(cx, |s, cx| s.flash(text, cx));
+}
+
+/// Moves the playhead to the open clip's scene time `st`.
+pub fn seek(studio: &Entity<Studio>, st: f64, cx: &mut App) {
+    let Some((c, _)) = studio.read(cx).clip_scene(cx) else { return };
+    let t = model::timeline_time(&c, st);
+    let pb = cx.store().read(cx).playback.clone();
+    pb.update(cx, |p, cx| p.seek(t, cx));
+}
+
 /// The selection `motion.editMesh` answers with (`selection: {vertices, faces}` or at the top).
 pub fn selection_from(v: &Value) -> EditSel {
-    let src = v.get("selection").unwrap_or(v);
+    // `{result: {selection: …}}` (motion.editMesh), `{selection: …}`, or the lists themselves.
+    let src = v.pointer("/result/selection").or_else(|| v.get("selection")).unwrap_or(v);
     let ints = |k: &str| -> Vec<u32> { src.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(|x| x.as_u64().map(|n| n as u32)).collect() };
     let edges = src
         .get("edges")
@@ -1245,7 +1299,8 @@ impl Render for Studio {
         }
         let busy = self.viewport.read(cx).busy();
         let toolbar = toolbar::render(self, window, cx);
-        let popover = self.popover.as_ref().map(|p| p.render(cx.entity(), window, cx));
+        let me = cx.entity();
+        let popover = self.popover.as_ref().map(|p| p.render(self, me, window, cx));
         let root = div()
             .id("studio")
             .key_context(if busy { "Studio StudioBusy" } else { "Studio" })

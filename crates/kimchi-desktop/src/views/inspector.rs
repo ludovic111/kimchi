@@ -418,6 +418,16 @@ impl Inspector {
             ),
             ClipContent::Media { .. } => {}
             ClipContent::Motion { template, .. } => {
+                // The Studio, and rendering ahead.
+                let id = clip.id;
+                let state = crate::views::studio::render_state::state_of(id, cx);
+                body.push(
+                    section(cx)
+                        .child(caps("Motion clip", cx))
+                        .child(Button::new("open-studio", "Open in the Studio").small().primary().with_icon("box").full_width().tooltip(crate::actions::tip("Open in the Studio (or double-click the clip)", &crate::actions::OpenStudio)).on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.open_studio(id, cx))))
+                        .when_some(state, |d, st| d.child(crate::views::studio::render_state::controls("insp-render", id, &st, cx)))
+                        .into_any_element(),
+                );
                 if template.is_some() {
                     body.push(self.motion_section(clip, window, cx));
                 } else {

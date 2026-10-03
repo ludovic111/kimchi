@@ -9,7 +9,7 @@ use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::actions::{self as act, tip};
 use crate::ui::{Button, GlassExt, drag, icon, motion};
-use crate::views::{agent_panel::AgentPanel, inspector::Inspector, jobs::JobsPopover, left_panel::LeftPanel, preview::PreviewView, timeline::Timeline};
+use crate::views::{agent_panel::AgentPanel, inspector::Inspector, jobs::JobsPopover, left_panel::LeftPanel, preview::PreviewView, studio::Studio, timeline::Timeline};
 
 pub const TOPBAR_H: f32 = 52.;
 // Panel sizes to start with (and to go back to on a double-click on a divider).
@@ -33,6 +33,8 @@ pub struct Editor {
     pub inspector: Entity<Inspector>,
     pub timeline: Entity<Timeline>,
     pub agent: Entity<AgentPanel>,
+    /// The motion clips' editor; it takes the centre while open.
+    pub studio: Entity<Studio>,
     jobs: Entity<JobsPopover>,
     rename: Option<(Entity<TextInput>, Subscription)>,
     left_w: f32,
@@ -41,13 +43,25 @@ pub struct Editor {
     agent_w: f32,
     resizing: Option<(Splitter, Pixels, f32)>,
     _sub: Subscription,
+    _studio_subs: Vec<Subscription>,
 }
 
 impl Editor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
         let sub = cx.observe(&store, |_, _, cx| cx.notify());
+        let studio = cx.new(|cx| Studio::new(window, cx));
+        let open = cx.subscribe_in(&store, window, |this: &mut Self, _, e: &crate::store::StoreEvent, window, cx| {
+            if let crate::store::StoreEvent::OpenStudio(clip) = e {
+                let clip = *clip;
+                this.studio.update(cx, |s, cx| s.open(clip, window, cx));
+                cx.notify();
+            }
+        });
+        let watch = cx.observe(&studio, |_, _, cx| cx.notify());
         Self {
+            studio,
+            _studio_subs: vec![open, watch],
             left: cx.new(|cx| LeftPanel::new(window, cx)),
             preview: cx.new(|cx| PreviewView::new(window, cx)),
             inspector: cx.new(|cx| Inspector::new(window, cx)),
@@ -337,6 +351,7 @@ impl Render for Editor {
         let t = cx.theme().clone();
         let agent_open = self.store.read(cx).agent_open;
         let resizing = self.resizing.is_some();
+        let studio_open = self.studio.read(cx).is_open();
         let top = self.top_bar(window, cx);
         div()
             .key_context("Editor")
@@ -349,7 +364,8 @@ impl Render for Editor {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(
+                    .when(studio_open, |d| d.child(div().flex_1().min_w_0().h_full().child(self.studio.clone())))
+                    .when(!studio_open, |d| d.child(
                         div()
                             .flex_1()
                             .min_w_0()
@@ -369,7 +385,7 @@ impl Render for Editor {
                             )
                             .child(self.splitter(Splitter::Timeline, cx))
                             .child(div().h(px(self.timeline_h)).flex_none().w_full().bg(t.bg_raised).child(self.timeline.clone())),
-                    )
+                    ))
                     .when(agent_open, |d| {
                         d.child(self.splitter(Splitter::Agent, cx)).child(motion::enter(
                             div().relative().w(px(self.agent_w)).flex_none().h_full().child(self.agent.clone().cached(full())),

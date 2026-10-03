@@ -15,7 +15,7 @@ use gpui::{
     App, Bounds, Context, Entity, FontWeight, Hsla, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, Pixels, Point,
     Render, RenderImage, ScrollWheelEvent, Subscription, Task, Window, canvas, div, img, point, prelude::*, px,
 };
-use kimchi_core::motion::{LayerKind, Scene2d, Scene3d};
+use kimchi_core::motion::{Scene2d, Scene3d};
 use kimchi_core::{Id, Project, Scene};
 use kimchi_media::render::space::viewport::{ViewCamera, ViewOptions};
 use serde_json::{Value, json};
@@ -50,7 +50,6 @@ pub enum ModalKind {
 struct MeshModal {
     kind: ModalKind,
     mouse0: [f64; 2],
-    pivot: V3,
     normal: V3,
     /// World units per pixel at the pivot.
     unit: f64,
@@ -153,6 +152,8 @@ pub struct Viewport {
     /// A transform in progress (gizmo drag or G / R / S).
     pub session: Option<Session>,
     modal_key: Option<String>,
+    /// A gizmo drag's undo key.
+    gizmo_key: Option<String>,
     mesh_modal: Option<MeshModal>,
     _intercept: Option<Subscription>,
     armed: Option<Armed>,
@@ -187,6 +188,7 @@ impl Viewport {
             drag: None,
             session: None,
             modal_key: None,
+            gizmo_key: None,
             mesh_modal: None,
             _intercept: None,
             armed: None,
@@ -606,6 +608,11 @@ impl Viewport {
         false
     }
 
+    /// Esc would stop something here.
+    pub fn escapable(&self) -> bool {
+        self.busy() || self.armed.is_some() || self.drag.is_some()
+    }
+
     pub fn tool_changed(&mut self, cx: &mut Context<Self>) {
         if !self.pen.is_empty() {
             self.finish_pen(false, cx);
@@ -745,7 +752,7 @@ impl Viewport {
         let Some((verts, faces, view)) = self.mesh(cx) else { return };
         let sel = self.studio.read(cx).edit_sel.clone();
         if sel.is_empty() {
-            self.studio.read(cx).flash("Select some faces, edges or vertices first.", cx);
+            super::flash("Select some faces, edges or vertices first.", cx);
             return;
         }
         let picked = sel.all_vertices(&faces);
@@ -762,7 +769,7 @@ impl Viewport {
         let normal = if math::len(n) < 1e-9 { view.toward_viewer(pivot) } else { math::norm(n) };
         let key = self.studio.update(cx, |s, _| s.drag_key());
         let unit = view.units_per_pixel(pivot);
-        self.mesh_modal = Some(MeshModal { kind, mouse0: self.mouse, pivot, normal, unit, typed: String::new(), amount: 0.0, applied: 0.0, busy: kind == ModalKind::Extrude, key });
+        self.mesh_modal = Some(MeshModal { kind, mouse0: self.mouse, normal, unit, typed: String::new(), amount: 0.0, applied: 0.0, busy: kind == ModalKind::Extrude, key });
         if kind == ModalKind::Extrude && extrude_first {
             // Extrude in place, then pull the new faces out.
             let st = self.studio.read(cx);
@@ -772,7 +779,7 @@ impl Viewport {
             let s = sel.params();
             p["vertices"] = s["vertices"].clone();
             p["faces"] = s["faces"].clone();
-            let task = self.studio.read(cx).call("motion.editMesh", p, cx);
+            let task = super::call("motion.editMesh", p, cx);
             cx.spawn(async move |this, cx| {
                 let r = task.await;
                 this.update(cx, |this, cx| match r {
@@ -834,7 +841,7 @@ impl Viewport {
         let s = st.edit_sel.params();
         p["vertices"] = s["vertices"].clone();
         p["faces"] = s["faces"].clone();
-        let task = st.call("motion.editMesh", p, cx);
+        let task = super::call("motion.editMesh", p, cx);
         cx.spawn(async move |this, cx| {
             let r = task.await;
             this.update(cx, |this, cx| {
@@ -997,7 +1004,7 @@ impl Viewport {
         };
         let d = path_data(&pts, closed, to_layer);
         match mask_on {
-            Some(id) => self.studio.read(cx).run("motion.setStackItem", json!({ "clipId": clip, "id": id, "field": "masks", "item": { "type": "path", "d": d } }), cx),
+            Some(id) => super::run("motion.setStackItem", json!({ "clipId": clip, "id": id, "field": "masks", "item": { "type": "path", "d": d } }), cx),
             None => {
                 let new_id = model::fresh_id(&scene, "path");
                 let mut layer = json!({ "id": new_id, "type": "path", "d": d, "closed": closed, "stroke": { "color": "#ffffff", "width": 4 } });
@@ -1298,6 +1305,11 @@ impl Viewport {
     fn drag_move(&mut self, e: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         let m = [f32::from(e.position.x) as f64, f32::from(e.position.y) as f64];
         self.mouse = m;
+        // The pointer on the 2D canvas (pen and shape tools).
+        let canvas_at = match self.scene(cx) {
+            Some((p, _, Scene::Flat(s), _)) => Some(self.view2(&s, &p, cx).to_canvas(m)),
+            _ => None,
+        };
         SHIFT.with(|c| c.set(e.modifiers.shift));
         match self.drag.as_mut() {
             Some(Drag::Orbit { last }) => {
@@ -1357,8 +1369,7 @@ impl Viewport {
             }
             Some(Drag::Layer(_)) => self.layer_drag_to(m, cx),
             Some(Drag::Pen { at, handle }) => {
-                let Some((p, _, Scene::Flat(s), _)) = self.scene(cx) else { return };
-                let c = self.view2(&s, &p, cx).to_canvas(m);
+                let Some(c) = canvas_at else { return };
                 *handle = [c[0] - at[0], c[1] - at[1]];
                 if let Some(last) = self.pen.last_mut() {
                     last.handle = *handle;
@@ -1366,8 +1377,8 @@ impl Viewport {
                 cx.notify();
             }
             Some(Drag::Shape { to, square, .. }) => {
-                let Some((p, _, Scene::Flat(s), _)) = self.scene(cx) else { return };
-                *to = self.view2(&s, &p, cx).to_canvas(m);
+                let Some(c) = canvas_at else { return };
+                *to = c;
                 *square = e.modifiers.shift;
                 cx.notify();
             }
@@ -1457,7 +1468,7 @@ impl Viewport {
                 let view = self.view3(s, t, &p, cx);
                 let w = model::worlds(s, t);
                 for id in model::thing_ids(&scene) {
-                    let at = match model::world_bounds(s, &w, &id) {
+                    let at = match model::world_bounds(s, &w, t, &id) {
                         Some((lo, hi)) if model::item(&scene, &id).is_some_and(|i| matches!(i, model::Item::Object(_))) => math::lerp(lo, hi, 0.5),
                         _ => match w.get(&id) {
                             Some(mm) => math::origin(mm),
@@ -1557,8 +1568,8 @@ impl Viewport {
 }
 
 /// Click picking through the 3D engine's `pick` when it has one, or by boxes.
-fn engine_pick(s: &Scene3d, w: &std::collections::HashMap<String, math::M4>, t: f64, o: V3, d: V3) -> Option<String> {
-    model::pick3d(s, w, t, o, d)
+fn engine_pick(s: &Scene3d, _w: &std::collections::HashMap<String, math::M4>, t: f64, o: V3, d: V3) -> Option<String> {
+    kimchi_media::render::space::viewport::pick(s, t, (o, d))
 }
 
 #[derive(Clone, Copy, Debug)]

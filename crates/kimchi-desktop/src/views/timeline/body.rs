@@ -324,6 +324,14 @@ impl TimelineBody {
         }
         self.consumed = true;
         if e.click_count == 2 {
+            // A motion clip: into the Studio.
+            if matches!(self.store.read(cx).clip(id).map(|c| &c.content), Some(kimchi_core::ClipContent::Motion { .. })) {
+                self.store.update(cx, |s, cx| {
+                    s.select(id, false, cx);
+                    s.open_studio(id, cx);
+                });
+                return;
+            }
             // A title: straight to its words.
             if matches!(self.store.read(cx).clip(id).map(|c| &c.content), Some(kimchi_core::ClipContent::Text { .. })) {
                 self.store.update(cx, |s, cx| {
@@ -1030,6 +1038,7 @@ impl TimelineBody {
                 _ => None,
             };
             let id = shown.id;
+            let render = crate::views::studio::render_state::state(self.store.read(cx), &p, &shown);
             let view = ClipView {
                 clip: &shown,
                 asset,
@@ -1046,6 +1055,7 @@ impl TimelineBody {
                 locked: track.locked,
                 agent: self.agent.marked.contains_key(&id),
                 peaks,
+                render,
             };
             let Some(el) = view.render(cx) else { continue };
             if ghost {

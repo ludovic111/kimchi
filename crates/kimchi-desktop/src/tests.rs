@@ -161,6 +161,11 @@ fn people_edit_motion_scenes_in_the_inspector(cx: &mut TestAppContext) {
     let p = f.settle(cx, |p| motion(p).is_some());
     let clip = motion(&p).expect("a motion clip");
     store_settles(cx, |s| s.selection == vec![clip.id]);
+    // It opens in the Studio; back to the edit for the inspector.
+    store_settles(cx, |s| s.studio.is_some());
+    let studio = cx.update(|_, cx| view.read(cx).editor().read(cx).studio.clone());
+    cx.update(|_, cx| studio.update(cx, |s, cx| s.close(cx)));
+    cx.run_until_parked();
     // Pick its text layer, then type in the words field.
     let inspector = cx.update(|_, cx| view.read(cx).editor().read(cx).inspector.clone());
     cx.update(|_, cx| inspector.update(cx, |i, cx| i.pick(clip.id, "text1", cx)));

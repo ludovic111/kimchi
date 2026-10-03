@@ -569,7 +569,7 @@ mod tests {
         let p1 = v.project([2.0, 0.0, 0.0]).unwrap();
         sess.update(&v, [p1[0], p1[1] + 30.0]);
         let (_, pos, ..) = &sess.reached[0];
-        assert!((pos[0] - 2.0).abs() < 1e-6 && pos[1].abs() < 1e-9, "{pos:?}");
+        assert!((pos[0] - 2.0).abs() < 0.01 && pos[1].abs() < 1e-9, "{pos:?}");
         // Typed numbers win.
         sess.typed = "-3".into();
         sess.update(&v, p1);

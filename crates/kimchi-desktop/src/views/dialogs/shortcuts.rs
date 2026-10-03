@@ -21,6 +21,10 @@ const MOUSE: &[(&str, &str)] = &[
     ("Rename a track", "Double-click its name"),
     ("Reset a panel's size", "Double-click its divider"),
     ("More actions", "Right-click anything"),
+    ("Studio: orbit the 3D view", "Middle-drag, or ⌥-drag"),
+    ("Studio: pan the view", "Shift + middle-drag, or Space-drag"),
+    ("Studio: zoom", "Scroll"),
+    ("Studio: open a motion clip", "Double-click it"),
 ];
 
 /// A shortcut's keys: the main one, an alias if there is one, and the pair for "previous / next" rows.
@@ -100,6 +104,7 @@ pub fn sheet(cx: &App) -> AnyElement {
                 .gap(px(28.))
                 .child(column(&["Playback", "Timeline"], cx))
                 .child(column(&["Editing"], cx))
+                .child(column(&["Studio", "Studio: modelling"], cx))
                 .child(div().flex_1().min_w_0().flex().flex_col().child(group("Panels", cx)).child(group("Project", cx)).child(mouse)),
         )
         .into_any_element()
