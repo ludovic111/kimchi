@@ -312,7 +312,10 @@ fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align
                 m.push(V3(v[0], v[1], z), V3(0.0, 0.0, nz), [v[0] / w + 0.5, 0.5 - v[1] / h]);
             }
             for t in buffers.indices.as_chunks::<3>().0.iter() {
-                if nz > 0.0 {
+                // Counter-clockwise seen from the side the cap faces (lyon's winding is y down).
+                let [a, b, c] = t.map(|i| buffers.vertices[i as usize]);
+                let ccw = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) > 0.0;
+                if ccw == (nz > 0.0) {
                     m.tri(base + t[0], base + t[1], base + t[2]);
                 } else {
                     m.tri(base + t[0], base + t[2], base + t[1]);
@@ -338,20 +341,31 @@ fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align
             _ => {}
         }
     }
-    for c in contours {
-        let mut pts = c;
-        pts.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
-        if pts.len() > 1 && (pts[0][0] - pts[pts.len() - 1][0]).abs() < 1e-6 && (pts[0][1] - pts[pts.len() - 1][1]).abs() < 1e-6 {
-            pts.pop();
-        }
+    let contours: Vec<Vec<[f32; 2]>> = contours
+        .into_iter()
+        .map(|mut pts| {
+            pts.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
+            if pts.len() > 1 && (pts[0][0] - pts[pts.len() - 1][0]).abs() < 1e-6 && (pts[0][1] - pts[pts.len() - 1][1]).abs() < 1e-6 {
+                pts.pop();
+            }
+            pts
+        })
+        .filter(|pts| pts.len() >= 3)
+        .collect();
+    for pts in &contours {
         let n = pts.len();
-        if n < 3 {
-            continue;
-        }
+        // Walls face away from the letter: fonts wind outlines either way round, so look at
+        // which side of the outline is filled (non-zero winding, like the caps).
+        let out = {
+            let (a, b) = (pts[0], pts[1]);
+            let right = V3(b[1] - a[1], -(b[0] - a[0]), 0.0).norm();
+            let probe = [(a[0] + b[0]) / 2.0 + right.0 * size * 1e-3, (a[1] + b[1]) / 2.0 + right.1 * size * 1e-3];
+            if winding(&contours, probe) != 0 { -1.0 } else { 1.0 }
+        };
         let edge_n: Vec<V3> = (0..n)
             .map(|i| {
                 let (a, b) = (pts[i], pts[(i + 1) % n]);
-                V3(b[1] - a[1], -(b[0] - a[0]), 0.0).norm()
+                V3(b[1] - a[1], -(b[0] - a[0]), 0.0).norm() * out
             })
             .collect();
         for i in 0..n {
@@ -365,11 +379,35 @@ fn text_mesh(text: &str, family: &str, weight: f64, size: f32, depth: f32, align
             let v1 = m.push(V3(b[0], b[1], hd), nb, [1.0, 0.0]);
             let v2 = m.push(V3(a[0], a[1], -hd), na, [0.0, 1.0]);
             let v3 = m.push(V3(b[0], b[1], -hd), nb, [1.0, 1.0]);
-            m.tri(v0, v2, v1);
-            m.tri(v1, v2, v3);
+            if out > 0.0 {
+                m.tri(v0, v2, v1);
+                m.tri(v1, v2, v3);
+            } else {
+                m.tri(v0, v1, v2);
+                m.tri(v1, v3, v2);
+            }
         }
     }
     m
+}
+
+/// How many times the outlines wind around `p` (counter-clockwise positive).
+fn winding(contours: &[Vec<[f32; 2]>], p: [f32; 2]) -> i32 {
+    let mut w = 0;
+    for c in contours {
+        for i in 0..c.len() {
+            let (a, b) = (c[i], c[(i + 1) % c.len()]);
+            let side = (b[0] - a[0]) * (p[1] - a[1]) - (p[0] - a[0]) * (b[1] - a[1]);
+            if a[1] <= p[1] {
+                if b[1] > p[1] && side > 0.0 {
+                    w += 1;
+                }
+            } else if b[1] <= p[1] && side < 0.0 {
+                w -= 1;
+            }
+        }
+    }
+    w
 }
 
 /// One drawable piece of a model: its mesh (already placed in the model) and its own material.
@@ -552,5 +590,27 @@ mod tests {
         assert!((hi.2 - 0.15).abs() < 1e-4 && (lo.2 + 0.15).abs() < 1e-4);
         assert!((lo.0 + hi.0).abs() < 0.2, "roughly centred: {lo:?} {hi:?}");
         assert!(hi.1 - lo.1 > 0.5 && hi.1 - lo.1 < 1.2, "about one unit tall: {lo:?} {hi:?}");
+    }
+
+    #[test]
+    fn text_faces_wind_outwards() {
+        // Booleans and solidify read the winding: every triangle turns counter-clockwise seen
+        // from outside, the way its normals point, letters with holes too.
+        for text in ["KIM", "O", "Bo8"] {
+            let m = text_mesh(text, "Manrope", 700.0, 1.0, 0.3, kimchi_core::TextAlign::Center, 0.0);
+            let mut volume = 0.0f64;
+            for t in m.index.as_chunks::<3>().0.iter() {
+                let v = |a: [f32; 3]| V3(a[0], a[1], a[2]);
+                let p = t.map(|i| v(m.pos[i as usize]));
+                let n = (p[1] - p[0]).cross(p[2] - p[0]);
+                if n.len() < 1e-9 {
+                    continue;
+                }
+                let stored = v(m.normal[t[0] as usize]) + v(m.normal[t[1] as usize]) + v(m.normal[t[2] as usize]);
+                assert!(n.dot(stored) > 0.0, "{text}: a triangle winds against its normals at {:?}", p[0]);
+                volume += p[0].dot(p[1].cross(p[2])) as f64 / 6.0;
+            }
+            assert!(volume > 0.0, "{text}: inside out ({volume})");
+        }
     }
 }
