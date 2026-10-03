@@ -176,7 +176,8 @@ async fn backend(inv: &Invocation) -> Result<Backend, Failure> {
 
 async fn run_command(inv: &Invocation, command: &str, params: serde_json::Map<String, Value>) -> Res {
     let spec = registry::spec(command).ok_or_else(|| Failure::Usage(kimchi_cli::unknown_command(command)))?;
-    let params = Value::Object(params);
+    let mut params = Value::Object(params);
+    registry::coerce(spec, &mut params);
     registry::validate(spec, &params).map_err(Failure::Usage)?;
     let backend = backend(inv).await?;
     let result = backend.call(command, params).await?;

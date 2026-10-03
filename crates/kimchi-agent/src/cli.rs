@@ -274,7 +274,7 @@ fn mcp_config(live: &Live) -> Value {
     json!({ "mcpServers": { "kimchi": {
         "command": live.mcp,
         "args": ["--live"],
-        "env": { "KIMCHI_CONTROL": live.control },
+        "env": { "KIMCHI_CONTROL": live.control, "KIMCHI_MCP_BUILTIN_AGENT": "1" },
     }}})
 }
 
@@ -422,6 +422,10 @@ pub(crate) fn codex_args(live: &Live, model: &str, resume: Option<&str>, others:
         format!("mcp_servers.kimchi.command={}", toml_str(&live.mcp.to_string_lossy())),
         "mcp_servers.kimchi.args=[\"--live\"]".into(),
         format!("mcp_servers.kimchi.env.KIMCHI_CONTROL={}", toml_str(&live.control.to_string_lossy())),
+        "mcp_servers.kimchi.env.KIMCHI_MCP_BUILTIN_AGENT=\"1\"".into(),
+        // Without it, Codex refuses every tool marked destructive (clip_delete, track_remove…)
+        // under approval_policy "never": kimchi's own permissions decide instead.
+        "mcp_servers.kimchi.default_tools_approval_mode=\"approve\"".into(),
         "mcp_servers.kimchi.startup_timeout_sec=30".into(),
         // Generation commands can wait for a render.
         "mcp_servers.kimchi.tool_timeout_sec=900".into(),

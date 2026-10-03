@@ -62,14 +62,24 @@ pub struct Param {
     pub kind: Kind,
     pub required: bool,
     pub doc: &'static str,
+    /// For arrays: what each item is (in the JSON Schema too, which some models need).
+    pub items: Option<Kind>,
 }
 
 pub const fn req(name: &'static str, kind: Kind, doc: &'static str) -> Param {
-    Param { name, kind, required: true, doc }
+    Param { name, kind, required: true, doc, items: None }
 }
 
 pub const fn opt(name: &'static str, kind: Kind, doc: &'static str) -> Param {
-    Param { name, kind, required: false, doc }
+    Param { name, kind, required: false, doc, items: None }
+}
+
+impl Param {
+    /// An array of `items`.
+    pub const fn of(mut self, items: Kind) -> Self {
+        self.items = Some(items);
+        self
+    }
 }
 
 /// What an agent needs to be allowed to run a command (`settings.agent.permissions`).
@@ -223,6 +233,9 @@ pub(crate) fn call_boxed<'a>(
 /// How long a change waits for a running `project.batch` to end.
 const BATCH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How long a window command waits for the app's window to open.
+const WINDOW_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 async fn run_checked(session: &Arc<Session>, source: Source, spec: &'static Spec, params: Value) -> CmdResult {
     let params = match params {
         Value::Null => Value::Object(Map::new()),
@@ -230,7 +243,17 @@ async fn run_checked(session: &Arc<Session>, source: Source, spec: &'static Spec
         other => return Err(format!("`{}` takes an object of parameters, not {other}", spec.name)),
     };
     allowed(session, source, spec)?;
+    let mut params = params;
+    coerce(spec, &mut params);
     validate(spec, &params)?;
+    // The app's bridge answers a moment before its window is up: a script that just started it
+    // waits for the window rather than being told there is none.
+    if spec.needs_window && !session.has_ui() && !session.headless {
+        let up = tokio::time::Instant::now() + WINDOW_WAIT;
+        while !session.has_ui() && tokio::time::Instant::now() < up {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
     if spec.needs_window && !session.has_ui() {
         return Err(format!(
             "`{}` needs the kimchi window. Start the app and use kimchi-cli without --file, or kimchi-mcp --live.",
@@ -276,6 +299,42 @@ pub fn allowed(session: &Session, source: Source, spec: &Spec) -> CmdResult<()> 
     }
 }
 
+/// Values a model wrote as JSON text where JSON was expected (`"[1, 2]"`, `"{\"a\": 1}"`, an
+/// array of `"0.5"` or of objects as strings) become what they say. Anything else is left for
+/// [`validate`] to explain.
+pub fn coerce(spec: &Spec, params: &mut Value) {
+    let Some(map) = params.as_object_mut() else { return };
+    let parse = |v: &Value, kind: Kind| -> Option<Value> {
+        let text = v.as_str()?.trim();
+        let parsed = match kind {
+            Kind::Number | Kind::Integer => text.parse::<f64>().ok().filter(|f| f.is_finite()).map(Value::from)?,
+            Kind::Boolean => Value::Bool(text.parse().ok()?),
+            Kind::Array | Kind::Object => serde_json::from_str(text).ok()?,
+            Kind::String | Kind::Any => return None,
+        };
+        kind.accepts(&parsed).then_some(parsed)
+    };
+    for p in spec.params {
+        let Some(v) = map.get_mut(p.name) else { continue };
+        if !p.kind.accepts(v)
+            && let Some(fixed) = parse(v, p.kind)
+        {
+            *v = fixed;
+        }
+        // One id or path where a list of them is expected.
+        if p.kind == Kind::Array && p.items == Some(Kind::String) && v.is_string() {
+            *v = Value::Array(vec![v.take()]);
+        }
+        if let (Some(items), Some(list)) = (p.items, v.as_array_mut()) {
+            for item in list.iter_mut().filter(|i| !items.accepts(i)) {
+                if let Some(fixed) = parse(item, items) {
+                    *item = fixed;
+                }
+            }
+        }
+    }
+}
+
 /// Checks parameter names and types against the spec.
 pub fn validate(spec: &Spec, params: &Value) -> CmdResult<()> {
     let map = params.as_object().ok_or("parameters must be an object")?;
@@ -296,6 +355,14 @@ pub fn validate(spec: &Spec, params: &Value) -> CmdResult<()> {
         if !p.kind.accepts(v) {
             let want = p.kind.schema_type().unwrap_or("a value");
             return Err(format!("`{k}` should be {} {want} ({}), got {v}", article(want), p.doc));
+        }
+        if let (Some(items), Some(list)) = (p.items, v.as_array()) {
+            for (i, item) in list.iter().enumerate() {
+                if !items.accepts(item) {
+                    let want = items.schema_type().unwrap_or("a value");
+                    return Err(format!("`{k}[{i}]` should be {} {want} ({}), got {item}", article(want), p.doc));
+                }
+            }
         }
         // Infinity or NaN (from a client's arithmetic) would be written as null and make the
         // project file unreadable.
@@ -438,6 +505,9 @@ pub fn input_schema(spec: &Spec) -> Value {
         if let Some(t) = p.kind.schema_type() {
             s.insert("type".into(), json!(t));
         }
+        if let Some(t) = p.items.and_then(Kind::schema_type) {
+            s.insert("items".into(), json!({ "type": t }));
+        }
         s.insert("description".into(), json!(p.doc));
         props.insert(p.name.into(), Value::Object(s));
     }
@@ -456,6 +526,7 @@ pub fn describe(spec: &Spec) -> Value {
         "params": spec.params.iter().map(|p| json!({
             "name": p.name,
             "type": p.kind.schema_type().unwrap_or("any"),
+            "items": p.items.and_then(Kind::schema_type),
             "required": p.required,
             "description": p.doc,
         })).collect::<Vec<_>>(),
@@ -500,7 +571,10 @@ pub fn markdown() -> String {
                 out.push_str(&format!(
                     "| `{}` | {} | {} | {} |\n",
                     p.name,
-                    p.kind.schema_type().unwrap_or("any"),
+                    match p.items.and_then(Kind::schema_type) {
+                        Some(item) => format!("array of {item}s"),
+                        None => p.kind.schema_type().unwrap_or("any").to_string(),
+                    },
                     if p.required { "required" } else { "" },
                     p.doc.replace('|', "\\|")
                 ));

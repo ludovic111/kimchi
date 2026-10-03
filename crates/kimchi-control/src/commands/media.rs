@@ -59,6 +59,11 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
 
 /// Probes files and adds them to the open project's media. Previews are made in the background.
 pub async fn import(s: &Arc<Session>, cx: &Ctx, paths: &[String]) -> CmdResult<Vec<Asset>> {
+    import_named(s, cx, paths, None).await
+}
+
+/// [`import`], naming the media `name` instead of after their files (a still kimchi made).
+pub async fn import_named(s: &Arc<Session>, cx: &Ctx, paths: &[String], name: Option<&str>) -> CmdResult<Vec<Asset>> {
     let project_id = s.current_id().ok_or(crate::session::NO_PROJECT)?;
     let tools = s.tools()?;
     let mut added = Vec::new();
@@ -76,7 +81,7 @@ pub async fn import(s: &Arc<Session>, cx: &Ctx, paths: &[String]) -> CmdResult<V
         match kimchi_media::probe(&tools, &p).await {
             Ok(probe) => added.push(Asset {
                 id: new_id(),
-                name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone()),
+                name: name.map(str::to_string).or_else(|| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| path.clone()),
                 kind: probe.kind,
                 path: path_str(&p),
                 meta: probe.meta,

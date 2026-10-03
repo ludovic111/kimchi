@@ -521,10 +521,7 @@ impl PreviewView {
                     .items_center()
                     .gap(px(8.))
                     .child(Button::icon("tp-loop", "repeat", tip(if looping { "Loop: on" } else { "Loop: off" }, &act::ToggleLoop)).selected(looping).on_click(move |_, _, cx| {
-                        pb_loop.update(cx, |p, cx| {
-                            p.looping = !p.looping;
-                            cx.notify();
-                        })
+                        pb_loop.update(cx, |p, cx| p.set_looping(!p.looping, cx))
                     }))
                     .child(div().font_family(MONO).text_size(px(sz::XS)).text_color(t.text_3).child(format!("{scale_pct}%"))),
             )

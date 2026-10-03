@@ -55,9 +55,7 @@ impl JobsPopover {
     fn close(&mut self, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| {
             if s.jobs_open {
-                s.jobs_open = false;
-                s.sync_ui(cx);
-                cx.notify();
+                s.set_jobs_open(false, cx);
             }
         });
     }
