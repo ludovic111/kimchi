@@ -596,7 +596,7 @@ impl Editor {
             .absolute()
             .inset_0()
             .child(
-                div().id((id, 1usize)).absolute().inset_0().left(px(offset)).bg(t.scrim.opacity(0.35)).on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                div().id((id, 1usize)).absolute().inset_0().left(px(offset)).bg(t.scrim.opacity(0.6)).on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                     this.close_drawers(cx);
                 })),
             )

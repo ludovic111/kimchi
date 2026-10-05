@@ -52,6 +52,8 @@ pub struct SettingsDialog {
     store: Entity<Store>,
     section: Section,
     open: bool,
+    /// The section the dialog was last asked for (`Dialog::Settings { section }`).
+    asked: Option<String>,
 
     // Models & keys: the fields show the provider they were loaded for.
     key: Entity<TextInput>,
@@ -92,14 +94,17 @@ impl SettingsDialog {
         let mut subs = vec![cx.observe_in(&store, window, |this: &mut Self, store, _, cx| {
             let dialog = store.read(cx).dialog.clone();
             let open = matches!(dialog, Some(Dialog::Settings { .. }));
-            if open && !this.open {
-                let section = match &dialog {
-                    Some(Dialog::Settings { section }) => Section::parse(section.as_deref()),
-                    _ => None,
-                };
+            let asked = match &dialog {
+                Some(Dialog::Settings { section }) => section.clone(),
+                _ => None,
+            };
+            // Opening, or asked for another section while open (`ui.showPanel` with a section).
+            if open && (!this.open || (asked.is_some() && asked != this.asked)) {
+                let section = Section::parse(asked.as_deref());
                 this.show(section.unwrap_or_else(|| this.section.clone()), cx);
             }
             this.open = open;
+            this.asked = if open { asked } else { None };
             let settings = store.read(cx).settings.clone();
             this.agent.sync(&settings, cx);
             cx.notify();
@@ -120,6 +125,7 @@ impl SettingsDialog {
             store,
             section: Section::Provider(String::new()),
             open: false,
+            asked: None,
             key,
             base,
             option,
