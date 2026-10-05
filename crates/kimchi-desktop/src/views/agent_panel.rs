@@ -257,6 +257,7 @@ impl AgentPanel {
                 let mut item = MenuItem::new(kind.label(), move |_, cx| {
                     cx.store().update(cx, |s, cx| s.run("app.setSetting", json!({ "key": "agent.provider", "value": kind.id() }), cx));
                 })
+.logo(kind.id())
                 .shortcut(match ready {
                     Some(true) => "ready",
                     Some(false) => "set up",
@@ -321,6 +322,7 @@ impl AgentPanel {
                     .tooltip(|_, cx| crate::ui::tooltip("Which model runs the agent".into(), cx))
                     .on_click(cx.listener(|this, e: &gpui::ClickEvent, _, cx| this.provider_menu(e.position(), cx)))
                     .child(div().flex_none().size(px(7.)).rounded_full().bg(dot))
+                    .child(crate::ui::logo(kind.id(), px(14.)))
                     .child(div().truncate().child(kind.label()))
                     .child(icon("chevron-down").size(px(12.))),
             )
@@ -388,7 +390,7 @@ impl AgentPanel {
             .bg(t.bg_sunken.opacity(0.7))
             .border_1()
             .border_color(t.line)
-            .child(icon("terminal").size(px(12.)).text_color(t.text_2))
+            .child(crate::ui::logo(client, px(14.)))
             .child(div().flex_1().min_w_0().truncate().font_family(MONO).text_size(px(10.5)).child(line))
             .child(Button::icon(("mcp-copy", i), "copy", "Copy").on_click(move |_, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));

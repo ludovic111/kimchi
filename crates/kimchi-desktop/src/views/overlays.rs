@@ -5,7 +5,7 @@ use kimchi_control::ToastKind;
 
 use crate::store::{ContextMenu, MenuEntry, StoreExt, Toast};
 use crate::theme::{ActiveTheme, size as sz};
-use crate::ui::{GlassExt, icon, kbd, motion};
+use crate::ui::{GlassExt, icon, kbd, logo, motion};
 
 pub fn context_menu(menu: ContextMenu, cx: &App) -> AnyElement {
     let t = cx.theme().clone();
@@ -37,6 +37,7 @@ pub fn context_menu(menu: ContextMenu, cx: &App) -> AnyElement {
                     })
                 })
                 .child(div().w(px(14.)).when_some(item.icon, |d, i| d.child(icon(i).text_color(color))))
+                .when_some(item.logo, |d, id| d.child(logo(id, px(16.))))
                 .child(div().flex_1().child(item.label))
                 .when_some(item.shortcut, |d, s| d.child(kbd(s, cx)))
                 .into_any_element()

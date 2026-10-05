@@ -148,7 +148,15 @@ impl JobsPopover {
                     .flex_1()
                     .min_w_0()
                     .child(div().truncate().text_size(px(12.5)).child(if j.request.prompt.is_empty() { "Untitled".to_string() } else { j.request.prompt.clone() }))
-                    .child(div().mt(px(1.)).truncate().text_size(px(sz::XS)).text_color(t.text_2).child(sub.join(" · ")))
+                    .child(
+                        div()
+                            .mt(px(1.))
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .child(crate::ui::logo(&j.provider, px(12.)))
+                            .child(div().flex_1().min_w_0().truncate().text_size(px(sz::XS)).text_color(t.text_2).child(sub.join(" · "))),
+                    )
                     .children(progress)
                     .when_some(j.error.clone().filter(|_| !active), |d, e| d.child(div().mt(px(3.)).text_size(px(sz::XS)).text_color(t.danger).child(e))),
             )

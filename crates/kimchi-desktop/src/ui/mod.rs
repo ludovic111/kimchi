@@ -3,6 +3,7 @@
 
 pub mod drag;
 pub mod input;
+pub mod logos;
 pub mod markdown;
 pub mod scrub;
 
@@ -15,6 +16,8 @@ use gpui::{
 
 use crate::assets::icon_path;
 use crate::theme::{ActiveTheme, Glass, MONO, size as sz};
+
+pub use logos::logo;
 
 pub type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 

@@ -1,4 +1,5 @@
-//! Bundled assets: lucide icons (ISC, `assets/icons/LICENSE.lucide.txt`) and the fonts.
+//! Bundled assets: lucide icons (ISC, `assets/icons/LICENSE.lucide.txt`), the logos of the
+//! services kimchi works with (`assets/logos/SOURCES.md`) and the fonts.
 
 use std::borrow::Cow;
 
@@ -8,6 +9,7 @@ use rust_embed::RustEmbed;
 #[derive(RustEmbed)]
 #[folder = "assets"]
 #[include = "icons/*.svg"]
+#[include = "logos/*.png"]
 pub struct Assets;
 
 impl AssetSource for Assets {
