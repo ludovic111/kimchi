@@ -71,7 +71,13 @@ else
   stamp=(--timestamp)
 fi
 sign() { # path identifier
-  codesign --force --options runtime "${stamp[@]}" --entitlements "$resources/kimchi.entitlements" \
+  local entitlements=()
+  # Only kimchi and its CLI/MCP host audio plugins; bundled FFmpeg needs no exceptions.
+  case "$2" in
+    app.kimchi.editor|app.kimchi.editor.cli|app.kimchi.editor.mcp)
+      entitlements=(--entitlements "$resources/kimchi.entitlements") ;;
+  esac
+  codesign --force --options runtime "${stamp[@]}" ${entitlements[@]+"${entitlements[@]}"} \
     --identifier "$2" --sign "$identity" "$1"
 }
 sign "$app/Contents/MacOS/kimchi-ffmpeg" app.kimchi.editor.ffmpeg

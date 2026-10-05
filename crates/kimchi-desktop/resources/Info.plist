@@ -24,6 +24,7 @@
   <key>NSRequiresAquaSystemAppearance</key><false/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSHumanReadableCopyright</key><string>MIT licence. Part of lsuite.</string>
+  <key>NSMicrophoneUsageDescription</key><string>kimchi records voice-over takes onto your timeline. Recordings stay on your computer.</string>
   <key>NSDesktopFolderUsageDescription</key><string>kimchi opens and saves media and projects you choose on your Desktop.</string>
   <key>NSDocumentsFolderUsageDescription</key><string>kimchi opens and saves media and projects you choose in Documents.</string>
   <key>NSDownloadsFolderUsageDescription</key><string>kimchi opens media you choose in Downloads.</string>
