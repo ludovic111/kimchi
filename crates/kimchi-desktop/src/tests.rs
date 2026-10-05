@@ -413,7 +413,7 @@ fn bounds_of(cx: &mut VisualTestContext, name: &'static str) -> Option<gpui::Bou
     cx.debug_bounds(name)
 }
 
-fn resize(cx: &mut VisualTestContext, w: f32, h: f32) {
+pub(crate) fn resize(cx: &mut VisualTestContext, w: f32, h: f32) {
     cx.simulate_resize(gpui::size(gpui::px(w), gpui::px(h)));
     cx.run_until_parked();
     // A second frame: the editor lays out from the size the first one measured.

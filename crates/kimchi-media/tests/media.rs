@@ -367,13 +367,14 @@ async fn cancels_and_reports_errors() {
     assert!(!Path::new(&st.path).exists());
     assert!(!fx.root.join(".cancelled.mp4.part").exists());
 
-    // A corrupt source: the error carries ffmpeg's explanation, not just an exit code.
+    // A corrupt source: either the shared audio mixer or the picture decoder can discover
+    // it first. Both must retain ffmpeg's explanation, not just an exit code.
     let mut broken = project.clone();
     std::fs::write(&fx.silent, b"definitely not a video").unwrap();
     broken.assets[0].path = fx.silent.to_string_lossy().into();
     let st = settings(&fx, "broken.mp4", ExportFormat::Mp4);
     match export(&tools, &broken, &st, |_| {}, CancellationToken::new()).await {
-        Err(MediaError::Ffmpeg(msg)) => {
+        Err(MediaError::Ffmpeg(msg) | MediaError::Unsupported(msg)) => {
             eprintln!("ffmpeg error: {msg}");
             assert!(msg.contains("silent.mp4") && msg.contains("Invalid data"), "{msg}");
             assert!(!msg.contains("Conversion failed"), "{msg}");
@@ -683,7 +684,7 @@ async fn hundreds_of_cuts_from_one_recording_export() {
     // ffmpeg only reads the mix: one input, however many cuts.
     let plan = kimchi_media::export::build(&p, &st, &kimchi_media::Caps::new(7, ["pcm_s24le"])).unwrap();
     assert_eq!(plan.inputs.iter().filter(|a| *a == "-i").count(), 1);
-    assert_eq!(plan.sources, [rec.clone()]);
+    assert_eq!(plan.sources.as_slice(), std::slice::from_ref(&rec));
 }
 
 #[tokio::test]

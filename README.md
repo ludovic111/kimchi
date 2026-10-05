@@ -38,6 +38,18 @@ rewritten from the ground up in Rust.
 - Snapshot undo/redo for every edit, autosave
 - Export to MP4 (H.264), HEVC, ProRes, WebM, GIF or audio-only
 
+**Sound and Ryolune**
+- A Rust mixer shared by playback, exports and speech transcription: clip and track gain/pan, editable fade shapes, buses, sends, automation, ducking, meters and a master true-peak limiter
+- Ryolune's stock effects and plugin host, with searchable effect lists and parameter panels; CLAP, VST3, native plugins and Audio Units on macOS, subject to the plugin and platform
+- Loudness measurement and normalization, beat detection, beat snapping and cuts on music beats
+- Voice-over recording with a count-in; finish a take to place it on an audio track, with undo
+- Import `.ryolune` songs as mixes or stems, refresh after changes, and send an editable multitrack audio session back to Ryolune
+- WAV (16/24-bit or float), AIFF, FLAC, MP3, AAC, Opus and Ogg exports, with sample rate, bitrate, stems and loudness options
+
+**A window that fits**
+- Side panels become drawers on small windows; dialogs and popovers fit the available space, and inspector sections fold
+- Real provider and app logos in menus, settings and generation results
+
 **Animation, motion graphics and 3D** (drawn by kimchi, the same in the preview and the export)
 - **Keyframes on any clip**: position, scale, rotation, opacity, blur, volume, text size and colour, with easings (ease, back, elastic, bounce, cubic-bezier, spring). Toggle a keyframe per property at the playhead in the inspector, or drag on the canvas
 - **Presets**: fade, rise, slide, pop, zoom, focus in and out; Ken Burns, pan, pulse, float, shake, spin
@@ -46,6 +58,7 @@ rewritten from the ground up in Rust.
 - **Two render engines**: a fast GPU engine (Metal on Macs, Apple Silicon included; Vulkan or DirectX 12 elsewhere; on the CPU otherwise) and a path tracer for real reflections, refraction through glass, soft light and bounced light
 - **Expressions** on any property: `wiggle(2, 30)`, `loopOut("pingpong")`, `time * 90`, `prop("ball", "x") + 100`, staggering by `index`
 - **The Studio**: a workspace for a motion clip with an outliner, a 3D viewport (orbit, move / rotate / scale handles, edit mode) or a 2D canvas (handles, pen tool), the properties of what's selected (modifiers, effects, materials, expressions, world and render settings), a dope sheet and a graph editor
+- **Camera navigation**: drag the visible orbit, pan and zoom controls, use the axis ball, or fly with WASD/QE. The Camera menu can lock the scene camera to your view, align it, add cameras and apply editable camera moves. The 2D canvas has visible pan, zoom and fit controls.
 - **Render now or at export**: a motion clip is drawn live (quick in the preview, full quality in the export), or rendered ahead into a file the timeline plays smoothly; edit the scene and it goes back to live until you render it again
 - **Templates**: lower third, title card, kinetic type, counter, bar chart, logo reveal, callout, quote, subscribe button, aurora background, wipe transition, glitch title, particle burst, kinetic sweep, radial burst, liquid background, 3D title, 3D logo spin, turntable, floating shapes, product shot, extruded logo, particle field, morphing blob; change their words and colours in the inspector
 - **Ask the agent**: it writes the scene (`motion.guide` explains every feature), models meshes, then looks at the frames it made from any angle

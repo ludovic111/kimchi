@@ -67,7 +67,7 @@ fn setup(cx: &mut TestAppContext) -> (Fixture, Entity<Timeline>, &mut VisualTest
 }
 
 fn lanes(view: &Entity<Timeline>, cx: &mut VisualTestContext) -> Bounds<Pixels> {
-    cx.update(|_, cx| view.read(cx).lanes.get())
+    cx.update(|_, cx| view.read(cx).body.read(cx).lanes.get())
 }
 
 fn drag(cx: &mut VisualTestContext, from: gpui::Point<Pixels>, to: gpui::Point<Pixels>, modifiers: Modifiers) {

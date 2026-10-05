@@ -80,7 +80,7 @@ pub fn apply(s: &mut Scene3d, m: &CameraMove) -> Result<String, String> {
         return Err(format!("No camera \"{id}\". Cameras: {}.", ids.join(", ")));
     };
     let (from, to) = (m.from.max(0.0), m.to);
-    if !matches!(m.kind, Move::Handheld { .. } | Move::Clear) && !(to > from + 1e-3) {
+    if !matches!(m.kind, Move::Handheld { .. } | Move::Clear) && to.partial_cmp(&(from + 1e-3)) != Some(std::cmp::Ordering::Greater) {
         return Err(format!("The move needs to end after it starts (from {from} s, to {to} s)."));
     }
     // What it films at the start (constraints and expressions applied), and its own keyframed
@@ -91,7 +91,7 @@ pub fn apply(s: &mut Scene3d, m: &CameraMove) -> Result<String, String> {
     let dist = len(sub(look, eye)).max(1e-3);
     let fwd = norm(sub(look, eye));
     let right = horizontal_right(fwd);
-    let ease = |default: Easing| m.easing.clone().unwrap_or(default);
+    let ease = |default: Easing| m.easing.unwrap_or(default);
     let in_out = Easing::parse("easeInOut").unwrap_or_default();
     let summary;
     match &m.kind {
@@ -120,7 +120,7 @@ pub fn apply(s: &mut Scene3d, m: &CameraMove) -> Result<String, String> {
             drop_moves(cam, &[ORBIT, FLY]);
             add_constraint(cam, ORBIT, "followPath", json!({ "path": curve, "align": false, "progress": 0 }));
             let turns = degrees.abs() / 360.0;
-            let easing = ease(if (degrees.abs() - 360.0).abs() < 1e-9 { Easing::Linear } else { in_out.clone() });
+            let easing = ease(if (degrees.abs() - 360.0).abs() < 1e-9 { Easing::Linear } else { in_out });
             keys(cam, &format!("constraints.{ORBIT}.progress"), from, KeyValue::Number(0.0), to, KeyValue::Number(round(turns)), easing);
             aim_at(cam, aim.as_deref(), c, from, to);
             summary = format!(
@@ -136,7 +136,7 @@ pub fn apply(s: &mut Scene3d, m: &CameraMove) -> Result<String, String> {
             let cam = camera_mut(s, &id);
             drop_moves(cam, &[ORBIT, FLY]);
             let p = keyed.position.0;
-            keys(cam, "position", from, vec3(p), to, vec3(add(p, scale(fwd, d))), ease(in_out.clone()));
+            keys(cam, "position", from, vec3(p), to, vec3(add(p, scale(fwd, d))), ease(in_out));
             summary = format!("The camera moves {} {:.2} along its view from {from} s to {to} s (position keyframes).", if d >= 0.0 { "in" } else { "out" }, d.abs());
         }
         Move::Truck { distance } => {
@@ -145,8 +145,8 @@ pub fn apply(s: &mut Scene3d, m: &CameraMove) -> Result<String, String> {
             drop_moves(cam, &[ORBIT, FLY]);
             let (p, q) = (keyed.position.0, keyed.target.0);
             let off = scale(right, d);
-            let e = ease(in_out.clone());
-            keys(cam, "position", from, vec3(p), to, vec3(add(p, off)), e.clone());
+            let e = ease(in_out);
+            keys(cam, "position", from, vec3(p), to, vec3(add(p, off)), e);
             keys(cam, "target", from, vec3(q), to, vec3(add(q, off)), e);
             summary = format!("The camera slides {:.2} to the {} from {from} s to {to} s (position and target keyframes).", d.abs(), if d >= 0.0 { "right" } else { "left" });
         }
@@ -155,12 +155,12 @@ pub fn apply(s: &mut Scene3d, m: &CameraMove) -> Result<String, String> {
             let cam = camera_mut(s, &id);
             drop_moves(cam, &[ORBIT, FLY]);
             let p = keyed.position.0;
-            keys(cam, "position", from, vec3(p), to, vec3(add(p, [0.0, d, 0.0])), ease(in_out.clone()));
+            keys(cam, "position", from, vec3(p), to, vec3(add(p, [0.0, d, 0.0])), ease(in_out));
             summary = format!("The camera rises {:.2} from {from} s to {to} s, still looking at the same point (position keyframes).", d);
         }
         Move::Zoom { amount } => {
             let cam = camera_mut(s, &id);
-            let e = ease(in_out.clone());
+            let e = ease(in_out);
             if keyed.orthographic() {
                 let k = ((keyed.fov + amount) / keyed.fov.max(1.0)).clamp(0.05, 20.0);
                 keys(cam, "orthoSize", from, KeyValue::Number(keyed.ortho_size), to, KeyValue::Number(round(keyed.ortho_size * k)), e);
@@ -213,7 +213,7 @@ pub fn apply(s: &mut Scene3d, m: &CameraMove) -> Result<String, String> {
             let cam = camera_mut(s, &id);
             drop_moves(cam, &[ORBIT, FLY, AIM]);
             add_constraint(cam, FLY, "followPath", json!({ "path": curve, "align": look_at.is_none() && !sweep, "progress": 0 }));
-            keys(cam, &format!("constraints.{FLY}.progress"), from, KeyValue::Number(0.0), to, KeyValue::Number(1.0), ease(in_out.clone()));
+            keys(cam, &format!("constraints.{FLY}.progress"), from, KeyValue::Number(0.0), to, KeyValue::Number(1.0), ease(in_out));
             if let Some(o) = look_at {
                 add_constraint(cam, AIM, "lookAt", json!({ "target": o }));
             } else if sweep {
@@ -301,7 +301,7 @@ fn keys(cam: &mut Camera, name: &str, from: f64, a: KeyValue, to: f64, b: KeyVal
     if let Some(list) = cam.keyframes.get_mut(name) {
         list.retain(|k| k.time < from - 1e-6 || k.time > to + 1e-6);
     }
-    let first_easing = cam.keyframes.get(name).and_then(|l| l.iter().find(|k| (k.time - from).abs() < 1e-6)).map(|k| k.easing.clone()).unwrap_or_default();
+    let first_easing = cam.keyframes.get(name).and_then(|l| l.iter().find(|k| (k.time - from).abs() < 1e-6)).map(|k| k.easing).unwrap_or_default();
     set_key(&mut cam.keyframes, name, Keyframe { time: from, value: a, easing: first_easing });
     set_key(&mut cam.keyframes, name, Keyframe { time: to, value: b, easing });
     normalize(&mut cam.keyframes);

@@ -37,11 +37,10 @@ pub struct Timeline {
     store: Entity<Store>,
     playback: Entity<Playback>,
     body: Entity<TimelineBody>,
-    /// The lanes area, shared with the body, which measures it.
-    lanes: Rc<Cell<Bounds<Pixels>>>,
     /// The zoom slider's track, as last drawn, and whether it is being dragged.
     slider: Rc<Cell<Bounds<Pixels>>>,
     sliding: bool,
+    width: f32,
     /// The mixer (in the tracks' place or beside them), the effect browser and an effect's panel.
     pub mixer: Entity<crate::views::mixer::MixerView>,
     pub browser: Entity<crate::views::mixer::browser::EffectBrowser>,
@@ -54,7 +53,6 @@ impl Timeline {
         let store = cx.store();
         let playback = store.read(cx).playback.clone();
         let body = cx.new(|cx| TimelineBody::new(window, cx));
-        let lanes = body.read(cx).lanes.clone();
         let subs = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe(&playback, |_, _, cx| {
@@ -66,7 +64,7 @@ impl Timeline {
         let mixer = cx.new(|cx| crate::views::mixer::MixerView::new(window, cx));
         let browser = cx.new(|cx| crate::views::mixer::browser::EffectBrowser::new(window, cx));
         let effect = cx.new(|cx| crate::views::mixer::effect_panel::EffectPanel::new(window, cx));
-        Self { store, playback, body, lanes, slider: Rc::new(Cell::new(Bounds::default())), sliding: false, mixer, browser, effect, _subs: subs }
+        Self { store, playback, body, slider: Rc::new(Cell::new(Bounds::default())), sliding: false, width: 0., mixer, browser, effect, _subs: subs }
     }
 
     /// Width of the track area (the lanes, without the headers), as last drawn: for zoom to fit.
@@ -116,8 +114,8 @@ impl Timeline {
         let (has_sel, snapping, ripple) = (!s.selection.is_empty(), s.snapping, s.ripple);
         let sep = || div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.line_strong);
         // Narrow timelines (agent panel open, small window) drop the least needed parts first.
-        let width = f32::from(self.lanes.get().size.width) + HEADER_W;
-        let (compact, narrow, tiny) = (width < 860., width < 720., width < 620.);
+        let width = self.width;
+        let (compact, narrow, tiny) = (width < 1100., width < 960., width < 820.);
         // The transport lives under the preview; the timeline keeps the time, where the eye is.
         let shuttle = self.playback.read(cx).shuttle;
         let clock = div()
@@ -268,11 +266,19 @@ impl Render for Timeline {
             let (scroll_y, view_h) = (b.scroll_y, f32::from(b.lanes.get().size.height));
             self.store.read(cx).project.clone().map(|p| div().absolute().top(px(RULER_H)).left_0().bottom_0().w(px(HEADER_W)).child(body::header_meters(&p, scroll_y, view_h, cx)))
         };
+        let measured = self.width;
+        let this = cx.entity().downgrade();
         div()
             .size_full()
             .relative()
             .flex()
             .flex_col()
+            .child(canvas(move |b, _, cx| {
+                let width = f32::from(b.size.width);
+                if (width - measured).abs() > 0.5 {
+                    cx.defer(move |cx| { let _ = this.update(cx, |t, cx| { t.width = width; cx.notify(); }); });
+                }
+            }, |_, _, _, _| {}).absolute().inset_0())
             .child(toolbar)
             .child(div().flex_1().min_h_0().w_full().child(crate::views::mixer::area(
                 div().relative().size_full().child(self.body.clone().cached(StyleRefinement::default().size_full())).child(playhead).children(meters).into_any_element(),

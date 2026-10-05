@@ -197,6 +197,7 @@ fn tempo_of(project: &Project) -> (f64, u32) {
 
 /// An automation lane from `keys[name]` at timeline times, its values through `map`, sampled
 /// finely where the keyframes ease (ryolune's lanes are straight lines between points).
+#[allow(clippy::too_many_arguments)]
 fn lane(id: String, name: String, target: AutomationTarget, keys: &Keyframes, key: &str, beat: impl Fn(f64) -> f64, (min, max): (f64, f64), map: impl Fn(f64) -> f64) -> Option<AutomationLane> {
     let list = keys.get(key).filter(|l| !l.is_empty())?;
     let mut times: Vec<f64> = vec![];
@@ -355,7 +356,7 @@ pub fn session(project: &Project, sounds: &SessionSounds) -> Result<(Session, Li
     }
     s.strips.insert(model::MASTER.into(), model::Strip { inserts, ..Default::default() });
     s.master_volume = fader_position(master.gain_db);
-    if let Some(l) = lane("kimchi-master-volume".into(), "Stereo Out volume".into(), AutomationTarget::MasterVolume, &master.keyframes, "gainDb", &beat, (0.0, 1.0), |db| fader_position(db) as f64) {
+    if let Some(l) = lane("kimchi-master-volume".into(), "Stereo Out volume".into(), AutomationTarget::MasterVolume, &master.keyframes, "gainDb", beat, (0.0, 1.0), |db| fader_position(db) as f64) {
         lanes.push(l);
     }
     add_plugin_lanes(&mut lanes, model::MASTER, &master.keyframes, &master.effects, &beat);

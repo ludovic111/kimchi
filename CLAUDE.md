@@ -8,6 +8,7 @@ and every action goes through one command registry. See README.md.
 crates/kimchi-core      project model, edits, undo history (labels, sources, batches, checkpoints),
                         keyframes/easings (anim.rs), motion scenes 2D+3D (motion.rs), presets, templates,
                         clip effects and looks (effects.rs), transitions (transition.rs)
+crates/kimchi-audio     Rust mixer, loudness, beats, devices/recording, Ryolune effects/plugins/songs
 crates/kimchi-media     ffmpeg probe/decode/encode; the compositor (render/: clips, flat.rs 2D motion,
                         space/ 3D on wgpu or the CPU rasteriser, grade.rs colour/key/LUT, mix.rs
                         transitions, source.rs decoders incl. reverse), export, preview, speech mix
@@ -157,14 +158,37 @@ renders, `Event::Render`). Window: `views/studio/` (`ui.studio`).
 - [ ] 3D on Metal (Apple Silicon) and DirectX 12: the new shaders (spot/area lights, environment mips, shadow array)
       were checked on llvmpipe/Vulkan only.
 - [ ] Path tracer: CPU only (about 30 s for 960×540 at 64 samples on 4 cores); a GPU path tracer would be the next step.
-      Point lights cast no shadows in the standard engine (no cube maps); area lights are a representative point there.
+      The standard engine now supports point-light cube shadows; area lights remain a representative point there.
 - [ ] Not done: sculpting, rigging/armatures, physics, 2D puppet/mesh warp, 3D layers in 2D, extruding a picture's
       outline, audio-driven expressions.
 
+## Responsive UI, camera navigation and audio (0.8.0)
+
+All sound for preview, export, scrub and transcription comes from `kimchi-audio::mixer::Mixer`.
+FFmpeg decodes individual sources and encodes the mix; Ryolune's pinned engine supplies the stock
+and external effects, song rendering and `.ryolune` document format. Core audio settings are in
+`kimchi-core/src/audio.rs`; commands in `commands/audio.rs`; the window's mixer, effects, recorder
+and export options in `views/mixer/`; clip controls in `views/inspector/audio.rs`. `recording.rs`
+connects the microphone recorder to count-in, placement and undo. Imported media intentionally
+stays in the media library after undoing its placement, as other imports do.
+
+Editor layout is solved in `ui/layout.rs`. Studio panels become drawers in narrow windows, and
+its toolbar wraps. The navigation gizmo provides orbit, pan and zoom drags; the Camera menu
+controls the scene camera and editable move presets (`motion.cameraMove`). `ui.studio` exposes
+navigation and the narrow-window drawers. Headless window tests must pump GPUI for window
+commands such as `timeline.seek`; calling them through a blocking fixture call deadlocks.
+
+Renderer work includes parallel row compositing, cached colour/noise calculations, faster large
+blurs, GPU buffer reuse, path-tracer improvements and point-light cube shadows (up to two point
+lights). Both CPU and GPU implementations must remain in agreement. Use the `render_bench`
+example and `docs/PERFORMANCE.md` for measurements; don't infer hardware GPU performance from
+llvmpipe. Live recording, placement and undo were checked against the virtual audio device;
+a 48 kHz mono WAV completed with no dropped samples. Physical microphones/speakers, macOS
+Audio Units/Metal and Windows devices still need checks on those systems.
+
 ## Next session
 
-kimchi 0.7.0 (2026-10-04): Blender-like 3D (modelling, modifiers, path tracer), After Effects-like 2D,
-expressions, the Studio, motion clips rendered ahead, `agent.*` / `ui.action` parity; 164 commands.
+0.8.0 is prepared on the update branch; publication is separate from local integration.
 
 - [ ] A pass with real mouse input in the running app: clicks, drags and typing are covered by GPUI
       UI tests and the app was driven through `kimchi-cli`, but nobody has used the window by hand yet.

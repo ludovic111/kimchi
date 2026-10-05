@@ -298,7 +298,7 @@ impl Editor {
                 self.prefs.timeline = layout::timeline_share(h, s.window.1);
             }
             Splitter::Agent => {
-                let max = (s.window.0 - layout::EDITOR_MIN_BESIDE_AGENT).min(layout::AGENT_MAX).max(layout::AGENT_MIN);
+                let max = (s.window.0 - layout::EDITOR_MIN_BESIDE_AGENT).clamp(layout::AGENT_MIN, layout::AGENT_MAX);
                 self.prefs.agent = (value - delta).clamp(layout::AGENT_MIN, max);
             }
         }
@@ -697,7 +697,7 @@ impl Render for Editor {
                     div().relative().w(px(w)).flex_none().h_full().debug_selector(|| "agent".into()).child(self.agent.clone().cached(full())),
                     "agent-in",
                     motion::BASE,
-                    (24., 0.),
+                    (0., 0.),
                 ))
             })
             // Panels the window is too narrow to dock, over the work.

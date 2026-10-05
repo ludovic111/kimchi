@@ -15,6 +15,7 @@ pub mod browser;
 pub mod effect_panel;
 pub mod export;
 pub mod live;
+pub mod recording;
 pub mod scrub;
 #[cfg(test)]
 mod tests;
@@ -157,7 +158,7 @@ pub fn ui_command(command: &str, params: Value, cx: &mut App) -> kimchi_control:
             Ok(live::meters_json(cx, playhead, playing))
         }
         "audio.devices" => Ok(devices_json(&store.read(cx).settings)),
-        "audio.record" => record_command(&params, cx),
+        "audio.record" => recording::command(&params, cx),
         "audio.showMixer" => {
             if store.read(cx).project.is_none() {
                 return Err(kimchi_control::session::NO_PROJECT.into());
@@ -207,18 +208,6 @@ pub fn devices_json(settings: &kimchi_control::Settings) -> Value {
         "input": if settings.audio.input_device.is_empty() { Value::Null } else { json!(settings.audio.input_device) },
         "devices": { "outputs": outputs, "inputs": inputs },
     })
-}
-
-fn record_command(params: &Value, cx: &mut App) -> kimchi_control::CmdResult {
-    let store = cx.store();
-    let action = params["action"].as_str().unwrap_or("status");
-    match action {
-        "status" => {
-            let s = store.read(cx);
-            Ok(json!({ "recording": s.audio.to_json(s.project.as_deref())["recording"] }))
-        }
-        _ => Err("Recording voice-overs isn't available in this build yet: kimchi's recorder (kimchi_audio::record) hasn't landed.".into()),
-    }
 }
 
 // ---- the view ---------------------------------------------------------------------------------
@@ -911,14 +900,14 @@ impl MixerView {
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(5.))
+            .gap(px(if detail == Detail::Small { 3. } else { 5. }))
             .px(px(5.))
-            .py(px(6.))
+            .py(px(if detail == Detail::Small { 4. } else { 6. }))
             .rounded(px(sz::R_SM))
             .bg(t.bg_raised)
             .border_1()
             .border_color(if selected { t.accent } else { t.line })
-            .overflow_hidden()
+            .overflow_y_scroll()
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| this.select(target, cx)))
             .on_mouse_down(MouseButton::Right, cx.listener(move |this, e: &MouseDownEvent, _, cx| this.strip_menu(&st, e.position, cx)))
             .child(header)
@@ -1257,8 +1246,9 @@ impl MixerView {
             .p(px(5.))
             .rounded(px(sz::R_XS))
             .bg(t.bg_sunken)
-            .child(row("M", lufs(snap.as_ref().map(|s| s.momentary_lufs)), "Momentary loudness (400 ms), LUFS"))
-            .child(row("S", lufs(snap.as_ref().map(|s| s.short_term_lufs)), "Short-term loudness (3 s), LUFS"))
+            .when(detail != Detail::Small, |d| d
+                .child(row("M", lufs(snap.as_ref().map(|s| s.momentary_lufs)), "Momentary loudness (400 ms), LUFS"))
+                .child(row("S", lufs(snap.as_ref().map(|s| s.short_term_lufs)), "Short-term loudness (3 s), LUFS")))
             .child(row("I", lufs(integrated), "Integrated loudness of the last play, LUFS"))
             .when(detail != Detail::Small, |d| {
                 d.child(

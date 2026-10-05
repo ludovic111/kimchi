@@ -241,6 +241,7 @@ pub struct Store {
     pub studio: Option<Value>,
     /// The audio views: the mixer, the selected strip, the effect panel and browser, recording.
     pub audio: crate::views::mixer::AudioView,
+    pub recorder: crate::views::mixer::recording::Recorder,
     next_toast: u64,
     _pump: Task<()>,
 }
@@ -316,6 +317,7 @@ impl Store {
             clipboard: Clipboard::default(),
             studio: None,
             audio: Default::default(),
+            recorder: Default::default(),
             next_toast: 1,
             _pump: pump,
         };
@@ -389,6 +391,7 @@ impl Store {
                 self.refresh_project();
                 self.library = self.session.library.list();
                 self.playback.update(cx, |p, cx| p.reset(cx));
+                crate::views::mixer::recording::project_switched(self, cx);
                 self.audio.forget_project();
                 crate::views::mixer::refresh_songs(self, cx);
             }

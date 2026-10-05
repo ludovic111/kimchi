@@ -582,9 +582,11 @@ fn grid_step(wavelength: f32) -> usize {
 /// every pixel when `step` is 1, else at grid nodes `step` pixels apart (in parallel) and read
 /// back with Catmull-Rom interpolation. Noise that changes over tens of pixels then costs a few
 /// percent of evaluating it everywhere.
+type DirectNoise<'f, const N: usize> = Box<dyn Fn(f32, f32) -> [f32; N] + Sync + 'f>;
+
 struct Field<'f, const N: usize> {
     /// The function itself, when the grid would be every pixel.
-    direct: Option<Box<dyn Fn(f32, f32) -> [f32; N] + Sync + 'f>>,
+    direct: Option<DirectNoise<'f, N>>,
     /// Pixel position of node (0, 0).
     x0: f32,
     y0: f32,

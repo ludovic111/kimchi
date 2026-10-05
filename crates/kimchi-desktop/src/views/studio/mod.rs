@@ -258,6 +258,8 @@ pub struct Studio {
     /// Navigating while looking through the camera moves the scene's camera (Blender's "Lock
     /// camera to view"): one undo step per gesture, a keyframe at the playhead when it is animated.
     pub lock_camera: bool,
+    /// Side panel shown over the viewport when the window is narrow.
+    pub drawer: Option<bool>,
     /// A smooth move of the editor camera in progress: where it ends, and whether it then looks
     /// through the scene's camera.
     view_goal: Option<(ViewCamera, bool)>,
@@ -331,6 +333,7 @@ impl Studio {
             through_camera: false,
             view: ViewCamera::default(),
             lock_camera: false,
+            drawer: None,
             view_goal: None,
             _view_anim: None,
             lock: None,
@@ -506,6 +509,16 @@ impl Studio {
         self.store.update(cx, |s, cx| s.set_studio_state(state, cx));
     }
 
+    /// The Studio shares the editor row with a docked Agent panel.
+    pub(super) fn available_width(&self, window: &Window, cx: &App) -> f32 {
+        let store = self.store.read(cx);
+        let layout = store.session.ui_state().layout;
+        let agent = if store.agent_open && !layout.overlays.iter().any(|p| p == "agent") {
+            layout.agent + crate::ui::layout::SPLITTER_W
+        } else { 0.0 };
+        (f32::from(window.viewport_size().width) - agent).max(1.0)
+    }
+
     /// What `ui.studio` answers.
     pub fn state_json(&self, cx: &App) -> Value {
         let Some(id) = self.clip else { return json!({ "open": false }) };
@@ -515,6 +528,7 @@ impl Studio {
             "clipId": id,
             "clipName": name,
             "kind": kind,
+            "panel": self.drawer.map(|right| if right { "properties" } else { "objects" }),
             "selection": self.selection,
             "active": self.active(),
             "mode": if self.mode == Mode::Edit { "edit" } else { "object" },
@@ -566,6 +580,12 @@ impl Studio {
                 Ok(self.state_json(cx))
             } else {
                 Err("The Studio isn't open. Open a motion clip first: ui.studio {\"clipId\": …}.".into())
+            };
+        }
+        if let Some(panel) = params.get("panel") {
+            self.drawer = match panel.as_str() {
+                Some("objects") => Some(false), Some("properties") => Some(true), Some("none") => None,
+                _ => return Err("panel must be objects, properties or none".into()),
             };
         }
         let (_, scene) = self.clip_scene(cx).ok_or("The clip is gone.")?;
@@ -1868,6 +1888,14 @@ impl Render for Studio {
         if self.clip.is_none() {
             return div().into_any_element();
         }
+        let width = self.available_width(window, cx);
+        let height = f32::from(window.viewport_size().height);
+        let dock_left = width >= 1200.;
+        let dock_right = width >= 960.;
+        let right_w = self.right_w.min((width - 550.).max(256.));
+        let left_budget = width - if dock_right { right_w + 10. } else { 0. } - 320.;
+        let left_w = self.left_w.min(left_budget.max(180.));
+        let bottom_h = self.bottom_h.min((height * 0.28).max(100.));
         let busy = self.viewport.read(cx).busy();
         let toolbar = toolbar::render(self, window, cx);
         let me = cx.entity();
@@ -1893,15 +1921,17 @@ impl Render for Studio {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .flex()
-                    .child(div().w(px(self.left_w)).flex_none().h_full().child(self.outliner.clone()))
-                    .child(self.splitter(0, cx))
+                    .flex().relative().overflow_hidden()
+                    .when(dock_left, |d| d.child(div().w(px(left_w)).flex_none().h_full().child(self.outliner.clone())).child(self.splitter(0, cx)))
                     .child(div().flex_1().min_w_0().h_full().bg(t.bg_sunken).child(self.viewport.clone()))
-                    .child(self.splitter(1, cx))
-                    .child(div().w(px(self.right_w)).flex_none().h_full().child(self.properties.clone())),
+                    .when(dock_right, |d| d.child(self.splitter(1, cx)).child(div().w(px(right_w)).flex_none().h_full().child(self.properties.clone())))
+                    .when(self.drawer == Some(false) && !dock_left, |d| d.child(
+                        div().absolute().left_0().top_0().bottom_0().w(px(left_w)).bg(t.bg_raised).border_r_1().border_color(t.line).occlude().child(self.outliner.clone())))
+                    .when(self.drawer == Some(true) && !dock_right, |d| d.child(
+                        div().absolute().right_0().top_0().bottom_0().w(px(right_w)).bg(t.bg_raised).border_l_1().border_color(t.line).occlude().child(self.properties.clone()))),
             )
             .child(self.splitter(2, cx))
-            .child(div().h(px(self.bottom_h)).flex_none().w_full().child(self.timeline.clone()))
+            .child(div().h(px(bottom_h)).flex_none().w_full().child(self.timeline.clone()))
             .when(self.resizing.is_some(), |d| d.child(drag::track(cx.entity(), Self::resize_move, Self::resize_end)))
             .children(popover);
         let root: gpui::Div = div().size_full().child(root);

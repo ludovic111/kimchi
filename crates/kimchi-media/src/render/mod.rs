@@ -812,7 +812,7 @@ pub(crate) fn playable(tools: &Tools, project: &Project) -> Project {
 /// a real cost in loops over millions of pixels. Exact; NaN and huge values pass through.
 #[inline(always)]
 pub(crate) fn floor(x: f32) -> f32 {
-    if !(x.abs() < 8_388_608.0) {
+    if x.abs().partial_cmp(&8_388_608.0) != Some(std::cmp::Ordering::Less) {
         return x; // NaN, infinities, and floats too big to have a fraction
     }
     let t = x as i32 as f32;

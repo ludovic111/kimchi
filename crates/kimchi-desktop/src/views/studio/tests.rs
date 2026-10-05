@@ -25,6 +25,7 @@ fn ui(f: &Fixture, cx: &mut VisualTestContext, name: &str, params: Value) -> Res
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(10));
     }
+    assert!(task.is_finished(), "{name} did not answer while the window was being pumped");
     f.rt.block_on(task).expect("the call ran")
 }
 
@@ -375,7 +376,7 @@ fn the_navigation_gizmo_and_gestures_move_the_view(cx: &mut TestAppContext) {
     let before = shown(cx).0;
     let centre = point(ball.x + px(42.), ball.y + px(60.));
     // (Up and down: it looks from below, where left and right only spin it in place.)
-    drag(cx, centre, centre + point(px(20.), px(-40.)));
+    drag(cx, centre, centre + point(px(20.), px(40.)));
     let after = shown(cx).0;
     assert!(len3(after.position, before.position) > 0.1 && (after.distance() - before.distance()).abs() < 1e-6, "turned around the same point: {before:?} → {after:?}");
 
@@ -527,14 +528,14 @@ fn lock_camera_to_view_moves_the_scene_camera_one_step_at_a_time(cx: &mut TestAp
 
     // An animated camera gets a keyframe at the playhead.
     f.call("motion.setKeyframes", json!({ "clipId": clip.to_string(), "id": "camera", "property": "position", "keyframes": [[0, [0, 2, 8]], [2, [0, 2, 6]]] }));
-    f.call("timeline.seek", json!({ "time": 1.0 }));
+    ui(&f, cx, "timeline.seek", json!({ "time": 1.0 })).unwrap();
     cx.run_until_parked();
     ui(&f, cx, "ui.studio", json!({ "navigate": { "zoom": 2 } })).unwrap();
     let keys = |p: &Project| camera_of(p, clip, "camera").keyframes.get("position").map(Vec::len).unwrap_or(0);
     assert_eq!(keys(&f.settle(cx, |p| keys(p) == 3)), 3, "a keyframe at 1 s");
 
     // Align the camera to a view, add one here, keyframe it.
-    ui(&f, cx, "ui.studio", json!({ "lockCamera": false, "view": { "position": [5, 3, 5], "target": [0, 0, 0], "fov": 30 } })).unwrap();
+    ui(&f, cx, "ui.studio", json!({ "lockCamera": false, "view": { "position": [5, 3, 5], "target": [0, 0, 0], "fov": 30, "ortho": false, "orthoSize": 5 } })).unwrap();
     ui(&f, cx, "ui.studio", json!({ "alignCamera": true })).unwrap();
     let p = f.settle(cx, |p| (camera_of(p, clip, "camera").fov - 30.0).abs() < 1e-6);
     assert_eq!(camera_of(&p, clip, "camera").fov, 30.0);
@@ -585,4 +586,27 @@ fn the_2d_canvas_zooms_pans_and_fits(cx: &mut TestAppContext) {
     let state = ui(&f, cx, "ui.studio", json!({ "zoom": "fit" })).unwrap();
     assert_eq!(state["fit"], true);
     assert!(ui(&f, cx, "ui.studio", json!({ "navigate": { "orbit": [1, 1] } })).unwrap_err().contains("3D"));
+}
+
+#[gpui::test]
+fn the_studio_keeps_room_for_the_view_when_resized(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    open_box(&f, cx);
+    let st = studio(&view, cx);
+    cx.update(|_, cx| st.update(cx, |s, _| { s.left_w = 480.; s.right_w = 560.; }));
+    for (w, h) in [(640., 480.), (800., 600.), (1024., 768.), (1200., 800.), (1600., 1000.)] {
+        crate::tests::resize(cx, w, h);
+        let b = cx.update(|_, cx| st.read(cx).viewport.read(cx).bounds_for_test());
+        assert!(b.size.width >= px(320.) && b.size.height >= px(170.), "{w}×{h}: {b:?}");
+        assert!(b.origin.x >= px(0.) && b.origin.x + b.size.width <= px(w), "{b:?}");
+        if w < 960. {
+            assert_eq!(ui(&f, cx, "ui.studio", json!({"panel": "properties"})).unwrap()["panel"], "properties");
+            assert_eq!(ui(&f, cx, "ui.studio", json!({"panel": "objects"})).unwrap()["panel"], "objects");
+            ui(&f, cx, "ui.studio", json!({"panel": "none"})).unwrap();
+        }
+    }
+    ui(&f, cx, "ui.action", json!({"action": "ToggleAgent"})).unwrap();
+    crate::tests::resize(cx, 1200., 800.);
+    let b = cx.update(|_, cx| st.read(cx).viewport.read(cx).bounds_for_test());
+    assert!(b.size.width >= px(320.), "the docked agent must leave room for the Studio: {b:?}");
 }

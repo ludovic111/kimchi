@@ -77,7 +77,7 @@ struct Shared {
 
 /// A take in progress.
 pub struct Recording {
-    _stream: cpal::Stream,
+    stream: Option<cpal::Stream>,
     shared: Arc<Shared>,
     writer: Option<std::thread::JoinHandle<Result<(u64, f32)>>>,
     options: Options,
@@ -106,6 +106,13 @@ pub fn start(options: Options) -> Result<Recording> {
         cpal::SampleFormat::I16 => open::<i16>(&device, &config.config(), producer, shared.clone()),
         cpal::SampleFormat::I32 => open::<i32>(&device, &config.config(), producer, shared.clone()),
         cpal::SampleFormat::U16 => open::<u16>(&device, &config.config(), producer, shared.clone()),
+        cpal::SampleFormat::F64 => open::<f64>(&device, &config.config(), producer, shared.clone()),
+        cpal::SampleFormat::I8 => open::<i8>(&device, &config.config(), producer, shared.clone()),
+        cpal::SampleFormat::I24 => open::<cpal::I24>(&device, &config.config(), producer, shared.clone()),
+        cpal::SampleFormat::I64 => open::<i64>(&device, &config.config(), producer, shared.clone()),
+        cpal::SampleFormat::U8 => open::<u8>(&device, &config.config(), producer, shared.clone()),
+        cpal::SampleFormat::U32 => open::<u32>(&device, &config.config(), producer, shared.clone()),
+        cpal::SampleFormat::U64 => open::<u64>(&device, &config.config(), producer, shared.clone()),
         other => Err(format!("{name} sends {other:?} samples, which kimchi can't record")),
     }?;
     let writer = Writer::create(&options.path, options.rate, channels, device_rate, device_channels)?;
@@ -114,9 +121,10 @@ pub fn start(options: Options) -> Result<Recording> {
         .name("kimchi-record".into())
         .spawn(move || writer.run(consumer, &s))
         .map_err(|e| e.to_string())?;
-    stream.play().map_err(|e| format!("{name}: {e}"))?;
-    tracing::info!(device = %name, rate = device_rate, channels = device_channels, path = %options.path.display(), "recording");
-    Ok(Recording { _stream: stream, shared, writer: Some(handle), options, channels, device: name })
+    let recording = Recording { stream: Some(stream), shared, writer: Some(handle), options, channels, device: name.clone() };
+    recording.stream.as_ref().unwrap().play().map_err(|e| format!("{name}: {e}"))?;
+    tracing::info!(device = %name, rate = device_rate, channels = device_channels, path = %recording.options.path.display(), "recording");
+    Ok(recording)
 }
 
 fn open<T>(device: &cpal::Device, config: &cpal::StreamConfig, mut producer: rtrb::Producer<f32>, shared: Arc<Shared>) -> Result<cpal::Stream>
@@ -185,6 +193,9 @@ impl Recording {
 
     /// Stops and finishes the file.
     pub fn stop(mut self) -> Result<Take> {
+        // Close the producer before draining the ring, otherwise an active input can keep
+        // filling it while stop waits for the writer.
+        self.stream.take();
         self.shared.stop.store(true, Ordering::Relaxed);
         let (frames, peak) = self.writer.take().ok_or("already stopped")?.join().map_err(|_| "the recording's writer stopped unexpectedly".to_string())??;
         Ok(Take {
@@ -203,6 +214,9 @@ impl Recording {
 
 impl Drop for Recording {
     fn drop(&mut self) {
+        // Close the producer before draining the ring, otherwise an active input can keep
+        // filling it while stop waits for the writer.
+        self.stream.take();
         self.shared.stop.store(true, Ordering::Relaxed);
         if let Some(w) = self.writer.take() {
             let _ = w.join();
@@ -250,8 +264,8 @@ impl Writer {
             // File frames between the last device frame and this one.
             while self.pos < 1.0 {
                 let f = self.pos as f32;
-                for c in 0..self.channels as usize {
-                    let v = self.last[c] + (now[c] - self.last[c]) * f;
+                for (c, sample) in now.iter().enumerate().take(self.channels as usize) {
+                    let v = self.last[c] + (sample - self.last[c]) * f;
                     self.peak = self.peak.max(v.abs());
                     self.wav.write_sample(v).map_err(|e| e.to_string())?;
                 }
@@ -274,7 +288,7 @@ impl Writer {
             if n > 0 {
                 buf.clear();
                 if let Ok(chunk) = consumer.read_chunk(n) {
-                    buf.extend(chunk.into_iter());
+                    buf.extend(chunk);
                 }
                 self.push(&buf)?;
                 shared.written.store(self.frames, Ordering::Relaxed);

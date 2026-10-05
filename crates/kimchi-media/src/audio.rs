@@ -224,6 +224,7 @@ pub(crate) struct Mixdown {
 /// Mixes `from..to` of `project` at `rate` to `path` (raw f32le stereo), as fast as it goes.
 /// With a loudness target on the master (and the master applied), the mix is measured first and
 /// brought to the target, then limited. `progress` gets 0..1; cancelling stops it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn mixdown(
     tools: &Tools,
     project: &Project,
@@ -339,7 +340,7 @@ fn normalise(from: &Path, to: &Path, rate: u32, gain: f32, ceiling: Option<f64>,
             break;
         }
         block.clear();
-        for f in bytes[..filled - filled % 8].chunks_exact(8) {
+        for f in bytes[..filled - filled % 8].as_chunks::<8>().0 {
             let l = f32::from_le_bytes([f[0], f[1], f[2], f[3]]) * gain;
             let r = f32::from_le_bytes([f[4], f[5], f[6], f[7]]) * gain;
             block.push([l, r]);

@@ -873,6 +873,7 @@ pub static SPECS: &[Spec] = &[
     edit("ui.studio", "Open, drive or close the Studio, the window's editor for motion clips (a Blender-like 3D editor, an After Effects-like 2D one). Every parameter is optional and applied in order; the answer is the Studio's state (also in ui.state). Edits to the scene itself are motion.* commands.", &[
         opt("clipId", String, "Open this motion clip (id or name)."),
         opt("close", Boolean, "Back to the edit."),
+        opt("panel", String, "In a narrow window: objects, properties or none opens or closes a Studio side drawer."),
         opt("select", Array, "Select these ids (layers, objects, lights, cameras; \"scene\"; \"material:<id>\", \"comp:<id>\"); empty clears."),
         opt("mode", String, "object or edit (3D mesh editing of the selected mesh object)."),
         opt("selectMode", String, "Edit mode: vertex, edge or face."),

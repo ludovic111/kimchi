@@ -116,8 +116,8 @@ pub(crate) struct Accumulator {
 impl Accumulator {
     pub(crate) fn add(&mut self, block: &[Frame]) {
         for f in block {
-            for c in 0..2 {
-                let v = f[c].abs();
+            for (c, sample) in f.iter().enumerate() {
+                let v = sample.abs();
                 self.peak[c] = self.peak[c].max(v);
                 self.squares[c] += (v as f64) * (v as f64);
             }

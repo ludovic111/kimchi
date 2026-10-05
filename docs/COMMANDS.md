@@ -1228,6 +1228,27 @@ Move keyframes of a layer, object, light or camera in time (the dope sheet's dra
 | `times` | array |  | Only the keyframes at these timeline times (seconds). |
 | `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
 
+### `motion.cameraMove`
+
+Animate a 3D scene's camera with a classic move, written as ordinary keyframes, constraints and expressions you can edit afterwards: orbit (around what it looks at, an object or a point, by degrees), turntable (a whole turn at an even speed), dolly (in or out along the view), truck (sideways), crane (up or down, still looking at the same point), zoom (the lens), flyThrough (along a curve: a followPath constraint), handheld (a gentle shake: wiggle expressions), or clear (the camera's animation goes). A new move replaces the one it would fight. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `move` | string | required | orbit, turntable, dolly, truck, crane, zoom, flyThrough, handheld or clear. |
+| `camera` | string |  | Which camera ("camera" is the main one; default the active one). |
+| `around` | any |  | orbit, turntable: an object id (it keeps facing it) or a point [x, y, z] (default: what the camera looks at). flyThrough: an object to keep facing. |
+| `degrees` | number |  | orbit, turntable: how far around; positive goes to the camera's right (default 90, turntable 360). |
+| `distance` | number |  | dolly (+ in, − out), truck (+ right, − left), crane (+ up, − down), in world units (default a third of the way to what it looks at). |
+| `amount` | number |  | zoom: degrees of field of view added (− zooms in; default −15). handheld: how much it shakes (1 gentle, 3 running, 0 off; default 1). |
+| `path` | string |  | flyThrough: a curve object to follow. |
+| `points` | array |  | flyThrough: [[x, y, z], …] points of a new curve to follow (default: a sweep past what it looks at). |
+| `lookAt` | string |  | flyThrough: an object to keep facing (default: facing along the path). |
+| `from` | number |  | Scene seconds the move starts (default the clip's start). |
+| `to` | number |  | Scene seconds it ends (default the clip's end). |
+| `easing` | string |  | How it moves (default easeInOut; a whole turn linear): linear, easeIn, easeOut, easeInOut, easeInOutCubic… |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
 ### `motion.render`
 
 Render motion clips ahead at full quality (the 3D engine and samples the scene asks for, motion blur…) into a file the timeline then plays: smooth playback and fast exports for heavy scenes. A clip that isn't rendered is drawn live (quick in the preview, full quality in the export). Editing the scene afterwards makes the render out of date: the clip is drawn live again until it is rendered again. Returns render ids; follow them with motion.renderStatus, or pass wait. _(changes things)_
@@ -1815,7 +1836,7 @@ Do what a keyboard shortcut or menu item of the window does, by its action name.
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `action` | string | required | PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide; sound: ToggleMixer, MuteTrack, SoloTrack, ArmTrack, RecordVoiceOver, AddEffect. |
+| `action` | string | required | PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide, StudioAlignCamera, StudioFly, StudioZoomIn, StudioZoomOut, StudioZoom100; sound: ToggleMixer, MuteTrack, SoloTrack, ArmTrack, RecordVoiceOver, AddEffect. |
 
 ### `ui.reveal`
 
@@ -1842,6 +1863,7 @@ Open, drive or close the Studio, the window's editor for motion clips (a Blender
 | --- | --- | --- | --- |
 | `clipId` | string |  | Open this motion clip (id or name). |
 | `close` | boolean |  | Back to the edit. |
+| `panel` | string |  | In a narrow window: objects, properties or none opens or closes a Studio side drawer. |
 | `select` | array |  | Select these ids (layers, objects, lights, cameras; "scene"; "material:<id>", "comp:<id>"); empty clears. |
 | `mode` | string |  | object or edit (3D mesh editing of the selected mesh object). |
 | `selectMode` | string |  | Edit mode: vertex, edge or face. |
@@ -1855,3 +1877,11 @@ Open, drive or close the Studio, the window's editor for motion clips (a Blender
 | `composition` | string |  | 2D: show and edit this composition ("" = the scene). |
 | `showGraph` | boolean |  | The timeline area shows the graph editor (true) or the dope sheet. |
 | `graphProperty` | string |  | The property the graph editor shows, e.g. position.x (of the selected item). |
+| `navigate` | object |  | 3D: move around, as the mouse would: {"orbit": [yaw°, pitch°], "pan": [dx, dy] (shares of the view), "zoom": 2 (twice as close), "fly": [forward, right, up] (world units), "look": [yaw°, pitch°] (turning where it stands)}. Through the camera with lockCamera, this moves the scene's camera (one undo step, a keyframe at the playhead when it is animated). |
+| `lockCamera` | boolean |  | 3D: while looking through the camera, navigating moves the scene's camera (Blender's Lock camera to view). |
+| `alignCamera` | boolean |  | 3D: put the active camera where the view is (then look through it). |
+| `addCamera` | boolean |  | 3D: add a camera where the view is. |
+| `keyframeCamera` | boolean |  | 3D: keyframe the camera's position and target at the playhead (true), or remove those keyframes (false). The selected camera, else the active one. |
+| `fly` | boolean |  | 3D: start (true) or end (false) fly mode: WASD / arrows move, Q and E down and up, the mouse looks, the wheel sets the speed; a click keeps the view, Esc puts it back. |
+| `zoom` | any |  | 2D: the canvas's zoom: "fit", "100%" or a number (1 = 100%). |
+| `pan` | array |  | 2D: [x, y] screen pixels the canvas's centre sits from the view's centre. |

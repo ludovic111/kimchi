@@ -276,7 +276,7 @@ fn run(shared: &Shared, tools: &Tools, path: &Path, seek: f64, filters: &[String
         frames.clear();
         for f in buf[..whole * frame_bytes].chunks_exact(frame_bytes) {
             let mut s = [0f32; 8];
-            for (c, b) in f.chunks_exact(4).enumerate() {
+            for (c, b) in f.as_chunks::<4>().0.iter().enumerate() {
                 s[c] = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
             }
             frames.push(fold(&s[..channels]));

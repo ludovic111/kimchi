@@ -68,7 +68,7 @@ fn the_volume_line_drags_in_one_step_and_takes_keyframes(cx: &mut TestAppContext
     });
     let (view, cx) = cx.add_window_view(Timeline::new);
     cx.run_until_parked();
-    let b = cx.update(|_, cx| view.read(cx).lanes.get());
+    let b = cx.update(|_, cx| view.read(cx).body.read(cx).lanes.get());
     // Audio 1 is the second row; at volume 1 its line sits at `line_y(1.0)` in the clip.
     let top = b.origin.y + px(track_h(kimchi_core::TrackKind::Video) + TRACK_GAP + 2.);
     let h = track_h(kimchi_core::TrackKind::Audio);

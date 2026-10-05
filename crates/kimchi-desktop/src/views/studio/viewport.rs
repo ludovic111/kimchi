@@ -256,6 +256,7 @@ impl Viewport {
     }
 
     /// In fly mode.
+    #[cfg(test)]
     pub fn flying(&self) -> bool {
         self.fly.is_some()
     }

@@ -981,12 +981,15 @@ mod tests {
         // Flying moves both ends; looking turns around the eye.
         let mut f = v;
         f.fly(1.0, 0.0, 0.5);
-        assert!((len(sub(f.position, v.position)) - 1.25f64.sqrt()).abs() < 1e-9 && (f.distance() - v.distance()).abs() < 1e-9);
+        let expected = add(v.basis().0, [0.0, 0.5, 0.0]);
+        assert!(len(sub(sub(f.position, v.position), expected)) < 1e-9 && (f.distance() - v.distance()).abs() < 1e-9);
         let mut l = v;
         l.look(30.0, 0.0);
         assert_eq!(l.position, v.position);
         let turned = dot(norm(sub(l.target, l.position)), norm(sub(v.target, v.position)));
-        assert!((turned - 30f64.to_radians().cos()).abs() < 1e-6, "{turned}");
+        let forward = v.basis().0;
+        let expected_dot = forward[1].powi(2) + (1.0 - forward[1].powi(2)) * 30f64.to_radians().cos();
+        assert!((turned - expected_dot).abs() < 1e-6, "{turned}");
         // Blends: the ends are the views, the middle keeps a sane distance.
         let mut top = v;
         top.align("top");

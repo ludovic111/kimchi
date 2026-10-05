@@ -306,10 +306,10 @@ fn track_with(env: &[f64], period_at: impl Fn(usize) -> f64) -> Vec<usize> {
         let mut best = 0.0;
         let mut arg = usize::MAX;
         if t >= near.max(1) {
-            for prev in t.saturating_sub(far)..=t - near.max(1) {
+            for (prev, previous_score) in score.iter().enumerate().take(t - near.max(1) + 1).skip(t.saturating_sub(far)) {
                 let gap = (t - prev) as f64;
                 let penalty = tightness * (gap / period).ln().powi(2);
-                let s = score[prev] - penalty;
+                let s = previous_score - penalty;
                 if arg == usize::MAX || s > best {
                     (best, arg) = (s, prev);
                 }

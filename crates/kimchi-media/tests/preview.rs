@@ -167,11 +167,12 @@ async fn streams_frames_and_sound() {
     // ffmpeg's sine is at 1/8 amplitude, a bit less after AAC.
     assert!(peak > 0.05 && peak <= 0.2, "{peak}");
 
-    // From the middle: frames start there; a silent project has no sound; past the end, nothing.
+    // From the middle: frames start there; muted tracks send silence so they can be
+    // unmuted without restarting playback; past the end, nothing.
     let mut silent = p.clone();
     silent.tracks.iter_mut().for_each(|t| t.muted = true);
     let mut stream = PreviewStream::start(&tools, &silent, 1.01, 160, 90, FPS).await.unwrap();
-    assert!(stream.audio().is_none());
+    let mut audio = stream.audio().expect("muted sources keep the live mixer running");
     let (pts, _) = stream.next_frame().await.unwrap().unwrap();
     assert_eq!(pts, 1.0);
     let mut n = 1;
@@ -179,6 +180,12 @@ async fn streams_frames_and_sound() {
         n += 1;
     }
     assert_eq!(n, 25);
+    let mut silent_samples = 0;
+    while let Some(chunk) = audio.recv().await {
+        assert!(chunk.samples.iter().all(|s| s.abs() < 1e-6));
+        silent_samples += chunk.samples.len();
+    }
+    assert_eq!(silent_samples, SAMPLE_RATE as usize * CHANNELS as usize);
     let mut done = PreviewStream::start(&tools, &p, 5.0, 160, 90, FPS).await.unwrap();
     assert!(done.next_frame().await.unwrap().is_none() && done.audio().is_none());
 
