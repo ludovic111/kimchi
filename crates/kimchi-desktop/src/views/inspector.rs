@@ -2,8 +2,8 @@
 //!
 //! - one clip: name, generation provenance, the AI actions, text style or solid colour, a
 //!   motion clip's template values and scene, transform, animation (keyframes at the playhead,
-//!   easings, presets), colour effects, the transition in, timing (speed, reverse, freeze
-//!   frame), sound and the source media;
+//!   easings, presets), colour effects, sound, timing (speed, reverse, freeze frame), the
+//!   transition in and the source media, each a section that folds away;
 //! - several clips: duplicate, delete, and "bridge" for two;
 //! - a media item picked in the media panel: poster, provenance, file facts, insert / reveal;
 //! - nothing: the project's canvas, frame rate and background, and the main shortcuts.
@@ -482,8 +482,13 @@ impl Inspector {
             body.push(self.animation_section(clip, fps, cx));
             body.push(self.color_section(clip, fps, cx));
         }
-        if !matches!(clip.content, ClipContent::Pending { .. }) && (track_kind == Some(TrackKind::Video) || has_sound) {
-            body.push(self.transition_section(clip, project, cx));
+        // The picture's sections, then sound, then the edit: timing and the transition in.
+        if has_sound {
+            body.push(
+                self.fold("sound", "Sound", cx)
+                    .child(labeled("Volume", self.volume.clone().into_any_element(), format!("{}%", (clip.volume * 100.0).round()), cx))
+                    .into_any_element(),
+            );
         }
 
         let speedable = matches!(clip.content, ClipContent::Media { .. }) && asset.as_ref().is_some_and(|a| a.kind != MediaKind::Image);
@@ -508,12 +513,8 @@ impl Inspector {
                 .into_any_element(),
         );
 
-        if has_sound {
-            body.push(
-                self.fold("sound", "Sound", cx)
-                    .child(labeled("Volume", self.volume.clone().into_any_element(), format!("{}%", (clip.volume * 100.0).round()), cx))
-                    .into_any_element(),
-            );
+        if !matches!(clip.content, ClipContent::Pending { .. }) && (track_kind == Some(TrackKind::Video) || has_sound) {
+            body.push(self.transition_section(clip, project, cx));
         }
 
         if let Some(a) = &asset {
