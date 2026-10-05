@@ -13,6 +13,7 @@
 
 pub mod ai;
 pub mod animation;
+pub mod audio;
 pub mod color;
 pub mod effects;
 pub mod fonts;
@@ -79,6 +80,8 @@ pub struct Inspector {
     fx: effects::EffectFields,
     /// Sections the person folded (by key), kept while the window is open.
     folded: std::collections::HashSet<&'static str>,
+    /// Sound controls (the clip's Audio section, a mixer strip's mix).
+    audio: audio::AudioFields,
     _subs: Vec<Subscription>,
 }
 
@@ -186,6 +189,7 @@ impl Inspector {
         let background = cx.new(|cx| ColorField::new(None, cx));
         subs.push(cx.subscribe(&background, |this: &mut Self, _, ch: &ColorChange, cx| this.set_settings(json!({ "background": ch.0.get(..7).unwrap_or(&ch.0) }), cx)));
         let fx = effects::EffectFields::new(&mut subs, cx);
+        let audio = audio::AudioFields::new(&mut subs, cx);
 
         Self {
             store,
@@ -217,6 +221,7 @@ impl Inspector {
             item_fields: Default::default(),
             fx,
             folded: Default::default(),
+            audio,
             _subs: subs,
         }
     }
@@ -484,11 +489,7 @@ impl Inspector {
         }
         // The picture's sections, then sound, then the edit: timing and the transition in.
         if has_sound {
-            body.push(
-                self.fold("sound", "Sound", cx)
-                    .child(labeled("Volume", self.volume.clone().into_any_element(), format!("{}%", (clip.volume * 100.0).round()), cx))
-                    .into_any_element(),
-            );
+            body.push(self.audio_section(clip, project, cx));
         }
 
         let speedable = matches!(clip.content, ClipContent::Media { .. }) && asset.as_ref().is_some_and(|a| a.kind != MediaKind::Image);
@@ -785,6 +786,8 @@ impl Render for Inspector {
                     self.multi_view(clips, cx)
                 } else if let Some(a) = selected_asset.and_then(|id| p.asset(id).cloned()) {
                     self.asset_view(&a, cx)
+                } else if let Some(v) = self.strip_view(&p, cx) {
+                    v
                 } else {
                     self.project_view(&p, window, cx)
                 }

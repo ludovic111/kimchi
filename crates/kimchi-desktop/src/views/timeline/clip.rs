@@ -13,7 +13,7 @@ use kimchi_core::{Asset, Clip, ClipContent, MediaKind};
 use kimchi_gen::Job;
 
 use super::body::TimelineBody;
-use super::waveform::{self, Peaks};
+use super::waveform::Peaks;
 use crate::theme::{ActiveTheme, MONO, parse_color};
 use crate::ui::icon;
 
@@ -217,7 +217,8 @@ impl ClipView<'_> {
             } else {
                 t.text.opacity(0.45)
             };
-            el = el.child(waveform::bars(peaks, wave.peaks_per_second, c.in_point, c.in_point + c.duration * c.speed, wf, (vis0, vis1), 0., wave_h, color));
+            // Scaled by the clip's level (its volume and keyframes).
+            el = el.child(super::body::wave(peaks, wave.peaks_per_second, c, wf, (vis0, vis1), wave_h, color, self.pps));
         }
 
         // A generation in flight: progress along the bottom and a slow shimmer.
@@ -249,39 +250,8 @@ impl ClipView<'_> {
         let fade_in_w = (c.fade_in / c.duration.max(1e-6)) as f32 * wf;
         let fade_out_w = (c.fade_out / c.duration.max(1e-6)) as f32 * wf;
         if fade_in_w > 2. || fade_out_w > 2. {
-            let shade = gpui::black().opacity(0.32);
-            el = el.child(
-                canvas(
-                    |_, _, _| (),
-                    move |b, _, window, _| {
-                        let o = b.origin;
-                        let at = |x: f32, y: f32| point(o.x + px(x), o.y + px(y));
-                        if fade_in_w > 2. {
-                            let mut p = PathBuilder::fill();
-                            p.move_to(at(off, h));
-                            p.line_to(at(off + fade_in_w, 0.));
-                            p.line_to(at(off, 0.));
-                            p.close();
-                            if let Ok(path) = p.build() {
-                                window.paint_path(path, shade);
-                            }
-                        }
-                        if fade_out_w > 2. {
-                            let end = off + wf;
-                            let mut p = PathBuilder::fill();
-                            p.move_to(at(end - fade_out_w, 0.));
-                            p.line_to(at(end, 0.));
-                            p.line_to(at(end, h));
-                            p.close();
-                            if let Ok(path) = p.build() {
-                                window.paint_path(path, shade);
-                            }
-                        }
-                    },
-                )
-                .absolute()
-                .inset_0(),
-            );
+            // In the clip's fade curve.
+            el = el.child(super::body::fades(c.audio.fade_curve, off, wf, h, fade_in_w, fade_out_w));
         }
 
         // Keyframes: diamonds along the bottom edge, the clip's own in the accent, a scene's dimmer.
@@ -325,6 +295,15 @@ impl ClipView<'_> {
                 .absolute()
                 .inset_0(),
             );
+        }
+
+        // Sound: the volume line and its keyframes, beats, the ryolune mark.
+        if let Some(p) = crate::store::StoreExt::store(&**cx).read(cx).project.clone() {
+            let line = super::body::shows_line(&p, c, self.selected);
+            let g = super::body::Geometry { vis: (vis0, vis1), off, wf, h, pps: self.pps };
+            for d in super::body::decorations(&p, c, self.asset, &g, line, !self.locked && !self.ghost, cx) {
+                el = el.child(d);
+            }
         }
 
         // Motion clips: whether they are drawn live or play rendered frames.

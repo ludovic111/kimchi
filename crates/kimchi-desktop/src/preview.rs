@@ -137,7 +137,6 @@ impl AudioBuffer {
     }
 
     /// The meters for what is heard now (the newest reading when sound hasn't started).
-    #[allow(dead_code)] // read by the mixer's meters
     pub fn meters(&self) -> Option<Snapshot> {
         let meters = self.inner.lock().meters.clone()?;
         match self.time() {

@@ -30,6 +30,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 
+# ryolune's engine, for its stock effects' factory presets (the same pin as kimchi-audio's).
+ryolune-engine = { git = "https://github.com/ludovic111/ryolune", rev = "50751d8" }
+
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]

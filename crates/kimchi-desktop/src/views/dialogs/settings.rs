@@ -7,6 +7,7 @@
 //! permissions and keys; agents themselves can't.
 
 mod agent;
+mod audio;
 mod diagnostics;
 mod models;
 
@@ -29,6 +30,7 @@ enum Section {
     Provider(String),
     Agent,
     Appearance,
+    Audio,
     Updates,
     Diagnostics,
     About,
@@ -40,6 +42,7 @@ impl Section {
             "models" | "keys" | "providers" => Section::Provider(String::new()),
             "agent" | "permissions" => Section::Agent,
             "appearance" | "theme" => Section::Appearance,
+            "audio" | "sound" | "devices" | "plugins" => Section::Audio,
             "updates" | "update" | "whatsnew" => Section::Updates,
             "diagnostics" | "logs" | "crashes" | "crash" => Section::Diagnostics,
             "about" | "ai" | "mcp" | "control" => Section::About,
@@ -66,6 +69,7 @@ pub struct SettingsDialog {
     // Agent.
     agent: agent::AgentState,
     diag: diagnostics::DiagState,
+    audio: audio::AudioState,
 
     checking_updates: bool,
     reduce_transparency: bool,
@@ -134,6 +138,7 @@ impl SettingsDialog {
             check: None,
             agent,
             diag: Default::default(),
+            audio: Default::default(),
             checking_updates: false,
             reduce_transparency: false,
             mcp: entry.mcp,
@@ -167,6 +172,9 @@ impl SettingsDialog {
         }
         if self.section == Section::Diagnostics {
             self.load_diagnostics(cx);
+        }
+        if self.section == Section::Audio {
+            self.load_audio(cx);
         }
         cx.notify();
     }
@@ -241,6 +249,7 @@ impl SettingsDialog {
         let mut children: Vec<AnyElement> = vec![div().px(px(9.)).pb(px(4.)).child(caps("kimchi", cx)).into_any_element()];
         for (sec, label, ic) in [
             (Section::Appearance, "Appearance", "sun"),
+            (Section::Audio, "Audio", "audio-lines"),
             (Section::Agent, "Agent", "bot"),
             (Section::Updates, "Updates", "refresh-cw"),
             (Section::Diagnostics, "Diagnostics", "file-text"),
@@ -302,6 +311,7 @@ impl SettingsDialog {
             Section::Provider(_) => ("Models & keys".into(), format!("Keys are stored in your {} and only sent to the provider they belong to.", crate::ui::keychain_name())),
             Section::Agent => ("Agent".into(), "The built-in agent, and what any agent or MCP client may do in kimchi.".into()),
             Section::Appearance => ("Appearance".into(), "Light or dark, and the glass of the chrome.".into()),
+            Section::Audio => ("Audio".into(), "Speakers and microphone, loudness, plugins, and ryolune.".into()),
             Section::Updates => ("Updates".into(), format!("kimchi {} · signed updates from GitHub Releases", kimchi_control::update::CURRENT)),
             Section::Diagnostics => ("Diagnostics".into(), "Logs and crash reports, to understand what went wrong.".into()),
             Section::About => ("About & AI control".into(), "Drive kimchi from Claude Code, Codex, scripts and its own agent.".into()),
@@ -653,6 +663,7 @@ impl Render for SettingsDialog {
             Section::Provider(_) => self.provider_detail(window, cx),
             Section::Agent => self.agent_section(window, cx),
             Section::Appearance => self.appearance(cx),
+            Section::Audio => self.audio_section(cx),
             Section::Updates => self.updates(cx),
             Section::Diagnostics => self.diagnostics_section(cx),
             Section::About => self.about(cx),

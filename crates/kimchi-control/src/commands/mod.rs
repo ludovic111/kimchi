@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod app;
+pub mod audio;
 pub mod captions;
 pub mod clip;
 pub mod export;
@@ -87,7 +88,7 @@ pub static SPECS: &[Spec] = &[
     // ---- media ------------------------------------------------------------
     query("media.list", "List the open project's media (imported and generated) with kind, length, size, previews and generation details.", &[]),
     query("media.get", "One media item in full, including how it was generated (prompt, model, seed, inputs).", &[ASSET_ID]),
-    edit("media.import", "Import media files (video, image, audio) into the open project. Thumbnails, filmstrips, waveforms and proxies are made in the background. With place, each file is also put on the timeline, one after the other.", &[
+    edit("media.import", "Import media files (video, image, audio, and ryolune songs, rendered by ryolune's engine) into the open project. Thumbnails, filmstrips, waveforms and proxies are made in the background. With place, each file is also put on the timeline, one after the other.", &[
         req("paths", Array, "Absolute paths of the files to import.").of(String),
         opt("place", Boolean, "Also put each file on the timeline (default false)."),
         OPT_TRACK,
@@ -176,7 +177,7 @@ pub static SPECS: &[Spec] = &[
         opt("color", String, "Solid clips: colour #rrggbb."),
         crate::registry::COALESCE,
     ]),
-    edit("clip.setKeyframes", "Animate one property of a clip: replace its keyframes (times in seconds from the clip's start). Properties: x, y, position ([x, y]), scale, scaleX, scaleY, rotation, opacity, blur (pixels), volume, the effects brightness, contrast, saturation, temperature, tint, vignette, sharpen (see clip.setEffects); text clips also fontSize, color, letterSpacing. One undo step.", &[
+    edit("clip.setKeyframes", "Animate one property of a clip: replace its keyframes (times in seconds from the clip's start). Properties: x, y, position ([x, y]), scale, scaleX, scaleY, rotation, opacity, blur (pixels), volume, pan (-1 left to 1 right), the effects brightness, contrast, saturation, temperature, tint, vignette, sharpen (see clip.setEffects); text clips also fontSize, color, letterSpacing. One undo step.", &[
         CLIP_ID,
         req("property", String, "The property to animate."),
         KEYFRAMES,
@@ -271,6 +272,192 @@ pub static SPECS: &[Spec] = &[
         crate::registry::COALESCE,
     ]),
     edit("captions.clear", "Remove every caption. One undo step.", &[]),
+    // ---- audio ------------------------------------------------------------
+    query("audio.overview", "The whole mix in one answer: every track's fader, pan, solo, mute, routing, sends, ducking and effects (with readable parameter values), the buses, the master (limiter, loudness target), clips whose sound was changed, ryolune songs (and whether they changed since), beats found in music, and problems. Read it before mixing.", &[]),
+    edit("audio.setTrack", "Mix a track: fader, pan, mute, solo, where it goes (the master or a bus), ducking under other tracks, record arm. Only the given fields change. One undo step (drags share a coalesce key).", &[
+        TRACK_ID,
+        opt("gainDb", Number, "Fader in dB, -96 (off) to +12; 0 leaves it as recorded."),
+        opt("pan", Number, "-1 (left) to 1 (right)."),
+        opt("muted", Boolean, "Silence the track."),
+        opt("solo", Boolean, "Hear only soloed tracks (and the buses they feed)."),
+        opt("output", String, "\"master\" or a bus (id or name, audio.addBus)."),
+        opt("duck", Any, "Automatic ducking: true (under every other track with sound), false or \"off\" to remove it, or {\"under\": [tracks], \"amountDb\": -12, \"thresholdDb\": -40, \"attack\": 0.15, \"release\": 0.6}."),
+        opt("armed", Boolean, "Arm for recording a voice-over take (audio.record)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("audio.setClip", "Change how clips sound: gain, pan, fades and their curve, which channels play, pitch, speed with or without pitch, mute the clip's own sound. Only the given fields change. One undo step. Animate pan with clip.setKeyframes property pan, the level with property volume.", &[
+        req("clipIds", Array, "Clips with sound (ids or names): audio clips and video clips with sound.").of(String),
+        opt("gainDb", Number, "Level in dB (-96 to +12; 0 = as recorded). Sets volume."),
+        opt("volume", Number, "Level as a factor, 0-4 (1 = as recorded)."),
+        opt("pan", Number, "-1 (left) to 1 (right)."),
+        opt("fadeIn", Number, "Fade-in length in seconds."),
+        opt("fadeOut", Number, "Fade-out length in seconds."),
+        opt("fadeCurve", String, "linear, equalPower, exponential or sCurve (both fades)."),
+        opt("channels", String, "stereo (as recorded), mono (both channels summed), left, right or swap."),
+        opt("pitch", Number, "Pitch shift in semitones, -24 to 24, without changing the speed."),
+        opt("preservePitch", Boolean, "A speed change keeps the pitch (true, the default) or plays like tape (false)."),
+        opt("muted", Boolean, "Silence this clip's sound (a video clip keeps its picture)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("audio.addBus", "Add a bus: tracks can feed it (audio.setTrack output) or send to it (audio.setSend), it has its own fader and effects and feeds the master. A shared reverb or a dialogue group. Returns its id.", &[
+        opt("name", String, "Name (default \"Bus 1\", \"Bus 2\"…)."),
+        opt("effect", String, "An effect to start with (id or name, audio.effects), e.g. \"Space\" for a reverb bus."),
+        opt("gainDb", Number, "Fader in dB (default 0)."),
+    ]),
+    edit("audio.removeBus", "Remove a bus; tracks that fed it go to the master and their sends to it go. One undo step.", &[req("busId", String, "Bus id or name.")]),
+    edit("audio.setBus", "Rename or mix a bus: fader, pan, mute, solo. Only the given fields change. One undo step.", &[
+        req("busId", String, "Bus id or name."),
+        opt("name", String, "New name."),
+        opt("gainDb", Number, "Fader in dB, -96 to +12."),
+        opt("pan", Number, "-1 (left) to 1 (right)."),
+        opt("muted", Boolean, "Silence the bus."),
+        opt("solo", Boolean, "Hear only soloed buses and tracks."),
+        crate::registry::COALESCE,
+    ]),
+    edit("audio.setSend", "Send part of a track's sound to a bus (made or changed): its level, before or after the track's fader. One undo step.", &[
+        TRACK_ID,
+        req("busId", String, "Bus id or name."),
+        opt("levelDb", Number, "Send level in dB (default 0 for a new send; -96 is off)."),
+        opt("preFader", Boolean, "Taken before the track's fader and pan (default false)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("audio.removeSend", "Stop a track sending to a bus.", &[TRACK_ID, req("busId", String, "Bus id or name.")]),
+    edit("audio.setMaster", "The master: its fader, the true-peak limiter at the very end and its ceiling, and the loudness exports are brought to. Only the given fields change. One undo step.", &[
+        opt("gainDb", Number, "Master fader in dB, -96 to +12."),
+        opt("limiter", Boolean, "Keep the mix under the ceiling (default on)."),
+        opt("ceilingDb", Number, "The limiter's ceiling in dBTP, -24 to 0 (default -1)."),
+        opt("loudness", Any, "Integrated loudness of exports in LUFS (-40 to -5), or \"youtube\" / \"streaming\" (-14), \"podcast\" (-16), \"broadcast\" (-23), or null / \"off\" to export as mixed."),
+        crate::registry::COALESCE,
+    ]),
+    query("audio.effects", "Effects that can go in a chain: ryolune's stock effects (EQ, compressor, reverb, delay, de-esser…) and the CLAP, VST3, Audio Unit and ryolune plugins on this computer, with category, format and a description.", &[
+        opt("query", String, "Only effects whose name, vendor or category contains this."),
+        opt("category", String, "Only this category (Dynamics, EQ & Filter, Space & Time…)."),
+    ]),
+    query("audio.effectParams", "An effect's parameters: id, name, range, unit, default and choices. With target and slot, also the values that slot has now.", &[
+        opt("effect", String, "Effect id or name (audio.effects)."),
+        opt("target", String, "A track, bus, clip (id or name) or \"master\", with slot."),
+        opt("slot", Any, "The effect in the target's chain: its slot id, its name or its position from 1."),
+    ]),
+    edit("audio.rescanPlugins", "Look for plugins again (CLAP, VST3, Audio Units, ryolune native) in the standard folders and Settings › Audio's folders; returns how many effects are known.", &[]),
+    edit("audio.addEffect", "Put an effect in a chain: a track's, a bus's, the master's or one clip's. One undo step. Returns the slot.", &[
+        req("target", String, "A track, bus or clip (id or name; prefix track:, bus: or clip: when names clash), or \"master\"."),
+        req("effect", String, "Effect id or name (audio.effects), e.g. \"Channel EQ\", \"ryolune Comp\", \"Space\"."),
+        opt("index", Integer, "Position in the chain from 0 (default: the end). Chains hold 8 effects."),
+        opt("params", Object, "Starting values by parameter name or id: numbers in the parameter's unit, or text such as \"-6 dB\", \"2.5k\", \"Hall\"."),
+        opt("bypassed", Boolean, "Add it switched off."),
+    ]),
+    edit("audio.removeEffect", "Take an effect out of a chain (its automation goes too). One undo step.", &[
+        req("target", String, "A track, bus or clip (id or name), or \"master\"."),
+        req("slot", Any, "Slot id, effect name or position from 1."),
+    ]),
+    edit("audio.moveEffect", "Move an effect to another place in its chain. One undo step.", &[
+        req("target", String, "A track, bus or clip (id or name), or \"master\"."),
+        req("slot", Any, "Slot id, effect name or position from 1."),
+        req("index", Integer, "New position from 0."),
+    ]),
+    edit("audio.setEffect", "Change an effect's parameters (by name or id, numbers or text like \"-6 dB\" or \"Hall\") or bypass it. Automated parameters get a keyframe at the playhead instead. One undo step (drags share a coalesce key).", &[
+        req("target", String, "A track, bus or clip (id or name), or \"master\"."),
+        req("slot", Any, "Slot id, effect name or position from 1."),
+        opt("params", Object, "Values by parameter name or id, e.g. {\"Threshold\": -20, \"Ratio\": \"4:1\"}."),
+        opt("bypassed", Boolean, "Switch the effect off (true) or on."),
+        opt("reset", Boolean, "Every parameter back to its default first."),
+        crate::registry::COALESCE,
+    ]),
+    edit("audio.copyEffects", "Copy a whole effect chain (settings included) onto other tracks, buses, clips or the master. One undo step.", &[
+        req("from", String, "Where the chain is: a track, bus, clip or \"master\"."),
+        req("to", Array, "Where it goes.").of(String),
+        opt("append", Boolean, "Add after their effects instead of replacing them (default false)."),
+    ]),
+    query("audio.effectPresets", "Ready-made settings for ryolune's stock effects (\"Vocal glue\", \"Small room\", \"Telephone\"…).", &[opt("effect", String, "Only this effect's presets.")]),
+    edit("audio.applyPreset", "Load a preset into an effect slot. One undo step.", &[
+        req("target", String, "A track, bus, clip or \"master\"."),
+        req("slot", Any, "Slot id, effect name or position from 1."),
+        req("preset", String, "Preset name (audio.effectPresets)."),
+    ]),
+    edit("audio.setAutomation", "Automate a track's, bus's or the master's fader, pan or an effect parameter over time: replace its keyframes (times in timeline seconds). Clips: animate volume and pan with clip.setKeyframes. One undo step.", &[
+        req("target", String, "A track or bus (id or name), or \"master\"."),
+        req("property", String, "gainDb, pan (not on the master), or an effect parameter: \"<effect or slot>.<parameter>\" such as \"Space.Mix\", or effects.<slot id>.<parameter id>."),
+        KEYFRAMES,
+        crate::registry::COALESCE,
+    ]),
+    edit("audio.addAutomationKey", "Set one automation keyframe at a time (default: the playhead), replacing one there; what the mixer's keyframe buttons do.", &[
+        req("target", String, "A track or bus (id or name), or \"master\"."),
+        req("property", String, "gainDb, pan, or \"<effect>.<parameter>\"."),
+        opt("time", Number, "Timeline seconds (default: the playhead)."),
+        opt("value", Any, "The value (default: what it is at that time); effect parameters also take text such as \"-6 dB\"."),
+        opt("easing", String, "How the value arrives here from the previous keyframe (default linear)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("audio.removeAutomationKey", "Remove an automation keyframe at a time, or the whole automation of a property (it then keeps its value at the playhead).", &[
+        req("target", String, "A track or bus (id or name), or \"master\"."),
+        req("property", String, "gainDb, pan, or \"<effect>.<parameter>\"."),
+        opt("time", Number, "Timeline seconds; omit to remove every keyframe of the property."),
+    ]),
+    query("audio.measure", "Loudness as EBU R128 measures it (integrated LUFS, loudness range, true peak, loudest moment) of the whole mix, a span, one track or one clip on its own.", &[
+        opt("clipId", String, "One clip on its own, at volume 1 with its effects."),
+        opt("trackId", String, "One track, after its fader (without the master)."),
+        opt("from", Number, "Start of the span in seconds (default 0)."),
+        opt("to", Number, "End of the span in seconds (default: the end)."),
+    ]),
+    edit("audio.normalize", "Bring clips to the same loudness (speech: -16 LUFS by default) or peak level by setting their volume. Measures each clip on its own. One undo step.", &[
+        req("clipIds", Array, "Clips with sound (ids or names).").of(String),
+        opt("target", Number, "Loudness in LUFS (default: Settings › Audio, -16), or the peak in dBFS with mode peak (default -1)."),
+        opt("mode", String, "loudness (default) or peak."),
+    ]),
+    edit("audio.detectBeats", "Find the tempo and the beats of a piece of music (a media item or a clip's), stored with the media: the timeline draws them under its clips and snaps to them, audio.beatCut cuts on them. ryolune songs already know theirs.", &[
+        opt("assetId", String, "Media id or name."),
+        opt("clipId", String, "A clip of the music, instead."),
+    ]),
+    edit("audio.beatCut", "Cut the picture on the music: split a video track's clips on the beats of a music clip, every few beats, in a span. Detects the beats first when needed. One undo step.", &[
+        req("musicClipId", String, "The music clip whose beats to follow."),
+        opt("trackId", String, "The picture track to cut (default: the top video track with clips)."),
+        opt("every", Integer, "Cut every this many beats (default 4: once a bar in 4/4)."),
+        opt("offset", Integer, "Beats to skip from the first downbeat (default 0)."),
+        opt("from", Number, "Start of the span in seconds (default: the music clip's start)."),
+        opt("to", Number, "End of the span in seconds (default: its end)."),
+        opt("markers", Boolean, "Add markers on those beats instead of cutting (default false)."),
+    ]),
+    edit("audio.autoDuck", "Duck the music under the dialogue in one call: the music tracks' level drops while the dialogue tracks speak. Tracks are guessed from their names and content when not given. One undo step.", &[
+        opt("music", Array, "Tracks to duck (default: tracks of ryolune songs, music with beats, or named music, song, score…).").of(String),
+        opt("dialogue", Array, "Tracks they duck under (default: every other track with sound).").of(String),
+        opt("amountDb", Number, "How far the music goes down, in dB (default -12)."),
+        opt("thresholdDb", Number, "Level above which the dialogue counts as speaking, dBFS (default -40)."),
+        opt("attack", Number, "Seconds to go down (default 0.15)."),
+        opt("release", Number, "Seconds to come back up (default 0.6)."),
+        opt("off", Boolean, "Remove the ducking from those tracks instead."),
+    ]),
+    edit("audio.importSong", "Put a ryolune song (.ryolune) on the timeline: rendered by ryolune's own engine, as its mix on one track or as stems (one track per ryolune track), with its tempo's beats and optionally its markers. kimchi renders it again when the song is saved (audio.refreshSongs). One undo step.", &[
+        req("path", String, "The .ryolune file."),
+        opt("as", String, "mix (default) or stems."),
+        opt("trackId", String, "Track for the mix (default: the first free audio track)."),
+        opt("start", Number, "Timeline position in seconds (default: the playhead)."),
+        opt("markers", Boolean, "Also add the song's markers to the timeline (default false)."),
+    ]).perm(Perm::Files),
+    edit("audio.refreshSongs", "Render ryolune songs again when their file was saved since (kimchi also does it when a project opens and when its window comes back to the front).", &[
+        opt("assetIds", Array, "Only these song media (default: all of them).").of(String),
+        opt("force", Boolean, "Render even when the file hasn't changed."),
+    ]),
+    edit("audio.openInRyolune", "Open a song clip's (or song media's) .ryolune file in ryolune: in the running ryolune (when its song has no unsaved changes), else by starting it.", &[
+        opt("clipId", String, "A clip of the song."),
+        opt("assetId", String, "The song media, instead."),
+        opt("force", Boolean, "Open it even if ryolune's open song has unsaved changes (they are lost)."),
+    ]).perm(Perm::Files),
+    edit("audio.scrub", "Hear the sound while the playhead is dragged (on by default), or not.", &[req("on", Boolean, "true to hear it.")]),
+    query("audio.meters", "The levels playing now: peak and RMS of every track, bus and the master, clip lights, how far ducked tracks are pulled down, and the master's momentary and short-term loudness.", &[]).window(),
+    query("audio.devices", "Sound outputs and inputs on this computer, and the ones Settings › Audio uses.", &[]).window(),
+    edit("audio.record", "Record a voice-over take from the microphone at the playhead onto an armed (or given) audio track, with a count-in: start, stop (the take lands as a clip, one undo step), cancel, or status.", &[
+        req("action", String, "start, stop, cancel or status."),
+        opt("trackId", String, "Track to record onto (default: the armed one, else a new audio track)."),
+        opt("countIn", Number, "Seconds counted in before recording (default: Settings › Audio, 3)."),
+        opt("input", String, "Input device name (default: Settings › Audio)."),
+    ]).perm(Perm::Files).window(),
+    edit("audio.showMixer", "Show or hide the window's mixer (in place of the timeline, or beside it), and open an effect's panel. Returns what the window's audio views show (also in ui.state).", &[
+        opt("open", Boolean, "Show (default) or hide the mixer."),
+        opt("layout", String, "replace (the mixer takes the timeline's place) or beside (both, side by side)."),
+        opt("target", String, "With slot: open that effect's panel (a track, bus, clip or \"master\")."),
+        opt("slot", Any, "Slot id, effect name or position from 1."),
+        opt("closeEffect", Boolean, "Close the effect panel."),
+    ]).window(),
     // ---- motion -----------------------------------------------------------
     query("motion.guide", "How to make motion graphics and 3D with kimchi: the scene formats (2D layers, 3D objects, camera, lights), every property, keyframes and easings, text reveals, masks, effects, templates and presets, with examples. Read it before writing a scene.", &[
         opt("topic", String, "2d, 3d, keyframes, templates, expressions, modelling, particles, rendering or all (default)."),
@@ -541,7 +728,7 @@ pub static SPECS: &[Spec] = &[
     query("export.encoders", "The video encoders this computer uses per format: hardware ones (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API, Media Foundation) that passed a test encode, and the CPU ones.", &[]),
     edit("export.start", "Render the open project to a file: every frame drawn as in the preview (titles, animation, motion graphics, 3D), encoded on the GPU or CPU with the mixed sound. Returns an export id; follow it with export.status, or pass wait.", &[
         req("path", String, "Destination file. The extension should match the format."),
-        opt("format", String, "mp4 (default), hevc, prores, webm, gif, audio (AAC) or wav."),
+        opt("format", String, "mp4 (default), hevc, prores, webm, gif, audio (sound only: AAC unless audioFormat says) or wav."),
         opt("quality", String, "draft, standard (default) or high."),
         opt("width", Integer, "Output width (default: the project's)."),
         opt("height", Integer, "Output height (default: the project's)."),
@@ -550,16 +737,25 @@ pub static SPECS: &[Spec] = &[
         opt("to", Number, "End of the range in seconds (default: the end)."),
         opt("encoder", String, "auto (default: the GPU or media engine when there is one, redone on the CPU if it fails), hardware (GPU only; WebM may be AV1) or software (CPU only: slower, smallest files)."),
         opt("captions", String, "burn (default: in the picture), file (an .srt next to the video instead), both, or none."),
+        opt("audioFormat", String, "Sound-only exports (format audio or wav): wav, aiff, flac, mp3, aac (m4a), opus or vorbis (ogg)."),
+        opt("sampleRate", Integer, "44100, 48000 or 96000 Hz (default: the project's; Opus is always 48000)."),
+        opt("bitDepth", Integer, "16 or 24 (or 32-bit float in WAV) for WAV, AIFF, FLAC and ProRes' sound (default 24)."),
+        opt("bitrate", Integer, "kbit/s of lossy sound: MP3, AAC, Opus, Vorbis (default: by quality)."),
+        opt("stems", Boolean, "Sound-only: one file per track with sound and per bus, into the folder path names."),
+        opt("stemsMaster", Boolean, "With stems: through the master's effects, fader and limiter too (default false)."),
+        opt("loudness", Any, "Loudness of this export in LUFS, or youtube (-14), podcast (-16), broadcast (-23); default: the master's target (audio.setMaster)."),
         WAIT,
     ]).perm(Perm::Files),
     query("export.status", "Exports with their progress, or one export.", &[opt("exportId", String, "One export.")]),
     edit("export.cancel", "Stop an export; nothing is left at the destination.", &[req("exportId", String, "Export id.")]),
     // ---- handoff (lsuite) -------------------------------------------------
     query("handoff.apps", "Other lsuite apps installed on this computer (from ~/.lsuite/apps) and whether they are running.", &[]),
-    edit("handoff.toRyolune", "Send the cut to ryolune to score it: renders the audio (WAV) and writes its length and markers next to it; when ryolune is running, imports the audio there and adds the markers.", &[
-        opt("from", Number, "Start of the range in seconds (default 0)."),
-        opt("to", Number, "End of the range in seconds (default: the end)."),
+    edit("handoff.toRyolune", "Send the cut to ryolune to score it: renders the audio (WAV) and writes its length and markers next to it; when ryolune is running, imports the audio there and adds the markers. With as session, the whole audio timeline instead: a ryolune multitrack session (one track per kimchi track with its clips, fades, gains, effects, fader and pan; the markers), opened in ryolune when it runs.", &[
+        opt("from", Number, "Start of the range in seconds (default 0; mix only)."),
+        opt("to", Number, "End of the range in seconds (default: the end; mix only)."),
         opt("name", String, "Name for the hand-off files (default: the project name)."),
+        opt("as", String, "mix (default: the cut's sound as one WAV) or session (a .ryolune multitrack session)."),
+        opt("force", Boolean, "With session: open it even if ryolune's open song has unsaved changes (they are lost)."),
     ]).perm(Perm::Files),
     edit("handoff.fromRyolune", "Put audio from ryolune on an audio track: a file ryolune exported (path), or, when ryolune is running, a fresh bounce of its open song.", &[
         opt("path", String, "An audio file from ryolune. Omit to ask the running ryolune for a bounce."),
@@ -629,7 +825,7 @@ pub static SPECS: &[Spec] = &[
     edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears.").of(String), opt("assetId", String, "A media item to select instead.")]).window(),
     edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), inspector, agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it.", &[
         req("panel", String, "Panel name."),
-        opt("section", String, "For settings: models, agent, appearance, updates, diagnostics or about."),
+        opt("section", String, "For settings: models, agent, appearance, audio, updates, diagnostics or about."),
         opt("open", Boolean, "false closes the panel or dialog instead (the left panel, inspector, agent, jobs or a dialog; default true)."),
         opt("all", Boolean, "For whatsNew: the notes of every release, not only this one's."),
     ]).window(),
@@ -650,7 +846,7 @@ pub static SPECS: &[Spec] = &[
         opt("reset", Boolean, "Back to the starting sizes first."),
     ]).window(),
     edit("ui.action", "Do what a keyboard shortcut or menu item of the window does, by its action name. It acts on the window's selection, playhead and clipboard as the key would, a moment after the answer. Agents need the permission of what it does (NewProject: projects, ToggleTheme: settings, Quit: app control…).", &[
-        req("action", String, "PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide."),
+        req("action", String, "PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide; sound: ToggleMixer, MuteTrack, SoloTrack, ArmTrack, RecordVoiceOver, AddEffect."),
     ]).window(),
     edit("ui.reveal", "Show a file in the file manager (Finder, Explorer…): a path, or a media item's file.", &[
         opt("path", String, "A file or folder (an export, a log folder…)."),
@@ -688,6 +884,7 @@ pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "clip" => Box::pin(clip::run(s, cx, a)).await,
         "transition" => Box::pin(transition::run(s, cx, a)).await,
         "captions" => Box::pin(captions::run(s, cx, a)).await,
+        "audio" => Box::pin(audio::run(s, cx, a)).await,
         "timeline" => Box::pin(timeline::run(s, cx, a)).await,
         "history" => Box::pin(history::run(s, cx, a)).await,
         "generate" => Box::pin(generate::run(s, cx, a)).await,

@@ -136,7 +136,7 @@ pub fn sheet(cx: &App) -> AnyElement {
                         .gap_x(px(28.))
                         .child(column(&["Playback", "Timeline"], cx))
                         .child(column(&["Editing"], cx))
-                        .child(col().child(group("Panels", cx)).child(group("Project", cx)).child(mouse)),
+                        .child(col().child(group("Panels", cx)).child(group("Project", cx)).child(group("Audio", cx)).child(mouse)),
                 )
                 .child(studio(cx)),
         )

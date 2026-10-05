@@ -169,6 +169,10 @@ pub struct UiState {
     pub ripple: bool,
     /// Panel sizes in the editor, in pixels.
     pub layout: UiLayout,
+    /// The window's audio views: the mixer (shown, its layout) and the open effect panel
+    /// (what `audio.showMixer` answers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<serde_json::Value>,
 }
 
 /// The editor's panel sizes as drawn (`ui.setLayout`), and how the window's size placed them.

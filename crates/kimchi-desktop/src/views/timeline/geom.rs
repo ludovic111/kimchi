@@ -115,6 +115,8 @@ pub fn snap_points(p: &Project, exclude: &[Id], playhead: Option<f64>) -> Vec<f6
             pts.push(c.end());
         }
     }
+    // The beats of music, when Settings › Audio asks for them.
+    pts.extend(super::body::beat_points(p));
     pts
 }
 

@@ -251,7 +251,11 @@ impl PreviewView {
         let (w, h) = self.render_size(&project, 1.0);
         let (tx, rx) = futures::channel::mpsc::channel(4);
         let audio = AudioBuffer::new();
-        let audio_out = AudioOut::open(audio.clone());
+        // The speakers Settings › Audio names (the system's default otherwise); the mixer's
+        // meters follow what they play.
+        let device = self.store.read(cx).settings.audio.output_device.clone();
+        let audio_out = AudioOut::open_on(audio.clone(), Some(device.as_str()).filter(|d| !d.is_empty()));
+        crate::views::mixer::live::set_source(cx, Some(audio.clone()));
         if audio_out.is_none() {
             // No output device: play silently instead of piling decoded sound up in memory.
             tracing::debug!("no audio output device; playing without sound");
