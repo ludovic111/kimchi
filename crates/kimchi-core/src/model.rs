@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::anim::{KeyValue, Keyframes, number_at, value_at};
+use crate::audio::{Beats, ClipAudio, Mixer, SongRef, TrackMix};
 use crate::effects::{EFFECT_PROPS, Effects};
 use crate::motion::{Scene, TemplateRef};
 use crate::transition::Transition;
@@ -35,6 +36,9 @@ pub struct Project {
     pub tracks: Vec<Track>,
     #[serde(default)]
     pub markers: Vec<Marker>,
+    /// Buses and the master (each track's own mix is on the track).
+    #[serde(default, skip_serializing_if = "Mixer::is_default")]
+    pub mixer: Mixer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -101,6 +105,9 @@ pub struct Asset {
     /// Browser-friendly transcode used by the preview when the source codec isn't playable.
     #[serde(default)]
     pub proxy: Option<String>,
+    /// Where the music's beats fall (detected, or a ryolune song's tempo).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beats: Option<Beats>,
 }
 
 impl Asset {
@@ -153,6 +160,8 @@ pub struct Waveform {
 pub enum AssetOrigin {
     Imported,
     Generated(Generation),
+    /// Rendered from a ryolune song (`.ryolune`), and rendered again when the song changes.
+    Song(SongRef),
 }
 
 /// Everything needed to understand (and redo) how an asset was generated.
@@ -202,11 +211,14 @@ pub struct Track {
     pub captions: bool,
     /// Sorted by `start`, never overlapping.
     pub clips: Vec<Clip>,
+    /// How the track's sound is mixed: fader, pan, solo, effects, routing, ducking, automation.
+    #[serde(default, skip_serializing_if = "TrackMix::is_default")]
+    pub mix: TrackMix,
 }
 
 impl Track {
     pub fn new(kind: TrackKind, name: impl Into<String>) -> Self {
-        Self { id: new_id(), kind, name: name.into(), muted: false, hidden: false, locked: false, captions: false, clips: vec![] }
+        Self { id: new_id(), kind, name: name.into(), muted: false, hidden: false, locked: false, captions: false, clips: vec![], mix: TrackMix::default() }
     }
 
     pub fn end(&self) -> f64 {
@@ -256,6 +268,9 @@ pub struct Clip {
     /// Motion clips rendered ahead of time: the frames to play instead of drawing the scene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rendered: Option<Rendered>,
+    /// The clip's sound beyond volume and fades: pan, fade shape, channels, pitch, effects.
+    #[serde(default, skip_serializing_if = "ClipAudio::is_default")]
+    pub audio: ClipAudio,
 }
 
 /// A motion clip rendered ahead ("Render" on the timeline): its frames in a file, played instead
@@ -315,6 +330,7 @@ impl Clip {
             effects: Effects::default(),
             transition: None,
             rendered: None,
+            audio: ClipAudio::default(),
         }
     }
 
@@ -418,6 +434,11 @@ impl Clip {
         number_at(&self.keyframes, "volume", t - self.start).unwrap_or(self.volume).clamp(0.0, 4.0)
     }
 
+    /// Pan at timeline time `t` (keyframes on `pan`, else the clip's), -1 left to 1 right.
+    pub fn pan_at(&self, t: f64) -> f64 {
+        number_at(&self.keyframes, "pan", t - self.start).unwrap_or(self.audio.pan).clamp(-1.0, 1.0)
+    }
+
     /// A text clip's style at timeline time `t`, with `fontSize`, `color` and `letterSpacing`
     /// keyframes applied.
     pub fn text_at(&self, t: f64) -> Option<TextStyle> {
@@ -452,7 +473,7 @@ impl Clip {
 
 /// Clip properties that take keyframes. Picture clips: x, y, position ([x, y]), scale, scaleX,
 /// scaleY, rotation, opacity, blur, and the effects brightness, contrast, saturation,
-/// temperature, tint, vignette, sharpen. Sound: volume. Text clips also: fontSize, color,
+/// temperature, tint, vignette, sharpen. Sound: volume, pan. Text clips also: fontSize, color,
 /// letterSpacing.
 pub const CLIP_PROPS: &[&str] = &[
     "x",
@@ -465,6 +486,7 @@ pub const CLIP_PROPS: &[&str] = &[
     "opacity",
     "blur",
     "volume",
+    "pan",
     "fontSize",
     "color",
     "letterSpacing",
@@ -653,6 +675,7 @@ impl Project {
             assets: vec![],
             tracks: vec![Track::new(TrackKind::Video, "Video 1"), Track::new(TrackKind::Audio, "Audio 1")],
             markers: vec![],
+            mixer: Mixer::default(),
         }
     }
 

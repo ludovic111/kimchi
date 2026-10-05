@@ -77,6 +77,9 @@ pub struct ClipPatch {
     /// Motion clips: frames rendered ahead (`Some(None)` goes back to drawing it live).
     #[serde(default)]
     pub rendered: Option<Option<crate::model::Rendered>>,
+    /// The clip's sound settings (pan, fade curve, channels, pitch, effects), replaced whole.
+    #[serde(default)]
+    pub audio: Option<crate::audio::ClipAudio>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -88,6 +91,9 @@ pub struct TrackPatch {
     /// Makes it (or stops it being) a captions track (video tracks only).
     #[serde(default)]
     pub captions: Option<bool>,
+    /// The track's mix (fader, pan, solo, effects, routing, ducking, automation), replaced whole.
+    #[serde(default)]
+    pub mix: Option<crate::audio::TrackMix>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -131,6 +137,8 @@ pub enum Edit {
     DropPending { job_id: String },
 
     AddMarker { time: f64, label: String },
+    /// Replaces the buses and the master.
+    SetMixer { mixer: crate::audio::Mixer },
     RemoveMarker { marker_id: Id },
 }
 
@@ -235,6 +243,11 @@ impl Project {
                         return Err(EditError::Invalid("captions go on a video track".into()));
                     }
                     t.captions = v;
+                }
+                if let Some(mix) = &patch.mix {
+                    mix.check(&self.mixer.buses).map_err(EditError::Invalid)?;
+                    let t = self.track_mut(*track_id).ok_or(EditError::TrackNotFound(*track_id))?;
+                    t.mix = mix.clone();
                 }
             }
             Edit::MoveTrack { track_id, index } => {
@@ -359,6 +372,18 @@ impl Project {
                 self.markers.sort_by(|a, b| a.time.total_cmp(&b.time));
             }
             Edit::RemoveMarker { marker_id } => self.markers.retain(|m| m.id != *marker_id),
+            Edit::SetMixer { mixer } => {
+                mixer.check().map_err(EditError::Invalid)?;
+                // Tracks that fed or sent to a bus that is gone go to the master instead.
+                let buses: Vec<Id> = mixer.buses.iter().map(|b| b.id).collect();
+                for t in &mut self.tracks {
+                    if t.mix.output.is_some_and(|o| !buses.contains(&o)) {
+                        t.mix.output = None;
+                    }
+                    t.mix.sends.retain(|s| buses.contains(&s.bus));
+                }
+                self.mixer = mixer.clone();
+            }
         }
         self.updated_at = chrono::Utc::now();
         Ok(out)
@@ -608,6 +633,10 @@ impl Project {
                 tr.duration = tr.duration.clamp(MIN_CLIP, 30.0);
                 tr
             });
+        }
+        if let Some(audio) = &p.audio {
+            audio.check().map_err(EditError::Invalid)?;
+            c.audio = audio.clone();
         }
         if let Some(r) = &p.rendered {
             if r.is_some() && !matches!(c.content, ClipContent::Motion { .. }) {

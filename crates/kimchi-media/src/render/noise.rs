@@ -23,22 +23,28 @@ fn fade(t: f32) -> f32 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
+/// Perlin's twelve edge directions: which two of x, y, z (0, 1, 2) and their signs.
+const EDGES: [(usize, f32, usize, f32); 12] = [
+    (0, 1.0, 1, 1.0),
+    (0, -1.0, 1, 1.0),
+    (0, 1.0, 1, -1.0),
+    (0, -1.0, 1, -1.0),
+    (0, 1.0, 2, 1.0),
+    (0, -1.0, 2, 1.0),
+    (0, 1.0, 2, -1.0),
+    (0, -1.0, 2, -1.0),
+    (1, 1.0, 2, 1.0),
+    (1, -1.0, 2, 1.0),
+    (1, 1.0, 2, -1.0),
+    (1, -1.0, 2, -1.0),
+];
+
+#[inline]
 fn grad(h: u32, x: f32, y: f32, z: f32) -> f32 {
-    // Perlin's twelve edge directions.
-    match h % 12 {
-        0 => x + y,
-        1 => -x + y,
-        2 => x - y,
-        3 => -x - y,
-        4 => x + z,
-        5 => -x + z,
-        6 => x - z,
-        7 => -x - z,
-        8 => y + z,
-        9 => -y + z,
-        10 => y - z,
-        _ => -y - z,
-    }
+    // A table instead of a branch per direction (the same sums: ±a ± b, exactly).
+    let (a, sa, b, sb) = EDGES[(h % 12) as usize];
+    let v = [x, y, z];
+    sa * v[a] + sb * v[b]
 }
 
 /// Gradient noise in three dimensions, about −1..1, smooth everywhere.
@@ -51,7 +57,7 @@ pub(crate) fn noise3(x: f32, y: f32, z: f32, seed: u32) -> f32 {
     // at 0 (the canvas centre).
     let wrap = |v: f32| if v.abs() < 1.0e6 { v } else { v.rem_euclid(65536.0) };
     let (x, y, z) = (wrap(x), wrap(y), wrap(z));
-    let (xi, yi, zi) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+    let (xi, yi, zi) = (super::floor(x) as i32, super::floor(y) as i32, super::floor(z) as i32);
     let (xf, yf, zf) = (x - xi as f32, y - yi as f32, z - zi as f32);
     let (u, v, w) = (fade(xf), fade(yf), fade(zf));
     let g = |dx: i32, dy: i32, dz: i32| grad(hash(xi + dx, yi + dy, zi + dz, seed), xf - dx as f32, yf - dy as f32, zf - dz as f32);

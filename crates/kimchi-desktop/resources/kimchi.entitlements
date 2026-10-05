@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Hardened runtime entitlements for kimchi.app (scripts/bundle-macos.sh). kimchi is not
-     sandboxed, so file and network access need nothing here. GPUI compiles its Metal shaders at
-     run time (runtime_shaders), which goes through the system's Metal compiler service and needs
-     no JIT or unsigned-memory exception; ffmpeg runs as a separate signed executable. Keep this
-     empty unless a feature needs an exception (microphone recording would add
-     com.apple.security.device.audio-input). -->
+<!-- Hardened runtime permissions for the recorder and Ryolune's audio plugin host.
+     Plugins can be signed by other developers and may generate executable code, as in
+     Ryolune's own Developer ID build. GPUI itself needs no runtime exception. -->
 <plist version="1.0">
 <dict>
+  <key>com.apple.security.device.audio-input</key><true/>
+  <key>com.apple.security.cs.disable-library-validation</key><true/>
+  <key>com.apple.security.cs.allow-jit</key><true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
 </dict>
 </plist>

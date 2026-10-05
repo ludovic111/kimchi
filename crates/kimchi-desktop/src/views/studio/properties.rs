@@ -348,6 +348,19 @@ impl Properties {
                 })
                 .collect()
         }, cx));
+        let studio = self.studio.clone();
+        body.push(
+            Button::new("cam-moves", "Camera moves and tools")
+                .small()
+                .with_icon("orbit")
+                .icon_after("chevron-down")
+                .tooltip("Orbit, turntable, dolly, truck, crane, zoom, fly-through, handheld: written as keyframes and constraints you can edit")
+                .on_click(move |e, _, cx| {
+                    let entries = super::menus::camera_menu(&studio, cx);
+                    super::menus::open_menu(e.position(), entries, cx);
+                })
+                .into_any_element(),
+        );
         Self::section("Use", body, cx)
     }
 

@@ -440,6 +440,11 @@ fn keyframes_and_value(s: &Arc<Session>, cx: &Ctx, a: &Args, id: Id, clip: &Clip
         ("rotation", Some(v)) => t.rotation = v,
         ("opacity", Some(v)) => t.opacity = v,
         ("volume", Some(v)) => patch.volume = Some(v),
+        ("pan", Some(v)) => {
+            let mut audio = clip.audio.clone();
+            audio.pan = v.clamp(-1.0, 1.0);
+            patch.audio = Some(audio);
+        }
         ("position", _) => {
             if let Some(p) = value.as_vec(2) {
                 (t.x, t.y) = (p[0], p[1]);

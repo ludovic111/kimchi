@@ -191,7 +191,7 @@ impl Render for CaptionsPanel {
         let this = cx.entity().downgrade();
         let models = segmented(
             "speech-model",
-            self.models.iter().map(|m| (m.id.clone(), SharedString::from(if m.downloaded { m.label.clone() } else { format!("{} · {} MB", m.label, m.size_mb) }))).collect(),
+            self.models.iter().map(|m| (m.id.clone(), SharedString::from(m.label.clone()))).collect(),
             model.clone(),
             move |v, _, cx| {
                 this.update(cx, |this, cx| {
@@ -224,6 +224,10 @@ impl Render for CaptionsPanel {
                     .child("Listens to the cut on this computer (Whisper) and puts the words on the captions track. Nothing is sent anywhere."),
             )
             .child(models)
+            // The model's size under the choice (the segments stay short in a narrow panel).
+            .when_some(self.models.iter().find(|m| m.id == model).filter(|m| !m.downloaded), |d, m| {
+                d.child(div().text_size(px(sz::XS)).text_color(t.text_3).child(format!("{} MB, downloaded once", m.size_mb)))
+            })
             .child(self.language.clone());
         listen = match &running {
             Some((stage, p)) => {

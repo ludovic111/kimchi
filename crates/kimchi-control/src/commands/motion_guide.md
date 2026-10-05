@@ -238,6 +238,17 @@ covers), depth of field `fStop` (like a lens: 1.4 very blurry, 8 sharp; 0 = off)
 `focusDistance` (0 = the target's distance), `constraints` (a `lookAt` keeps it on an object,
 `followPath` flies it along a curve).
 
+**Camera moves**: `motion.cameraMove {"move": "orbit", "degrees": 90}` writes a classic shot as
+plain keyframes, constraints and expressions you can edit afterwards (default over the whole clip;
+`from`/`to` scene seconds, `easing`, `camera`): `orbit`/`turntable` (around `around`: an object
+id it keeps facing, a point, or what it looks at; an invisible circle curve `cameraOrbit`, a
+`followPath` constraint `orbit` and keyframes of `constraints.orbit.progress`), `dolly`
+(`distance` + in), `truck` (+ right), `crane` (+ up, still looking at the same point) as two
+`position` (and `target`) keyframes, `zoom` (`amount` degrees of `fov`, − closer), `flyThrough`
+(along `path`, a curve object, or new `points`; `lookAt` an object, else it faces along the
+path: a `followPath` constraint `flyThrough`), `handheld` (`amount` 1 gentle: `wiggle`
+expressions on position, target and roll) and `clear`.
+
 **World**: `"environment": {"type": "gradient", "top": "#5b7fb8", "horizon": "#d8e2ee",
 "bottom": "#3a3632", "strength": 1, "visible": true}` lights the scene from all around and is
 reflected by shiny things. Types `color` (`color`), `gradient`, `sky` (a daylight sky lit by the

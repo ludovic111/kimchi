@@ -3,6 +3,26 @@
 What changed in each kimchi release. The app shows the newest section in **What's new** after it
 updates, and the release workflow puts the section in the update's notes.
 
+## 0.8.0 — 2026-10-05
+
+### New
+- **A proper audio mixer** shared by playback and exports: track and clip gain, pan, fade curves, buses, sends, automation, ducking, level meters and a master true-peak limiter.
+- **Ryolune inside the sound engine.** Use its stock effects, discover external plugins, import `.ryolune` songs as mixes or stems, refresh changed songs, and send an editable multitrack session back to Ryolune.
+- **Voice-over recording** with a count-in, selectable input and one-step undo for placing a take.
+- **Audio exports** in WAV, AIFF, FLAC, MP3, AAC, Opus and Ogg, with sample-rate, bitrate, stems and loudness controls. Beat detection and timeline beat markers help cut to music.
+- **Camera navigation you can find.** Visible orbit, pan, zoom and fly controls, a Camera menu, camera-to-view locking, and editable camera move presets in the 3D Studio.
+- Authentic provider logos, bundled locally for OpenAI/ChatGPT/Codex, Claude and other supported services, with source attribution.
+
+### Better
+- The editor adapts its side panels, timeline controls, mixer and dialogs to the available window size. The Studio toolbar wraps and its side panels become drawers in compact windows.
+- Renderer optimisations cover row compositing, colour calculations, large blurs, procedural noise, reusable GPU buffers and path tracing. Point lights now cast shadows in the standard engine.
+- The Motion Studio adds direct canvas zoom and pan controls alongside its existing layer, keyframe and graph tools.
+
+### Fixed
+- Preview audio recovers after a buffer underrun and supports integer-format output devices as well as floating-point devices.
+- Finishing a recording stops the input callback before draining and closing its WAV file; failed placement preserves the take.
+- The agent panel's opening animation stays within the window, and compact toolbars respond to their actual available width.
+
 ## 0.7.0 — 2026-10-04
 
 ### New

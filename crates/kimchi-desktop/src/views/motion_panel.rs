@@ -194,11 +194,12 @@ impl Render for MotionPanel {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap(px(6.))
                     .px(px(10.))
                     .pb(px(12.))
-                    .child(div().flex_1().child(Button::new("new-2d", "New 2D scene").small().with_icon("shapes").full_width().tooltip("A motion graphics clip at the playhead, opened in the Studio").on_click(|_, _, cx| new_scene(false, cx))))
-                    .child(div().flex_1().child(Button::new("new-3d", "New 3D scene").small().with_icon("box").full_width().tooltip("A 3D scene at the playhead with a camera and a floor, opened in the Studio").on_click(|_, _, cx| new_scene(true, cx)))),
+                    .child(div().flex_grow_1().flex_basis(px(120.)).child(Button::new("new-2d", "New 2D scene").small().with_icon("shapes").full_width().tooltip("A motion graphics clip at the playhead, opened in the Studio").on_click(|_, _, cx| new_scene(false, cx))))
+                    .child(div().flex_grow_1().flex_basis(px(120.)).child(Button::new("new-3d", "New 3D scene").small().with_icon("box").full_width().tooltip("A 3D scene at the playhead with a camera and a floor, opened in the Studio").on_click(|_, _, cx| new_scene(true, cx)))),
             )
             .child(div().px(px(14.)).pb(px(6.)).child(caps("Motion graphics", cx)))
             .child(grid("2d"))

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ludovic111/kimchi"
@@ -11,6 +11,7 @@ rust-version = "1.90"
 
 [workspace.dependencies]
 kimchi-core = { path = "crates/kimchi-core" }
+kimchi-audio = { path = "crates/kimchi-audio" }
 kimchi-media = { path = "crates/kimchi-media" }
 kimchi-gen = { path = "crates/kimchi-gen" }
 kimchi-control = { path = "crates/kimchi-control" }
@@ -47,4 +48,8 @@ url = "2"
 wiremock = "0.6"
 
 [profile.dev.package."*"]
+opt-level = 2
+
+# The mixer runs in real time behind the preview: even debug builds need it optimised.
+[profile.dev.package.kimchi-audio]
 opt-level = 2

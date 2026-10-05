@@ -22,10 +22,10 @@ use serde_json::{Value, json};
 
 use super::gizmo::{self, Handle, Kind, Session, View3};
 use super::math::{self, V3};
-use super::{Mode, SelectMode, Studio, Tool, model};
+use super::{Mode, Nav, SelectMode, Studio, Tool, model};
 use crate::store::{MenuEntry, MenuItem, Store, StoreExt};
 use crate::theme::{ActiveTheme, MONO, size as sz};
-use crate::ui::{drag, icon};
+use crate::ui::{GlassExt, drag, icon};
 
 /// Largest picture asked for (pixels, longest side).
 const MAX_RENDER: f64 = 1600.0;
@@ -67,6 +67,13 @@ struct MeshModal {
 enum Drag {
     Orbit { last: Point<Pixels> },
     Pan { last: Point<Pixels> },
+    /// Up closer, down further (Ctrl+middle-drag, the zoom button).
+    Zoom { last: Point<Pixels> },
+    /// On the axis ball: a click on an axis looks along it, a drag orbits.
+    Ball { start: Point<Pixels>, last: Point<Pixels>, moved: bool, axis: Option<&'static str> },
+    /// The right button: a click opens the menu, a drag looks around (and WASD flies) until it
+    /// is let go.
+    Right { start: Point<Pixels>, last: Point<Pixels>, moved: bool },
     /// A press that becomes a box selection if it moves, a pick if it doesn't.
     Press { start: Point<Pixels>, now: Point<Pixels>, additive: bool, moved: bool, boxing: bool },
     Gizmo,
@@ -130,6 +137,24 @@ struct Request {
     comp: Option<String>,
 }
 
+/// Fly mode: keys held move the view, the mouse turns it, the wheel sets the speed.
+struct Fly {
+    /// Movement keys down (w a s d q e and the arrows), and Shift (faster).
+    held: Vec<String>,
+    fast: bool,
+    /// World units a second.
+    speed: f64,
+    /// Where it started (Esc puts it back), and whether that was through the camera.
+    start: ViewCamera,
+    through: bool,
+    /// Started by holding the right button: letting go ends it, keeping the view.
+    hold: bool,
+    /// The pointer's last position (looking follows its moves).
+    last: Option<[f64; 2]>,
+    tick: std::time::Instant,
+    _task: Task<()>,
+}
+
 /// Something armed by a key, waiting for a click.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Armed {
@@ -169,6 +194,11 @@ pub struct Viewport {
     samples: Option<(u32, u32)>,
     /// The display's pixels per point (pictures are rendered for it).
     scale: f32,
+    fly: Option<Fly>,
+    /// The fitted 2D canvas's zoom, as last drawn (the Studio reads it).
+    pub fit_zoom: Cell<f64>,
+    /// The selected camera's path over the clip, kept while the scene is the same.
+    cam_path: Option<(usize, String, Vec<V3>, Vec<V3>)>,
     _subs: Vec<Subscription>,
 }
 
@@ -207,13 +237,37 @@ impl Viewport {
             refiner: None,
             samples: None,
             scale: 2.0,
+            fly: None,
+            fit_zoom: Cell::new(0.5),
+            cam_path: None,
             _subs: subs,
         }
     }
 
     /// A tool or modal operation has the keyboard (the Studio's single keys are off).
     pub fn busy(&self) -> bool {
-        self.modal_key.is_some() || self.mesh_modal.is_some() || !self.pen.is_empty()
+        self.modal_key.is_some() || self.mesh_modal.is_some() || !self.pen.is_empty() || self.fly.is_some()
+    }
+
+    /// Where the viewport is in the window (tests aim the pointer at its parts).
+    #[cfg(test)]
+    pub fn bounds_for_test(&self) -> Bounds<Pixels> {
+        self.bounds.get()
+    }
+
+    /// In fly mode.
+    #[cfg(test)]
+    pub fn flying(&self) -> bool {
+        self.fly.is_some()
+    }
+
+    /// The 2D canvas's zoom on screen (the fitted one too).
+    pub fn canvas_zoom(&self, cx: &App) -> Option<f64> {
+        let (p, _, scene, _) = self.scene(cx)?;
+        match &scene {
+            Scene::Flat(s) => Some(self.view2(s, &p, cx).zoom),
+            Scene::Space(_) => None,
+        }
     }
 
     // ---- what is shown ------------------------------------------------------------------------
@@ -248,6 +302,9 @@ impl Viewport {
         let pr = (project.settings.width as f64, project.settings.height as f64);
         let canvas = model::canvas_size(s, st.composition.as_deref(), pr);
         let zoom = if st.canvas.fit { ((bw - 48.0) / canvas.0).min((bh - 48.0) / canvas.1).max(0.01) } else { st.canvas.zoom };
+        if st.canvas.fit {
+            self.fit_zoom.set(zoom);
+        }
         let pan = if st.canvas.fit { [0.0, 0.0] } else { st.canvas.pan };
         View2 { cx: bx + bw / 2.0 + pan[0], cy: by + bh / 2.0 + pan[1], zoom, canvas, project: pr }
     }
@@ -412,14 +469,17 @@ impl Viewport {
         self.refiner = Some((cancel, task));
     }
 
-    /// While the pointer works the view, pictures come at half size; full size once it rests.
-    fn interacting(&mut self, cx: &mut Context<Self>) {
+    /// While the pointer works the view, pictures come at half size; full size once it rests
+    /// (and then `ui.state` hears where the view is).
+    pub fn interacting(&mut self, cx: &mut Context<Self>) {
         self.fast = true;
         self._settle = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(Duration::from_millis(250)).await;
             this.update(cx, |this, cx| {
                 this.fast = false;
                 this.refresh(cx);
+                let studio = this.studio.clone();
+                cx.defer(move |cx| studio.update(cx, |s, cx| s.changed(cx)));
             })
             .ok();
         }));
@@ -532,6 +592,9 @@ impl Viewport {
     fn modal_keystroke(&mut self, k: &Keystroke, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.busy() {
             return false;
+        }
+        if self.fly.is_some() {
+            return self.fly_keystroke(k, cx);
         }
         // The pen: Enter finishes the path, Esc drops it.
         if !self.pen.is_empty() && self.modal_key.is_none() && self.mesh_modal.is_none() {
@@ -649,6 +712,9 @@ impl Viewport {
 
     /// Puts everything back as it was before the operation.
     pub fn cancel_modal(&mut self, cx: &mut Context<Self>) {
+        if self.fly.is_some() {
+            self.end_fly(false, cx);
+        }
         let time = self.studio.read(cx).playhead(cx);
         if let (Some(sess), Some(key)) = (self.session.take(), self.modal_key.clone())
             && let Some(clip) = self.studio.read(cx).clip
@@ -673,6 +739,10 @@ impl Viewport {
 
     /// Esc: stops what the viewport is doing; false when there was nothing.
     pub fn escape(&mut self, _: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.fly.is_some() {
+            self.end_fly(false, cx);
+            return true;
+        }
         if self.busy() {
             self.cancel_modal(cx);
             self.pen.clear();
@@ -707,6 +777,125 @@ impl Viewport {
             self.armed = Some(Armed::LoopCut);
             cx.notify();
         }
+    }
+
+    // ---- fly mode ----------------------------------------------------------------------------------
+
+    /// Fly mode: W/S forward and back, A/D sideways, Q/E down and up (or the arrows), Shift
+    /// faster, the mouse looks around, the wheel sets the speed. A click or Enter keeps the view,
+    /// Esc or a right click puts it back. `hold`: started by the right button, it ends when the
+    /// button is let go (keeping the view).
+    pub fn start_fly(&mut self, hold: bool, cx: &mut Context<Self>) {
+        if self.fly.is_some() || self.busy() {
+            return;
+        }
+        let Some((_, _, Scene::Space(_), _)) = self.scene(cx) else { return };
+        let (start, through) = self.studio.update(cx, |s, cx| {
+            s.finish_view_anim(cx);
+            s.nav_begin();
+            let through = s.through_camera;
+            let start = if through { s.camera_view(cx).unwrap_or(s.view) } else { s.view };
+            (start, through)
+        });
+        // About a third of the way to what it looks at, each second.
+        let speed = (start.distance() * 0.35).clamp(0.2, 200.0);
+        let task = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(16)).await;
+                let on = this.update(cx, |v, cx| v.fly_step(cx)).unwrap_or(false);
+                if !on {
+                    break;
+                }
+            }
+        });
+        self.fly = Some(Fly { held: vec![], fast: false, speed, start, through, hold, last: None, tick: std::time::Instant::now(), _task: task });
+        self.studio.update(cx, |s, cx| {
+            s.flying = true;
+            s.changed(cx);
+        });
+        // Its keys (WASD…) aren't the Studio's while flying.
+        self.intercept(cx);
+        cx.notify();
+    }
+
+    /// Ends fly mode, keeping where it got to or putting the view back.
+    pub fn end_fly(&mut self, keep: bool, cx: &mut Context<Self>) {
+        let Some(f) = self.fly.take() else { return };
+        if self.modal_key.is_none() && self.mesh_modal.is_none() && self.pen.is_empty() {
+            self._intercept = None;
+        }
+        self.studio.update(cx, |s, cx| {
+            s.flying = false;
+            if !keep {
+                if s.through_camera && s.lock_camera {
+                    s.put_camera_back(f.start, cx);
+                } else {
+                    s.view = f.start;
+                    s.through_camera = f.through && !s.lock_camera;
+                }
+            }
+            s.nav_end(cx);
+        });
+        cx.notify();
+    }
+
+    /// One frame of flying: moves by the keys held. False once fly mode is over.
+    fn fly_step(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(f) = self.fly.as_mut() else { return false };
+        // At least a frame's worth (a late timer still moves), at most a tenth of a second.
+        let dt = f.tick.elapsed().as_secs_f64().clamp(1.0 / 120.0, 0.1);
+        f.tick = std::time::Instant::now();
+        if f.held.is_empty() {
+            return true;
+        }
+        let has = |k: &[&str]| f.held.iter().any(|h| k.contains(&h.as_str()));
+        let axis = |plus: &[&str], minus: &[&str]| (has(plus) as i32 - has(minus) as i32) as f64;
+        let (fw, rt, up) = (axis(&["w", "up"], &["s", "down"]), axis(&["d", "right"], &["a", "left"]), axis(&["e"], &["q"]));
+        let step = f.speed * if f.fast { 3.0 } else { 1.0 } * dt;
+        if fw != 0.0 || rt != 0.0 || up != 0.0 {
+            self.studio.update(cx, |s, cx| s.navigate(Nav::Fly(fw * step, rt * step, up * step), cx));
+            self.interacting(cx);
+        }
+        true
+    }
+
+    /// A key while flying; true when fly mode took it.
+    fn fly_keystroke(&mut self, k: &Keystroke, cx: &mut Context<Self>) -> bool {
+        let Some(f) = self.fly.as_mut() else { return false };
+        let key = k.key.as_str();
+        f.fast = k.modifiers.shift;
+        match key {
+            "w" | "a" | "s" | "d" | "q" | "e" | "up" | "down" | "left" | "right" => {
+                if !f.held.iter().any(|h| h == key) {
+                    f.held.push(key.to_string());
+                }
+            }
+            "escape" => self.end_fly(false, cx),
+            "enter" | "space" => self.end_fly(true, cx),
+            _ => {}
+        }
+        cx.notify();
+        true
+    }
+
+    /// A key let go (the Studio passes key ups on while flying).
+    pub fn fly_key_up(&mut self, key: &str, shift: bool) {
+        if let Some(f) = self.fly.as_mut() {
+            f.held.retain(|h| h != key);
+            f.fast = shift;
+        }
+    }
+
+    /// The pointer moved while flying: turn the view by as much.
+    fn fly_look(&mut self, m: [f64; 2], cx: &mut Context<Self>) {
+        let Some(f) = self.fly.as_mut() else { return };
+        let Some(last) = f.last.replace(m) else { return };
+        let (dx, dy) = (m[0] - last[0], m[1] - last[1]);
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        self.studio.update(cx, |s, cx| s.navigate(Nav::Look(dx * 0.2, -dy * 0.2), cx));
+        self.interacting(cx);
     }
 
     // ---- edit mode -------------------------------------------------------------------------------
@@ -1188,6 +1377,13 @@ impl Viewport {
                 cx.notify();
             });
         }
+        // Flying: a click keeps the view, a right click puts it back.
+        if let Some(f) = &self.fly {
+            if !f.hold {
+                self.end_fly(e.button != MouseButton::Right, cx);
+            }
+            return;
+        }
         // A modal operation: a click confirms it.
         if self.modal_key.is_some() || self.mesh_modal.is_some() {
             if e.button == MouseButton::Right {
@@ -1199,9 +1395,18 @@ impl Viewport {
         }
         let space = self.studio.read(cx).space_down;
         let three = self.studio.read(cx).is_3d(cx);
+        let ctrl = e.modifiers.control || e.modifiers.platform;
         match e.button {
             MouseButton::Middle => {
-                self.drag = Some(if e.modifiers.shift || !three { Drag::Pan { last: e.position } } else { Drag::Orbit { last: e.position } });
+                // Blender's: middle orbits, Shift+middle pans, Ctrl+middle zooms (2D: pans).
+                let d = if !three || e.modifiers.shift {
+                    Drag::Pan { last: e.position }
+                } else if ctrl {
+                    Drag::Zoom { last: e.position }
+                } else {
+                    Drag::Orbit { last: e.position }
+                };
+                self.begin_nav(d, cx);
                 return;
             }
             MouseButton::Right => {
@@ -1209,18 +1414,30 @@ impl Viewport {
                     self.finish_pen(false, cx);
                     return;
                 }
-                self.context_menu(e.position, window, cx);
+                if three {
+                    // A click opens the menu (when let go); a drag looks around and flies.
+                    self.drag = Some(Drag::Right { start: e.position, last: e.position, moved: false });
+                } else {
+                    self.context_menu(e.position, window, cx);
+                }
                 return;
             }
             _ => {}
         }
         if space {
             self.studio.update(cx, |s, _| s.space_panned = true);
-            self.drag = Some(Drag::Pan { last: e.position });
+            self.begin_nav(Drag::Pan { last: e.position }, cx);
             return;
         }
         if three && e.modifiers.alt {
-            self.drag = Some(if e.modifiers.shift { Drag::Pan { last: e.position } } else { Drag::Orbit { last: e.position } });
+            let d = if e.modifiers.shift {
+                Drag::Pan { last: e.position }
+            } else if ctrl {
+                Drag::Zoom { last: e.position }
+            } else {
+                Drag::Orbit { last: e.position }
+            };
+            self.begin_nav(d, cx);
             return;
         }
         let additive = e.modifiers.shift || e.modifiers.platform || e.modifiers.control;
@@ -1341,6 +1558,10 @@ impl Viewport {
         let m = [f32::from(e.position.x) as f64, f32::from(e.position.y) as f64];
         self.mouse = m;
         SHIFT.with(|c| c.set(e.modifiers.shift));
+        if self.fly.as_ref().is_some_and(|f| !f.hold) {
+            self.fly_look(m, cx);
+            return;
+        }
         if self.modal_key.is_some() && self.drag.is_none() {
             if let Some(s) = self.session.as_mut() {
                 s.snap = s.snap || e.modifiers.control;
@@ -1395,38 +1616,58 @@ impl Viewport {
                 let d = e.position - *last;
                 *last = e.position;
                 let (dx, dy) = (f32::from(d.x) as f64, f32::from(d.y) as f64);
-                self.studio.update(cx, |s, cx| {
-                    s.through_camera = false;
-                    s.view.orbit(dx * 0.4, dy * 0.4);
-                    cx.notify();
-                });
+                self.studio.update(cx, |s, cx| s.navigate(Nav::Orbit(dx * 0.4, dy * 0.4), cx));
                 self.interacting(cx);
+            }
+            Some(Drag::Ball { start, last, moved, .. }) => {
+                let d = e.position - *last;
+                *last = e.position;
+                let far = e.position - *start;
+                if !*moved && (f32::from(far.x).abs() > 3. || f32::from(far.y).abs() > 3.) {
+                    *moved = true;
+                }
+                if *moved {
+                    let (dx, dy) = (f32::from(d.x) as f64, f32::from(d.y) as f64);
+                    self.studio.update(cx, |s, cx| s.navigate(Nav::Orbit(dx * 0.6, dy * 0.6), cx));
+                    self.interacting(cx);
+                }
+            }
+            Some(Drag::Zoom { last }) => {
+                let d = e.position - *last;
+                *last = e.position;
+                // Up: closer.
+                let k = (f32::from(d.y) as f64 * 0.008).exp();
+                if self.studio.read(cx).is_3d(cx) {
+                    self.studio.update(cx, |s, cx| s.navigate(Nav::Zoom(k, None), cx));
+                } else {
+                    let z = self.canvas_zoom(cx).unwrap_or(1.0);
+                    self.studio.update(cx, |s, cx| s.zoom_canvas_to(z / k, cx));
+                }
+                self.interacting(cx);
+            }
+            Some(Drag::Right { start, last, moved }) => {
+                let far = e.position - *start;
+                let d = e.position - *last;
+                *last = e.position;
+                let begins = !*moved && (f32::from(far.x).abs() > 4. || f32::from(far.y).abs() > 4.);
+                if begins {
+                    *moved = true;
+                }
+                let moved = *moved;
+                if begins {
+                    self.start_fly(true, cx);
+                }
+                if moved {
+                    let (dx, dy) = (f32::from(d.x) as f64, f32::from(d.y) as f64);
+                    self.studio.update(cx, |s, cx| s.navigate(Nav::Look(dx * 0.2, -dy * 0.2), cx));
+                    self.interacting(cx);
+                }
             }
             Some(Drag::Pan { last }) => {
                 let d = e.position - *last;
                 *last = e.position;
                 let (dx, dy) = (f32::from(d.x) as f64, f32::from(d.y) as f64);
-                let h = f32::from(self.sizes().size.height).max(1.0) as f64;
-                let three = self.studio.read(cx).is_3d(cx);
-                let fit_zoom = self.scene(cx).and_then(|(p, _, s, _)| match &s {
-                    Scene::Flat(f) => Some(self.view2(f, &p, cx).zoom),
-                    _ => None,
-                });
-                self.studio.update(cx, |s, cx| {
-                    if three {
-                        s.through_camera = false;
-                        s.view.pan(dx / h, dy / h);
-                    } else {
-                        if s.canvas.fit {
-                            s.canvas.fit = false;
-                            s.canvas.zoom = fit_zoom.unwrap_or(s.canvas.zoom);
-                            s.canvas.pan = [0.0, 0.0];
-                        }
-                        s.canvas.pan = [s.canvas.pan[0] + dx, s.canvas.pan[1] + dy];
-                    }
-                    cx.notify();
-                });
-                self.interacting(cx);
+                self.pan_by(dx, dy, cx);
             }
             Some(Drag::Press { start, now, moved, boxing, .. }) => {
                 *now = e.position;
@@ -1465,9 +1706,30 @@ impl Viewport {
         }
     }
 
-    fn drag_end(&mut self, e: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn drag_end(&mut self, e: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
         let m = [f32::from(e.position.x) as f64, f32::from(e.position.y) as f64];
         match self.drag.take() {
+            Some(Drag::Orbit { .. } | Drag::Pan { .. } | Drag::Zoom { .. }) => self.studio.update(cx, |s, cx| s.nav_end(cx)),
+            Some(Drag::Ball { moved, axis, .. }) => {
+                if !moved && let Some(name) = axis {
+                    // Clicked again on the axis it looks along: from the other side, like Blender.
+                    let shown = self.studio.read(cx).view_shown();
+                    let name = if !shown.1 && shown.0.aligned_axis() == Some(name) { opposite(name) } else { name };
+                    self.studio.update(cx, |s, cx| {
+                        s.gesture = false;
+                        s.look_from(name, cx)
+                    });
+                } else {
+                    self.studio.update(cx, |s, cx| s.nav_end(cx));
+                }
+            }
+            Some(Drag::Right { moved, start, .. }) => {
+                if moved {
+                    self.end_fly(true, cx);
+                } else {
+                    self.context_menu(start, window, cx);
+                }
+            }
             Some(Drag::Press { start, now, additive, moved, boxing }) => {
                 let a = [f32::from(start.x) as f64, f32::from(start.y) as f64];
                 let b = [f32::from(now.x) as f64, f32::from(now.y) as f64];
@@ -1586,49 +1848,103 @@ impl Viewport {
         });
     }
 
-    fn scroll(&mut self, e: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let d = e.delta.pixel_delta(px(16.));
-        let dy = f32::from(d.y) as f64;
-        if dy.abs() < 0.01 {
-            return;
+    /// Starts a drag that moves the view (one undo step when it moves a locked camera).
+    fn begin_nav(&mut self, d: Drag, cx: &mut Context<Self>) {
+        self.studio.update(cx, |s, _| s.nav_begin());
+        self.drag = Some(d);
+        cx.notify();
+    }
+
+    /// Pans by screen pixels: the 3D view (or a locked camera), or the 2D canvas.
+    fn pan_by(&mut self, dx: f64, dy: f64, cx: &mut Context<Self>) {
+        let h = f32::from(self.sizes().size.height).max(1.0) as f64;
+        if self.studio.read(cx).is_3d(cx) {
+            self.studio.update(cx, |s, cx| s.navigate(Nav::Pan(dx / h, dy / h), cx));
+        } else {
+            let fit_zoom = self.canvas_zoom(cx);
+            self.studio.update(cx, |s, cx| {
+                if s.canvas.fit {
+                    s.canvas = super::Canvas2d { zoom: fit_zoom.unwrap_or(s.canvas.zoom), pan: [0.0, 0.0], fit: false };
+                }
+                s.canvas.pan = [s.canvas.pan[0] + dx, s.canvas.pan[1] + dy];
+                cx.notify();
+            });
         }
-        let m = [f32::from(e.position.x) as f64, f32::from(e.position.y) as f64];
-        let Some((p, _, scene, _)) = self.scene(cx) else { return };
+        self.interacting(cx);
+    }
+
+    /// Zooms by `k` (> 1 closer) towards a point of the screen: the 3D view heads for what is
+    /// under it, the 2D canvas keeps it under the pointer.
+    fn zoom_at(&mut self, k: f64, m: [f64; 2], cx: &mut Context<Self>) {
+        let Some((p, _, scene, t)) = self.scene(cx) else { return };
         match &scene {
-            Scene::Space(_) => {
-                let f = (1.0f64 - dy * 0.002).clamp(0.5, 2.0);
-                self.studio.update(cx, |s, cx| {
-                    s.through_camera = false;
-                    s.view.zoom(1.0 / f);
-                    cx.notify();
-                });
+            Scene::Space(s) => {
+                let v = self.view3(s, t, &p, cx);
+                let at = (!self.studio.read(cx).through_camera).then(|| v.cam.point_under(v.w, v.h, m[0] - v.x, m[1] - v.y));
+                self.studio.update(cx, |s, cx| s.navigate(Nav::Zoom(1.0 / k, at), cx));
             }
             Scene::Flat(s) => {
                 let v = self.view2(s, &p, cx);
-                if e.modifiers.shift {
-                    let (dx, dy2) = (f32::from(d.x) as f64, dy);
-                    self.studio.update(cx, |s, cx| {
-                        if s.canvas.fit {
-                            s.canvas = super::Canvas2d { zoom: v.zoom, pan: [0.0, 0.0], fit: false };
-                        }
-                        s.canvas.pan = [s.canvas.pan[0] + dx + dy2, s.canvas.pan[1]];
-                        cx.notify();
-                    });
-                } else {
-                    // Zoom around the pointer: the canvas point under it stays under it.
-                    let under = v.to_canvas(m);
-                    let zoom = (v.zoom * (1.0 + dy * 0.002)).clamp(0.02, 32.0);
-                    let b = self.sizes();
-                    let centre = [f32::from(b.origin.x) as f64 + f32::from(b.size.width) as f64 / 2.0, f32::from(b.origin.y) as f64 + f32::from(b.size.height) as f64 / 2.0];
-                    let pan = [m[0] - under[0] * zoom - centre[0], m[1] - under[1] * zoom - centre[1]];
-                    self.studio.update(cx, |s, cx| {
-                        s.canvas = super::Canvas2d { zoom, pan, fit: false };
-                        s.changed(cx);
-                    });
-                }
+                let under = v.to_canvas(m);
+                let zoom = (v.zoom * k).clamp(0.02, 32.0);
+                let b = self.sizes();
+                let centre = [f32::from(b.origin.x) as f64 + f32::from(b.size.width) as f64 / 2.0, f32::from(b.origin.y) as f64 + f32::from(b.size.height) as f64 / 2.0];
+                let pan = [m[0] - under[0] * zoom - centre[0], m[1] - under[1] * zoom - centre[1]];
+                self.studio.update(cx, |s, cx| {
+                    s.canvas = super::Canvas2d { zoom, pan, fit: false };
+                    cx.notify();
+                });
             }
         }
         self.interacting(cx);
+    }
+
+    /// The wheel and two-finger scrolling. 3D: a trackpad orbits (like Blender on a Mac), a
+    /// mouse wheel zooms to the pointer; Shift pans, Ctrl/Cmd zooms. 2D: a trackpad pans, a
+    /// wheel zooms to the pointer; Shift pans sideways, Ctrl/Cmd zooms. Flying: the speed.
+    fn scroll(&mut self, e: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let d = e.delta.pixel_delta(px(16.));
+        let (dx, dy) = (f32::from(d.x) as f64, f32::from(d.y) as f64);
+        if dx.abs() < 0.01 && dy.abs() < 0.01 {
+            return;
+        }
+        if let Some(f) = self.fly.as_mut() {
+            f.speed = (f.speed * (1.0 + dy * 0.01).clamp(0.5, 2.0)).clamp(0.01, 1000.0);
+            cx.notify();
+            return;
+        }
+        let m = [f32::from(e.position.x) as f64, f32::from(e.position.y) as f64];
+        let three = self.studio.read(cx).is_3d(cx);
+        let trackpad = e.delta.precise();
+        let zoom = e.modifiers.control || e.modifiers.platform;
+        // A burst of scrolling that moves a locked camera is one undo step.
+        if e.touch_phase == gpui::TouchPhase::Started {
+            self.studio.update(cx, |s, _| s.lock = None);
+        }
+        if zoom {
+            self.zoom_at((dy * 0.004).exp(), m, cx);
+        } else if e.modifiers.shift {
+            // A wheel scrolls one way: Shift+wheel moves sideways on the 2D canvas, up/down in 3D.
+            if !three && !trackpad { self.pan_by(dy, 0.0, cx) } else { self.pan_by(dx, dy, cx) }
+        } else if trackpad {
+            if three {
+                self.studio.update(cx, |s, cx| s.navigate(Nav::Orbit(dx * 0.3, dy * 0.3), cx));
+                self.interacting(cx);
+            } else {
+                self.pan_by(dx, dy, cx);
+            }
+        } else {
+            self.zoom_at((dy * 0.002).exp(), m, cx);
+        }
+    }
+
+    /// A trackpad pinch: zooms where the fingers are.
+    fn pinch(&mut self, e: &gpui::PinchEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let m = [f32::from(e.position.x) as f64, f32::from(e.position.y) as f64];
+        if e.phase == gpui::TouchPhase::Started {
+            self.studio.update(cx, |s, _| s.lock = None);
+        }
+        self.zoom_at((1.0 + e.delta as f64).clamp(0.5, 2.0), m, cx);
     }
 
     /// Right-click: what can be done with the selection here.
@@ -1705,6 +2021,19 @@ fn path_data(pts: &[PenPoint], closed: bool, map: impl Fn([f64; 2]) -> [f64; 2])
         d.push_str(" Z");
     }
     d
+}
+
+/// The axis view seen from the other side.
+fn opposite(name: &'static str) -> &'static str {
+    match name {
+        "front" => "back",
+        "back" => "front",
+        "left" => "right",
+        "right" => "left",
+        "top" => "bottom",
+        "bottom" => "top",
+        other => other,
+    }
 }
 
 fn round2(v: f64) -> f64 {
@@ -1888,6 +2217,31 @@ impl Viewport {
         {
             out.push(Mark::Line(vec![pa, pb], false, hex(0xffd84d), 3.0));
         }
+        // The selected camera's path over the clip, its keyframes as dots.
+        if let Some((_, _, path, keys)) = &self.cam_path {
+            let col = t2.accent;
+            let mut run: Vec<[f64; 2]> = vec![];
+            for p in path {
+                match view.project(*p) {
+                    Some(q) => run.push(q),
+                    None => {
+                        if run.len() > 1 {
+                            out.push(Mark::Line(std::mem::take(&mut run), false, col.opacity(0.85), 1.5));
+                        }
+                        run.clear();
+                    }
+                }
+            }
+            if run.len() > 1 {
+                out.push(Mark::Line(run, false, col.opacity(0.85), 1.5));
+            }
+            for k in keys {
+                if let Some(q) = view.project(*k) {
+                    out.push(Mark::Dot(q, 4.5, col));
+                    out.push(Mark::Dot(q, 2.5, gpui::white()));
+                }
+            }
+        }
         if through_camera_frame(st.through_camera) {
             out.push(Mark::Line(vec![[view.x, view.y], [view.x + view.w, view.y], [view.x + view.w, view.y + view.h], [view.x, view.y + view.h]], true, t2.accent.opacity(0.8), 1.5));
         }
@@ -1991,6 +2345,7 @@ impl Render for Viewport {
             let _ = window.drop_image(old);
         }
         self.scale = window.scale_factor().clamp(1.0, 3.0);
+        self.update_camera_path(cx);
         let t = cx.theme().clone();
         let bounds = self.bounds.clone();
         let entity = cx.entity();
@@ -2002,7 +2357,7 @@ impl Render for Viewport {
                 let (bx, by) = (f32::from(b.origin.x) as f64, f32::from(b.origin.y) as f64);
                 let st = self.studio.read(cx);
                 let mut label = if st.through_camera {
-                    format!("Camera · {}", s.active_camera_at(*tt))
+                    format!("Camera · {}{}", s.active_camera_at(*tt), if st.lock_camera { " · locked to the view" } else { "" })
                 } else {
                     format!("User {}", if st.view.ortho { "orthographic" } else { "perspective" })
                 };
@@ -2035,7 +2390,12 @@ impl Render for Viewport {
             (_, Tool::Text, false) => gpui::CursorStyle::IBeam,
             _ => gpui::CursorStyle::Arrow,
         };
-        let axis = if three { self.axis_widget(cx).into_any_element() } else { div().into_any_element() };
+        let canvas_zoom = if three { None } else { self.canvas_zoom(cx) };
+        let axis = match canvas_zoom {
+            None if three => self.nav_widget(cx).into_any_element(),
+            Some(z) => self.canvas_controls(z, cx).into_any_element(),
+            None => div().into_any_element(),
+        };
         let box_rect = match &self.drag {
             Some(Drag::Press { start, now, boxing: true, .. }) => Some((*start, *now)),
             _ => None,
@@ -2053,7 +2413,9 @@ impl Render for Viewport {
             // A release right after the press (before the window-wide tracker exists) ends the drag too.
             .on_mouse_up(MouseButton::Left, cx.listener(Self::drag_end))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::drag_end))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::drag_end))
             .on_scroll_wheel(cx.listener(Self::scroll))
+            .on_pinch(cx.listener(Self::pinch))
             .child(
                 canvas(
                     move |b, _, cx| {
@@ -2117,7 +2479,41 @@ impl Render for Viewport {
 }
 
 impl Viewport {
+    /// Keeps the selected camera's path (positions over the clip, and where its keyframes are)
+    /// for the overlay.
+    fn update_camera_path(&mut self, cx: &App) {
+        let Some((p, c, Scene::Space(s), _)) = self.scene(cx) else {
+            self.cam_path = None;
+            return;
+        };
+        let st = self.studio.read(cx);
+        let scene = Scene::Space(s.clone());
+        let Some(id) = st.selection.iter().rev().find(|k| matches!(model::item(&scene, k), Some(model::Item::Camera))).cloned() else {
+            self.cam_path = None;
+            return;
+        };
+        let key = Arc::as_ptr(&p) as usize;
+        if self.cam_path.as_ref().is_some_and(|(k, i, ..)| *k == key && *i == id) {
+            return;
+        }
+        let (a, b) = (model::scene_time(&c, c.start), model::scene_time(&c, c.end()));
+        let (lo, hi) = (a.min(b), a.max(b));
+        const N: usize = 96;
+        let path: Vec<V3> = (0..=N).filter_map(|i| s.camera_by_id_at(&id, lo + (hi - lo) * i as f64 / N as f64).map(|c| c.position.0)).collect();
+        // Still: no path to draw.
+        let moves = path.windows(2).any(|w| math::len(math::sub(w[0], w[1])) > 1e-6);
+        let mut times: Vec<f64> = s.camera_by_id(&id).map(|cam| cam.keyframes.iter().filter(|(n, _)| n.starts_with("position") || n.ends_with(".progress")).flat_map(|(_, l)| l.iter().map(|k| k.time)).collect()).unwrap_or_default();
+        times.sort_by(f64::total_cmp);
+        times.dedup_by(|x, y| (*x - *y).abs() < 1e-6);
+        let keys: Vec<V3> = times.into_iter().filter_map(|t| s.camera_by_id_at(&id, t).map(|c| c.position.0)).collect();
+        self.cam_path = Some((key, id, if moves { path } else { vec![] }, if moves { keys } else { vec![] }));
+    }
+
     fn status_line(&self, cx: &App) -> Option<String> {
+        if let Some(f) = &self.fly {
+            let how = if f.hold { "let go of the right button to stop" } else { "click or Enter to keep · Esc or right-click to go back" };
+            return Some(format!("Flying · W A S D move · Q E down and up · Shift faster · the mouse looks · the wheel sets the speed ({:.1} units/s) · {how}", f.speed));
+        }
         if let Some(s) = &self.session
             && self.modal_key.is_some()
         {
@@ -2155,15 +2551,22 @@ impl Viewport {
         None
     }
 
-    /// The axis widget: click an axis to look along it.
-    fn axis_widget(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The navigation gizmo in the corner, like Blender's: the axis ball (click an axis to look
+    /// along it, click it again for the other side, drag the ball to orbit), and under it
+    /// buttons to drag (orbit, pan, zoom) and toggles (fly, through the camera, camera locked
+    /// to the view, perspective / orthographic, frame).
+    fn nav_widget(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::actions::{self as act, tip};
+        let t = cx.theme().clone();
         let st = self.studio.read(cx);
-        let cam = st.view;
+        // The ball turns with what is seen (the camera's view when looking through it).
+        let cam = if st.through_camera { st.camera_view(cx).unwrap_or(st.view) } else { st.view };
+        let (through, lock, ortho, flying) = (st.view_shown().1, st.lock_camera, cam.ortho, self.fly.is_some());
         let f = math::norm(math::sub(cam.target, cam.position));
         let up0 = if f[1].abs() > 0.999 { [0.0, 0.0, -1.0] } else { [0.0, 1.0, 0.0] };
         let r = math::norm(math::cross(f, up0));
         let u = math::cross(r, f);
-        let (c, k) = (40.0, 28.0);
+        let (c, k) = (42.0, 29.0);
         let mut dots: Vec<(usize, bool, f64, f64, f64)> = vec![];
         for i in 0..3 {
             for neg in [false, true] {
@@ -2175,15 +2578,21 @@ impl Viewport {
         // Far ones first, so near ones are on top.
         dots.sort_by(|a, b| b.4.total_cmp(&a.4));
         let lines: Vec<Mark> = dots.iter().filter(|d| !d.1).map(|d| Mark::Line(vec![[c, c], [d.2, d.3]], false, hex(gizmo::AXIS_COLORS[d.0]), 2.0)).collect();
-        let studio = self.studio.clone();
         let names = [("right", "left"), ("top", "bottom"), ("front", "back")];
-        div()
-            .absolute()
-            .top(px(8.))
-            .right(px(8.))
-            .size(px(80.))
+        let ball_hover = t.hover;
+        let ball = div()
+            .id("nav-ball")
+            .relative()
+            .size(px(84.))
             .rounded_full()
             .bg(gpui::black().opacity(0.18))
+            .hover(move |s| s.bg(ball_hover))
+            .cursor(gpui::CursorStyle::OpenHand)
+            .tooltip(|_, cx| crate::ui::tooltip("Drag to orbit · click an axis to look along it (again: from the other side)".into(), cx))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                this.begin_nav(Drag::Ball { start: e.position, last: e.position, moved: false, axis: None }, cx);
+            }))
             .child(canvas(|_, _, _| (), move |b, _, window, _| {
                 let o = [f32::from(b.origin.x) as f64, f32::from(b.origin.y) as f64];
                 let shifted = lines
@@ -2195,11 +2604,10 @@ impl Viewport {
                     .collect();
                 paint_marks(shifted, window)
             }).absolute().size_full())
-            .children(dots.into_iter().map(move |(i, neg, x, y, _)| {
+            .children(dots.into_iter().map(|(i, neg, x, y, _)| {
                 let name = if neg { names[i].1 } else { names[i].0 };
-                let studio = studio.clone();
                 let col = hex(gizmo::AXIS_COLORS[i]);
-                let size = if neg { 10. } else { 15. };
+                let size = if neg { 11. } else { 17. };
                 div()
                     .id(("axis-dot", i * 2 + neg as usize))
                     .absolute()
@@ -2208,43 +2616,145 @@ impl Viewport {
                     .size(px(size))
                     .rounded_full()
                     .bg(if neg { col.opacity(0.45) } else { col })
+                    .hover(|s| s.border_2().border_color(gpui::white()))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(9.))
+                    .text_size(px(9.5))
                     .font_weight(FontWeight::BOLD)
                     .text_color(gpui::black())
                     .cursor_pointer()
                     .when(!neg, |d| d.child(["X", "Y", "Z"][i]))
                     .tooltip(move |_, cx| crate::ui::tooltip(format!("Look from the {name}").into(), cx))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(move |_, _, cx| studio.update(cx, |s, cx| {
-                        let _ = s.set_view(name, cx);
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.begin_nav(Drag::Ball { start: e.position, last: e.position, moved: false, axis: Some(name) }, cx);
                     }))
+            }));
+        // A round button in the column.
+        let button = |id: &'static str, ic: &'static str, on: bool, tooltip: gpui::SharedString| {
+            let (hover, accent, fg, on_fg) = (t.hover, t.accent, t.text, t.text_on_accent);
+            div()
+                .id(id)
+                .size(px(30.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(if on { on_fg } else { fg })
+                .when(on, |d| d.bg(accent))
+                .when(!on, move |d| d.hover(move |s| s.bg(hover)))
+                .child(icon(ic).size(px(15.)))
+                .tooltip(move |_, cx| crate::ui::tooltip(tooltip.clone(), cx))
+        };
+        let drag_button = |id: &'static str, ic: &'static str, tooltip: gpui::SharedString, kind: fn(Point<Pixels>) -> Drag, cx: &mut Context<Self>| {
+            button(id, ic, false, tooltip).cursor(gpui::CursorStyle::OpenHand).on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                this.begin_nav(kind(e.position), cx);
             }))
+        };
+        let studio = self.studio.clone();
+        let sep = div().mx(px(7.)).my(px(2.)).h(px(1.)).bg(t.line);
+        let column = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(2.))
+            .p(px(3.))
+            .rounded(px(18.))
+            .glass(t.glass2)
+            .shadow(t.glass_shadow())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(drag_button("nav-orbit", "orbit", "Orbit: drag here · in the view: middle-drag or Alt+drag, or scroll with two fingers on a trackpad".into(), |p| Drag::Orbit { last: p }, cx))
+            .child(drag_button("nav-pan", "hand", "Pan: drag here · in the view: Shift+middle-drag, Shift+scroll, or Space+drag".into(), |p| Drag::Pan { last: p }, cx))
+            .child(drag_button("nav-zoom", "zoom-in", "Zoom: drag up and down here · the wheel zooms to the pointer, Ctrl+scroll, a pinch, + and −".into(), |p| Drag::Zoom { last: p }, cx))
+            .child(button("nav-fly", "plane", flying, tip("Fly: W A S D or the arrows move, Q and E down and up, the mouse looks, the wheel sets the speed; click to keep, Esc to go back. Or hold the right button and drag", &act::StudioFly)).cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
+                if this.fly.is_some() {
+                    this.end_fly(true, cx);
+                } else {
+                    this.start_fly(false, cx);
+                }
+            })))
+            .child(sep)
+            .child(button("nav-camera", "video", through, tip("Look through the camera", &act::StudioKey0)).cursor_pointer().on_click({
+                let studio = studio.clone();
+                move |_, _, cx| studio.update(cx, |s, cx| s.toggle_camera_view(cx))
+            }))
+            .child(button("nav-lock", if lock { "lock" } else { "lock-open" }, lock, "Lock the camera to the view: looking through it, moving around moves the camera (a keyframe at the playhead when it is animated)".into()).cursor_pointer().on_click({
+                let studio = studio.clone();
+                move |_, _, cx| studio.update(cx, |s, cx| s.set_lock_camera(!s.lock_camera, cx))
+            }))
+            .child(button("nav-ortho", if ortho { "square" } else { "box" }, ortho, tip(if ortho { "Orthographic (click for perspective)" } else { "Perspective (click for orthographic)" }, &act::StudioOrtho)).cursor_pointer().on_click({
+                let studio = studio.clone();
+                move |_, _, cx| studio.update(cx, |s, cx| s.toggle_ortho(cx))
+            }))
+            .child(button("nav-frame", "focus", false, tip("Frame the selection (everything when nothing is; Home frames everything)", &act::StudioFrame)).cursor_pointer().on_click({
+                let studio = studio.clone();
+                move |_, _, cx| studio.update(cx, |s, cx| s.frame_selection(true, cx))
+            }));
+        div().absolute().top(px(8.)).right(px(8.)).flex().flex_col().items_center().gap(px(8.)).child(ball).child(column)
+    }
+
+    /// The 2D canvas's zoom controls, bottom right: out, the zoom (click: 100%), in, fit.
+    fn canvas_controls(&self, zoom: f64, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::actions::{self as act, tip};
+        let t = cx.theme().clone();
+        let studio = self.studio.clone();
+        let fit = studio.read(cx).canvas.fit;
+        let (hover, accent, fg, on_fg) = (t.hover, t.accent, t.text, t.text_on_accent);
+        let button = move |id: &'static str, ic: &'static str, on: bool, tooltip: gpui::SharedString| {
+            div()
+                .id(id)
+                .size(px(26.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .text_color(if on { on_fg } else { fg })
+                .when(on, |d| d.bg(accent))
+                .when(!on, move |d| d.hover(move |s| s.bg(hover)))
+                .child(icon(ic).size(px(14.)))
+                .tooltip(move |_, cx| crate::ui::tooltip(tooltip.clone(), cx))
+        };
+        let (s1, s2, s3, s4) = (studio.clone(), studio.clone(), studio.clone(), studio.clone());
+        div()
+            .absolute()
+            .bottom(px(10.))
+            .right(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .p(px(3.))
+            .rounded(px(16.))
+            .glass(t.glass2)
+            .shadow(t.glass_shadow())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(button("canvas-out", "zoom-out", false, tip("Zoom out (the wheel, Ctrl+scroll or a pinch zoom to the pointer)", &act::StudioZoomOut)).on_click(move |_, _, cx| s1.update(cx, |s, cx| s.zoom_canvas_to(zoom * 0.8, cx))))
             .child(
                 div()
-                    .id("axis-camera")
-                    .absolute()
-                    .bottom(px(-26.))
-                    .left(px(28.))
-                    .size(px(24.))
-                    .rounded_full()
+                    .id("canvas-100")
+                    .px(px(6.))
+                    .h(px(26.))
+                    .min_w(px(52.))
+                    .rounded(px(13.))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(gpui::black().opacity(0.3))
-                    .text_color(gpui::white().opacity(0.85))
                     .cursor_pointer()
-                    .child(icon("video").size(px(12.)))
-                    .tooltip(|_, cx| crate::ui::tooltip(crate::actions::tip("Look through the camera", &crate::actions::StudioKey0), cx))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click({
-                        let studio = self.studio.clone();
-                        move |_, _, cx| studio.update(cx, |s, cx| {
-                            let _ = s.set_view("camera", cx);
-                        })
-                    }),
+                    .font_family(MONO)
+                    .text_size(px(sz::XS))
+                    .text_color(fg)
+                    .hover(move |s| s.bg(hover))
+                    .child(format!("{:.0}%", zoom * 100.0))
+                    .tooltip(|_, cx| crate::ui::tooltip(tip("Show it at 100%", &crate::actions::StudioZoom100), cx))
+                    .on_click(move |_, _, cx| s2.update(cx, |s, cx| s.zoom_canvas_to(1.0, cx))),
             )
+            .child(button("canvas-in", "zoom-in", false, tip("Zoom in", &act::StudioZoomIn)).on_click(move |_, _, cx| s3.update(cx, |s, cx| s.zoom_canvas_to(zoom * 1.25, cx))))
+            .child(div().w(px(1.)).h(px(16.)).mx(px(2.)).bg(t.line))
+            .child(button("canvas-fit", "maximize-2", fit, tip("Fit the canvas · pan with Space+drag, middle-drag or two fingers", &act::StudioFit)).on_click(move |_, _, cx| s4.update(cx, |s, cx| {
+                s.canvas.fit = true;
+                s.changed(cx);
+            })))
     }
 }

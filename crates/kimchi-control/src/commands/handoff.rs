@@ -45,6 +45,11 @@ fn safe_name(name: &str) -> String {
 }
 
 async fn to_ryolune(s: &Arc<Session>, a: &Args) -> CmdResult {
+    match a.opt_str("as").unwrap_or("mix") {
+        "mix" => {}
+        "session" => return session_to_ryolune(s, a).await,
+        other => return Err(format!("as is mix or session, not `{other}`.")),
+    }
     let project = s.project()?;
     let end = project.duration();
     if end <= 0.0 {
@@ -59,7 +64,7 @@ async fn to_ryolune(s: &Arc<Session>, a: &Args) -> CmdResult {
     let dir = handoff_dir("ryolune");
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
     let wav = dir.join(format!("{name}.wav"));
-    let settings = ExportSettings { path: wav.to_string_lossy().into_owned(), format: ExportFormat::Wav, quality: Quality::High, width: None, height: None, fps: None, range: Some((from, to)), encoder: Default::default() };
+    let settings = ExportSettings { path: wav.to_string_lossy().into_owned(), format: ExportFormat::Wav, quality: Quality::High, width: None, height: None, fps: None, range: Some((from, to)), encoder: Default::default(), audio: Default::default() };
     let id = crate::commands::export::start(s, project.clone(), settings)?;
     crate::commands::export::wait(s, &id).await?;
 
@@ -112,6 +117,33 @@ async fn to_ryolune(s: &Arc<Session>, a: &Args) -> CmdResult {
     Ok(result)
 }
 
+/// The whole audio timeline as a ryolune session (`as: session`), opened in the running ryolune.
+async fn session_to_ryolune(s: &Arc<Session>, a: &Args) -> CmdResult {
+    let project = s.project()?;
+    if !project.tracks.iter().any(|t| t.clips.iter().any(|c| crate::commands::audio::has_sound(&project, c))) {
+        return Err("The timeline has no sound to send.".into());
+    }
+    let name = safe_name(a.opt_str("name").unwrap_or(&project.name));
+    let dir = handoff_dir("ryolune");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
+    let tools = s.tools()?;
+    let path = kimchi_media::audio::write_ryolune_session(&tools, &project, &dir.join(format!("{name}.ryolune"))).await.map_err(crate::session::err)?;
+    let mut result = json!({ "session": path, "sentToRyolune": false });
+    match RyoluneClient::connect().await {
+        Ok(mut r) => {
+            let info = r.call("session.info", json!({})).await.unwrap_or(Value::Null);
+            if info.get("dirty").and_then(Value::as_bool).unwrap_or(false) && !a.bool_or("force", false) {
+                result["ryoluneNote"] = json!("ryolune's open song has unsaved changes, so the session wasn't opened there: save it, then open the file (or pass force).");
+            } else {
+                r.call("session.open", json!({ "path": path })).await.map_err(|e| format!("ryolune couldn't open the session: {e}"))?;
+                result["sentToRyolune"] = json!(true);
+            }
+        }
+        Err(e) => result["ryoluneNote"] = json!(format!("{e} Open the file in ryolune.")),
+    }
+    Ok(result)
+}
+
 async fn from_ryolune(s: &Arc<Session>, cx: &Ctx, a: &Args) -> CmdResult {
     let project = s.project()?;
     let path = match a.opt_str("path") {
@@ -153,7 +185,7 @@ fn find_number(v: &Value, key: &str) -> Option<f64> {
 
 /// A minimal client for ryolune's bridge: `$RYOLUNE_CONTROL`, else `~/.ryolune/control.json`,
 /// else the control file named in `~/.lsuite/apps/ryolune.json`.
-struct RyoluneClient {
+pub(crate) struct RyoluneClient {
     lines: tokio::io::Lines<BufReader<tokio::net::tcp::OwnedReadHalf>>,
     write: tokio::net::tcp::OwnedWriteHalf,
     next: u64,
@@ -171,7 +203,7 @@ impl RyoluneClient {
         crate::discovery::find("ryolune").and_then(|e| e.running).and_then(|r| r.control_file)
     }
 
-    async fn connect() -> Result<Self, String> {
+    pub(crate) async fn connect() -> Result<Self, String> {
         let file = Self::control_file().filter(|p| p.is_file()).ok_or("ryolune isn't running.")?;
         let d: Value = serde_json::from_slice(&std::fs::read(&file).map_err(|e| e.to_string())?).map_err(|e| format!("Invalid ryolune control file: {e}"))?;
         let port = d["port"].as_u64().ok_or("Invalid ryolune control file.")? as u16;
@@ -186,7 +218,7 @@ impl RyoluneClient {
         Ok(c)
     }
 
-    async fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+    pub(crate) async fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next;
         self.next += 1;
         let line = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });

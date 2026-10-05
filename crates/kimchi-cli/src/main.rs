@@ -91,6 +91,10 @@ type Res = Result<(), Failure>;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // The plugin scanner runs this program to probe one bundle in a child process.
+    if let Some(code) = kimchi_audio::plugins::scan_child() {
+        std::process::exit(code);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args).await {
         Ok(()) => ExitCode::SUCCESS,

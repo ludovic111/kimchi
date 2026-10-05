@@ -16,7 +16,7 @@ fn sep(cx: &App) -> Div {
     div().flex_none().w(px(1.)).h(px(18.)).mx(px(4.)).bg(cx.theme().line)
 }
 
-pub fn render(this: &mut Studio, _window: &mut Window, cx: &mut Context<Studio>) -> AnyElement {
+pub fn render(this: &mut Studio, window: &mut Window, cx: &mut Context<Studio>) -> AnyElement {
     let t = cx.theme().clone();
     let me = cx.entity();
     let Some((clip, scene)) = this.clip_scene(cx) else { return div().into_any_element() };
@@ -27,23 +27,33 @@ pub fn render(this: &mut Studio, _window: &mut Window, cx: &mut Context<Studio>)
     };
     let mut bar = div()
         .id("studio-toolbar")
-        .h(px(40.))
+        .min_h(px(40.)).py(px(4.))
         .flex_none()
-        .flex()
+        .flex().flex_wrap()
         .items_center()
         .gap(px(4.))
         .px(px(8.))
         .border_b_1()
         .border_color(t.line)
         .bg(t.bg_raised)
-        .overflow_x_hidden();
+        .overflow_hidden();
     {
         let me = me.clone();
         bar = bar.child(Button::new("studio-back", "Back to the edit").small().with_icon("chevron-left").tooltip(tip("Back to the edit", &act::StudioEscape)).on_click(move |_, _, cx| me.update(cx, |s, cx| s.close(cx))));
     }
+    for (right, label, limit) in [(false, "Objects", 1200.), (true, "Properties", 960.)] {
+        if this.available_width(window, cx) < limit {
+            let me = me.clone();
+            bar = bar.child(Button::new(if right { "studio-properties" } else { "studio-objects" }, label)
+                .small().selected(this.drawer == Some(right)).on_click(move |_, _, cx| me.update(cx, |s, cx| {
+                    s.drawer = if s.drawer == Some(right) { None } else { Some(right) };
+                    s.changed(cx);
+                })));
+        }
+    }
     bar = bar.child(
         div()
-            .flex()
+            .flex_none().flex()
             .items_center()
             .gap(px(6.))
             .px(px(6.))
@@ -55,7 +65,7 @@ pub fn render(this: &mut Studio, _window: &mut Window, cx: &mut Context<Studio>)
     bar = bar.child(sep(cx));
     if three {
         let me2 = me.clone();
-        bar = bar.child(div().w(px(140.)).child(segmented(
+        bar = bar.child(div().flex_none().w(px(140.)).child(segmented(
             "studio-mode",
             vec![(Mode::Object, "Object".into()), (Mode::Edit, "Edit".into())],
             this.mode,
@@ -113,7 +123,7 @@ pub fn render(this: &mut Studio, _window: &mut Window, cx: &mut Context<Studio>)
         }));
         bar = bar.child(sep(cx));
         let me_sh = me.clone();
-        bar = bar.child(div().w(px(210.)).child(segmented(
+        bar = bar.child(div().flex_none().w(px(210.)).child(segmented(
             "studio-shading",
             vec![(Shading::Solid, "Solid".into()), (Shading::Material, "Material".into()), (Shading::Rendered, "Rendered".into())],
             this.shading,
@@ -126,7 +136,7 @@ pub fn render(this: &mut Studio, _window: &mut Window, cx: &mut Context<Studio>)
             },
             cx,
         )));
-        let (me_g, me_h, me_o, me_c) = (me.clone(), me.clone(), me.clone(), me.clone());
+        let (me_g, me_h) = (me.clone(), me.clone());
         bar = bar
             .child(Button::icon("grid", "grid-3x3", "Floor grid and axes").selected(this.grid).on_click(move |_, _, cx| {
                 me_g.update(cx, |s, cx| {
@@ -139,20 +149,12 @@ pub fn render(this: &mut Studio, _window: &mut Window, cx: &mut Context<Studio>)
                     s.helpers = !s.helpers;
                     s.changed(cx);
                 })
-            }))
-            .child(Button::icon("ortho", if this.view.ortho { "square" } else { "box" }, tip(if this.view.ortho { "Orthographic (switch to perspective)" } else { "Perspective (switch to orthographic)" }, &act::StudioOrtho)).on_click(move |_, _, cx| {
-                me_o.update(cx, |s, cx| {
-                    s.view.ortho = !s.view.ortho;
-                    s.through_camera = false;
-                    s.changed(cx);
-                })
-            }))
-            .child(Button::icon("cam-view", "video", tip("Through the camera", &act::StudioKey0)).selected(this.through_camera).on_click(move |_, _, cx| {
-                me_c.update(cx, |s, cx| {
-                    s.through_camera = !s.through_camera;
-                    s.changed(cx);
-                })
             }));
+        let me_cam = me.clone();
+        bar = bar.child(Button::new("camera-menu", "Camera").small().ghost().with_icon("video").icon_after("chevron-down").selected(this.through_camera || this.lock_camera).tooltip("The camera: look through it, lock it to the view, put it where you are, keyframe it, and moves (orbit, dolly, crane, fly-through…)").on_click(move |e, _, cx| {
+            let entries = super::menus::camera_menu(&me_cam, cx);
+            super::menus::open_menu(e.position(), entries, cx);
+        }));
     } else {
         bar = bar
             .child(tool_button(Tool::Select, "mouse-pointer-2", "Select", &act::StudioToolSelect))

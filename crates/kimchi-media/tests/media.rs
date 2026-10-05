@@ -196,6 +196,7 @@ fn asset(kind: MediaKind, path: &Path, meta: kimchi_core::MediaMeta) -> Asset {
         filmstrip: None,
         waveform: None,
         proxy: None,
+        beats: None,
     }
 }
 
@@ -246,6 +247,7 @@ fn settings(fx: &Fixtures, name: &str, format: ExportFormat) -> ExportSettings {
         fps: None,
         range: None,
         encoder: Default::default(),
+        audio: Default::default(),
     }
 }
 
@@ -365,13 +367,14 @@ async fn cancels_and_reports_errors() {
     assert!(!Path::new(&st.path).exists());
     assert!(!fx.root.join(".cancelled.mp4.part").exists());
 
-    // A corrupt source: the error carries ffmpeg's explanation, not just an exit code.
+    // A corrupt source: either the shared audio mixer or the picture decoder can discover
+    // it first. Both must retain ffmpeg's explanation, not just an exit code.
     let mut broken = project.clone();
     std::fs::write(&fx.silent, b"definitely not a video").unwrap();
     broken.assets[0].path = fx.silent.to_string_lossy().into();
     let st = settings(&fx, "broken.mp4", ExportFormat::Mp4);
     match export(&tools, &broken, &st, |_| {}, CancellationToken::new()).await {
-        Err(MediaError::Ffmpeg(msg)) => {
+        Err(MediaError::Ffmpeg(msg) | MediaError::Unsupported(msg)) => {
             eprintln!("ffmpeg error: {msg}");
             assert!(msg.contains("silent.mp4") && msg.contains("Invalid data"), "{msg}");
             assert!(!msg.contains("Conversion failed"), "{msg}");
@@ -544,7 +547,7 @@ async fn reversed_clips_and_transitions_render_and_export() {
     assert!(played.windows(2).all(|w| w[1] <= w[0].saturating_add(3)), "never brighter: {played:?}");
     assert!(grey(&Renderer::new(&tools, &p, 64, 64, 10.0).still(1.5).unwrap()) < 90);
 
-    let st = ExportSettings { path: dir.path().join("rev.mp4").to_string_lossy().into(), format: ExportFormat::Mp4, quality: Quality::Draft, width: None, height: None, fps: None, range: None, encoder: Default::default() };
+    let st = ExportSettings { path: dir.path().join("rev.mp4").to_string_lossy().into(), format: ExportFormat::Mp4, quality: Quality::Draft, width: None, height: None, fps: None, range: None, encoder: Default::default(), audio: Default::default() };
     export(&tools, &p, &st, |_| {}, CancellationToken::new()).await.unwrap();
     let out = Path::new(&st.path);
     assert!(pixel(&tools, out, 0.1, 32, 32)[1] > 160 && pixel(&tools, out, 1.85, 32, 32)[1] < 60);
@@ -624,7 +627,7 @@ async fn pictures_that_end_before_their_sound_hold_their_last_frame() {
         assert!(grey(&f) > 90, "frame {n} shows the held picture, not the background: {}", grey(&f));
     }
     assert!(grey(&Renderer::new(&tools, &p, 64, 64, 10.0).still(0.5).unwrap()) > 90);
-    let st = ExportSettings { path: dir.path().join("tail.mp4").to_string_lossy().into(), format: ExportFormat::Mp4, quality: Quality::Draft, width: None, height: None, fps: None, range: None, encoder: Default::default() };
+    let st = ExportSettings { path: dir.path().join("tail.mp4").to_string_lossy().into(), format: ExportFormat::Mp4, quality: Quality::Draft, width: None, height: None, fps: None, range: None, encoder: Default::default(), audio: Default::default() };
     export(&tools, &p, &st, |_| {}, CancellationToken::new()).await.unwrap();
 }
 
@@ -668,7 +671,7 @@ async fn hundreds_of_cuts_from_one_recording_export() {
     let mut p = Project::new("cuts", ProjectSettings { width: 64, height: 64, fps: 10.0, ..Default::default() });
     p.tracks = vec![Track { clips, ..Track::new(TrackKind::Audio, "A") }];
     p.assets = vec![a];
-    let st = ExportSettings { path: dir.path().join("cuts.wav").to_string_lossy().into(), format: ExportFormat::Wav, quality: Quality::Draft, width: None, height: None, fps: None, range: None, encoder: Default::default() };
+    let st = ExportSettings { path: dir.path().join("cuts.wav").to_string_lossy().into(), format: ExportFormat::Wav, quality: Quality::Draft, width: None, height: None, fps: None, range: None, encoder: Default::default(), audio: Default::default() };
     export(&tools, &p, &st, |_| {}, CancellationToken::new()).await.unwrap();
     let (duration, ..) = shape(&tools, Path::new(&st.path)).await;
     assert!((duration - 15.0).abs() < 0.05, "{duration}");
@@ -678,8 +681,10 @@ async fn hundreds_of_cuts_from_one_recording_export() {
     // (`sine` is at 1/8 of full scale.)
     let silent: Vec<usize> = samples.chunks(1_600).enumerate().filter(|(_, cut)| !cut[200..1400].iter().any(|s| s.abs() > 0.08)).map(|(i, _)| i).collect();
     assert!(silent.is_empty(), "silent cuts: {silent:?}");
+    // ffmpeg only reads the mix: one input, however many cuts.
     let plan = kimchi_media::export::build(&p, &st, &kimchi_media::Caps::new(7, ["pcm_s24le"])).unwrap();
-    assert_eq!(plan.inputs.iter().filter(|a| *a == "-i").count(), 64);
+    assert_eq!(plan.inputs.iter().filter(|a| *a == "-i").count(), 1);
+    assert_eq!(plan.sources.as_slice(), std::slice::from_ref(&rec));
 }
 
 #[tokio::test]

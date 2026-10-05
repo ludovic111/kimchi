@@ -13,6 +13,7 @@ fn video_asset(duration: f64) -> Asset {
         filmstrip: None,
         waveform: None,
         proxy: None,
+        beats: None,
     }
 }
 

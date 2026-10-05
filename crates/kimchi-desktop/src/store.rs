@@ -96,6 +96,8 @@ pub type MenuAction = Rc<dyn Fn(&mut Window, &mut App)>;
 pub struct MenuItem {
     pub label: SharedString,
     pub icon: Option<&'static str>,
+    /// A service's logo before the label (`ui::logo` id), e.g. the agent's providers.
+    pub logo: Option<&'static str>,
     pub shortcut: Option<SharedString>,
     pub danger: bool,
     /// Uses the accent: an AI action.
@@ -106,10 +108,14 @@ pub struct MenuItem {
 
 impl MenuItem {
     pub fn new(label: impl Into<SharedString>, action: impl Fn(&mut Window, &mut App) + 'static) -> Self {
-        Self { label: label.into(), icon: None, shortcut: None, danger: false, ai: false, disabled: false, action: Rc::new(action) }
+        Self { label: label.into(), icon: None, logo: None, shortcut: None, danger: false, ai: false, disabled: false, action: Rc::new(action) }
     }
     pub fn icon(mut self, icon: &'static str) -> Self {
         self.icon = Some(icon);
+        self
+    }
+    pub fn logo(mut self, id: &'static str) -> Self {
+        self.logo = Some(id);
         self
     }
     pub fn shortcut(mut self, s: impl Into<SharedString>) -> Self {
@@ -221,6 +227,9 @@ pub struct Store {
     pub snapping: bool,
     pub ripple: bool,
     pub left_tab: LeftTab,
+    /// Counts the times a left tab was asked for (`set_left_tab`): the editor shows the left
+    /// panel (or its drawer, in a narrow window) when it changes.
+    pub left_reveal: u64,
     pub dialog: Option<Dialog>,
     pub agent_open: bool,
     pub jobs_open: bool,
@@ -230,6 +239,9 @@ pub struct Store {
     pub clipboard: Clipboard,
     /// What the Studio shows while it is open (its `ui.studio` state), for `ui.state`.
     pub studio: Option<Value>,
+    /// The audio views: the mixer, the selected strip, the effect panel and browser, recording.
+    pub audio: crate::views::mixer::AudioView,
+    pub recorder: crate::views::mixer::recording::Recorder,
     next_toast: u64,
     _pump: Task<()>,
 }
@@ -295,6 +307,7 @@ impl Store {
             snapping: true,
             ripple: false,
             left_tab: LeftTab::Media,
+            left_reveal: 0,
             dialog: None,
             agent_open: false,
             jobs_open: false,
@@ -303,6 +316,8 @@ impl Store {
             dropping: false,
             clipboard: Clipboard::default(),
             studio: None,
+            audio: Default::default(),
+            recorder: Default::default(),
             next_toast: 1,
             _pump: pump,
         };
@@ -376,6 +391,9 @@ impl Store {
                 self.refresh_project();
                 self.library = self.session.library.list();
                 self.playback.update(cx, |p, cx| p.reset(cx));
+                crate::views::mixer::recording::project_switched(self, cx);
+                self.audio.forget_project();
+                crate::views::mixer::refresh_songs(self, cx);
             }
             Event::Job { job } => match self.jobs.iter_mut().find(|j| j.id == job.id) {
                 Some(j) => *j = *job,
@@ -475,6 +493,7 @@ impl Store {
             ripple: self.ripple,
             // The editor keeps its panel sizes up to date itself.
             layout: self.session.ui_state().layout,
+            audio: Some(self.audio.to_json(self.project.as_deref())),
         });
     }
 
@@ -679,8 +698,10 @@ impl Store {
         cx.notify();
     }
 
+    /// Shows a tab of the left panel (opening the panel if it was closed).
     pub fn set_left_tab(&mut self, tab: LeftTab, cx: &mut Context<Self>) {
         self.left_tab = tab;
+        self.left_reveal += 1;
         self.sync_ui(cx);
         cx.notify();
     }
@@ -720,6 +741,16 @@ impl Store {
         cx.emit(StoreEvent::Compose(Box::new(req)));
         self.sync_ui(cx);
         cx.notify();
+    }
+
+    /// Changes what the audio views show (mixer, strip, effect panel…).
+    pub fn set_audio(&mut self, f: impl FnOnce(&mut crate::views::mixer::AudioView), cx: &mut Context<Self>) {
+        let before = self.audio.clone();
+        f(&mut self.audio);
+        if self.audio != before {
+            self.sync_ui(cx);
+            cx.notify();
+        }
     }
 
     pub fn set_zoom(&mut self, pps: f64, cx: &mut Context<Self>) {

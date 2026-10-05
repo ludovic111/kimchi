@@ -224,9 +224,11 @@ impl Home {
         let t = cx.theme().clone();
         let s = self.store.read(cx);
         let connected = s.providers.iter().filter(|p| p.ready).count();
+        let connected_logos: Vec<String> = s.providers.iter().filter(|p| p.ready && crate::ui::logos::logo_file(&p.info.id).is_some()).take(4).map(|p| p.info.id.clone()).collect();
         let update = s.update.available.clone();
         let fullscreen = window.is_fullscreen();
         let controls = crate::ui::window_controls(window, cx);
+        let compact = crate::ui::layout::breakpoint(f32::from(window.viewport_size().width)) == crate::ui::layout::Breakpoint::Compact;
         div()
             .id("home-top")
             .h(px(crate::views::editor::TOPBAR_H))
@@ -261,7 +263,12 @@ impl Home {
                                 .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: Some("updates".into()) }, cx))),
                         )
                     })
-                    .child(Button::new("home-support", "Support").small().ghost().with_icon("heart").on_click(|_, _, cx| cx.open_url(crate::app::SUPPORT_URL)))
+                    .child(if compact {
+                        Button::icon("home-support", "heart", "Support kimchi")
+                    } else {
+                        Button::new("home-support", "Support").small().ghost().with_icon("heart")
+                    }
+                    .on_click(|_, _, cx| cx.open_url(crate::app::SUPPORT_URL)))
                     .child(
                         div()
                             .id("home-keys")
@@ -279,7 +286,10 @@ impl Home {
                             .role(gpui::Role::Button)
                             .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: Some("models".into()) }, cx)))
                             .child(icon("key-round").text_color(if connected > 0 { t.success } else { t.text_2 }))
-                            .child(if connected > 0 {
+                            .children(connected_logos.iter().map(|id| crate::ui::logo(id, px(14.))))
+                            .child(if connected > 0 && compact {
+                                format!("{connected} connected")
+                            } else if connected > 0 {
                                 format!("{connected} model provider{} connected", if connected == 1 { "" } else { "s" })
                             } else {
                                 "Connect a model provider".into()

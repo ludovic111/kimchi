@@ -97,6 +97,7 @@ pub fn clip_menu(_: &mut TimelineBody, id: Id, position: Point<Pixels>, cx: &mut
         });
         items.push(item.icon("snowflake").disabled(!inside || locked).entry());
     }
+    items.extend(crate::views::mixer::clip_menu_items(&p, &clip, locked));
     if picture {
         let inside = playhead.clamp(clip.start, clip.end());
         let (c1, c2, c3) = (clip.clone(), clip.clone(), clip.clone());

@@ -495,6 +495,7 @@ async fn land(s: &Arc<Session>, job: &Job) -> CmdResult<()> {
             filmstrip: None,
             waveform: None,
             proxy: None,
+            beats: None,
         };
         first.get_or_insert(asset.id);
         add_asset(s, tag.project_id, asset)?;

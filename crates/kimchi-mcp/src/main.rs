@@ -44,6 +44,10 @@ Register it with an MCP client, for example Claude Code:
 
 #[tokio::main]
 async fn main() {
+    // The plugin scanner runs this program to probe one bundle in a child process.
+    if let Some(code) = kimchi_audio::plugins::scan_child() {
+        std::process::exit(code);
+    }
     let mut file: Option<PathBuf> = None;
     let (mut live, mut headless) = (false, false);
     let mut args = std::env::args().skip(1);

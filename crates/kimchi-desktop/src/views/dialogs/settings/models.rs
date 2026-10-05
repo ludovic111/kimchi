@@ -287,7 +287,14 @@ impl SettingsDialog {
                             .flex_col()
                             .gap(px(3.))
                             .min_w_0()
-                            .child(div().text_size(px(sz::XL)).font_weight(FontWeight::SEMIBOLD).child(p.info.name.clone()))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(9.))
+                                    .child(crate::ui::logo(&p.info.id, px(22.)))
+                                    .child(div().text_size(px(sz::XL)).font_weight(FontWeight::SEMIBOLD).child(p.info.name.clone())),
+                            )
                             .child(div().text_color(t.text_2).child(p.info.tagline.clone())),
                     )
                     .child(div().w(px(150.)).flex_none().child(toggle_row(

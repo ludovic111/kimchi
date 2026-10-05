@@ -141,6 +141,12 @@ impl Workspace {
         subs.push(cx.subscribe_in(&studio, window, |ws, _, e: &views::studio::StudioEvent, window, cx| match e {
             views::studio::StudioEvent::Closed => window.focus(&ws.focus, cx),
         }));
+        // Back to the front: ryolune songs saved meanwhile are rendered again.
+        subs.push(cx.observe_window_activation(window, |ws, window, cx| {
+            if window.is_window_active() {
+                ws.store.update(cx, views::mixer::refresh_songs);
+            }
+        }));
         store.update(cx, |s, cx| s.sync_ui(cx));
         Self { store, focus, home, editor, dialogs, _subs: subs }
     }
@@ -182,6 +188,11 @@ impl Workspace {
             }
             "ui.showPanel" if params["open"] == json!(false) => {
                 let panel = params["panel"].as_str().unwrap_or("");
+                // The left panel closes to its rail (whichever tab is named); the inspector closes.
+                if matches!(panel, "media" | "generate" | "text" | "motion" | "captions" | "inspector") {
+                    self.editor.update(cx, |e, cx| if panel == "inspector" { e.set_inspector_open(false, cx) } else { e.set_left_open(false, cx) });
+                    return Ok(json!({ "panel": panel, "open": false }));
+                }
                 store.update(cx, |s, cx| match panel {
                     "agent" => s.set_agent_open(false, cx),
                     "jobs" => s.set_jobs_open(false, cx),
@@ -194,7 +205,7 @@ impl Workspace {
                     _ => {}
                 });
                 if !matches!(panel, "agent" | "jobs" | "settings" | "diagnostics" | "export" | "palette" | "shortcuts" | "whatsNew") {
-                    return Err(format!("`{panel}` can't be closed: the left panel always shows one tab (open another), and home is left by opening a project."));
+                    return Err(format!("`{panel}` can't be closed: home is left by opening a project."));
                 }
                 Ok(json!({ "panel": panel, "open": false }))
             }
@@ -216,6 +227,9 @@ impl Workspace {
                     "diagnostics" | "logs" => s.open_dialog(Dialog::Settings { section: Some("diagnostics".into()) }, cx),
                     _ => {}
                 });
+                if panel == "inspector" {
+                    self.editor.update(cx, |e, cx| e.set_inspector_open(true, cx));
+                }
                 if panel == "home" {
                     store.update(cx, |s, cx| s.run("project.close", json!({}), cx));
                 }
@@ -269,6 +283,7 @@ impl Workspace {
                 Ok(json!({ "revealed": path }))
             }
             "ui.screenshot" => views::screenshot::capture(params["path"].as_str(), window),
+            c if c.starts_with("audio.") => views::mixer::ui_command(c, params, cx),
             "ui.studio" => {
                 if store.read(cx).project.is_none() {
                     return Err(kimchi_control::session::NO_PROJECT.into());
@@ -642,6 +657,14 @@ impl Workspace {
     }
 
     fn deselect(&mut self, _: &Deselect, _: &mut Window, cx: &mut Context<Self>) {
+        let (menu, dialog) = {
+            let s = self.store.read(cx);
+            (s.menu.is_some(), s.dialog.is_some())
+        };
+        // A drawer over the work (narrow windows) goes before the selection does.
+        if !menu && !dialog && self.has_project(cx) && self.editor.update(cx, |e, cx| e.close_drawers(cx)) {
+            return;
+        }
         self.store.update(cx, |s, cx| {
             if s.menu.is_some() {
                 s.close_menu(cx);
@@ -715,6 +738,18 @@ impl Workspace {
 
     fn show_shortcuts(&mut self, _: &ShowShortcuts, _: &mut Window, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| if s.dialog == Some(Dialog::Shortcuts) { s.close_dialog(cx) } else { s.open_dialog(Dialog::Shortcuts, cx) });
+    }
+
+    fn toggle_left_panel(&mut self, _: &ToggleLeftPanel, _: &mut Window, cx: &mut Context<Self>) {
+        if self.has_project(cx) {
+            self.editor.update(cx, |e, cx| e.toggle_left(cx));
+        }
+    }
+
+    fn toggle_inspector(&mut self, _: &ToggleInspector, _: &mut Window, cx: &mut Context<Self>) {
+        if self.has_project(cx) {
+            self.editor.update(cx, |e, cx| e.toggle_inspector(cx));
+        }
     }
 
     fn toggle_agent(&mut self, _: &ToggleAgent, _: &mut Window, cx: &mut Context<Self>) {
@@ -992,6 +1027,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::add_marker))
             .on_action(cx.listener(Self::add_text))
             .on_action(cx.listener(Self::toggle_agent))
+            .on_action(cx.listener(Self::toggle_left_panel))
+            .on_action(cx.listener(Self::toggle_inspector))
             .on_action(cx.listener(Self::toggle_jobs))
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::open_settings))
@@ -1005,6 +1042,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::restart_app))
             .on_action(cx.listener(Self::help))
             .on_action(cx.listener(Self::support))
+            .map(views::mixer::on_actions)
             .on_drop(cx.listener(Self::on_drop_paths))
             .on_drag_move::<ExternalPaths>(cx.listener(|ws, _, _, cx| {
                 ws.store.update(cx, |s, cx| {

@@ -1,6 +1,7 @@
 //! kimchi-media: everything that touches media files, via ffmpeg/ffprobe.
 
 pub mod accel;
+pub mod audio;
 pub mod export;
 pub mod preview;
 pub mod render;

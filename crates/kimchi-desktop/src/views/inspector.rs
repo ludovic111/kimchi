@@ -2,8 +2,8 @@
 //!
 //! - one clip: name, generation provenance, the AI actions, text style or solid colour, a
 //!   motion clip's template values and scene, transform, animation (keyframes at the playhead,
-//!   easings, presets), colour effects, the transition in, timing (speed, reverse, freeze
-//!   frame), sound and the source media;
+//!   easings, presets), colour effects, sound, timing (speed, reverse, freeze frame), the
+//!   transition in and the source media, each a section that folds away;
 //! - several clips: duplicate, delete, and "bridge" for two;
 //! - a media item picked in the media panel: poster, provenance, file facts, insert / reveal;
 //! - nothing: the project's canvas, frame rate and background, and the main shortcuts.
@@ -13,6 +13,7 @@
 
 pub mod ai;
 pub mod animation;
+pub mod audio;
 pub mod color;
 pub mod effects;
 pub mod fonts;
@@ -33,6 +34,7 @@ use crate::store::{Store, StoreExt};
 use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::scrub::{Scrub, ScrubChange};
+use crate::ui::fold::Fold;
 use crate::ui::{Button, GlassExt, caps, icon, kbd, segmented, switch, tooltip};
 use color::{ColorChange, ColorField};
 use fonts::{FontPicked, FontPicker};
@@ -76,6 +78,10 @@ pub struct Inspector {
     item_fields: scene_editor::ItemFields,
     /// Colour, transition and speed controls.
     fx: effects::EffectFields,
+    /// Sections the person folded (by key), kept while the window is open.
+    folded: std::collections::HashSet<&'static str>,
+    /// Sound controls (the clip's Audio section, a mixer strip's mix).
+    audio: audio::AudioFields,
     _subs: Vec<Subscription>,
 }
 
@@ -183,6 +189,7 @@ impl Inspector {
         let background = cx.new(|cx| ColorField::new(None, cx));
         subs.push(cx.subscribe(&background, |this: &mut Self, _, ch: &ColorChange, cx| this.set_settings(json!({ "background": ch.0.get(..7).unwrap_or(&ch.0) }), cx)));
         let fx = effects::EffectFields::new(&mut subs, cx);
+        let audio = audio::AudioFields::new(&mut subs, cx);
 
         Self {
             store,
@@ -213,6 +220,8 @@ impl Inspector {
             scene_item: None,
             item_fields: Default::default(),
             fx,
+            folded: Default::default(),
+            audio,
             _subs: subs,
         }
     }
@@ -350,8 +359,7 @@ impl Inspector {
             let still = asset.as_ref().is_some_and(|a| matches!(a.kind, MediaKind::Video | MediaKind::Image));
             let (c1, c2, c3) = (clip.clone(), clip.clone(), clip.clone());
             body.push(
-                section(cx)
-                    .child(caps("With AI", cx))
+                self.fold("ai", "With AI", cx)
                     .child(ai_button("ai-animate", "clapperboard", "Animate this frame", cx).on_click(move |_, _, cx| ai::animate_frame(&c1, cx)))
                     .when(still, |d| d.child(ai_button("ai-extend", "arrow-right-to-line", "Extend shot", cx).on_click(move |_, _, cx| ai::extend_clip(&c2, cx))))
                     .child(ai_button("ai-restyle", "wand-sparkles", "Restyle frame", cx).on_click(move |_, _, cx| ai::restyle_frame(&c3, cx)))
@@ -366,8 +374,7 @@ impl Inspector {
                 let this = cx.entity();
                 let (e1, e2, e3, e4) = (this.clone(), this.clone(), this.clone(), this.clone());
                 body.push(
-                    section(cx)
-                        .child(caps("Text", cx))
+                    self.fold("text", "Text", cx)
                         .child(self.content.clone())
                         .child(div().flex().gap(px(6.)).child(self.font.clone()))
                         .child(self.text_color.clone())
@@ -408,7 +415,7 @@ impl Inspector {
                         .into_any_element(),
                 );
             }
-            ClipContent::Solid { .. } => body.push(section(cx).child(caps("Colour", cx)).child(self.solid.clone()).into_any_element()),
+            ClipContent::Solid { .. } => body.push(self.fold("solid", "Colour", cx).child(self.solid.clone()).into_any_element()),
             ClipContent::Pending { prompt, model_name, .. } => body.push(
                 section(cx)
                     .child(div().flex().items_center().gap(px(6.)).text_color(t.accent_text).child(icon("loader-circle").text_color(t.accent_text)).child(caps("Generating", cx)))
@@ -422,8 +429,7 @@ impl Inspector {
                 let id = clip.id;
                 let state = crate::views::studio::render_state::state_of(id, cx);
                 body.push(
-                    section(cx)
-                        .child(caps("Motion clip", cx))
+                    self.fold("motion-clip", "Motion clip", cx)
                         .child(Button::new("open-studio", "Open in the Studio").small().primary().with_icon("box").full_width().tooltip(crate::actions::tip("Open in the Studio (or double-click the clip)", &crate::actions::OpenStudio)).on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.open_studio(id, cx))))
                         .when_some(state, |d, st| d.child(crate::views::studio::render_state::controls("insp-render", id, &st, cx)))
                         .into_any_element(),
@@ -451,16 +457,10 @@ impl Inspector {
             let reset_this = this.clone();
             let opacity = clip.transform.opacity;
             body.push(
-                section(cx)
-                    .child(
-                        div().flex().items_center().justify_between().child(caps("Transform", cx)).child(
-                            Button::icon("reset-transform", "rotate-ccw", "Reset position, scale, rotation and opacity").small().on_click(move |_, _, cx| {
-                                reset_this.update(cx, |this, cx| {
-                                    this.update_clip(json!({ "x": 0, "y": 0, "scale": 1, "rotation": 0, "opacity": 1, "fit": reset_fit }), "reset", true, cx)
-                                })
-                            }),
-                        ),
-                    )
+                self.fold("transform", "Transform", cx)
+                    .trailing(Button::icon("reset-transform", "rotate-ccw", "Reset position, scale, rotation and opacity").small().on_click(move |_, _, cx| {
+                        reset_this.update(cx, |this, cx| this.update_clip(json!({ "x": 0, "y": 0, "scale": 1, "rotation": 0, "opacity": 1, "fit": reset_fit }), "reset", true, cx))
+                    }))
                     .child(grid2().child(self.x.clone()).child(self.y.clone()).child(self.scale.clone()).child(self.rotation.clone()))
                     .child(labeled("Opacity", self.opacity.clone().into_any_element(), format!("{}%", (opacity * 100.0).round()), cx))
                     .when(matches!(clip.content, ClipContent::Media { .. }), |d| {
@@ -487,15 +487,15 @@ impl Inspector {
             body.push(self.animation_section(clip, fps, cx));
             body.push(self.color_section(clip, fps, cx));
         }
-        if !matches!(clip.content, ClipContent::Pending { .. }) && (track_kind == Some(TrackKind::Video) || has_sound) {
-            body.push(self.transition_section(clip, project, cx));
+        // The picture's sections, then sound, then the edit: timing and the transition in.
+        if has_sound {
+            body.push(self.audio_section(clip, project, cx));
         }
 
         let speedable = matches!(clip.content, ClipContent::Media { .. }) && asset.as_ref().is_some_and(|a| a.kind != MediaKind::Image);
         let store_playhead = self.store.read(cx).playback.read(cx).playhead;
         body.push(
-            section(cx)
-                .child(caps("Timing", cx))
+            self.fold("timing", "Timing", cx)
                 .child(
                     div()
                         .flex()
@@ -514,20 +514,14 @@ impl Inspector {
                 .into_any_element(),
         );
 
-        if has_sound {
-            body.push(
-                section(cx)
-                    .child(caps("Sound", cx))
-                    .child(labeled("Volume", self.volume.clone().into_any_element(), format!("{}%", (clip.volume * 100.0).round()), cx))
-                    .into_any_element(),
-            );
+        if !matches!(clip.content, ClipContent::Pending { .. }) && (track_kind == Some(TrackKind::Video) || has_sound) {
+            body.push(self.transition_section(clip, project, cx));
         }
 
         if let Some(a) = &asset {
             let path = a.path.clone();
             body.push(
-                section(cx)
-                    .child(caps("Source", cx))
+                self.fold("source", "Source", cx)
                     .child(div().text_size(px(sz::SM)).truncate().child(a.name.clone()))
                     .child(facts(a, cx))
                     .child(Button::new("reveal-source", crate::ui::reveal_label()).small().with_icon("folder-search").on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&path))))
@@ -551,8 +545,7 @@ impl Inspector {
         if n == 2 && on_video {
             let (a, b) = (clips[0].clone(), clips[1].clone());
             body.push(
-                section(cx)
-                    .child(caps("With AI", cx))
+                self.fold("ai", "With AI", cx)
                     .child(ai_button("ai-bridge", "waypoints", "Bridge these two shots", cx).on_click(move |_, _, cx| ai::bridge(&a, &b, cx)))
                     .child(
                         div()
@@ -622,8 +615,7 @@ impl Inspector {
         if a.kind == MediaKind::Image {
             let (a1, a2) = (a.clone(), a.clone());
             body.push(
-                section(cx)
-                    .child(caps("With AI", cx))
+                self.fold("ai", "With AI", cx)
                     .child(ai_button("ai-animate-image", "clapperboard", "Animate with AI", cx).on_click(move |_, _, cx| ai::animate_image(&a1, cx)))
                     .child(ai_button("ai-edit-image", "wand-sparkles", "Edit with AI", cx).on_click(move |_, _, cx| ai::edit_image(&a2, cx)))
                     .into_any_element(),
@@ -675,17 +667,14 @@ impl Inspector {
         ];
         let t = cx.theme().clone();
         let body = vec![
-            section(cx)
-                .child(caps("Canvas", cx))
+            self.fold("canvas", "Canvas", cx)
                 .child(presets)
                 .child(grid2().child(self.width.clone()).child(self.height.clone()))
                 .child(div().text_size(px(sz::SM)).text_color(t.text_2).child(format!("{} · {}×{}", s.aspect_ratio(), w, h)))
                 .into_any_element(),
-            section(cx).child(caps("Frame rate", cx)).child(rates).into_any_element(),
-            section(cx).child(caps("Background", cx)).child(self.background.clone()).into_any_element(),
-            section(cx)
-                .border_b_0()
-                .child(caps("Shortcuts", cx))
+            self.fold("frame-rate", "Frame rate", cx).child(rates).into_any_element(),
+            self.fold("background", "Background", cx).child(self.background.clone()).into_any_element(),
+            self.fold("shortcuts", "Shortcuts", cx)
                 .children(keys.iter().map(|(what, a)| {
                     let k = match *what {
                         "Copy / paste" => format!("{} {}", act::keys_label("M-c"), act::keys_label("M-v")),
@@ -741,7 +730,11 @@ impl Inspector {
                     .text_size(px(sz::SM))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(t.accent_text)
-                    .child(icon("sparkles").text_color(t.accent_text))
+                    .child(if crate::ui::logos::logo_file(&g.provider).is_some() {
+                        crate::ui::logo(&g.provider, px(14.)).into_any_element()
+                    } else {
+                        icon("sparkles").text_color(t.accent_text).into_any_element()
+                    })
                     .child(g.model_name.clone()),
             )
             .child(div().text_size(px(sz::MD)).line_height(px(sz::MD * 1.35)).text_color(t.text).child(g.prompt.clone()))
@@ -793,6 +786,8 @@ impl Render for Inspector {
                     self.multi_view(clips, cx)
                 } else if let Some(a) = selected_asset.and_then(|id| p.asset(id).cloned()) {
                     self.asset_view(&a, cx)
+                } else if let Some(v) = self.strip_view(&p, cx) {
+                    v
                 } else {
                     self.project_view(&p, window, cx)
                 }
@@ -828,6 +823,21 @@ pub fn insert_at_playhead(asset: Id, cx: &mut App) {
         let t = s.playback.read(cx).playhead;
         s.run_then("clip.insertMedia", json!({ "assetId": asset, "start": t }), cx, |s, v, cx| s.set_selection(crate::app::created(&v), cx));
     });
+}
+
+impl Inspector {
+    /// A titled section that folds away with a click on its header (remembered by `key`).
+    pub(crate) fn fold(&self, key: &'static str, title: impl Into<SharedString>, cx: &mut Context<Self>) -> Fold {
+        let this = cx.entity().downgrade();
+        Fold::new(ElementId::Name(format!("fold-{key}").into()), title, !self.folded.contains(key)).on_toggle(move |_, cx| {
+            let _ = this.update(cx, |i, cx| {
+                if !i.folded.remove(key) {
+                    i.folded.insert(key);
+                }
+                cx.notify();
+            });
+        })
+    }
 }
 
 fn section(cx: &App) -> Div {

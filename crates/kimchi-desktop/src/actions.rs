@@ -63,6 +63,8 @@ actions!(
         ShowMotion,
         ShowCaptions,
         ToggleAgent,
+        ToggleLeftPanel,
+        ToggleInspector,
         ToggleJobs,
         ToggleTheme,
         ShowShortcuts,
@@ -110,6 +112,17 @@ actions!(
         StudioGraph,
         StudioHide,
         StudioUnhide,
+        ToggleMixer,
+        MuteTrack,
+        SoloTrack,
+        ArmTrack,
+        RecordVoiceOver,
+        AddEffect,
+        StudioAlignCamera,
+        StudioFly,
+        StudioZoomIn,
+        StudioZoomOut,
+        StudioZoom100,
     ]
 );
 
@@ -142,7 +155,7 @@ macro_rules! sc {
 }
 
 #[cfg(test)]
-const GROUPS: [&str; 7] = ["Playback", "Editing", "Timeline", "Panels", "Project", "Studio", "Studio: modelling"];
+const GROUPS: [&str; 8] = ["Playback", "Editing", "Timeline", "Audio", "Panels", "Project", "Studio", "Studio: modelling"];
 
 pub static SHORTCUTS: &[Shortcut] = &[
     sc!("Playback", "Play / pause", ["space"], Editing, PlayPause),
@@ -189,6 +202,8 @@ pub static SHORTCUTS: &[Shortcut] = &[
     sc!("Panels", "Motion", ["M-4"], App, ShowMotion),
     sc!("Panels", "Captions", ["M-5"], App, ShowCaptions),
     sc!("Panels", "Agent", ["M-j"], App, ToggleAgent),
+    sc!("Panels", "Show / hide the left panel", ["M-alt-b"], App, ToggleLeftPanel),
+    sc!("Panels", "Show / hide the inspector", ["M-alt-i"], App, ToggleInspector),
     sc!("Panels", "Keyboard shortcuts", ["?", "M-/"], App, ShowShortcuts),
     sc!("Project", "Import media", ["M-i"], App, Import),
     sc!("Project", "Export", ["M-e"], App, Export),
@@ -198,6 +213,13 @@ pub static SHORTCUTS: &[Shortcut] = &[
     sc!("Project", "Settings", ["M-,"], App, OpenSettings),
     sc!("", "Quit", ["M-q"], App, Quit),
     sc!("Timeline", "Open in the Studio", ["M-shift-o"], Editing, OpenStudio),
+    // Sound: the mixer key is ryolune's.
+    sc!("Audio", "Mixer", ["x"], Editing, ToggleMixer),
+    sc!("Audio", "Mute the selected track", ["alt-m"], Editing, MuteTrack),
+    sc!("Audio", "Solo the selected track", ["alt-s"], Editing, SoloTrack),
+    sc!("Audio", "Arm the selected track for recording", ["alt-a"], Editing, ArmTrack),
+    sc!("Audio", "Record a voice-over / stop", ["shift-r"], Editing, RecordVoiceOver),
+    sc!("Audio", "Add an effect", ["M-shift-e"], Editing, AddEffect),
     // The Studio: Blender's keys in 3D, After Effects' in 2D.
     sc!("Studio", "Back to the edit", ["escape"], Studio, StudioEscape),
     sc!("Studio", "Play / pause the clip", ["space"], Studio, StudioPlay),
@@ -222,6 +244,11 @@ pub static SHORTCUTS: &[Shortcut] = &[
     sc!("Studio", "Frame (edit mode: fill)", ["f"], Studio, StudioFill),
     sc!("Studio", "Frame everything", ["home"], Studio, StudioFrameAll),
     sc!("Studio", "Fit the canvas (2D)", ["shift-z"], Studio, StudioFit),
+    sc!("Studio", "Zoom in", ["=", "+"], Studio, StudioZoomIn),
+    sc!("Studio", "Zoom out", ["-"], Studio, StudioZoomOut),
+    sc!("Studio", "Canvas at 100% (2D)", ["/"], Studio, StudioZoom100),
+    sc!("Studio", "Fly through the scene (WASD, QE, mouse to look)", ["shift-`", "~"], Studio, StudioFly),
+    sc!("Studio", "Align the active camera to the view", ["M-alt-0"], Studio, StudioAlignCamera),
     sc!("Studio", "Select tool", ["v"], Studio, StudioToolSelect),
     sc!("Studio", "Next tool", ["w"], Studio, StudioToolCycle),
     sc!("Studio", "Pen (2D)", ["p"], Studio, StudioPen),
@@ -411,6 +438,15 @@ pub fn menus() -> Vec<Menu> {
             MenuItem::action("Zoom to Fit", ZoomFit),
             MenuItem::action("Snapping", ToggleSnap),
         ]),
+        Menu::new("Audio").items([
+            MenuItem::action("Mixer", ToggleMixer),
+            MenuItem::action("Add Effect…", AddEffect),
+            MenuItem::separator(),
+            MenuItem::action("Mute Track", MuteTrack),
+            MenuItem::action("Solo Track", SoloTrack),
+            MenuItem::action("Arm Track", ArmTrack),
+            MenuItem::action("Record Voice-Over", RecordVoiceOver),
+        ]),
         Menu::new("View").items([
             MenuItem::action("Command Palette", Palette),
             MenuItem::action("Media", ShowMedia),
@@ -418,6 +454,8 @@ pub fn menus() -> Vec<Menu> {
             MenuItem::action("Text", ShowText),
             MenuItem::action("Motion", ShowMotion),
             MenuItem::action("Captions", ShowCaptions),
+            MenuItem::action("Left Panel", ToggleLeftPanel),
+            MenuItem::action("Inspector", ToggleInspector),
             MenuItem::action("Agent", ToggleAgent),
             MenuItem::action("Generation Jobs", ToggleJobs),
             MenuItem::separator(),

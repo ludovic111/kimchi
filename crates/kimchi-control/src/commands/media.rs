@@ -12,6 +12,8 @@ use crate::session::{CmdResult, Session, ToastKind, err};
 /// File extensions the import dialog offers.
 pub const MEDIA_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "m4v", "webm", "mkv", "avi", "png", "jpg", "jpeg", "webp", "gif", "heic", "avif", "mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "aif", "aiff",
+    // ryolune songs, rendered by its engine.
+    "ryolune",
 ];
 
 pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
@@ -78,6 +80,19 @@ pub async fn import_named(s: &Arc<Session>, cx: &Ctx, paths: &[String], name: Op
                 continue;
             }
         };
+        // A ryolune song: rendered by ryolune's engine, then imported like any sound.
+        if crate::commands::audio::is_song(&p) {
+            match crate::commands::audio::song_asset(s, &s.project()?, &p, None).await {
+                Ok((mut asset, _)) => {
+                    if let Some(n) = name {
+                        asset.name = n.to_string();
+                    }
+                    added.push(asset);
+                }
+                Err(e) => failures.push(format!("{}: {e}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())),
+            }
+            continue;
+        }
         match kimchi_media::probe(&tools, &p).await {
             Ok(probe) => added.push(Asset {
                 id: new_id(),
@@ -91,6 +106,7 @@ pub async fn import_named(s: &Arc<Session>, cx: &Ctx, paths: &[String], name: Op
                 filmstrip: None,
                 waveform: None,
                 proxy: None,
+                beats: None,
             }),
             Err(e) => failures.push(format!("{}: {e}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())),
         }

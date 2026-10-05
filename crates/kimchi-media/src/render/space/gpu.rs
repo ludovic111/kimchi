@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use rayon::prelude::*;
 use tiny_skia::Pixmap;
 use wgpu::util::DeviceExt;
 
@@ -21,6 +22,11 @@ const SHADER: &str = include_str!("gpu.wgsl");
 const SAMPLES: u32 = 4;
 const SHADOW_SIZE: u32 = 2048;
 const SHADOW_LAYERS: u32 = 4;
+/// Each face of a point light's cube of shadow maps (six faces per light).
+const CUBE_SHADOW_SIZE: u32 = 1024;
+const CUBE_LAYERS: u32 = 6 * super::POINT_SHADOWS as u32;
+/// Shadow slots in the shader's globals: the 2D maps' layers, then the cube faces'.
+const SHADOW_SLOTS: usize = (SHADOW_LAYERS + CUBE_LAYERS) as usize;
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Per-object uniform stride (dynamic offsets must be 256-aligned).
@@ -42,6 +48,8 @@ pub(crate) struct Gpu {
     sampler: wgpu::Sampler,
     env_sampler: wgpu::Sampler,
     shadow_tex: wgpu::Texture,
+    /// Point lights' cube faces.
+    cube_tex: wgpu::Texture,
     white: (wgpu::Texture, wgpu::TextureView),
     white_linear: (wgpu::Texture, wgpu::TextureView),
     no_env: (wgpu::Texture, wgpu::TextureView),
@@ -127,6 +135,7 @@ impl Gpu {
                 texture(2, wgpu::TextureViewDimension::D2, float),
                 texture(3, wgpu::TextureViewDimension::D2, float),
                 filtering(4),
+                texture(5, wgpu::TextureViewDimension::D2Array, wgpu::TextureSampleType::Depth),
             ],
         });
         let item_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -249,6 +258,16 @@ impl Gpu {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
+        let cube_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("point light shadow maps"),
+            size: wgpu::Extent3d { width: CUBE_SHADOW_SIZE, height: CUBE_SHADOW_SIZE, depth_or_array_layers: CUBE_LAYERS },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
         let white_px = Texture { width: 1, height: 1, rgba: vec![255; 4] };
         let white = upload(&device, &queue, &white_px, true);
         let white_linear = upload(&device, &queue, &white_px, false);
@@ -271,6 +290,7 @@ impl Gpu {
             sampler,
             env_sampler,
             shadow_tex,
+            cube_tex,
             white,
             white_linear,
             no_env,
@@ -364,6 +384,9 @@ impl Gpu {
         }
         let env_image = env.and_then(|e| e.image.clone()).map(|t| self.texture_view(&t, true));
 
+        // Which slot of the shader's shadows each map takes: 2D maps their layer of `shadow_tex`,
+        // cube faces 4 + their layer of `cube_tex`.
+        let slots = shadow_slots(&f.shadows);
         // Globals.
         let linear = want.linear;
         let mut g: Vec<f32> = vec![];
@@ -420,7 +443,7 @@ impl Gpu {
                         LightKind::Spot => 2.0,
                         LightKind::Area => 3.0,
                     };
-                    let shadow = f.shadows.iter().position(|s| s.light == i).map_or(-1.0, |s| s as f32);
+                    let shadow = f.shadows.iter().position(|s| s.light == i).and_then(|k| slots[k]).map_or(-1.0, |s| s as f32);
                     g.extend([l.v.0, l.v.1, l.v.2, kind]);
                     g.extend([l.color[0], l.color[1], l.color[2], l.range]);
                     g.extend([l.dir.0, l.dir.1, l.dir.2, shadow]);
@@ -429,8 +452,14 @@ impl Gpu {
                 None => g.extend([0.0; 16]),
             }
         }
-        for i in 0..SHADOW_LAYERS as usize {
-            match f.shadows.get(i) {
+        let mut by_slot: Vec<Option<&super::ShadowRes>> = vec![None; SHADOW_SLOTS];
+        for (k, s) in f.shadows.iter().enumerate() {
+            if let Some(slot) = slots[k] {
+                by_slot[slot] = Some(s);
+            }
+        }
+        for slot in &by_slot {
+            match slot {
                 Some(s) => {
                     g.extend(s.viewproj.flat());
                     g.extend([if s.ortho { 1.0 } else { 0.0 }, s.softness, s.near, s.far]);
@@ -461,6 +490,7 @@ impl Gpu {
         let item_binding = wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &item_buf, offset: 0, size: wgpu::BufferSize::new(ITEM_STRIDE) });
 
         let shadow_view = self.shadow_tex.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
+        let cube_view = self.cube_tex.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
         let env_view = self.env.as_ref().filter(|_| env_maps.is_some()).map_or(&self.no_env.1, |e| &e.2);
         let image_view = env_image.and_then(|k| self.textures.get(&(k, true))).map_or(&self.white.1, |t| &t.2);
         let main_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -472,6 +502,7 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(env_view) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(image_view) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.env_sampler) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&cube_view) },
             ],
         });
         let shadow_item_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -509,16 +540,17 @@ impl Gpu {
         let mut depth_passes: Vec<(M4, wgpu::TextureView)> = f
             .shadows
             .iter()
-            .take(SHADOW_LAYERS as usize)
-            .enumerate()
-            .map(|(i, s)| {
-                let view = self.shadow_tex.create_view(&wgpu::TextureViewDescriptor {
+            .zip(&slots)
+            .filter_map(|(s, slot)| {
+                let slot = (*slot)? as u32;
+                let (tex, layer) = if slot < SHADOW_LAYERS { (&self.shadow_tex, slot) } else { (&self.cube_tex, slot - SHADOW_LAYERS) };
+                let view = tex.create_view(&wgpu::TextureViewDescriptor {
                     dimension: Some(wgpu::TextureViewDimension::D2),
-                    base_array_layer: i as u32,
+                    base_array_layer: layer,
                     array_layer_count: Some(1),
                     ..Default::default()
                 });
-                (s.viewproj, view)
+                Some((s.viewproj, view))
             })
             .collect();
         let camera_depth = want.depth.then(|| t.flat_depth.create_view(&Default::default()));
@@ -625,42 +657,41 @@ impl Gpu {
 
         let color = read(&self.device, &t.readback)?;
         let (w_, h_) = (w as usize, h as usize);
-        let px = |x: usize, y: usize, k: usize| -> f32 {
-            let at = y * t.row as usize + x * 8 + k * 2;
-            f16_to_f32(u16::from_le_bytes([color[at], color[at + 1]]))
-        };
+        let row = t.row as usize;
+        // Half floats → f32 from a table, rows on every core.
+        let half = half_table();
+        let texel = |line: &[u8], x: usize, k: usize| half[u16::from_le_bytes([line[x * 8 + k * 2], line[x * 8 + k * 2 + 1]]) as usize];
         let pixels = if linear {
-            let mut out = Vec::with_capacity(w_ * h_);
-            for y in 0..h_ {
-                for x in 0..w_ {
-                    out.push([px(x, y, 0), px(x, y, 1), px(x, y, 2), px(x, y, 3)]);
+            let mut out = vec![[0.0f32; 4]; w_ * h_];
+            out.par_chunks_mut(w_).zip(color.par_chunks(row)).for_each(|(dst, line)| {
+                for (x, o) in dst.iter_mut().enumerate() {
+                    *o = std::array::from_fn(|k| texel(line, x, k));
                 }
-            }
+            });
             Pixels::Linear(out)
         } else {
             let mut out = vec![0u8; w_ * h_ * 4];
-            for y in 0..h_ {
-                for x in 0..w_ {
-                    let a = px(x, y, 3).clamp(0.0, 1.0);
-                    let o = &mut out[(y * w_ + x) * 4..(y * w_ + x) * 4 + 4];
+            out.par_chunks_mut(w_ * 4).zip(color.par_chunks(row)).for_each(|(dst, line)| {
+                for (x, o) in dst.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                    let a = texel(line, x, 3).clamp(0.0, 1.0);
                     for (k, v) in o.iter_mut().take(3).enumerate() {
-                        *v = (px(x, y, k).clamp(0.0, a) * 255.0).round() as u8;
+                        *v = crate::render::byte(texel(line, x, k).clamp(0.0, a) * 255.0);
                     }
-                    o[3] = (a * 255.0).round() as u8;
+                    o[3] = crate::render::byte(a * 255.0);
                 }
-            }
+            });
             Pixels::Encoded(Pixmap::from_vec(out, tiny_skia::IntSize::from_wh(w, h).ok_or("size")?).ok_or_else(|| "bad picture".to_string())?)
         };
         let depth = if want.depth {
             let raw = read(&self.device, &t.depth_readback)?;
-            let mut out = Vec::with_capacity(w_ * h_);
-            for y in 0..h_ {
-                for x in 0..w_ {
-                    let at = y * t.depth_row as usize + x * 4;
-                    let z = f32::from_le_bytes([raw[at], raw[at + 1], raw[at + 2], raw[at + 3]]);
-                    out.push(if z >= 1.0 { f32::INFINITY } else { f.camera.distance(z) });
+            let drow = t.depth_row as usize;
+            let mut out = vec![0.0f32; w_ * h_];
+            out.par_chunks_mut(w_).zip(raw.par_chunks(drow)).for_each(|(dst, line)| {
+                for (x, o) in dst.iter_mut().enumerate() {
+                    let z = f32::from_le_bytes([line[x * 4], line[x * 4 + 1], line[x * 4 + 2], line[x * 4 + 3]]);
+                    *o = if z >= 1.0 { f32::INFINITY } else { f.camera.distance(z) };
                 }
-            }
+            });
             out
         } else {
             vec![]
@@ -703,6 +734,32 @@ impl Gpu {
             depth_row,
         }
     }
+}
+
+/// The globals slot of each of the frame's shadow maps: 2D maps (the sun's, spot and area
+/// lights') in order from 0, cube faces from [`SHADOW_LAYERS`], six per point light; `None` for
+/// maps past what the textures hold.
+fn shadow_slots(shadows: &[super::ShadowRes]) -> Vec<Option<usize>> {
+    let mut flat = 0usize;
+    // Lights with cube maps, in the order their faces come.
+    let mut cubes: Vec<usize> = vec![];
+    shadows
+        .iter()
+        .map(|s| match s.face {
+            None => {
+                flat += 1;
+                (flat <= SHADOW_LAYERS as usize).then_some(flat - 1)
+            }
+            Some(face) => {
+                let c = cubes.iter().position(|&l| l == s.light).unwrap_or_else(|| {
+                    cubes.push(s.light);
+                    cubes.len() - 1
+                });
+                let slot = SHADOW_LAYERS as usize + c * 6 + face as usize;
+                (slot < SHADOW_SLOTS).then_some(slot)
+            }
+        })
+        .collect()
 }
 
 /// Waits for a buffer the GPU wrote and copies it out.
@@ -781,6 +838,12 @@ fn upload_env(device: &wgpu::Device, queue: &wgpu::Queue, maps: Option<&EnvMaps>
 
 fn bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Every half float's value, by its bits.
+fn half_table() -> &'static [f32] {
+    static T: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+    T.get_or_init(|| (0..=u16::MAX).map(f16_to_f32).collect())
 }
 
 /// IEEE half → single.

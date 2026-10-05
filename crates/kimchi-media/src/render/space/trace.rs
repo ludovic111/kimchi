@@ -55,7 +55,16 @@ pub struct Settings {
     /// Another seed gives other (equally good) grain.
     pub seed: u32,
     pub filter: Filter,
+    /// Adaptive sampling: a pixel stops taking samples once its remaining grain is below this
+    /// many 8-bit levels of the finished picture (flat walls and the sky converge long before
+    /// edges, glass and soft shadows do). 0 = every pixel takes every sample.
+    pub noise: f32,
 }
+
+/// Samples every pixel takes before adaptive sampling may stop it, at least.
+const ADAPTIVE_MIN: u32 = 16;
+/// How often (in samples) a pixel checks whether it has converged.
+const ADAPTIVE_EVERY: u32 = 8;
 
 /// How samples spread over and around their pixel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -70,7 +79,15 @@ pub enum Filter {
 impl Settings {
     pub fn of(r: &RenderSettings) -> Settings {
         let n = |v: f64, lo: f64, hi: f64, def: u32| if v.is_finite() { v.round().clamp(lo, hi) as u32 } else { def };
-        Settings { samples: n(r.samples, 1.0, 65_536.0, 64), bounces: n(r.bounces, 0.0, 64.0, 4), denoise: r.denoise, seed: 0, filter: Filter::default() }
+        Settings {
+            samples: n(r.samples, 1.0, 65_536.0, 64),
+            bounces: n(r.bounces, 0.0, 64.0, 4),
+            denoise: r.denoise,
+            seed: 0,
+            filter: Filter::default(),
+            // The denoiser smooths what is left, so pixels may stop a little earlier.
+            noise: if r.denoise { 1.0 } else { 0.5 },
+        }
     }
 }
 
@@ -1239,6 +1256,24 @@ struct Px {
     normal: Rgb,
     depth: f32,
     hits: f32,
+    /// Samples taken (fewer than the frame's once adaptive sampling stopped the pixel).
+    n: u32,
+    /// Adaptive sampling stopped it.
+    done: bool,
+}
+
+impl Px {
+    /// Has the pixel's grain fallen below `noise` 8-bit levels of the finished picture? Its
+    /// mean's standard error, through the slope of exposure and the sRGB curve where it is.
+    fn converged(&self, noise: f32, gain: f32) -> bool {
+        let n = self.n.max(1) as f32;
+        let mean = lum(self.c) / n;
+        let var = (self.l2 / n - mean * mean).max(0.0);
+        let error = (var / n).sqrt();
+        let v = (mean * gain).max(0.003_130_8);
+        let slope = 255.0 * 0.4396 * v.powf(-0.5833) * gain;
+        error * slope < noise
+    }
 }
 
 /// A path-traced frame that gets better with every call to [`Progressive::add`].
@@ -1286,6 +1321,7 @@ impl Progressive {
         let rays = AtomicU64::new(0);
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(bands.len().max(1));
         let (world, settings) = (&self.world, &self.settings);
+        let gain = 2f32.powf(world.exposure).min(1e6);
         std::thread::scope(|scope| {
             for _ in 0..threads {
                 scope.spawn(|| {
@@ -1298,7 +1334,17 @@ impl Progressive {
                         let y0 = *b * BAND;
                         for (k, px) in pixels.iter_mut().enumerate() {
                             let (x, y) = ((k % w) as u32, (y0 + k / w) as u32);
+                            if px.done {
+                                continue;
+                            }
                             for s in from..to {
+                                // Checked at fixed sample counts, so how `add` is called
+                                // doesn't change which pixels stop (or the picture).
+                                if settings.noise > 0.0 && s >= ADAPTIVE_MIN && s % ADAPTIVE_EVERY == 0 && px.converged(settings.noise, gain) {
+                                    px.done = true;
+                                    break;
+                                }
+                                px.n += 1;
                                 let smp = world.trace(x, y, s, settings);
                                 count += smp.rays;
                                 px.c = add(px.c, smp.c);
@@ -1334,7 +1380,6 @@ impl Progressive {
     /// The picture so far (denoised when the settings ask), premultiplied.
     pub fn picture(&self) -> Pixmap {
         let (w, h) = (self.world.width as usize, self.world.height as usize);
-        let n = self.samples.max(1) as f32;
         // Mean light where something was seen (not divided by coverage yet).
         let mut shaded: Vec<Rgb> = self.px.iter().map(|p| if p.a > 0.0 { scale(p.c, 1.0 / p.a) } else { [0.0; 3] }).collect();
         if self.settings.denoise && self.samples > 0 {
@@ -1347,6 +1392,7 @@ impl Progressive {
                 .px
                 .iter()
                 .map(|p| {
+                    let n = p.n.max(1) as f32;
                     let m = lum(p.c) / n;
                     let cover = (p.a / n).max(1e-3);
                     // Of the mean, and in the same units as `shaded`.
@@ -1365,7 +1411,7 @@ impl Progressive {
             for x in 0..w {
                 let i = y * w + x;
                 let p = &self.px[i];
-                let a = (p.a / n).clamp(0.0, 1.0);
+                let a = (p.a / p.n.max(1) as f32).clamp(0.0, 1.0);
                 let mut c = [0.0f32; 4];
                 if a > 0.0 {
                     let raw = scale(p.raw, 1.0 / p.a);
@@ -1380,9 +1426,9 @@ impl Progressive {
                 let k = 1.0 - c[3];
                 let oa = (c[3] + bg[3] * k).clamp(0.0, 1.0);
                 for j in 0..3 {
-                    px[j] = ((c[j] + bg[j] * k).clamp(0.0, oa) * 255.0).round() as u8;
+                    px[j] = crate::render::byte((c[j] + bg[j] * k).clamp(0.0, oa) * 255.0);
                 }
-                px[3] = (oa * 255.0).round() as u8;
+                px[3] = crate::render::byte(oa * 255.0);
             }
         });
         Pixmap::from_vec(out, tiny_skia::IntSize::from_wh(w as u32, h as u32).expect("non-empty")).expect("sized")

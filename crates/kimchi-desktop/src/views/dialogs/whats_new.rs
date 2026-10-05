@@ -62,6 +62,8 @@ pub fn sheet(since: Option<String>, all: bool, cx: &App) -> AnyElement {
         .id("whats-new")
         .role(gpui::Role::Dialog)
         .aria_label("What's new")
+        .flex_1()
+        .min_h_0()
         .flex()
         .flex_col()
         .child(
@@ -87,7 +89,7 @@ pub fn sheet(since: Option<String>, all: bool, cx: &App) -> AnyElement {
                 )
                 .child(Button::icon("whats-new-close", "x", "Close (Esc)").on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.close_dialog(cx)))),
         )
-        .child(div().id("whats-new-body").max_h(px(520.)).overflow_y_scroll().px(px(20.)).py(px(16.)).flex().flex_col().gap(px(18.)).children(body))
+        .child(div().id("whats-new-body").flex_1().min_h_0().max_h(px(560.)).overflow_y_scroll().px(px(20.)).py(px(16.)).flex().flex_col().gap(px(18.)).children(body))
         .child(
             div()
                 .flex()

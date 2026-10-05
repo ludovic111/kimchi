@@ -441,10 +441,8 @@ pub fn thing_menu(studio: &Entity<Studio>, selection: Vec<String>, cx: &App) -> 
         }
         Some((id, model::Item::Camera)) => {
             out.push(MenuItem::new("Set as the active camera", run("motion.updateLayer", json!({ "clipId": clip, "id": "scene", "props": { "activeCamera": id } }))).icon("video").entry());
-            let s = studio.clone();
-            out.push(MenuItem::new("Look through it", move |_, cx| s.update(cx, |s, cx| {
-                let _ = s.set_view("camera", cx);
-            })).icon("eye").shortcut_of(&act::StudioKey0).entry());
+            out.push(MenuEntry::Separator);
+            out.extend(camera_menu(studio, cx));
         }
         Some((id, model::Item::Layer(kind))) => {
             if *kind == "comp"
@@ -479,7 +477,7 @@ pub fn thing_menu(studio: &Entity<Studio>, selection: Vec<String>, cx: &App) -> 
     let s = studio.clone();
     out.push(MenuItem::new("Keyframe here", move |_, cx| s.update(cx, |s, cx| s.keyframe_selection(cx))).icon("diamond").shortcut_of(&act::StudioInsert).disabled(things.is_empty()).entry());
     let s = studio.clone();
-    out.push(MenuItem::new("Frame", move |_, cx| s.update(cx, |s, cx| s.frame_selection(cx))).icon("scan").shortcut_of(&act::StudioFrame).entry());
+    out.push(MenuItem::new("Frame", move |_, cx| s.update(cx, |s, cx| s.frame_selection(true, cx))).icon("scan").shortcut_of(&act::StudioFrame).entry());
     if let Some(id) = active.clone().filter(|a| model::is_thing(&scene, a) || a.starts_with(model::MATERIAL) || a.starts_with(model::COMPOSITION)).filter(|a| a != "camera") {
         let s = studio.clone();
         out.push(MenuItem::new("Rename", move |w, cx| {
@@ -491,6 +489,70 @@ pub fn thing_menu(studio: &Entity<Studio>, selection: Vec<String>, cx: &App) -> 
     let s = studio.clone();
     let deletable = selection.iter().any(|k| k != "scene" && k != "camera");
     out.push(MenuItem::new("Delete", move |w, cx| s.update(cx, |s, cx| s.delete(w, cx))).icon("trash").shortcut_of(&act::StudioDelete).danger().disabled(!deletable).entry());
+    out
+}
+
+/// The Camera menu (the toolbar's, a camera's right-click and its Properties): looking through
+/// it, locking it to the view, putting it where the view is, keyframing it, and the classic
+/// moves written as editable animation (`motion.cameraMove`).
+pub fn camera_menu(studio: &Entity<Studio>, cx: &App) -> Vec<MenuEntry> {
+    let st = studio.read(cx);
+    let (through, lock, keyed) = (st.view_shown().1, st.lock_camera, st.camera_keyed_here(cx));
+    let cam = st.camera_in_hand(cx).unwrap_or_else(|| "camera".into());
+    let curve = st.clip_scene(cx).and_then(|(_, scene)| st.active().filter(|a| matches!(model::item(&scene, a), Some(model::Item::Object("curve")))).map(str::to_string));
+    let check = |on: bool, otherwise: &'static str| if on { "check" } else { otherwise };
+    let mut out = vec![];
+    let s = studio.clone();
+    out.push(MenuItem::new("Look through the camera", move |_, cx| s.update(cx, |s, cx| s.toggle_camera_view(cx))).icon(check(through, "video")).shortcut_of(&act::StudioKey0).entry());
+    let s = studio.clone();
+    out.push(MenuItem::new("Lock the camera to the view", move |_, cx| s.update(cx, |s, cx| s.set_lock_camera(!s.lock_camera, cx))).icon(check(lock, "lock-open")).entry());
+    let s = studio.clone();
+    out.push(MenuItem::new("Align the camera to the view", move |_, cx| s.update(cx, |s, cx| {
+        if let Err(e) = s.align_camera_to_view(cx) {
+            super::flash(e, cx);
+        }
+    })).icon("scan-eye").shortcut_of(&act::StudioAlignCamera).entry());
+    let s = studio.clone();
+    out.push(MenuItem::new("Add a camera here", move |_, cx| s.update(cx, |s, cx| {
+        let _ = s.add_camera_here(cx);
+    })).icon("plus").entry());
+    let s = studio.clone();
+    out.push(MenuItem::new(if keyed { format!("Remove {cam}'s keyframe here") } else { format!("Keyframe {cam} here") }, move |_, cx| s.update(cx, |s, cx| {
+        if let Err(e) = s.keyframe_camera(None, cx) {
+            super::flash(e, cx);
+        }
+    })).icon("diamond").entry());
+    out.push(MenuEntry::Separator);
+    let moves: Vec<(String, &'static str, &'static str, Value)> = vec![
+        ("Orbit around the selection (90°)".into(), "orbit", "orbit", json!({})),
+        ("Turntable (a whole turn)".into(), "refresh-cw", "turntable", json!({})),
+        ("Dolly in".into(), "zoom-in", "dolly", json!({ "share": 0.35 })),
+        ("Dolly out".into(), "zoom-out", "dolly", json!({ "share": -0.5 })),
+        ("Truck left".into(), "move-horizontal", "truck", json!({ "share": -0.3 })),
+        ("Truck right".into(), "move-horizontal", "truck", json!({ "share": 0.3 })),
+        ("Crane up".into(), "move-vertical", "crane", json!({ "share": 0.35 })),
+        ("Crane down".into(), "move-vertical", "crane", json!({ "share": -0.25 })),
+        ("Zoom the lens in".into(), "aperture", "zoom", json!({})),
+        (match &curve {
+            Some(c) => format!("Fly along “{c}”"),
+            None => "Fly-by (a new path you can edit)".into(),
+        }, "route", "flyThrough", curve.as_ref().map(|c| json!({ "path": c })).unwrap_or(json!({}))),
+        ("Handheld shake".into(), "vibrate", "handheld", json!({})),
+    ];
+    for (label, ic, mv, extra) in moves {
+        let s = studio.clone();
+        out.push(MenuItem::new(format!("Move: {label}"), move |_, cx| s.update(cx, |s, cx| s.camera_move(mv, extra.clone(), cx))).icon(ic).entry());
+    }
+    let s = studio.clone();
+    out.push(MenuItem::new("Clear the camera's moves", move |_, cx| s.update(cx, |s, cx| s.camera_move("clear", json!({}), cx))).icon("trash").danger().entry());
+    out.push(MenuEntry::Separator);
+    let s = studio.clone();
+    out.push(MenuItem::new("Fly through the scene", move |_, cx| {
+        let vp = s.read(cx).viewport.clone();
+        vp.update(cx, |v, cx| v.start_fly(false, cx));
+    }).icon("plane").shortcut_of(&act::StudioFly).entry());
+    let s = studio.clone();
+    out.push(MenuItem::new("Frame the selection", move |_, cx| s.update(cx, |s, cx| s.frame_selection(true, cx))).icon("focus").shortcut_of(&act::StudioFrame).entry());
     out
 }
 

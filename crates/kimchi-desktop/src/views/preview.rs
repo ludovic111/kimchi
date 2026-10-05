@@ -104,6 +104,10 @@ struct Playing {
     synced: bool,
     _task: Task<()>,
     _audio: Option<AudioOut>,
+    /// The sound on its way out: changes to the mix go to it, its time keeps the picture in step.
+    sound: Arc<AudioBuffer>,
+    /// The project the sound was last told about.
+    mixed: usize,
     generation: u64,
 }
 
@@ -186,6 +190,10 @@ impl PreviewView {
         if playing {
             if self.playing.as_ref().is_none_or(|p| p.generation != generation) {
                 self.start_stream(project, playhead, generation, cx);
+            } else if let Some(play) = self.playing.as_mut().filter(|p| p.mixed != Arc::as_ptr(&project) as usize) {
+                // Edited while playing: the mix follows without restarting.
+                play.mixed = Arc::as_ptr(&project) as usize;
+                play.sound.update(project);
             }
             cx.notify();
             return;
@@ -243,12 +251,18 @@ impl PreviewView {
         let (w, h) = self.render_size(&project, 1.0);
         let (tx, rx) = futures::channel::mpsc::channel(4);
         let audio = AudioBuffer::new();
-        let audio_out = AudioOut::open(audio.clone());
+        // The speakers Settings › Audio names (the system's default otherwise); the mixer's
+        // meters follow what they play.
+        let device = self.store.read(cx).settings.audio.output_device.clone();
+        let audio_out = AudioOut::open_on(audio.clone(), Some(device.as_str()).filter(|d| !d.is_empty()));
+        crate::views::mixer::live::set_source(cx, Some(audio.clone()));
         if audio_out.is_none() {
             // No output device: play silently instead of piling decoded sound up in memory.
             tracing::debug!("no audio output device; playing without sound");
             audio.close();
         }
+        let mixed = Arc::as_ptr(&project) as usize;
+        let sound = audio.clone();
         let task = gpui_tokio::Tokio::spawn(cx, crate::preview::stream(session, project, from, w.max(320), h.max(180), tx, audio));
         let task = cx.spawn(async move |this, cx| {
             if let Ok(Err(e)) = task.await {
@@ -259,7 +273,7 @@ impl PreviewView {
                 .ok();
             }
         });
-        self.playing = Some(Playing { frames: rx, queue: VecDeque::new(), synced: false, _task: task, _audio: audio_out, generation });
+        self.playing = Some(Playing { frames: rx, queue: VecDeque::new(), synced: false, _task: task, _audio: audio_out, sound, mixed, generation });
     }
 
     /// While playing: advance the clock and show the latest frame that is due.
@@ -285,6 +299,13 @@ impl PreviewView {
             } else {
                 window.request_animation_frame();
                 return;
+            }
+        }
+        // The clock follows the sound being heard, when there is any.
+        if let Some(heard) = self.playing.as_ref().and_then(|p| p.sound.time()) {
+            let ahead = self.playback.read(cx).playhead;
+            if (heard - ahead).abs() > 0.04 {
+                self.playback.update(cx, |p, _| p.resync(heard));
             }
         }
         let still = self.playback.update(cx, |p, cx| p.tick(cx));
@@ -466,32 +487,38 @@ impl PreviewView {
         };
         let pb_toggle = self.playback.clone();
         let pb_loop = self.playback.clone();
+        // A narrow preview keeps the play button and the time; the rest goes as room runs out.
+        let width = f32::from(self.viewport.get().size.width);
+        let (narrow, tiny) = (width < 560., width < 420.);
+        let side = || div().flex_1().min_w_0().flex().items_center().overflow_hidden();
         div()
+            .id("transport")
+            .debug_selector(|| "transport".into())
             .h(px(TRANSPORT_H))
             .flex_none()
             .flex()
             .items_center()
-            .justify_between()
+            .gap(px(8.))
             .px(px(12.))
             .border_t_1()
             .border_color(t.line)
             .child(
-                div()
-                    .w(px(200.))
-                    .flex()
+                side()
                     .gap(px(6.))
                     .font_family(MONO)
                     .text_size(px(sz::SM))
-                    .child(div().text_color(t.text).child(smpte(now, fps)))
-                    .child(div().text_color(t.text_3).child(format!("/ {}", smpte(total, fps))))
-                    .when(shuttle != 0., |d| d.child(div().text_color(t.accent_text).child(crate::views::timeline::rate_label(shuttle)))),
+                    .whitespace_nowrap()
+                    .child(div().flex_none().text_color(if playing || shuttle != 0. { t.accent_text } else { t.text }).child(smpte(now, fps)))
+                    .when(!narrow, |d| d.child(div().text_color(t.text_3).child(format!("/ {}", smpte(total, fps)))))
+                    .when(shuttle != 0., |d| d.child(div().flex_none().text_color(t.accent_text).child(crate::views::timeline::rate_label(shuttle)))),
             )
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .items_center()
                     .gap(px(2.))
-                    .child(Button::icon("tp-start", "skip-back", tip("Go to start", &act::GoToStart)).on_click(seek(0.0)))
+                    .when(!tiny, |d| d.child(Button::icon("tp-start", "skip-back", tip("Go to start", &act::GoToStart)).on_click(seek(0.0))))
                     .child(Button::icon("tp-prev", "step-back", tip("Previous frame", &act::StepBack)).on_click(step(-1.0)))
                     .child(
                         div()
@@ -506,24 +533,22 @@ impl PreviewView {
                             .text_color(t.text_on_accent)
                             .cursor_pointer()
                             .hover(|s| s.bg(t.accent_hover))
+                            .active(|s| s.opacity(0.85))
                             .tooltip(move |_, cx| crate::ui::tooltip(tip(if playing { "Pause" } else { "Play" }, &act::PlayPause), cx))
                             .on_click(move |_, _, cx| pb_toggle.update(cx, |p, cx| p.toggle(cx)))
                             .child(icon(if playing { "pause" } else { "play" }).size(px(16.)).text_color(t.text_on_accent)),
                     )
                     .child(Button::icon("tp-next", "step-forward", tip("Next frame", &act::StepForward)).on_click(step(1.0)))
-                    .child(Button::icon("tp-end", "skip-forward", tip("Go to end", &act::GoToEnd)).on_click(seek(total))),
+                    .when(!tiny, |d| d.child(Button::icon("tp-end", "skip-forward", tip("Go to end", &act::GoToEnd)).on_click(seek(total)))),
             )
             .child(
-                div()
-                    .w(px(200.))
-                    .flex()
+                side()
                     .justify_end()
-                    .items_center()
                     .gap(px(8.))
                     .child(Button::icon("tp-loop", "repeat", tip(if looping { "Loop: on" } else { "Loop: off" }, &act::ToggleLoop)).selected(looping).on_click(move |_, _, cx| {
                         pb_loop.update(cx, |p, cx| p.set_looping(!p.looping, cx))
                     }))
-                    .child(div().font_family(MONO).text_size(px(sz::XS)).text_color(t.text_3).child(format!("{scale_pct}%"))),
+                    .when(!narrow, |d| d.child(div().flex_none().font_family(MONO).text_size(px(sz::XS)).text_color(t.text_3).child(format!("{scale_pct}%")))),
             )
     }
 }
@@ -641,7 +666,11 @@ impl Render for PreviewView {
                             move |bounds, _, cx| {
                                 if viewport.get() != bounds {
                                     viewport.set(bounds);
-                                    entity.update(cx, |this, cx| this.refresh(cx));
+                                    // Draw the stage at the new size at once (the frame follows).
+                                    entity.update(cx, |this, cx| {
+                                        this.refresh(cx);
+                                        cx.notify();
+                                    });
                                 }
                             },
                             |_, _, _, _| {},

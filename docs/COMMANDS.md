@@ -125,7 +125,7 @@ One media item in full, including how it was generated (prompt, model, seed, inp
 
 ### `media.import`
 
-Import media files (video, image, audio) into the open project. Thumbnails, filmstrips, waveforms and proxies are made in the background. With place, each file is also put on the timeline, one after the other. _(changes things · permission: files)_
+Import media files (video, image, audio, and ryolune songs, rendered by ryolune's engine) into the open project. Thumbnails, filmstrips, waveforms and proxies are made in the background. With place, each file is also put on the timeline, one after the other. _(changes things · permission: files)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -342,7 +342,7 @@ Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, spe
 
 ### `clip.setKeyframes`
 
-Animate one property of a clip: replace its keyframes (times in seconds from the clip's start). Properties: x, y, position ([x, y]), scale, scaleX, scaleY, rotation, opacity, blur (pixels), volume, the effects brightness, contrast, saturation, temperature, tint, vignette, sharpen (see clip.setEffects); text clips also fontSize, color, letterSpacing. One undo step. _(changes things)_
+Animate one property of a clip: replace its keyframes (times in seconds from the clip's start). Properties: x, y, position ([x, y]), scale, scaleX, scaleY, rotation, opacity, blur (pixels), volume, pan (-1 left to 1 right), the effects brightness, contrast, saturation, temperature, tint, vignette, sharpen (see clip.setEffects); text clips also fontSize, color, letterSpacing. One undo step. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -525,6 +525,369 @@ Restyle every caption at once: text style fields (see clip.addText) and/or their
 ### `captions.clear`
 
 Remove every caption. One undo step. _(changes things)_
+
+## audio
+
+### `audio.overview`
+
+The whole mix in one answer: every track's fader, pan, solo, mute, routing, sends, ducking and effects (with readable parameter values), the buses, the master (limiter, loudness target), clips whose sound was changed, ryolune songs (and whether they changed since), beats found in music, and problems. Read it before mixing. _(read only)_
+
+### `audio.setTrack`
+
+Mix a track: fader, pan, mute, solo, where it goes (the master or a bus), ducking under other tracks, record arm. Only the given fields change. One undo step (drags share a coalesce key). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `trackId` | string | required | Track id or unique name ("Video 1"), as listed by track.list. |
+| `gainDb` | number |  | Fader in dB, -96 (off) to +12; 0 leaves it as recorded. |
+| `pan` | number |  | -1 (left) to 1 (right). |
+| `muted` | boolean |  | Silence the track. |
+| `solo` | boolean |  | Hear only soloed tracks (and the buses they feed). |
+| `output` | string |  | "master" or a bus (id or name, audio.addBus). |
+| `duck` | any |  | Automatic ducking: true (under every other track with sound), false or "off" to remove it, or {"under": [tracks], "amountDb": -12, "thresholdDb": -40, "attack": 0.15, "release": 0.6}. |
+| `armed` | boolean |  | Arm for recording a voice-over take (audio.record). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `audio.setClip`
+
+Change how clips sound: gain, pan, fades and their curve, which channels play, pitch, speed with or without pitch, mute the clip's own sound. Only the given fields change. One undo step. Animate pan with clip.setKeyframes property pan, the level with property volume. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array of strings | required | Clips with sound (ids or names): audio clips and video clips with sound. |
+| `gainDb` | number |  | Level in dB (-96 to +12; 0 = as recorded). Sets volume. |
+| `volume` | number |  | Level as a factor, 0-4 (1 = as recorded). |
+| `pan` | number |  | -1 (left) to 1 (right). |
+| `fadeIn` | number |  | Fade-in length in seconds. |
+| `fadeOut` | number |  | Fade-out length in seconds. |
+| `fadeCurve` | string |  | linear, equalPower, exponential or sCurve (both fades). |
+| `channels` | string |  | stereo (as recorded), mono (both channels summed), left, right or swap. |
+| `pitch` | number |  | Pitch shift in semitones, -24 to 24, without changing the speed. |
+| `preservePitch` | boolean |  | A speed change keeps the pitch (true, the default) or plays like tape (false). |
+| `muted` | boolean |  | Silence this clip's sound (a video clip keeps its picture). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `audio.addBus`
+
+Add a bus: tracks can feed it (audio.setTrack output) or send to it (audio.setSend), it has its own fader and effects and feeds the master. A shared reverb or a dialogue group. Returns its id. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `name` | string |  | Name (default "Bus 1", "Bus 2"…). |
+| `effect` | string |  | An effect to start with (id or name, audio.effects), e.g. "Space" for a reverb bus. |
+| `gainDb` | number |  | Fader in dB (default 0). |
+
+### `audio.removeBus`
+
+Remove a bus; tracks that fed it go to the master and their sends to it go. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `busId` | string | required | Bus id or name. |
+
+### `audio.setBus`
+
+Rename or mix a bus: fader, pan, mute, solo. Only the given fields change. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `busId` | string | required | Bus id or name. |
+| `name` | string |  | New name. |
+| `gainDb` | number |  | Fader in dB, -96 to +12. |
+| `pan` | number |  | -1 (left) to 1 (right). |
+| `muted` | boolean |  | Silence the bus. |
+| `solo` | boolean |  | Hear only soloed buses and tracks. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `audio.setSend`
+
+Send part of a track's sound to a bus (made or changed): its level, before or after the track's fader. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `trackId` | string | required | Track id or unique name ("Video 1"), as listed by track.list. |
+| `busId` | string | required | Bus id or name. |
+| `levelDb` | number |  | Send level in dB (default 0 for a new send; -96 is off). |
+| `preFader` | boolean |  | Taken before the track's fader and pan (default false). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `audio.removeSend`
+
+Stop a track sending to a bus. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `trackId` | string | required | Track id or unique name ("Video 1"), as listed by track.list. |
+| `busId` | string | required | Bus id or name. |
+
+### `audio.setMaster`
+
+The master: its fader, the true-peak limiter at the very end and its ceiling, and the loudness exports are brought to. Only the given fields change. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `gainDb` | number |  | Master fader in dB, -96 to +12. |
+| `limiter` | boolean |  | Keep the mix under the ceiling (default on). |
+| `ceilingDb` | number |  | The limiter's ceiling in dBTP, -24 to 0 (default -1). |
+| `loudness` | any |  | Integrated loudness of exports in LUFS (-40 to -5), or "youtube" / "streaming" (-14), "podcast" (-16), "broadcast" (-23), or null / "off" to export as mixed. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `audio.effects`
+
+Effects that can go in a chain: ryolune's stock effects (EQ, compressor, reverb, delay, de-esser…) and the CLAP, VST3, Audio Unit and ryolune plugins on this computer, with category, format and a description. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `query` | string |  | Only effects whose name, vendor or category contains this. |
+| `category` | string |  | Only this category (Dynamics, EQ & Filter, Space & Time…). |
+
+### `audio.effectParams`
+
+An effect's parameters: id, name, range, unit, default and choices. With target and slot, also the values that slot has now. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `effect` | string |  | Effect id or name (audio.effects). |
+| `target` | string |  | A track, bus, clip (id or name) or "master", with slot. |
+| `slot` | any |  | The effect in the target's chain: its slot id, its name or its position from 1. |
+
+### `audio.rescanPlugins`
+
+Look for plugins again (CLAP, VST3, Audio Units, ryolune native) in the standard folders and Settings › Audio's folders; returns how many effects are known. _(changes things)_
+
+### `audio.addEffect`
+
+Put an effect in a chain: a track's, a bus's, the master's or one clip's. One undo step. Returns the slot. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `target` | string | required | A track, bus or clip (id or name; prefix track:, bus: or clip: when names clash), or "master". |
+| `effect` | string | required | Effect id or name (audio.effects), e.g. "Channel EQ", "ryolune Comp", "Space". |
+| `index` | integer |  | Position in the chain from 0 (default: the end). Chains hold 8 effects. |
+| `params` | object |  | Starting values by parameter name or id: numbers in the parameter's unit, or text such as "-6 dB", "2.5k", "Hall". |
+| `bypassed` | boolean |  | Add it switched off. |
+
+### `audio.removeEffect`
+
+Take an effect out of a chain (its automation goes too). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `target` | string | required | A track, bus or clip (id or name), or "master". |
+| `slot` | any | required | Slot id, effect name or position from 1. |
+
+### `audio.moveEffect`
+
+Move an effect to another place in its chain. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `target` | string | required | A track, bus or clip (id or name), or "master". |
+| `slot` | any | required | Slot id, effect name or position from 1. |
+| `index` | integer | required | New position from 0. |
+
+### `audio.setEffect`
+
+Change an effect's parameters (by name or id, numbers or text like "-6 dB" or "Hall") or bypass it. Automated parameters get a keyframe at the playhead instead. One undo step (drags share a coalesce key). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `target` | string | required | A track, bus or clip (id or name), or "master". |
+| `slot` | any | required | Slot id, effect name or position from 1. |
+| `params` | object |  | Values by parameter name or id, e.g. {"Threshold": -20, "Ratio": "4:1"}. |
+| `bypassed` | boolean |  | Switch the effect off (true) or on. |
+| `reset` | boolean |  | Every parameter back to its default first. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `audio.copyEffects`
+
+Copy a whole effect chain (settings included) onto other tracks, buses, clips or the master. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `from` | string | required | Where the chain is: a track, bus, clip or "master". |
+| `to` | array of strings | required | Where it goes. |
+| `append` | boolean |  | Add after their effects instead of replacing them (default false). |
+
+### `audio.effectPresets`
+
+Ready-made settings for ryolune's stock effects ("Vocal glue", "Small room", "Telephone"…). _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `effect` | string |  | Only this effect's presets. |
+
+### `audio.applyPreset`
+
+Load a preset into an effect slot. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `target` | string | required | A track, bus, clip or "master". |
+| `slot` | any | required | Slot id, effect name or position from 1. |
+| `preset` | string | required | Preset name (audio.effectPresets). |
+
+### `audio.setAutomation`
+
+Automate a track's, bus's or the master's fader, pan or an effect parameter over time: replace its keyframes (times in timeline seconds). Clips: animate volume and pan with clip.setKeyframes. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `target` | string | required | A track or bus (id or name), or "master". |
+| `property` | string | required | gainDb, pan (not on the master), or an effect parameter: "<effect or slot>.<parameter>" such as "Space.Mix", or effects.<slot id>.<parameter id>. |
+| `keyframes` | array | required | [{"time": 0, "value": 0}, {"time": 0.6, "value": 1, "easing": "easeOut"}] or [[0, 0], [0.6, 1, "easeOut"]]. A keyframe's easing shapes the move into it: linear (default), hold, ease, easeIn, easeOut, easeInOut, ease<In\|Out\|InOut><Sine\|Quad\|Cubic\|Quart\|Quint\|Expo\|Circ\|Back\|Elastic\|Bounce>, cubicBezier(x1,y1,x2,y2), spring(bounce 0-1). Empty removes the animation. |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `audio.addAutomationKey`
+
+Set one automation keyframe at a time (default: the playhead), replacing one there; what the mixer's keyframe buttons do. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `target` | string | required | A track or bus (id or name), or "master". |
+| `property` | string | required | gainDb, pan, or "<effect>.<parameter>". |
+| `time` | number |  | Timeline seconds (default: the playhead). |
+| `value` | any |  | The value (default: what it is at that time); effect parameters also take text such as "-6 dB". |
+| `easing` | string |  | How the value arrives here from the previous keyframe (default linear). |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
+### `audio.removeAutomationKey`
+
+Remove an automation keyframe at a time, or the whole automation of a property (it then keeps its value at the playhead). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `target` | string | required | A track or bus (id or name), or "master". |
+| `property` | string | required | gainDb, pan, or "<effect>.<parameter>". |
+| `time` | number |  | Timeline seconds; omit to remove every keyframe of the property. |
+
+### `audio.measure`
+
+Loudness as EBU R128 measures it (integrated LUFS, loudness range, true peak, loudest moment) of the whole mix, a span, one track or one clip on its own. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string |  | One clip on its own, at volume 1 with its effects. |
+| `trackId` | string |  | One track, after its fader (without the master). |
+| `from` | number |  | Start of the span in seconds (default 0). |
+| `to` | number |  | End of the span in seconds (default: the end). |
+
+### `audio.normalize`
+
+Bring clips to the same loudness (speech: -16 LUFS by default) or peak level by setting their volume. Measures each clip on its own. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array of strings | required | Clips with sound (ids or names). |
+| `target` | number |  | Loudness in LUFS (default: Settings › Audio, -16), or the peak in dBFS with mode peak (default -1). |
+| `mode` | string |  | loudness (default) or peak. |
+
+### `audio.detectBeats`
+
+Find the tempo and the beats of a piece of music (a media item or a clip's), stored with the media: the timeline draws them under its clips and snaps to them, audio.beatCut cuts on them. ryolune songs already know theirs. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `assetId` | string |  | Media id or name. |
+| `clipId` | string |  | A clip of the music, instead. |
+
+### `audio.beatCut`
+
+Cut the picture on the music: split a video track's clips on the beats of a music clip, every few beats, in a span. Detects the beats first when needed. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `musicClipId` | string | required | The music clip whose beats to follow. |
+| `trackId` | string |  | The picture track to cut (default: the top video track with clips). |
+| `every` | integer |  | Cut every this many beats (default 4: once a bar in 4/4). |
+| `offset` | integer |  | Beats to skip from the first downbeat (default 0). |
+| `from` | number |  | Start of the span in seconds (default: the music clip's start). |
+| `to` | number |  | End of the span in seconds (default: its end). |
+| `markers` | boolean |  | Add markers on those beats instead of cutting (default false). |
+
+### `audio.autoDuck`
+
+Duck the music under the dialogue in one call: the music tracks' level drops while the dialogue tracks speak. Tracks are guessed from their names and content when not given. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `music` | array of strings |  | Tracks to duck (default: tracks of ryolune songs, music with beats, or named music, song, score…). |
+| `dialogue` | array of strings |  | Tracks they duck under (default: every other track with sound). |
+| `amountDb` | number |  | How far the music goes down, in dB (default -12). |
+| `thresholdDb` | number |  | Level above which the dialogue counts as speaking, dBFS (default -40). |
+| `attack` | number |  | Seconds to go down (default 0.15). |
+| `release` | number |  | Seconds to come back up (default 0.6). |
+| `off` | boolean |  | Remove the ducking from those tracks instead. |
+
+### `audio.importSong`
+
+Put a ryolune song (.ryolune) on the timeline: rendered by ryolune's own engine, as its mix on one track or as stems (one track per ryolune track), with its tempo's beats and optionally its markers. kimchi renders it again when the song is saved (audio.refreshSongs). One undo step. _(changes things · permission: files)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | The .ryolune file. |
+| `as` | string |  | mix (default) or stems. |
+| `trackId` | string |  | Track for the mix (default: the first free audio track). |
+| `start` | number |  | Timeline position in seconds (default: the playhead). |
+| `markers` | boolean |  | Also add the song's markers to the timeline (default false). |
+
+### `audio.refreshSongs`
+
+Render ryolune songs again when their file was saved since (kimchi also does it when a project opens and when its window comes back to the front). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `assetIds` | array of strings |  | Only these song media (default: all of them). |
+| `force` | boolean |  | Render even when the file hasn't changed. |
+
+### `audio.openInRyolune`
+
+Open a song clip's (or song media's) .ryolune file in ryolune: in the running ryolune (when its song has no unsaved changes), else by starting it. _(changes things · permission: files)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string |  | A clip of the song. |
+| `assetId` | string |  | The song media, instead. |
+| `force` | boolean |  | Open it even if ryolune's open song has unsaved changes (they are lost). |
+
+### `audio.scrub`
+
+Hear the sound while the playhead is dragged (on by default), or not. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `on` | boolean | required | true to hear it. |
+
+### `audio.meters`
+
+The levels playing now: peak and RMS of every track, bus and the master, clip lights, how far ducked tracks are pulled down, and the master's momentary and short-term loudness. _(read only · needs the window)_
+
+### `audio.devices`
+
+Sound outputs and inputs on this computer, and the ones Settings › Audio uses. _(read only · needs the window)_
+
+### `audio.record`
+
+Record a voice-over take from the microphone at the playhead onto an armed (or given) audio track, with a count-in: start, stop (the take lands as a clip, one undo step), cancel, or status. _(changes things · permission: files · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `action` | string | required | start, stop, cancel or status. |
+| `trackId` | string |  | Track to record onto (default: the armed one, else a new audio track). |
+| `countIn` | number |  | Seconds counted in before recording (default: Settings › Audio, 3). |
+| `input` | string |  | Input device name (default: Settings › Audio). |
+
+### `audio.showMixer`
+
+Show or hide the window's mixer (in place of the timeline, or beside it), and open an effect's panel. Returns what the window's audio views show (also in ui.state). _(changes things · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `open` | boolean |  | Show (default) or hide the mixer. |
+| `layout` | string |  | replace (the mixer takes the timeline's place) or beside (both, side by side). |
+| `target` | string |  | With slot: open that effect's panel (a track, bus, clip or "master"). |
+| `slot` | any |  | Slot id, effect name or position from 1. |
+| `closeEffect` | boolean |  | Close the effect panel. |
 
 ## motion
 
@@ -865,6 +1228,27 @@ Move keyframes of a layer, object, light or camera in time (the dope sheet's dra
 | `times` | array |  | Only the keyframes at these timeline times (seconds). |
 | `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
 
+### `motion.cameraMove`
+
+Animate a 3D scene's camera with a classic move, written as ordinary keyframes, constraints and expressions you can edit afterwards: orbit (around what it looks at, an object or a point, by degrees), turntable (a whole turn at an even speed), dolly (in or out along the view), truck (sideways), crane (up or down, still looking at the same point), zoom (the lens), flyThrough (along a curve: a followPath constraint), handheld (a gentle shake: wiggle expressions), or clear (the camera's animation goes). A new move replaces the one it would fight. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `move` | string | required | orbit, turntable, dolly, truck, crane, zoom, flyThrough, handheld or clear. |
+| `camera` | string |  | Which camera ("camera" is the main one; default the active one). |
+| `around` | any |  | orbit, turntable: an object id (it keeps facing it) or a point [x, y, z] (default: what the camera looks at). flyThrough: an object to keep facing. |
+| `degrees` | number |  | orbit, turntable: how far around; positive goes to the camera's right (default 90, turntable 360). |
+| `distance` | number |  | dolly (+ in, − out), truck (+ right, − left), crane (+ up, − down), in world units (default a third of the way to what it looks at). |
+| `amount` | number |  | zoom: degrees of field of view added (− zooms in; default −15). handheld: how much it shakes (1 gentle, 3 running, 0 off; default 1). |
+| `path` | string |  | flyThrough: a curve object to follow. |
+| `points` | array |  | flyThrough: [[x, y, z], …] points of a new curve to follow (default: a sweep past what it looks at). |
+| `lookAt` | string |  | flyThrough: an object to keep facing (default: facing along the path). |
+| `from` | number |  | Scene seconds the move starts (default the clip's start). |
+| `to` | number |  | Scene seconds it ends (default the clip's end). |
+| `easing` | string |  | How it moves (default easeInOut; a whole turn linear): linear, easeIn, easeOut, easeInOut, easeInOutCubic… |
+| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+
 ### `motion.render`
 
 Render motion clips ahead at full quality (the 3D engine and samples the scene asks for, motion blur…) into a file the timeline then plays: smooth playback and fast exports for heavy scenes. A clip that isn't rendered is drawn live (quick in the preview, full quality in the export). Editing the scene afterwards makes the render out of date: the clip is drawn live again until it is rendered again. Returns render ids; follow them with motion.renderStatus, or pass wait. _(changes things)_
@@ -1157,7 +1541,7 @@ Render the open project to a file: every frame drawn as in the preview (titles, 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `path` | string | required | Destination file. The extension should match the format. |
-| `format` | string |  | mp4 (default), hevc, prores, webm, gif, audio (AAC) or wav. |
+| `format` | string |  | mp4 (default), hevc, prores, webm, gif, audio (sound only: AAC unless audioFormat says) or wav. |
 | `quality` | string |  | draft, standard (default) or high. |
 | `width` | integer |  | Output width (default: the project's). |
 | `height` | integer |  | Output height (default: the project's). |
@@ -1166,6 +1550,13 @@ Render the open project to a file: every frame drawn as in the preview (titles, 
 | `to` | number |  | End of the range in seconds (default: the end). |
 | `encoder` | string |  | auto (default: the GPU or media engine when there is one, redone on the CPU if it fails), hardware (GPU only; WebM may be AV1) or software (CPU only: slower, smallest files). |
 | `captions` | string |  | burn (default: in the picture), file (an .srt next to the video instead), both, or none. |
+| `audioFormat` | string |  | Sound-only exports (format audio or wav): wav, aiff, flac, mp3, aac (m4a), opus or vorbis (ogg). |
+| `sampleRate` | integer |  | 44100, 48000 or 96000 Hz (default: the project's; Opus is always 48000). |
+| `bitDepth` | integer |  | 16 or 24 (or 32-bit float in WAV) for WAV, AIFF, FLAC and ProRes' sound (default 24). |
+| `bitrate` | integer |  | kbit/s of lossy sound: MP3, AAC, Opus, Vorbis (default: by quality). |
+| `stems` | boolean |  | Sound-only: one file per track with sound and per bus, into the folder path names. |
+| `stemsMaster` | boolean |  | With stems: through the master's effects, fader and limiter too (default false). |
+| `loudness` | any |  | Loudness of this export in LUFS, or youtube (-14), podcast (-16), broadcast (-23); default: the master's target (audio.setMaster). |
 | `wait` | boolean |  | Wait until the job finishes and return it (always true with --file). |
 
 ### `export.status`
@@ -1192,13 +1583,15 @@ Other lsuite apps installed on this computer (from ~/.lsuite/apps) and whether t
 
 ### `handoff.toRyolune`
 
-Send the cut to ryolune to score it: renders the audio (WAV) and writes its length and markers next to it; when ryolune is running, imports the audio there and adds the markers. _(changes things · permission: files)_
+Send the cut to ryolune to score it: renders the audio (WAV) and writes its length and markers next to it; when ryolune is running, imports the audio there and adds the markers. With as session, the whole audio timeline instead: a ryolune multitrack session (one track per kimchi track with its clips, fades, gains, effects, fader and pan; the markers), opened in ryolune when it runs. _(changes things · permission: files)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `from` | number |  | Start of the range in seconds (default 0). |
-| `to` | number |  | End of the range in seconds (default: the end). |
+| `from` | number |  | Start of the range in seconds (default 0; mix only). |
+| `to` | number |  | End of the range in seconds (default: the end; mix only). |
 | `name` | string |  | Name for the hand-off files (default: the project name). |
+| `as` | string |  | mix (default: the cut's sound as one WAV) or session (a .ryolune multitrack session). |
+| `force` | boolean |  | With session: open it even if ryolune's open song has unsaved changes (they are lost). |
 
 ### `handoff.fromRyolune`
 
@@ -1391,13 +1784,13 @@ Select clips (or one media item) in the window. _(changes things · needs the wi
 
 ### `ui.showPanel`
 
-Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it. _(changes things · needs the window)_
+Open a panel or dialog: media, generate, text, motion, captions (left panel), inspector, agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it. _(changes things · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `panel` | string | required | Panel name. |
-| `section` | string |  | For settings: models, agent, appearance, updates, diagnostics or about. |
-| `open` | boolean |  | false closes the panel or dialog instead (agent, jobs or a dialog; default true). |
+| `section` | string |  | For settings: models, agent, appearance, audio, updates, diagnostics or about. |
+| `open` | boolean |  | false closes the panel or dialog instead (the left panel, inspector, agent, jobs or a dialog; default true). |
 | `all` | boolean |  | For whatsNew: the notes of every release, not only this one's. |
 
 ### `ui.closeDialogs`
@@ -1425,14 +1818,16 @@ Timeline and playback options in the window: snapping, ripple delete and loop. O
 
 ### `ui.setLayout`
 
-Resize the editor's panels, in pixels (each within its limits), or put them back as they start. Returns the sizes. _(changes things · needs the window)_
+Resize, open or close the editor's panels (sizes in pixels, each within its limits), or put them back as they start. The window keeps the preview at least 340×190: in a small window side panels are drawn smaller, or over the work as drawers, and get their size back when it grows. Returns the sizes as drawn, the window's size and the panels drawn as overlays. _(changes things · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `left` | number |  | Width of the left panel (280-520). |
-| `inspector` | number |  | Width of the inspector, on the right (260-440). |
-| `timeline` | number |  | Height of the timeline (180-620). |
-| `agent` | number |  | Width of the Agent panel (300-560). |
+| `left` | number |  | Width of the left panel (248-520). |
+| `inspector` | number |  | Width of the inspector, on the right (256-460). |
+| `timeline` | number |  | Height of the timeline (150 up to the window's height less the preview's 190). |
+| `agent` | number |  | Width of the Agent panel (300-600). |
+| `leftOpen` | boolean |  | Open (true) or close the left panel; its rail of tabs stays. |
+| `inspectorOpen` | boolean |  | Open (true) or close the inspector. |
 | `reset` | boolean |  | Back to the starting sizes first. |
 
 ### `ui.action`
@@ -1441,7 +1836,7 @@ Do what a keyboard shortcut or menu item of the window does, by its action name.
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `action` | string | required | PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide. |
+| `action` | string | required | PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide, StudioAlignCamera, StudioFly, StudioZoomIn, StudioZoomOut, StudioZoom100; sound: ToggleMixer, MuteTrack, SoloTrack, ArmTrack, RecordVoiceOver, AddEffect. |
 
 ### `ui.reveal`
 
@@ -1468,6 +1863,7 @@ Open, drive or close the Studio, the window's editor for motion clips (a Blender
 | --- | --- | --- | --- |
 | `clipId` | string |  | Open this motion clip (id or name). |
 | `close` | boolean |  | Back to the edit. |
+| `panel` | string |  | In a narrow window: objects, properties or none opens or closes a Studio side drawer. |
 | `select` | array |  | Select these ids (layers, objects, lights, cameras; "scene"; "material:<id>", "comp:<id>"); empty clears. |
 | `mode` | string |  | object or edit (3D mesh editing of the selected mesh object). |
 | `selectMode` | string |  | Edit mode: vertex, edge or face. |
@@ -1481,3 +1877,11 @@ Open, drive or close the Studio, the window's editor for motion clips (a Blender
 | `composition` | string |  | 2D: show and edit this composition ("" = the scene). |
 | `showGraph` | boolean |  | The timeline area shows the graph editor (true) or the dope sheet. |
 | `graphProperty` | string |  | The property the graph editor shows, e.g. position.x (of the selected item). |
+| `navigate` | object |  | 3D: move around, as the mouse would: {"orbit": [yaw°, pitch°], "pan": [dx, dy] (shares of the view), "zoom": 2 (twice as close), "fly": [forward, right, up] (world units), "look": [yaw°, pitch°] (turning where it stands)}. Through the camera with lockCamera, this moves the scene's camera (one undo step, a keyframe at the playhead when it is animated). |
+| `lockCamera` | boolean |  | 3D: while looking through the camera, navigating moves the scene's camera (Blender's Lock camera to view). |
+| `alignCamera` | boolean |  | 3D: put the active camera where the view is (then look through it). |
+| `addCamera` | boolean |  | 3D: add a camera where the view is. |
+| `keyframeCamera` | boolean |  | 3D: keyframe the camera's position and target at the playhead (true), or remove those keyframes (false). The selected camera, else the active one. |
+| `fly` | boolean |  | 3D: start (true) or end (false) fly mode: WASD / arrows move, Q and E down and up, the mouse looks, the wheel sets the speed; a click keeps the view, Esc puts it back. |
+| `zoom` | any |  | 2D: the canvas's zoom: "fit", "100%" or a number (1 = 100%). |
+| `pan` | array |  | 2D: [x, y] screen pixels the canvas's centre sits from the view's centre. |

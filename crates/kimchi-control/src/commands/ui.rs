@@ -10,7 +10,7 @@ use crate::registry::{Args, Ctx, Perm};
 use crate::resolve;
 use crate::session::{CmdResult, Session};
 
-pub const PANELS: &[&str] = &["media", "generate", "text", "motion", "captions", "agent", "jobs", "settings", "export", "palette", "home", "shortcuts", "whatsNew", "diagnostics"];
+pub const PANELS: &[&str] = &["media", "generate", "text", "motion", "captions", "inspector", "agent", "jobs", "settings", "export", "palette", "home", "shortcuts", "whatsNew", "diagnostics"];
 
 /// `ui.studio`'s words, checked before the window sees them.
 const STUDIO_CHOICES: [(&str, &[&str]); 4] = [
@@ -68,6 +68,8 @@ pub const ACTIONS: &[(&str, Perm)] = &[
     ("ShowMotion", Perm::Edit),
     ("ShowCaptions", Perm::Edit),
     ("ToggleAgent", Perm::Edit),
+    ("ToggleLeftPanel", Perm::Edit),
+    ("ToggleInspector", Perm::Edit),
     ("ToggleJobs", Perm::Edit),
     ("ShowShortcuts", Perm::Edit),
     ("OpenSettings", Perm::Edit),
@@ -125,6 +127,18 @@ pub const ACTIONS: &[(&str, Perm)] = &[
     ("StudioGraph", Perm::Edit),
     ("StudioHide", Perm::Edit),
     ("StudioUnhide", Perm::Edit),
+    // Sound.
+    ("ToggleMixer", Perm::Edit),
+    ("MuteTrack", Perm::Edit),
+    ("SoloTrack", Perm::Edit),
+    ("ArmTrack", Perm::Edit),
+    ("RecordVoiceOver", Perm::Files),
+    ("AddEffect", Perm::Edit),
+    ("StudioAlignCamera", Perm::Edit),
+    ("StudioFly", Perm::Edit),
+    ("StudioZoomIn", Perm::Edit),
+    ("StudioZoomOut", Perm::Edit),
+    ("StudioZoom100", Perm::Edit),
 ];
 
 pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {

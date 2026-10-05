@@ -17,11 +17,11 @@ use serde_json::{Value, json};
 
 use super::color::{ColorChange, ColorField};
 use super::slider::Slider;
-use super::{Inspector, section};
+use super::Inspector;
 use crate::store::StoreExt;
 use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::scrub::{Scrub, ScrubChange};
-use crate::ui::{Button, caps, switch};
+use crate::ui::{Button, switch};
 
 /// Correction sliders: (property, label, minimum). Maximums are 1.
 const FIELDS: [(&str, &str, f64); 7] = [
@@ -233,20 +233,16 @@ impl Inspector {
         };
 
         let any = !clip.effects.is_default() || EFFECT_PROPS.iter().any(|p| clip.keyframes.contains_key(*p));
-        section(cx)
-            .child(
-                div().flex().items_center().justify_between().child(caps("Colour", cx)).child(
-                    Button::icon("fx-reset", "rotate-ccw", "Remove every colour effect, key and LUT").small().disabled(!any).on_click(move |_, _, cx| {
-                        cx.store().update(cx, |s, cx| {
-                            let mut steps = vec![json!({ "command": "clip.setEffects", "params": { "clipIds": [id], "reset": true } })];
-                            for p in EFFECT_PROPS {
-                                steps.push(json!({ "command": "clip.setKeyframes", "params": { "clipId": id, "property": p, "keyframes": [] } }));
-                            }
-                            s.run("project.batch", json!({ "commands": steps, "label": "reset colour" }), cx)
-                        })
-                    }),
-                ),
-            )
+        self.fold("colour", "Colour", cx)
+            .trailing(Button::icon("fx-reset", "rotate-ccw", "Remove every colour effect, key and LUT").small().disabled(!any).on_click(move |_, _, cx| {
+                cx.store().update(cx, |s, cx| {
+                    let mut steps = vec![json!({ "command": "clip.setEffects", "params": { "clipIds": [id], "reset": true } })];
+                    for p in EFFECT_PROPS {
+                        steps.push(json!({ "command": "clip.setKeyframes", "params": { "clipId": id, "property": p, "keyframes": [] } }));
+                    }
+                    s.run("project.batch", json!({ "commands": steps, "label": "reset colour" }), cx)
+                })
+            }))
             .child(looks)
             .child(rows)
             .child(switch(
@@ -296,8 +292,7 @@ impl Inspector {
             (Some(sp), Some(tr)) if (sp.duration() - tr.duration).abs() > 1e-3 => Some(format!("Plays for {:.2} s: the clips are too short for more.", sp.duration())),
             _ => None,
         };
-        section(cx)
-            .child(caps(if audio { "Crossfade in" } else { "Transition in" }, cx))
+        self.fold("transition", if audio { "Crossfade in" } else { "Transition in" }, cx)
             .child(grid)
             .when(current.is_some(), |d| d.child(self.fx.transition_len.clone()))
             .children(shortened.map(|s| div().text_size(px(sz::SM)).text_color(t.warning).child(s)))

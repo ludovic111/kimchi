@@ -24,6 +24,10 @@ use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBackgroundAppear
 use kimchi_control::{Session, SessionOptions};
 
 fn main() {
+    // The plugin scanner runs this program to probe one bundle in a child process.
+    if let Some(code) = kimchi_audio::plugins::scan_child() {
+        std::process::exit(code);
+    }
     // Logs to `<data>/logs/kimchi.log` (and stderr), crash reports, and the note of how the last
     // run ended: first, so everything after is recorded.
     let data_dir = kimchi_control::session::default_data_dir();
@@ -148,7 +152,15 @@ pub fn open_main_window(cx: &mut App) {
     let (w, h) = std::env::var("KIMCHI_WINDOW_SIZE")
         .ok()
         .and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.trim().parse::<f32>().ok()?, h.trim().parse::<f32>().ok()?))))
-        .unwrap_or((1480., 920.));
+        .unwrap_or_else(|| {
+            // 1480 × 920, or less on a smaller screen (never past what it shows, never under the minimum).
+            let screen = cx.primary_display().map(|d| d.visible_bounds().size);
+            let fit = |want: f32, room: Option<f32>, min: f32| room.map_or(want, |r| want.min(r * 0.92)).max(min);
+            (
+                fit(1480., screen.map(|s| f32::from(s.width)), ui::layout::WINDOW_MIN_W),
+                fit(920., screen.map(|s| f32::from(s.height)), ui::layout::WINDOW_MIN_H),
+            )
+        });
     let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
     let transparent = cx.global::<theme::Theme>().transparent;
     let options = WindowOptions {
@@ -158,7 +170,7 @@ pub fn open_main_window(cx: &mut App) {
         titlebar: Some(TitlebarOptions { title: Some("kimchi".into()), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(17.))) }),
         focus: true,
         show: true,
-        window_min_size: Some(size(px(1100.), px(680.))),
+        window_min_size: Some(size(px(crate::ui::layout::WINDOW_MIN_W), px(crate::ui::layout::WINDOW_MIN_H))),
         // The window material on macOS; the CSS-like tiers sit on top of it.
         window_background: if transparent { WindowBackgroundAppearance::Blurred } else { WindowBackgroundAppearance::Opaque },
         app_id: Some("kimchi".into()),

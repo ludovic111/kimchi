@@ -1,6 +1,7 @@
 //! kimchi-core: the editing model. No I/O beyond reading and writing project files.
 
 pub mod anim;
+pub mod audio;
 pub mod edit;
 pub mod effects;
 pub mod expr;
@@ -19,6 +20,7 @@ pub use history::Editor;
 pub use model::*;
 pub use store::{Library, ProjectSummary};
 
+pub use audio::{Beats, Bus, Channels, ClipAudio, Duck, FadeCurve, Insert, Master, Mixer, SongRef, TrackMix};
 pub use anim::{Easing, KeyValue, Keyframe, Keyframes};
 pub use effects::{ChromaKey, Effects, Lut};
 pub use motion::{Scene, Scene2d, Scene3d, TemplateRef};

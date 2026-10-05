@@ -213,12 +213,19 @@ pub(crate) fn apply(p: &mut Pixmap, e: &Effect, cx: &mut FxCx) {
         "fractalNoise" => {
             let (scale, octaves, evo, contrast) = (n("scale").max(1.0), n("complexity").round() as u32, n("evolution"), n("contrast"));
             let (ca, cb, amount, seed) = (col("colorA"), col("colorB"), n("amount"), e.n("seed") as u32);
-            map_rgb(p, move |v, x, y| {
+            let Some(roi) = ink(p) else { return };
+            // The finest octave's wavelength on the picture sets how coarse the grid may be.
+            let finest = scale * zoom(base) / 2f32.powi(octaves.clamp(1, 10) as i32 - 1);
+            let field = Field::new(roi, grid_step(finest), |x, y| {
                 let (px, py) = project(x, y);
-                let f = noise::fbm(px / scale, py / scale, evo, octaves, seed);
+                [noise::fbm(px / scale, py / scale, evo, octaves, seed)]
+            });
+            map_rgba(p, Some(roi), move |v, x, y| {
+                let f = field.at(x, y)[0];
                 let u = (f * contrast * 0.5 + 0.5).clamp(0.0, 1.0);
                 let g: [f32; 3] = std::array::from_fn(|i| ca[i] + (cb[i] - ca[i]) * u);
-                mix3(v, g, amount)
+                let c = mix3([v[0], v[1], v[2]], g, amount);
+                [c[0], c[1], c[2], v[3]]
             });
         }
         "halftone" => halftone(p, n("size") * k, n("angle"), e.b("color"), at_point(cx.base, 0.0, 0.0)),
@@ -235,10 +242,14 @@ pub(crate) fn apply(p: &mut Pixmap, e: &Effect, cx: &mut FxCx) {
         "turbulentDisplace" => {
             let (amount, size, evo, seed) = (n("amount") * k, n("size").max(1.0), n("evolution"), e.n("seed") as u32);
             let roi = ink(p).map(|r| r.grow(amount + 1.0, p));
-            warp(p, roi, move |x, y| {
+            let field = Field::new(roi.unwrap_or_else(|| Roi::full(p)), grid_step(size * zoom(base) / 4.0), |x, y| {
                 let (px, py) = project(x, y);
                 let (qx, qy) = (px / size, py / size);
-                (x + amount * noise::fbm(qx, qy, evo, 3, seed), y + amount * noise::fbm(qx + 19.1, qy + 7.7, evo, 3, seed))
+                [noise::fbm(qx, qy, evo, 3, seed), noise::fbm(qx + 19.1, qy + 7.7, evo, 3, seed)]
+            });
+            warp(p, roi, move |x, y| {
+                let [dx, dy] = field.at(x, y);
+                (x + amount * dx, y + amount * dy)
             });
         }
         "waveWarp" => {
@@ -467,8 +478,8 @@ fn read(p: &Pixmap, r: Roi) -> Vec<Px> {
 
 fn store(px: Px) -> [u8; 4] {
     let a = px[3].clamp(0.0, 255.0);
-    let c = |v: f32| v.clamp(0.0, a).round() as u8;
-    [c(px[0]), c(px[1]), c(px[2]), a.round() as u8]
+    let c = |v: f32| super::byte(v.clamp(0.0, a));
+    [c(px[0]), c(px[1]), c(px[2]), super::byte(a)]
 }
 
 fn write(p: &mut Pixmap, r: Roi, buf: &[Px]) {
@@ -496,7 +507,7 @@ fn bilinear(w: usize, h: usize, x: f32, y: f32, get: impl Fn(usize) -> Px) -> Px
     if !(fx > -1.0 && fy > -1.0 && fx < w as f32 && fy < h as f32) {
         return [0.0; 4];
     }
-    let (x0, y0) = (fx.floor(), fy.floor());
+    let (x0, y0) = (super::floor(fx), super::floor(fy));
     let (tx, ty) = (fx - x0, fy - y0);
     let (x0, y0) = (x0 as isize, y0 as isize);
     let at = |x: isize, y: isize| if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h { get(y as usize * w + x as usize) } else { [0.0; 4] };
@@ -549,6 +560,93 @@ fn warp(p: &mut Pixmap, roi: Option<Roi>, f: impl Fn(f32, f32) -> (f32, f32) + S
             px.copy_from_slice(&store(sample_u8(&src, w, h, sx, sy)));
         }
     });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Smooth fields
+
+/// Picture pixels per unit of `base` (how much the layer's space is magnified).
+fn zoom(base: Transform) -> f32 {
+    let z = (base.sx * base.sy - base.kx * base.ky).abs().sqrt();
+    if z.is_finite() { z } else { 1.0 }
+}
+
+/// Grid spacing (pixels) for a field whose finest detail repeats every `wavelength` pixels:
+/// eight or more nodes per wave, read back with cubic interpolation, look the same as
+/// evaluating every pixel (within half a percent of one octave's range).
+fn grid_step(wavelength: f32) -> usize {
+    if wavelength.is_finite() { (wavelength / 8.0).floor().clamp(1.0, 8.0) as usize } else { 1 }
+}
+
+/// A smooth function of the pixel position (noise), over a region of the picture: evaluated at
+/// every pixel when `step` is 1, else at grid nodes `step` pixels apart (in parallel) and read
+/// back with Catmull-Rom interpolation. Noise that changes over tens of pixels then costs a few
+/// percent of evaluating it everywhere.
+type DirectNoise<'f, const N: usize> = Box<dyn Fn(f32, f32) -> [f32; N] + Sync + 'f>;
+
+struct Field<'f, const N: usize> {
+    /// The function itself, when the grid would be every pixel.
+    direct: Option<DirectNoise<'f, N>>,
+    /// Pixel position of node (0, 0).
+    x0: f32,
+    y0: f32,
+    step: f32,
+    cols: usize,
+    rows: usize,
+    nodes: Vec<[f32; N]>,
+}
+
+impl<'f, const N: usize> Field<'f, N> {
+    fn new(r: Roi, step: usize, f: impl Fn(f32, f32) -> [f32; N] + Sync + 'f) -> Self {
+        if step <= 1 {
+            return Field { direct: Some(Box::new(f)), x0: 0.0, y0: 0.0, step: 1.0, cols: 0, rows: 0, nodes: vec![] };
+        }
+        let s = step as f32;
+        // One node before the region and two after it, for the cubic's four taps.
+        let (x0, y0) = (r.x0 as f32 + 0.5 - s, r.y0 as f32 + 0.5 - s);
+        let (cols, rows) = (r.w().div_ceil(step) + 3, r.h().div_ceil(step) + 3);
+        let mut nodes = vec![[0.0f32; N]; cols * rows];
+        nodes.par_chunks_mut(cols).enumerate().for_each(|(j, row)| {
+            for (i, v) in row.iter_mut().enumerate() {
+                *v = f(x0 + i as f32 * s, y0 + j as f32 * s);
+            }
+        });
+        Field { direct: None, x0, y0, step: s, cols, rows, nodes }
+    }
+
+    #[inline]
+    fn at(&self, x: f32, y: f32) -> [f32; N] {
+        if let Some(f) = &self.direct {
+            return f(x, y);
+        }
+        // Between nodes 1 and len − 2 (the cubic reads one node before and two after).
+        let gx = ((x - self.x0) / self.step).clamp(1.0, (self.cols - 2) as f32 - 1e-3);
+        let gy = ((y - self.y0) / self.step).clamp(1.0, (self.rows - 2) as f32 - 1e-3);
+        let (ix, iy) = (gx as usize, gy as usize);
+        let (wx, wy) = (catmull_rom(gx - ix as f32), catmull_rom(gy - iy as f32));
+        let mut out = [0.0f32; N];
+        for (dy, ky) in wy.iter().enumerate() {
+            let row = &self.nodes[(iy + dy - 1) * self.cols..];
+            let mut acc = [0.0f32; N];
+            for (dx, kx) in wx.iter().enumerate() {
+                let v = &row[ix + dx - 1];
+                for c in 0..N {
+                    acc[c] += v[c] * kx;
+                }
+            }
+            for c in 0..N {
+                out[c] += acc[c] * ky;
+            }
+        }
+        out
+    }
+}
+
+/// Catmull-Rom weights of the four nodes around a point `t` (0–1) past the second.
+#[inline]
+fn catmull_rom(t: f32) -> [f32; 4] {
+    let (t2, t3) = (t * t, t * t * t);
+    [(-t + 2.0 * t2 - t3) * 0.5, (2.0 - 5.0 * t2 + 3.0 * t3) * 0.5, (t + 4.0 * t2 - 3.0 * t3) * 0.5, (t3 - t2) * 0.5]
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -649,7 +747,7 @@ where
             // Bilinear, clamped to the edge of the small copy.
             let fx = ((x as f32 + 0.5) * k - 0.5).clamp(0.0, (sw - 1) as f32);
             let fy = ((y as f32 + 0.5) * k - 0.5).clamp(0.0, (sh - 1) as f32);
-            let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+            let (x0, y0) = (fx as usize, fy as usize);
             let (x1, y1) = ((x0 + 1).min(sw - 1), (y0 + 1).min(sh - 1));
             let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
             let (a, b, c, d) = (small[y0 * sw + x0], small[y0 * sw + x1], small[y1 * sw + x0], small[y1 * sw + x1]);
@@ -1144,3 +1242,33 @@ fn sharpen(p: &mut Pixmap, amount: f32, k: f32) {
     write(p, r, &out);
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Noise read back from a grid stays within a hair of the noise itself, at the coarsest
+    /// grid its finest octave allows.
+    #[test]
+    fn grid_fields_match_the_function() {
+        for (scale, octaves) in [(648.0f32, 5u32), (432.0, 3), (40.0, 2), (12.0, 4)] {
+            let finest = scale / 2f32.powi(octaves as i32 - 1);
+            let step = grid_step(finest);
+            let f = |x: f32, y: f32| [noise::fbm(x / scale, y / scale, 0.37, octaves, 7), noise::fbm(x / scale + 19.1, y / scale, 0.37, octaves, 7)];
+            let r = Roi { x0: 3, y0: 5, x1: 403, y1: 305 };
+            let field = Field::new(r, step, f);
+            let mut worst = 0.0f32;
+            for y in (r.y0..r.y1).step_by(3) {
+                for x in (r.x0..r.x1).step_by(3) {
+                    let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                    let (a, b) = (field.at(px, py), f(px, py));
+                    worst = worst.max((a[0] - b[0]).abs()).max((a[1] - b[1]).abs());
+                }
+            }
+            assert!(worst < 0.004, "scale {scale}, {octaves} octaves, step {step}: off by {worst}");
+        }
+        assert_eq!(grid_step(f32::NAN), 1);
+        assert_eq!(grid_step(15.0), 1);
+        assert_eq!(grid_step(1e6), 8);
+    }
+}

@@ -698,3 +698,61 @@ fn a_big_floor_running_behind_the_camera_has_no_holes() {
     }
     assert_eq!(holes, 0, "pixels of the background showing through the floor");
 }
+
+#[test]
+fn the_srgb_table_follows_the_curve() {
+    let mut worst = 0.0f32;
+    for i in 0..=200_000 {
+        let v = i as f32 / 200_000.0;
+        worst = worst.max((linear_to_srgb(v) - linear_to_srgb_exact(v)).abs());
+    }
+    assert!(worst < 2e-5, "off by {worst}");
+    assert_eq!(linear_to_srgb(f32::NAN), 0.0);
+    assert_eq!(linear_to_srgb(-1.0), 0.0);
+    assert!((linear_to_srgb(7.0) - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn point_lights_cast_shadows_every_way() {
+    // A bulb low over the floor with a box beside it on every side: each box shadows the floor
+    // behind it, whichever face of the bulb's cube of maps it falls on.
+    let scene = |shadows: bool| {
+        json!({"background": "#000000", "ambient": 0, "fog": false, "camera": {"position": [0, 9, 0.01], "target": [0, 0, 0]},
+            "lights": [{"id": "bulb", "type": "point", "position": [0, 1, 0], "intensity": 2, "castShadows": shadows}],
+            "objects": [
+                {"id": "floor", "type": "plane", "width": 12, "height": 12, "rotation": [-90, 0, 0], "material": {"color": "#ffffff", "roughness": 1}},
+                {"id": "e", "type": "box", "size": [0.3, 1.6, 1.0], "position": [1.2, 0.8, 0]},
+                {"id": "w", "type": "box", "size": [0.3, 1.6, 1.0], "position": [-1.2, 0.8, 0]},
+                {"id": "n", "type": "box", "size": [1.0, 1.6, 0.3], "position": [0, 0.8, -1.2]},
+                {"id": "s", "type": "box", "size": [1.0, 1.6, 0.3], "position": [0, 0.8, 1.2]}
+            ]})
+    };
+    let (on, off) = (draw(scene(true), 0.0), draw(scene(false), 0.0));
+    dump("point-shadow", &on);
+    // The floor just past each box, seen from above (160×90, 9 units up: ~1 unit ≈ 9 px).
+    for (name, (x, y)) in [("east", (104, 45)), ("west", (56, 45)), ("north", (80, 21)), ("south", (80, 69))] {
+        let (a, b) = (mean(&on, x - 2, y - 2, x + 2, y + 2), mean(&off, x - 2, y - 2, x + 2, y + 2));
+        assert!(a < b * 0.5, "{name}: shadowed {a} vs lit {b}");
+    }
+    // Near the bulb, between the boxes, the floor stays lit.
+    assert!(mean(&on, 78, 43, 82, 47) > mean(&off, 78, 43, 82, 47) * 0.9);
+}
+
+#[test]
+#[ignore]
+fn zz_probe_lights() {
+    for shadows in [true, false] {
+        let s = scene(json!({"background": "#000000", "camera": {"position": [0, 4, 6], "target": [0, 0, 0]},
+            "lights": [
+                {"id": "s", "type": "spot", "position": [-1, 4, 1], "direction": [0.2, -1, -0.2], "angle": 50, "color": "#ffcc88", "intensity": 1.5},
+                {"id": "a", "type": "area", "position": [2, 2, 2], "direction": [-0.5, -0.5, -0.5], "size": [1.5, 1], "intensity": 0.8, "castShadows": shadows},
+                {"id": "p", "type": "point", "position": [0, 1, 2], "range": 5, "color": "#88aaff", "castShadows": false}
+            ],
+            "objects": [
+                {"id": "f", "type": "plane", "width": 10, "height": 10, "rotation": [-90, 0, 0], "material": {"color": "#d0d0d0", "roughness": 0.6}},
+                {"id": "b", "type": "box", "size": 1, "position": [0, 0.5, 0], "material": {"color": "#ff5a36", "clearcoat": 1, "roughness": 0.5}}
+            ]}));
+        let p = Space::cpu().render(&s, 0.0, 640, 360, &mut None_, Quality::Preview).unwrap();
+        dump(&format!("probe-lights-{shadows}"), &p);
+    }
+}

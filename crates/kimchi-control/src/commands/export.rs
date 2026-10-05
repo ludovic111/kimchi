@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use kimchi_core::Project;
 use kimchi_media::EncoderChoice;
-use kimchi_media::export::{ExportFormat, ExportSettings, Quality};
+use kimchi_media::export::{AudioFormat, AudioOptions, ExportFormat, ExportSettings, Quality};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
@@ -18,9 +18,11 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 { "id": "prores", "label": "ProRes 422 HQ", "extension": "mov", "note": "For further editing." },
                 { "id": "webm", "label": "WebM (VP9 + Opus)", "extension": "webm", "note": "For the web." },
                 { "id": "gif", "label": "Animated GIF", "extension": "gif", "note": "No sound." },
-                { "id": "audio", "label": "Audio only (AAC)", "extension": "m4a", "note": "The mix." },
+                { "id": "audio", "label": "Audio only", "extension": "m4a", "note": "The mix: AAC in M4A, or the file type audioFormat names (audioFormats)." },
                 { "id": "wav", "label": "Audio only (WAV)", "extension": "wav", "note": "Uncompressed 24-bit mix." },
             ],
+            "audioFormats": AudioFormat::ALL.iter().map(|f| json!({ "id": f, "extension": f.extension(), "lossy": f.is_lossy() })).collect::<Vec<_>>(),
+            "sampleRates": kimchi_media::export::AUDIO_RATES,
             "qualities": ["draft", "standard", "high"],
             "encoders": ["auto", "hardware", "software"],
         })),
@@ -56,6 +58,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                     (f, t) => Some((f.unwrap_or(0.0), t.unwrap_or(f64::MAX))),
                 },
                 encoder: encoder(a.opt_str("encoder").unwrap_or("auto"))?,
+                audio: audio_options(&a)?,
             };
             let mut project = s.project()?;
             // Captions: in the picture, in a file next to it, both or neither.
@@ -107,6 +110,40 @@ pub fn format(f: &str) -> CmdResult<ExportFormat> {
         "audio" => ExportFormat::Audio,
         "wav" => ExportFormat::Wav,
         other => return Err(format!("format is mp4, hevc, prores, webm, gif, audio or wav, not \"{other}\"")),
+    })
+}
+
+/// The sound options of `export.start`.
+pub fn audio_options(a: &Args) -> CmdResult<AudioOptions> {
+    let sample_rate = a.opt_u32("sampleRate");
+    if let Some(r) = sample_rate
+        && !kimchi_media::export::AUDIO_RATES.contains(&r)
+    {
+        return Err(format!("sampleRate is 44100, 48000 or 96000, not {r}"));
+    }
+    let bit_depth = a.opt_u32("bitDepth");
+    if let Some(d) = bit_depth
+        && ![16, 24, 32].contains(&d)
+    {
+        return Err(format!("bitDepth is 16, 24 or 32, not {d}"));
+    }
+    let bitrate_kbps = a.opt_u32("bitrate");
+    if let Some(b) = bitrate_kbps
+        && !(32..=512).contains(&b)
+    {
+        return Err(format!("bitrate goes from 32 to 512 kbit/s, not {b}"));
+    }
+    Ok(AudioOptions {
+        format: a.opt_str("audioFormat").map(AudioFormat::parse).transpose()?,
+        sample_rate,
+        bit_depth,
+        bitrate_kbps,
+        stems: a.bool_or("stems", false),
+        stems_master: a.bool_or("stemsMaster", false),
+        loudness: match a.0.get("loudness") {
+            None => None,
+            Some(v) => crate::commands::audio::loudness(v)?,
+        },
     })
 }
 

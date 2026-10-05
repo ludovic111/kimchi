@@ -102,6 +102,7 @@ impl AgentPanel {
                             .bg(t.bg_sunken.opacity(0.5))
                             .border_1()
                             .border_color(t.line)
+                            .child(crate::ui::logo(r.provider.id(), px(16.)))
                             .child(
                                 div()
                                     .flex_1()

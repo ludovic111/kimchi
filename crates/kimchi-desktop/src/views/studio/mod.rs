@@ -184,6 +184,47 @@ pub struct KeyRef {
     pub time: f64,
 }
 
+/// One step of moving around the 3D view (the editor's camera, or the scene's when it is locked
+/// to the view).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Nav {
+    /// Around what it looks at, degrees left/right and up/down.
+    Orbit(f64, f64),
+    /// Sideways and up/down by a share of what it shows.
+    Pan(f64, f64),
+    /// Closer (< 1) or further (> 1), towards a point when given (zoom to the pointer).
+    Zoom(f64, Option<[f64; 3]>),
+    /// Through the scene: forward, right, up (world units).
+    Fly(f64, f64, f64),
+    /// Turning where it stands, degrees left/right and up/down.
+    Look(f64, f64),
+}
+
+impl Nav {
+    pub fn apply(self, v: &mut ViewCamera) {
+        match self {
+            Nav::Orbit(yaw, pitch) => v.orbit(yaw, pitch),
+            Nav::Pan(dx, dy) => v.pan(dx, dy),
+            Nav::Zoom(f, Some(p)) => v.zoom_toward(f, p),
+            Nav::Zoom(f, None) => v.zoom(f),
+            Nav::Fly(f, r, u) => v.fly(f, r, u),
+            Nav::Look(yaw, pitch) => v.look(yaw, pitch),
+        }
+    }
+}
+
+/// The scene's camera moved from the view: its undo key and where it has got to (ahead of the
+/// project, which follows a moment later).
+struct CameraLock {
+    key: String,
+    id: String,
+    pose: ViewCamera,
+    last: Instant,
+}
+
+/// How long a smooth view change takes.
+const VIEW_MOVE: Duration = Duration::from_millis(280);
+
 pub enum StudioEvent {
     /// Back to the edit: the workspace takes the keyboard again.
     Closed,
@@ -214,6 +255,21 @@ pub struct Studio {
     pub helpers: bool,
     pub through_camera: bool,
     pub view: ViewCamera,
+    /// Navigating while looking through the camera moves the scene's camera (Blender's "Lock
+    /// camera to view"): one undo step per gesture, a keyframe at the playhead when it is animated.
+    pub lock_camera: bool,
+    /// Side panel shown over the viewport when the window is narrow.
+    pub drawer: Option<bool>,
+    /// A smooth move of the editor camera in progress: where it ends, and whether it then looks
+    /// through the scene's camera.
+    view_goal: Option<(ViewCamera, bool)>,
+    _view_anim: Option<Task<()>>,
+    /// The scene's camera being moved from the view (lock camera to view).
+    lock: Option<CameraLock>,
+    /// A navigation gesture (drag) is on: the lock's undo step lasts until it ends.
+    gesture: bool,
+    /// Fly mode is on in the viewport (it says so).
+    pub flying: bool,
     /// The gizmo follows the object's own axes.
     pub local: bool,
     /// Snap moves to the grid and turns to 15° (Ctrl also does while dragging).
@@ -276,6 +332,13 @@ impl Studio {
             helpers: true,
             through_camera: false,
             view: ViewCamera::default(),
+            lock_camera: false,
+            drawer: None,
+            view_goal: None,
+            _view_anim: None,
+            lock: None,
+            gesture: false,
+            flying: false,
             local: false,
             snapping: false,
             canvas: Canvas2d { zoom: 0.5, pan: [0.0, 0.0], fit: true },
@@ -367,8 +430,11 @@ impl Studio {
             self.canvas.fit = true;
             self.tool = if scene.is_3d() { Tool::Move } else { Tool::Select };
             self.view = ViewCamera::default();
+            self.stop_view_anim();
+            self.lock = None;
             if let Scene::Space(s) = scene {
-                self.frame_all(s, cx);
+                let s = s.clone();
+                self.frame_all(&s, false, cx);
             }
         }
         // The playhead goes into the clip, so the scene shows.
@@ -443,6 +509,16 @@ impl Studio {
         self.store.update(cx, |s, cx| s.set_studio_state(state, cx));
     }
 
+    /// The Studio shares the editor row with a docked Agent panel.
+    pub(super) fn available_width(&self, window: &Window, cx: &App) -> f32 {
+        let store = self.store.read(cx);
+        let layout = store.session.ui_state().layout;
+        let agent = if store.agent_open && !layout.overlays.iter().any(|p| p == "agent") {
+            layout.agent + crate::ui::layout::SPLITTER_W
+        } else { 0.0 };
+        (f32::from(window.viewport_size().width) - agent).max(1.0)
+    }
+
     /// What `ui.studio` answers.
     pub fn state_json(&self, cx: &App) -> Value {
         let Some(id) = self.clip else { return json!({ "open": false }) };
@@ -452,6 +528,7 @@ impl Studio {
             "clipId": id,
             "clipName": name,
             "kind": kind,
+            "panel": self.drawer.map(|right| if right { "properties" } else { "objects" }),
             "selection": self.selection,
             "active": self.active(),
             "mode": if self.mode == Mode::Edit { "edit" } else { "object" },
@@ -464,7 +541,10 @@ impl Studio {
         });
         if kind == "3d" {
             v["shading"] = json!(self.shading);
-            v["view"] = if self.through_camera { json!("camera") } else { json!(self.view) };
+            let (view, through) = self.view_goal.unwrap_or((self.view, self.through_camera));
+            v["view"] = if through { json!("camera") } else { json!(view) };
+            v["lockCamera"] = json!(self.lock_camera);
+            v["flying"] = json!(self.flying);
             v["grid"] = json!(self.grid);
             v["helpers"] = json!(self.helpers);
             v["gizmo"] = json!(if self.local { "local" } else { "global" });
@@ -475,6 +555,8 @@ impl Studio {
         } else {
             v["composition"] = json!(self.composition);
             v["zoom"] = json!((self.canvas.zoom * 1000.0).round() / 1000.0);
+            v["fit"] = json!(self.canvas.fit);
+            v["pan"] = json!(self.canvas.pan.map(|p| p.round()));
             v["maskMode"] = json!(self.mask_mode);
         }
         v
@@ -498,6 +580,12 @@ impl Studio {
                 Ok(self.state_json(cx))
             } else {
                 Err("The Studio isn't open. Open a motion clip first: ui.studio {\"clipId\": …}.".into())
+            };
+        }
+        if let Some(panel) = params.get("panel") {
+            self.drawer = match panel.as_str() {
+                Some("objects") => Some(false), Some("properties") => Some(true), Some("none") => None,
+                _ => return Err("panel must be objects, properties or none".into()),
             };
         }
         let (_, scene) = self.clip_scene(cx).ok_or("The clip is gone.")?;
@@ -557,7 +645,51 @@ impl Studio {
             self.helpers = b;
         }
         if params.get("frame").and_then(Value::as_bool) == Some(true) {
-            self.frame_selection(cx);
+            self.frame_selection(false, cx);
+        }
+        if let Some(b) = params.get("lockCamera").and_then(Value::as_bool) {
+            self.set_lock_camera(b, cx);
+            self.finish_view_anim(cx);
+        }
+        if let Some(n) = params.get("navigate") {
+            if !scene.is_3d() {
+                return Err("navigate is for 3D scenes; a 2D canvas takes zoom and pan.".into());
+            }
+            self.navigate_json(n, cx)?;
+        }
+        if params.get("alignCamera").and_then(Value::as_bool) == Some(true) {
+            self.align_camera_to_view(cx)?;
+        }
+        if params.get("addCamera").and_then(Value::as_bool) == Some(true) {
+            self.add_camera_here(cx)?;
+        }
+        if let Some(b) = params.get("keyframeCamera").and_then(Value::as_bool) {
+            self.keyframe_camera(Some(b), cx)?;
+        }
+        if let Some(b) = params.get("fly").and_then(Value::as_bool) {
+            if !scene.is_3d() {
+                return Err("Fly mode is for 3D scenes.".into());
+            }
+            self.viewport_soon(cx, move |v, cx| if b { v.start_fly(false, cx) } else { v.end_fly(true, cx) });
+        }
+        if let Some(z) = params.get("zoom") {
+            if scene.is_3d() {
+                return Err("zoom is for the 2D canvas; move the 3D view with navigate {\"zoom\": 2}.".into());
+            }
+            match z {
+                Value::String(w) if w == "fit" => self.canvas.fit = true,
+                Value::String(w) if w == "100%" => self.zoom_canvas_to(1.0, cx),
+                Value::Number(n) => self.zoom_canvas_to(n.as_f64().unwrap_or(1.0).clamp(0.02, 32.0), cx),
+                _ => return Err("zoom is \"fit\", \"100%\" or a number (1 = 100%)".into()),
+            }
+        }
+        if let Some(p) = params.get("pan") {
+            let xy = p.as_array().and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?])).ok_or("pan is [x, y]: screen pixels the canvas's centre sits from the view's")?;
+            if scene.is_3d() {
+                return Err("pan is for the 2D canvas; move the 3D view with navigate {\"pan\": [dx, dy]}.".into());
+            }
+            let zoom = self.shown_zoom(cx);
+            self.canvas = Canvas2d { zoom, pan: xy, fit: false };
         }
         if let Some(b) = params.get("showGraph").and_then(Value::as_bool) {
             self.show_graph = b;
@@ -657,6 +789,7 @@ impl Studio {
     }
 
     pub fn set_view(&mut self, name: &str, cx: &mut Context<Self>) -> Result<(), String> {
+        self.stop_view_anim();
         match name {
             "camera" => self.through_camera = true,
             "persp" | "perspective" => {
@@ -677,21 +810,126 @@ impl Studio {
         Ok(())
     }
 
-    /// Fits the editor camera around a box.
-    fn frame_box(&mut self, lo: [f64; 3], hi: [f64; 3]) {
-        let c = math::lerp(lo, hi, 0.5);
-        let r = (math::len(math::sub(hi, lo)) / 2.0).max(0.25);
-        let dir = math::norm(math::sub(self.view.position, self.view.target));
-        let dir = if math::len(dir) < 1e-6 { [0.0, 0.3, 1.0] } else { dir };
-        // Room around it: the box's sphere fills about half the view's height.
-        let dist = r / (self.view.fov.to_radians() / 2.0).tan().max(0.05) * 1.9;
-        self.view.target = c;
-        self.view.position = math::add(c, math::scale(dir, dist));
-        self.view.ortho_size = r * 2.4;
-        self.through_camera = false;
+    /// A view from the window (a click on the axis ball, a number key): it glides there.
+    pub fn look_from(&mut self, name: &str, cx: &mut Context<Self>) {
+        let base = self.view_goal.map(|g| g.0).unwrap_or(self.view);
+        match name {
+            "camera" => {
+                if let Some(cam) = self.camera_view(cx) {
+                    self.go_to(cam, true, cx);
+                }
+            }
+            "front" | "back" | "left" | "right" | "top" | "bottom" => {
+                let mut v = if self.through_camera { self.camera_view(cx).unwrap_or(base) } else { base };
+                v.align(name);
+                self.go_to(v, false, cx);
+            }
+            other => {
+                let _ = self.set_view(other, cx);
+            }
+        }
     }
 
-    fn frame_all(&mut self, s: &kimchi_core::motion::Scene3d, cx: &App) {
+    /// The scene's filming camera at the playhead, as a view.
+    pub fn camera_view(&self, cx: &App) -> Option<ViewCamera> {
+        let (_, scene) = self.clip_scene(cx)?;
+        let Scene::Space(s) = scene else { return None };
+        Some(ViewCamera::from_camera(&s.camera_at(self.scene_time(cx))))
+    }
+
+    /// Where the view is going (the end of a smooth move), or where it is.
+    pub fn view_shown(&self) -> (ViewCamera, bool) {
+        self.view_goal.unwrap_or((self.view, self.through_camera))
+    }
+
+    /// Moves the editor camera to `goal` smoothly (at once when the person asks the system to
+    /// reduce motion); `through` ends looking through the scene's camera.
+    pub fn go_to(&mut self, goal: ViewCamera, through: bool, cx: &mut Context<Self>) {
+        self.stop_view_anim();
+        let from = if self.through_camera { self.camera_view(cx).unwrap_or(self.view) } else { self.view };
+        if cx.reduce_motion() || (from == goal && through == self.through_camera) {
+            self.view = goal;
+            self.through_camera = through;
+            self.changed(cx);
+            return;
+        }
+        self.through_camera = false;
+        self.view = from;
+        self.view_goal = Some((goal, through));
+        let start = Instant::now();
+        self._view_anim = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(16)).await;
+                let more = this
+                    .update(cx, |this, cx| {
+                        let Some((goal, through)) = this.view_goal else { return false };
+                        let k = (start.elapsed().as_secs_f64() / VIEW_MOVE.as_secs_f64()).min(1.0);
+                        if k >= 1.0 {
+                            this.view = goal;
+                            this.through_camera = through;
+                            this.view_goal = None;
+                            this.changed(cx);
+                            return false;
+                        }
+                        // Ease out: quick to start, settling softly.
+                        this.view = from.blend(&goal, 1.0 - (1.0 - k).powi(3));
+                        this.viewport_soon(cx, |v, cx| v.interacting(cx));
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !more {
+                    break;
+                }
+            }
+        }));
+        self.changed(cx);
+    }
+
+    /// Stops a smooth move where it is (the person took over).
+    fn stop_view_anim(&mut self) {
+        self.view_goal = None;
+        self._view_anim = None;
+    }
+
+    /// Ends a smooth move at once (tests, and commands that read the view right after).
+    pub fn finish_view_anim(&mut self, cx: &mut Context<Self>) {
+        if let Some((goal, through)) = self.view_goal.take() {
+            self.view = goal;
+            self.through_camera = through;
+            self._view_anim = None;
+            self.changed(cx);
+        }
+    }
+
+    /// The editor camera fitted around a box.
+    fn framed(&self, lo: [f64; 3], hi: [f64; 3]) -> ViewCamera {
+        let base = self.view_goal.map(|g| g.0).unwrap_or(self.view);
+        let mut v = base;
+        let c = math::lerp(lo, hi, 0.5);
+        let r = (math::len(math::sub(hi, lo)) / 2.0).max(0.25);
+        let dir = math::norm(math::sub(base.position, base.target));
+        let dir = if math::len(dir) < 1e-6 { [0.0, 0.3, 1.0] } else { dir };
+        // Room around it: the box's sphere fills about half the view's height.
+        let dist = r / (base.fov.to_radians() / 2.0).tan().max(0.05) * 1.9;
+        v.target = c;
+        v.position = math::add(c, math::scale(dir, dist));
+        v.ortho_size = r * 2.4;
+        v
+    }
+
+    fn frame_box(&mut self, lo: [f64; 3], hi: [f64; 3], animate: bool, cx: &mut Context<Self>) {
+        let v = self.framed(lo, hi);
+        if animate {
+            self.go_to(v, false, cx);
+        } else {
+            self.stop_view_anim();
+            self.view = v;
+            self.through_camera = false;
+        }
+    }
+
+    fn frame_all(&mut self, s: &kimchi_core::motion::Scene3d, animate: bool, cx: &mut Context<Self>) {
         let t = self.scene_time(cx);
         let w = model::worlds(s, t);
         // The subject, not the stage: floors and backdrops (planes, grids) and hidden things
@@ -716,17 +954,20 @@ impl Studio {
         };
         if let Some((lo, hi)) = union(false).or_else(|| union(true)) {
             // Look from where the scene's camera looks, so the first view is a familiar one.
-            let cam = s.camera_at(t);
-            let dir = math::norm(math::sub(cam.position.0, cam.target.0));
-            if math::len(dir) > 1e-6 {
-                self.view.position = math::add(self.view.target, dir);
+            if !animate {
+                let cam = s.camera_at(t);
+                let dir = math::norm(math::sub(cam.position.0, cam.target.0));
+                if math::len(dir) > 1e-6 {
+                    self.view.position = math::add(self.view.target, dir);
+                }
             }
-            self.frame_box(lo, hi);
+            self.frame_box(lo, hi, animate, cx);
         }
     }
 
-    /// F / `.`: the selection fills the view (everything when nothing is selected).
-    pub fn frame_selection(&mut self, cx: &mut Context<Self>) {
+    /// F / `.`: the selection fills the view (everything when nothing is selected); the view
+    /// glides there when `animate`.
+    pub fn frame_selection(&mut self, animate: bool, cx: &mut Context<Self>) {
         let Some((_, scene)) = self.clip_scene(cx) else { return };
         match &scene {
             Scene::Space(s) => {
@@ -743,14 +984,267 @@ impl Studio {
                     }
                 }
                 if lo[0] <= hi[0] {
-                    self.frame_box(lo, hi);
+                    self.frame_box(lo, hi, animate, cx);
                 } else {
-                    self.frame_all(s, cx);
+                    self.frame_all(s, animate, cx);
                 }
             }
             Scene::Flat(_) => self.canvas.fit = true,
         }
         self.changed(cx);
+    }
+
+    // ---- moving around ------------------------------------------------------------------------
+
+    /// A navigation gesture begins (a drag): until it ends, moving a locked camera is one undo
+    /// step.
+    pub fn nav_begin(&mut self) {
+        self.stop_view_anim();
+        self.lock = None;
+        self.gesture = true;
+    }
+
+    /// The gesture ended: `ui.state` hears where the view is.
+    pub fn nav_end(&mut self, cx: &mut Context<Self>) {
+        self.gesture = false;
+        self.changed(cx);
+    }
+
+    /// One step of moving around: the editor's camera, or with the camera locked to the view
+    /// while looking through it, the scene's camera (a command).
+    pub fn navigate(&mut self, op: Nav, cx: &mut Context<Self>) {
+        self.stop_view_anim();
+        if self.through_camera && self.lock_camera {
+            self.move_camera(op, cx);
+            return;
+        }
+        if self.through_camera {
+            // Off the camera's view, from where the camera is (no jump), like Blender.
+            if let Some(v) = self.camera_view(cx) {
+                self.view = v;
+            }
+            self.through_camera = false;
+            self.publish(cx);
+        }
+        op.apply(&mut self.view);
+        cx.notify();
+    }
+
+    /// `ui.studio`'s navigate: {"orbit": [yaw, pitch], "pan": [dx, dy], "zoom": 2, "fly":
+    /// [forward, right, up], "look": [yaw, pitch]}, applied in that order as one step.
+    fn navigate_json(&mut self, n: &Value, cx: &mut Context<Self>) -> Result<(), String> {
+        let o = n.as_object().ok_or("navigate is an object: {\"orbit\": [yaw, pitch], \"pan\": [dx, dy], \"zoom\": 2, \"fly\": [forward, right, up], \"look\": [yaw, pitch]}")?;
+        let nums = |k: &str, len: usize| -> Result<Option<Vec<f64>>, String> {
+            match o.get(k) {
+                None => Ok(None),
+                Some(v) => {
+                    let list: Vec<f64> = v.as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+                    if list.len() != len {
+                        return Err(format!("navigate.{k} is a list of {len} numbers"));
+                    }
+                    Ok(Some(list))
+                }
+            }
+        };
+        if let Some(bad) = o.keys().find(|k| !matches!(k.as_str(), "orbit" | "pan" | "zoom" | "fly" | "look")) {
+            return Err(format!("navigate takes orbit, pan, zoom, fly and look, not `{bad}`"));
+        }
+        let mut ops = vec![];
+        if let Some(v) = nums("orbit", 2)? {
+            ops.push(Nav::Orbit(v[0], v[1]));
+        }
+        if let Some(v) = nums("pan", 2)? {
+            ops.push(Nav::Pan(v[0], v[1]));
+        }
+        if let Some(z) = o.get("zoom") {
+            let z = z.as_f64().filter(|z| *z > 0.0).ok_or("navigate.zoom is a number above 0: 2 = twice as close, 0.5 = twice as far")?;
+            ops.push(Nav::Zoom(1.0 / z, None));
+        }
+        if let Some(v) = nums("fly", 3)? {
+            ops.push(Nav::Fly(v[0], v[1], v[2]));
+        }
+        if let Some(v) = nums("look", 2)? {
+            ops.push(Nav::Look(v[0], v[1]));
+        }
+        // One undo step for the whole call.
+        self.nav_begin();
+        for op in ops {
+            self.navigate(op, cx);
+        }
+        self.gesture = false;
+        Ok(())
+    }
+
+    /// Lock camera to view; turning it on looks through the camera (where it acts).
+    pub fn set_lock_camera(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.lock_camera = on;
+        self.lock = None;
+        if on && !self.view_shown().1 {
+            self.look_from("camera", cx);
+        }
+        self.changed(cx);
+    }
+
+    /// The id of the camera filming at the playhead (3D).
+    pub fn active_camera(&self, cx: &App) -> Option<String> {
+        match self.clip_scene(cx)? {
+            (_, Scene::Space(s)) => Some(s.active_camera_at(self.scene_time(cx))),
+            _ => None,
+        }
+    }
+
+    /// Lock camera to view: the scene's camera moves as the view would, through
+    /// `motion.updateLayer` (a keyframe at the playhead when it is animated).
+    fn move_camera(&mut self, op: Nav, cx: &mut Context<Self>) {
+        let Some((c, Scene::Space(s))) = self.clip_scene(cx) else { return };
+        let t = self.scene_time(cx);
+        let id = s.active_camera_at(t);
+        let Some(src) = s.camera_by_id(&id) else { return };
+        if src.constraints.iter().any(|k| k.enabled && matches!(k.kind.as_str(), "followPath" | "copyPosition")) {
+            flash("This camera follows a path (a constraint): clear its moves (Camera menu) to move it by hand.", cx);
+            return;
+        }
+        let stale = self.lock.as_ref().is_none_or(|l| l.id != id || (!self.gesture && l.last.elapsed() > Duration::from_millis(700)));
+        if stale {
+            let pose = ViewCamera::from_camera(&s.camera_by_id_at(&id, t).unwrap_or_else(|| s.camera_at(t)));
+            self.lock = Some(CameraLock { key: self.drag_key(), id: id.clone(), pose, last: Instant::now() });
+        }
+        let time = self.playhead(cx);
+        let Some(lock) = self.lock.as_mut() else { return };
+        op.apply(&mut lock.pose);
+        lock.last = Instant::now();
+        let r = |v: [f64; 3]| v.map(|x| (x * 10000.0).round() / 10000.0);
+        let mut props = json!({ "position": r(lock.pose.position), "target": r(lock.pose.target) });
+        if lock.pose.ortho {
+            props["orthoSize"] = json!((lock.pose.ortho_size * 10000.0).round() / 10000.0);
+        }
+        let params = json!({ "clipId": c.id, "id": id, "props": props, "time": time, "coalesce": lock.key });
+        self.send(vec![("motion.updateLayer".into(), params)], cx);
+        self.viewport_soon(cx, |v, cx| v.interacting(cx));
+    }
+
+    /// Puts the locked camera back where the gesture found it (a cancelled fly).
+    pub fn put_camera_back(&mut self, pose: ViewCamera, cx: &mut Context<Self>) {
+        if let Some(lock) = self.lock.as_mut() {
+            lock.pose = pose;
+            lock.last = Instant::now();
+            // A step that moves nothing sends the pose, with the gesture's undo key.
+            self.move_camera(Nav::Pan(0.0, 0.0), cx);
+        }
+    }
+
+    /// Ctrl+Alt+0: the active camera goes where the view is (and the view looks through it).
+    pub fn align_camera_to_view(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        let (c, scene) = self.clip_scene(cx).ok_or("no clip")?;
+        let Scene::Space(s) = scene else { return Err("Cameras are 3D.".into()) };
+        let id = s.active_camera_at(self.scene_time(cx));
+        let v = self.view_shown().0;
+        let r = |v: [f64; 3]| v.map(|x| (x * 10000.0).round() / 10000.0);
+        let mut props = json!({ "position": r(v.position), "target": r(v.target), "fov": (v.fov * 100.0).round() / 100.0, "projection": if v.ortho { "orthographic" } else { "perspective" } });
+        if v.ortho {
+            props["orthoSize"] = json!((v.ortho_size * 10000.0).round() / 10000.0);
+        }
+        self.stop_view_anim();
+        self.run_then("motion.updateLayer", json!({ "clipId": c.id, "id": id, "props": props, "time": self.playhead(cx) }), cx, |this, _, cx| {
+            this.through_camera = true;
+            this.changed(cx);
+        });
+        Ok(())
+    }
+
+    /// A new camera where the view is, selected.
+    pub fn add_camera_here(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        let (_, scene) = self.clip_scene(cx).ok_or("no clip")?;
+        if !scene.is_3d() {
+            return Err("Cameras are 3D.".into());
+        }
+        let v = self.view_shown().0;
+        let r = |v: [f64; 3]| v.map(|x| (x * 100.0).round() / 100.0);
+        let me = cx.entity();
+        let camera = json!({ "type": "camera", "position": r(v.position), "target": r(v.target), "fov": (v.fov * 10.0).round() / 10.0 });
+        // After this update: adding reads the Studio.
+        cx.defer(move |cx| menus::add_thing(&me, "camera", camera, None, cx));
+        Ok(())
+    }
+
+    /// The camera the camera tools act on: the selected one, else the one filming.
+    pub fn camera_in_hand(&self, cx: &App) -> Option<String> {
+        let (_, scene) = self.clip_scene(cx)?;
+        if !scene.is_3d() {
+            return None;
+        }
+        self.active().filter(|a| matches!(model::item(&scene, a), Some(model::Item::Camera))).map(str::to_string).or_else(|| self.active_camera(cx))
+    }
+
+    /// Whether the camera in hand has a position keyframe at the playhead.
+    pub fn camera_keyed_here(&self, cx: &App) -> bool {
+        let Some((_, scene)) = self.clip_scene(cx) else { return false };
+        let Some(id) = self.camera_in_hand(cx) else { return false };
+        let t = self.scene_time(cx);
+        model::keyframes(&scene, &id).and_then(|k| k.get("position").cloned()).is_some_and(|l| l.iter().any(|k| (k.time - t).abs() < 1e-3))
+    }
+
+    /// The camera's position and target keyframed at the playhead (`Some(true)`), the keys there
+    /// removed (`Some(false)`), or whichever is the change (`None`, the toggle).
+    pub fn keyframe_camera(&mut self, on: Option<bool>, cx: &mut Context<Self>) -> Result<(), String> {
+        let id = self.camera_in_hand(cx).ok_or("Cameras are in 3D scenes.")?;
+        let on = on.unwrap_or(!self.camera_keyed_here(cx));
+        let clip = self.clip;
+        let time = self.playhead(cx);
+        let commands: Vec<Value> = ["position", "target"]
+            .iter()
+            .map(|p| {
+                if on {
+                    json!({ "command": "motion.addKeyframe", "params": { "clipId": clip, "id": id, "property": p, "time": time } })
+                } else {
+                    json!({ "command": "motion.removeKeyframe", "params": { "clipId": clip, "id": id, "property": p, "time": time } })
+                }
+            })
+            .collect();
+        self.run("project.batch", json!({ "commands": commands, "label": if on { "Keyframe the camera" } else { "Remove the camera's keyframes" }, "atomic": false }), cx);
+        Ok(())
+    }
+
+    /// A camera move from the window (the Camera menu): around the selection's middle when
+    /// something is selected, over the whole clip.
+    pub fn camera_move(&mut self, mv: &str, extra: Value, cx: &mut Context<Self>) {
+        let Some((c, Scene::Space(s))) = self.clip_scene(cx) else { return };
+        let t = self.scene_time(cx);
+        let w = model::worlds(&s, t);
+        let mut params = json!({ "clipId": c.id, "move": mv });
+        if let Some(cam) = self.camera_in_hand(cx) {
+            params["camera"] = json!(cam);
+        }
+        if matches!(mv, "orbit" | "turntable") {
+            let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            let scene = Scene::Space(s.clone());
+            for k in self.selection.iter().filter(|k| matches!(model::item(&scene, k), Some(model::Item::Object(_)))) {
+                if let Some((a, b)) = model::world_bounds(&s, &w, t, k) {
+                    for i in 0..3 {
+                        lo[i] = lo[i].min(a[i]);
+                        hi[i] = hi[i].max(b[i]);
+                    }
+                }
+            }
+            if lo[0] <= hi[0] {
+                params["around"] = json!(math::lerp(lo, hi, 0.5).map(|v| (v * 1000.0).round() / 1000.0));
+            }
+        }
+        if let (Some(o), Some(e)) = (params.as_object_mut(), extra.as_object()) {
+            o.extend(e.clone());
+            // A share of the way to what the camera looks at, as a distance.
+            if let Some(share) = o.remove("share").and_then(|v| v.as_f64()) {
+                let id = self.camera_in_hand(cx).unwrap_or_else(|| "camera".into());
+                let d = s.camera_by_id_at(&id, t).map(|c| math::len(math::sub(c.target.0, c.position.0))).unwrap_or(3.0);
+                o.insert("distance".into(), json!(((share * d) * 1000.0).round() / 1000.0));
+            }
+        }
+        self.run_then("motion.cameraMove", params, cx, |this, v, cx| {
+            if let Some(d) = v["did"].as_str() {
+                flash(d.to_string(), cx);
+            }
+            this.changed(cx);
+        });
     }
 
     // ---- running commands -------------------------------------------------------------------
@@ -978,6 +1472,11 @@ impl Studio {
                 cx.notify();
             }))
             .on_key_up(cx.listener(|this, e: &gpui::KeyUpEvent, _, cx| {
+                // Fly mode moves while its keys are down.
+                if this.flying {
+                    let (key, shift) = (e.keystroke.key.clone(), e.keystroke.modifiers.shift);
+                    this.viewport.update(cx, |v, _| v.fly_key_up(&key, shift));
+                }
                 if e.keystroke.key == "space" && this.space_down {
                     this.space_down = false;
                     if !this.space_panned {
@@ -1008,27 +1507,40 @@ impl Studio {
             .on_action(cx.listener(|this, _: &StudioKey3, _, cx| this.number_key(3, cx)))
             .on_action(cx.listener(|this, _: &StudioKey7, _, cx| this.number_key(7, cx)))
             .on_action(cx.listener(|this, _: &StudioKey0, _, cx| this.number_key(0, cx)))
-            .on_action(cx.listener(|this, _: &StudioOrtho, _, cx| {
-                this.view.ortho = !this.view.ortho;
-                this.through_camera = false;
-                this.changed(cx);
-            }))
-            .on_action(cx.listener(|this, _: &StudioFrame, _, cx| this.frame_selection(cx)))
+            .on_action(cx.listener(|this, _: &StudioOrtho, _, cx| this.toggle_ortho(cx)))
+            .on_action(cx.listener(|this, _: &StudioFrame, _, cx| this.frame_selection(true, cx)))
             .on_action(cx.listener(|this, _: &StudioFill, _, cx| {
                 // F fills in edit mode, like Blender; it frames otherwise.
                 if this.mode == Mode::Edit {
                     this.mesh_op("fill", json!({}), cx);
                 } else {
-                    this.frame_selection(cx);
+                    this.frame_selection(true, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &StudioFrameAll, _, cx| {
                 if let Some((_, Scene::Space(s))) = this.clip_scene(cx) {
-                    this.frame_all(&s, cx);
+                    this.frame_all(&s, true, cx);
                 } else {
                     this.canvas.fit = true;
                 }
                 this.changed(cx);
+            }))
+            .on_action(cx.listener(|this, _: &StudioAlignCamera, _, cx| {
+                if let Err(e) = this.align_camera_to_view(cx) {
+                    flash(e, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &StudioFly, w, cx| {
+                if this.is_3d(cx) {
+                    this.with_viewport(w, cx, |v, _, cx| v.start_fly(false, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &StudioZoomIn, _, cx| this.zoom_step(1.25, cx)))
+            .on_action(cx.listener(|this, _: &StudioZoomOut, _, cx| this.zoom_step(0.8, cx)))
+            .on_action(cx.listener(|this, _: &StudioZoom100, _, cx| {
+                if !this.is_3d(cx) {
+                    this.zoom_canvas_to(1.0, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &StudioFit, _, cx| {
                 this.canvas.fit = true;
@@ -1074,10 +1586,72 @@ impl Studio {
             1 => "front",
             3 => "right",
             7 => "top",
-            0 => "camera",
+            0 => {
+                self.toggle_camera_view(cx);
+                return;
+            }
             _ => return,
         };
-        let _ = self.set_view(view, cx);
+        self.look_from(view, cx);
+    }
+
+    /// 0 / the camera button: through the scene's camera (gliding into it), or back out where it is.
+    pub fn toggle_camera_view(&mut self, cx: &mut Context<Self>) {
+        if self.view_shown().1 {
+            self.stop_view_anim();
+            if let Some(v) = self.camera_view(cx) {
+                self.view = v;
+            }
+            self.through_camera = false;
+            self.changed(cx);
+        } else {
+            self.look_from("camera", cx);
+        }
+    }
+
+    /// 5 / the projection button.
+    pub fn toggle_ortho(&mut self, cx: &mut Context<Self>) {
+        self.finish_view_anim(cx);
+        if self.through_camera {
+            if let Some(v) = self.camera_view(cx) {
+                self.view = v;
+            }
+            self.through_camera = false;
+        }
+        // The same framing either way: the orthographic height is what the perspective shows at
+        // the target.
+        if !self.view.ortho {
+            self.view.ortho_size = self.view.distance() * (self.view.fov.to_radians() / 2.0).tan() * 2.0;
+        }
+        self.view.ortho = !self.view.ortho;
+        self.changed(cx);
+    }
+
+    /// + / −: the 3D view closer or further; the 2D canvas zoomed around its middle.
+    fn zoom_step(&mut self, k: f64, cx: &mut Context<Self>) {
+        if self.is_3d(cx) {
+            self.nav_begin();
+            self.navigate(Nav::Zoom(1.0 / k, None), cx);
+            self.nav_end(cx);
+        } else {
+            let z = self.shown_zoom(cx);
+            self.zoom_canvas_to(z * k, cx);
+        }
+    }
+
+    /// The 2D canvas's zoom on screen (fitted, the one the viewport last drew).
+    pub fn shown_zoom(&self, cx: &App) -> f64 {
+        if self.canvas.fit { self.viewport.read(cx).fit_zoom.get() } else { self.canvas.zoom }
+    }
+
+    /// The 2D canvas at a zoom (1 = 100%), keeping what is in the middle of the view there.
+    pub fn zoom_canvas_to(&mut self, zoom: f64, cx: &mut Context<Self>) {
+        let now = self.shown_zoom(cx).max(1e-6);
+        let pan = if self.canvas.fit { [0.0, 0.0] } else { self.canvas.pan };
+        let zoom = zoom.clamp(0.02, 32.0);
+        let k = zoom / now;
+        self.canvas = Canvas2d { zoom, pan: [pan[0] * k, pan[1] * k], fit: false };
+        self.changed(cx);
     }
 
     pub fn set_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
@@ -1314,6 +1888,14 @@ impl Render for Studio {
         if self.clip.is_none() {
             return div().into_any_element();
         }
+        let width = self.available_width(window, cx);
+        let height = f32::from(window.viewport_size().height);
+        let dock_left = width >= 1200.;
+        let dock_right = width >= 960.;
+        let right_w = self.right_w.min((width - 550.).max(256.));
+        let left_budget = width - if dock_right { right_w + 10. } else { 0. } - 320.;
+        let left_w = self.left_w.min(left_budget.max(180.));
+        let bottom_h = self.bottom_h.min((height * 0.28).max(100.));
         let busy = self.viewport.read(cx).busy();
         let toolbar = toolbar::render(self, window, cx);
         let me = cx.entity();
@@ -1339,15 +1921,17 @@ impl Render for Studio {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .flex()
-                    .child(div().w(px(self.left_w)).flex_none().h_full().child(self.outliner.clone()))
-                    .child(self.splitter(0, cx))
+                    .flex().relative().overflow_hidden()
+                    .when(dock_left, |d| d.child(div().w(px(left_w)).flex_none().h_full().child(self.outliner.clone())).child(self.splitter(0, cx)))
                     .child(div().flex_1().min_w_0().h_full().bg(t.bg_sunken).child(self.viewport.clone()))
-                    .child(self.splitter(1, cx))
-                    .child(div().w(px(self.right_w)).flex_none().h_full().child(self.properties.clone())),
+                    .when(dock_right, |d| d.child(self.splitter(1, cx)).child(div().w(px(right_w)).flex_none().h_full().child(self.properties.clone())))
+                    .when(self.drawer == Some(false) && !dock_left, |d| d.child(
+                        div().absolute().left_0().top_0().bottom_0().w(px(left_w)).bg(t.bg_raised).border_r_1().border_color(t.line).occlude().child(self.outliner.clone())))
+                    .when(self.drawer == Some(true) && !dock_right, |d| d.child(
+                        div().absolute().right_0().top_0().bottom_0().w(px(right_w)).bg(t.bg_raised).border_l_1().border_color(t.line).occlude().child(self.properties.clone()))),
             )
             .child(self.splitter(2, cx))
-            .child(div().h(px(self.bottom_h)).flex_none().w_full().child(self.timeline.clone()))
+            .child(div().h(px(bottom_h)).flex_none().w_full().child(self.timeline.clone()))
             .when(self.resizing.is_some(), |d| d.child(drag::track(cx.entity(), Self::resize_move, Self::resize_end)))
             .children(popover);
         let root: gpui::Div = div().size_full().child(root);

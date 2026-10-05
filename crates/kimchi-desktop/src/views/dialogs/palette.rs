@@ -24,6 +24,8 @@ struct Cmd {
     keywords: &'static str,
     hint: Option<SharedString>,
     icon: &'static str,
+    /// A service's or app's logo shown instead of the icon (`ui::logo` id).
+    logo: Option<&'static str>,
     /// An AI action: drawn with the accent.
     ai: bool,
     run: Run,
@@ -31,10 +33,14 @@ struct Cmd {
 
 impl Cmd {
     fn new(label: impl Into<SharedString>, icon: &'static str, run: impl Fn(&mut Window, &mut App) + 'static) -> Self {
-        Self { label: label.into(), keywords: "", hint: None, icon, ai: false, run: Rc::new(run) }
+        Self { label: label.into(), keywords: "", hint: None, icon, logo: None, ai: false, run: Rc::new(run) }
     }
     fn keywords(mut self, k: &'static str) -> Self {
         self.keywords = k;
+        self
+    }
+    fn logo(mut self, id: &'static str) -> Self {
+        self.logo = Some(id);
         self
     }
     fn ai(mut self) -> Self {
@@ -136,7 +142,8 @@ impl Palette {
                 Cmd::new("Send the cut to ryolune to score", "music", |_, cx| {
                     cx.store().update(cx, |s, cx| s.run_then("handoff.toRyolune", json!({}), cx, |s, _, cx| s.info("Sent to ryolune.", cx)))
                 })
-                .keywords("music soundtrack lsuite"),
+                .keywords("music soundtrack lsuite")
+                .logo("ryolune"),
                 Cmd::action("Show generation jobs", "sparkles", act::ToggleJobs),
                 Cmd::action("Focus the prompt", "wand-sparkles", act::FocusGenerate).ai(),
                 Cmd::action("Back to projects", "arrow-left", act::CloseProject).keywords("home close"),
@@ -171,6 +178,8 @@ impl Palette {
                 ]);
             }
             v.push(Cmd::action("Agent", "bot", act::ToggleAgent).keywords("assistant chat ai").ai());
+            v.push(Cmd::action("Show / hide the left panel", "panel-left", act::ToggleLeftPanel).keywords("sidebar media tabs layout"));
+            v.push(Cmd::action("Show / hide the inspector", "panel-right", act::ToggleInspector).keywords("properties sidebar layout"));
         }
         v.extend([
             Cmd::action("New project", "file-plus", act::NewProject),
@@ -186,7 +195,7 @@ impl Palette {
             Cmd::action("Logs and crash reports", "file-text", act::ShowDiagnostics).keywords("diagnostics debug crash log bug"),
             Cmd::action("Report a problem", "bug", act::ReportProblem).keywords("bug issue crash feedback"),
             Cmd::action("Restart kimchi", "rotate-ccw", act::RestartApp).keywords("relaunch reload"),
-            Cmd::new("Connect Claude Code or Codex (MCP)", "waypoints", |_, cx| settings("about", cx)).keywords("ai control mcp cli"),
+            Cmd::new("Connect Claude Code or Codex (MCP)", "waypoints", |_, cx| settings("about", cx)).keywords("ai control mcp cli cursor claude desktop vs code").logo("claude-code"),
             Cmd::action("Driving kimchi from AI and scripts", "info", act::OpenHelp).keywords("help docs cli mcp"),
             Cmd::action("Support kimchi", "heart", act::OpenSupport).keywords("help sponsor donate"),
             Cmd::action("About kimchi", "info", act::About).keywords("version"),
@@ -303,7 +312,10 @@ impl Render for Palette {
                         }
                     }))
                     .on_click(cx.listener(move |this, _, window, cx| this.run_cmd(run.clone(), window, cx)))
-                    .child(icon(c.icon).size(px(15.)).text_color(color))
+                    .child(match c.logo {
+                        Some(id) => crate::ui::logo(id, px(15.)).into_any_element(),
+                        None => icon(c.icon).size(px(15.)).text_color(color).into_any_element(),
+                    })
                     .child(div().flex_1().min_w_0().truncate().when(c.ai && on, |d| d.font_weight(FontWeight::SEMIBOLD)).child(c.label))
                     .when_some(c.hint, |d, h| d.child(kbd(h, cx)))
             })
@@ -316,6 +328,8 @@ impl Render for Palette {
             .on_action(cx.listener(Self::select_next))
             .role(gpui::Role::Dialog)
             .aria_label("Command palette")
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
             .max_h(px(440.))

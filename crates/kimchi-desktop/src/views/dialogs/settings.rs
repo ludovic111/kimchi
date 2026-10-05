@@ -7,6 +7,7 @@
 //! permissions and keys; agents themselves can't.
 
 mod agent;
+mod audio;
 mod diagnostics;
 mod models;
 
@@ -29,6 +30,7 @@ enum Section {
     Provider(String),
     Agent,
     Appearance,
+    Audio,
     Updates,
     Diagnostics,
     About,
@@ -40,6 +42,7 @@ impl Section {
             "models" | "keys" | "providers" => Section::Provider(String::new()),
             "agent" | "permissions" => Section::Agent,
             "appearance" | "theme" => Section::Appearance,
+            "audio" | "sound" | "devices" | "plugins" => Section::Audio,
             "updates" | "update" | "whatsnew" => Section::Updates,
             "diagnostics" | "logs" | "crashes" | "crash" => Section::Diagnostics,
             "about" | "ai" | "mcp" | "control" => Section::About,
@@ -52,6 +55,8 @@ pub struct SettingsDialog {
     store: Entity<Store>,
     section: Section,
     open: bool,
+    /// The section the dialog was last asked for (`Dialog::Settings { section }`).
+    asked: Option<String>,
 
     // Models & keys: the fields show the provider they were loaded for.
     key: Entity<TextInput>,
@@ -64,6 +69,7 @@ pub struct SettingsDialog {
     // Agent.
     agent: agent::AgentState,
     diag: diagnostics::DiagState,
+    audio: audio::AudioState,
 
     checking_updates: bool,
     reduce_transparency: bool,
@@ -92,14 +98,17 @@ impl SettingsDialog {
         let mut subs = vec![cx.observe_in(&store, window, |this: &mut Self, store, _, cx| {
             let dialog = store.read(cx).dialog.clone();
             let open = matches!(dialog, Some(Dialog::Settings { .. }));
-            if open && !this.open {
-                let section = match &dialog {
-                    Some(Dialog::Settings { section }) => Section::parse(section.as_deref()),
-                    _ => None,
-                };
+            let asked = match &dialog {
+                Some(Dialog::Settings { section }) => section.clone(),
+                _ => None,
+            };
+            // Opening, or asked for another section while open (`ui.showPanel` with a section).
+            if open && (!this.open || (asked.is_some() && asked != this.asked)) {
+                let section = Section::parse(asked.as_deref());
                 this.show(section.unwrap_or_else(|| this.section.clone()), cx);
             }
             this.open = open;
+            this.asked = if open { asked } else { None };
             let settings = store.read(cx).settings.clone();
             this.agent.sync(&settings, cx);
             cx.notify();
@@ -120,6 +129,7 @@ impl SettingsDialog {
             store,
             section: Section::Provider(String::new()),
             open: false,
+            asked: None,
             key,
             base,
             option,
@@ -128,6 +138,7 @@ impl SettingsDialog {
             check: None,
             agent,
             diag: Default::default(),
+            audio: Default::default(),
             checking_updates: false,
             reduce_transparency: false,
             mcp: entry.mcp,
@@ -161,6 +172,9 @@ impl SettingsDialog {
         }
         if self.section == Section::Diagnostics {
             self.load_diagnostics(cx);
+        }
+        if self.section == Section::Audio {
+            self.load_audio(cx);
         }
         cx.notify();
     }
@@ -208,7 +222,7 @@ impl SettingsDialog {
 
     // ---- the frame ------------------------------------------------------------
 
-    fn nav(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn nav(&self, narrow: bool, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let providers = self.store.read(cx).providers.clone();
         let current = self.current_provider(cx).map(|p| p.info.id.clone());
@@ -235,6 +249,7 @@ impl SettingsDialog {
         let mut children: Vec<AnyElement> = vec![div().px(px(9.)).pb(px(4.)).child(caps("kimchi", cx)).into_any_element()];
         for (sec, label, ic) in [
             (Section::Appearance, "Appearance", "sun"),
+            (Section::Audio, "Audio", "audio-lines"),
             (Section::Agent, "Agent", "bot"),
             (Section::Updates, "Updates", "refresh-cw"),
             (Section::Diagnostics, "Diagnostics", "file-text"),
@@ -260,8 +275,14 @@ impl SettingsDialog {
             );
             for p in providers.iter().filter(|p| p.info.kind == kind) {
                 let selected = matches!(self.section, Section::Provider(_)) && current.as_deref() == Some(p.info.id.as_str());
-                let dot = status_dot(p, cx);
-                children.push(item(ElementId::Name(format!("nav-provider-{}", p.info.id).into()), p.info.name.clone().into(), dot, selected, Section::Provider(p.info.id.clone()), cx));
+                // The provider's logo, its status dot at the corner.
+                let lead = div()
+                    .relative()
+                    .flex_none()
+                    .child(crate::ui::logo(&p.info.id, px(16.)))
+                    .child(div().absolute().right(px(-3.)).bottom(px(-3.)).child(status_dot(p, cx)))
+                    .into_any_element();
+                children.push(item(ElementId::Name(format!("nav-provider-{}", p.info.id).into()), p.info.name.clone().into(), lead, selected, Section::Provider(p.info.id.clone()), cx));
             }
         }
         if providers.is_empty() {
@@ -269,7 +290,7 @@ impl SettingsDialog {
         }
         div()
             .id("settings-nav")
-            .w(px(210.))
+            .w(px(if narrow { 168. } else { 210. }))
             .flex_none()
             .h_full()
             .overflow_y_scroll()
@@ -290,6 +311,7 @@ impl SettingsDialog {
             Section::Provider(_) => ("Models & keys".into(), format!("Keys are stored in your {} and only sent to the provider they belong to.", crate::ui::keychain_name())),
             Section::Agent => ("Agent".into(), "The built-in agent, and what any agent or MCP client may do in kimchi.".into()),
             Section::Appearance => ("Appearance".into(), "Light or dark, and the glass of the chrome.".into()),
+            Section::Audio => ("Audio".into(), "Speakers and microphone, loudness, plugins, and ryolune.".into()),
             Section::Updates => ("Updates".into(), format!("kimchi {} · signed updates from GitHub Releases", kimchi_control::update::CURRENT)),
             Section::Diagnostics => ("Diagnostics".into(), "Logs and crash reports, to understand what went wrong.".into()),
             Section::About => ("About & AI control".into(), "Drive kimchi from Claude Code, Codex, scripts and its own agent.".into()),
@@ -545,6 +567,8 @@ impl SettingsDialog {
         let mcp_path = mcp.clone().unwrap_or_else(|| crate::ui::mcp_fallback().into());
         let claude = format!("claude mcp add kimchi -- {} --live", crate::ui::shell_quote(&mcp_path));
         let codex = format!("codex mcp add kimchi -- {} --live", crate::ui::shell_quote(&mcp_path));
+        // What Cursor and Claude Desktop take in their MCP config files.
+        let json_config = json!({ "mcpServers": { "kimchi": { "command": mcp_path, "args": ["--live"] } } }).to_string();
         let cli = self.cli.as_ref().map(|p| format!("{} app.commands", crate::ui::shell_quote(&p.display().to_string())));
         let link = |id: &'static str, label: &'static str, url: &'static str| {
             Button::new(id, label).small().ghost().icon_after("arrow-up-right").on_click(move |_, _, cx| cx.open_url(url))
@@ -579,13 +603,21 @@ impl SettingsDialog {
                     .child(link("about-docs", "AI control guide", crate::app::HELP_URL)),
             )
             .child(div().h(px(1.)).bg(t.line))
-            .child(group(
+            .child(app_group(
+                &["claude-code"],
                 "Connect Claude Code",
                 Some("Every command in kimchi is a tool for Claude Code, Codex or any MCP client. Live, it drives this window, and your permissions in Settings › Agent apply."),
                 self.code_line("copy-claude", claude, cx),
                 cx,
             ))
-            .child(group("Connect Codex", None, self.code_line("copy-codex", codex, cx), cx))
+            .child(app_group(&["codex"], "Connect Codex", None, self.code_line("copy-codex", codex, cx), cx))
+            .child(app_group(
+                &["cursor", "claude-desktop", "vscode"],
+                "Connect Cursor, Claude Desktop or VS Code",
+                Some("Add this server to Cursor's mcp.json or Claude Desktop's claude_desktop_config.json. VS Code takes the same server under \"servers\" in .vscode/mcp.json."),
+                self.code_line("copy-json", json_config, cx),
+                cx,
+            ))
             .when_some(cli, |d, cli| d.child(group("From a terminal", Some("kimchi-cli runs the same commands, on the open window or on a project file."), self.code_line("copy-cli", cli, cx), cx)))
             .when(mcp.is_none(), |d| {
                 d.child(note("circle-alert", "kimchi-mcp wasn't found next to this copy of kimchi (a development build?). Build it with `cargo build -p kimchi-mcp`.", t.warning, cx))
@@ -624,11 +656,14 @@ impl Render for SettingsDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let (title, subtitle) = self.title();
-        let nav = self.nav(cx);
+        // A narrow window gets a narrower list of sections.
+        let narrow = f32::from(window.viewport_size().width) < 760.;
+        let nav = self.nav(narrow, cx);
         let body = match self.section.clone() {
             Section::Provider(_) => self.provider_detail(window, cx),
             Section::Agent => self.agent_section(window, cx),
             Section::Appearance => self.appearance(cx),
+            Section::Audio => self.audio_section(cx),
             Section::Updates => self.updates(cx),
             Section::Diagnostics => self.diagnostics_section(cx),
             Section::About => self.about(cx),
@@ -638,6 +673,8 @@ impl Render for SettingsDialog {
             .key_context("SettingsDialog")
             .role(gpui::Role::Dialog)
             .aria_label("Settings")
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
             .child(
@@ -662,11 +699,14 @@ impl Render for SettingsDialog {
                     .child(Button::icon("settings-x", "x", "Close (Esc)").on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.close_dialog(cx)))),
             )
             .child(
+                // As tall as the window allows (the dialog frame caps it), both sides scroll.
                 div()
                     .h(px(560.))
+                    .min_h_0()
+                    .flex_shrink_1()
                     .flex()
                     .child(nav)
-                    .child(div().id("settings-body").flex_1().min_w_0().h_full().overflow_y_scroll().track_scroll(&self.body_scroll).p(px(20.)).child(body)),
+                    .child(div().id("settings-body").debug_selector(|| "settings-body".into()).flex_1().min_w_0().h_full().overflow_y_scroll().track_scroll(&self.body_scroll).p(px(20.)).child(body)),
             )
     }
 }
@@ -681,6 +721,26 @@ fn group(title: &str, help: Option<&str>, control: AnyElement, cx: &App) -> AnyE
         .flex_col()
         .gap(px(7.))
         .child(div().text_size(px(sz::SM)).font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child(title.to_string()))
+        .when_some(help, |d, h| d.child(div().text_size(px(sz::SM)).text_color(t.text_2).child(h.to_string())))
+        .child(control)
+        .into_any_element()
+}
+
+/// A `group` for connecting outside apps: their logos before the title.
+fn app_group(logos: &[&str], title: &str, help: Option<&str>, control: AnyElement, cx: &App) -> AnyElement {
+    let t = cx.theme();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(7.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .children(logos.iter().map(|id| crate::ui::logo(id, px(16.))))
+                .child(div().ml(px(2.)).text_size(px(sz::SM)).font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child(title.to_string())),
+        )
         .when_some(help, |d, h| d.child(div().text_size(px(sz::SM)).text_color(t.text_2).child(h.to_string())))
         .child(control)
         .into_any_element()
