@@ -81,7 +81,7 @@ impl Texture {
             return [1.0; 4];
         }
         let (x, y) = (u.rem_euclid(1.0) * w - 0.5, v.rem_euclid(1.0) * h - 0.5);
-        let (x0, y0) = (x.floor(), y.floor());
+        let (x0, y0) = (crate::render::floor(x), crate::render::floor(y));
         let (fx, fy) = (x - x0, y - y0);
         let at = |xi: f32, yi: f32| -> [f32; 4] {
             let xi = (xi as i64).rem_euclid(self.width as i64) as usize;
@@ -427,7 +427,7 @@ impl Space {
                 *a += *v as f32;
             }
         }
-        let out: Vec<u8> = acc.iter().map(|v| (v / n as f32).round().clamp(0.0, 255.0) as u8).collect();
+        let out: Vec<u8> = acc.iter().map(|v| crate::render::byte(v / n as f32)).collect();
         Pixmap::from_vec(out, tiny_skia::IntSize::from_wh(width.max(1), height.max(1)).ok_or_else(|| crate::MediaError::Unsupported("empty frame".into()))?)
             .ok_or_else(|| crate::MediaError::Unsupported("bad frame".into()))
     }
@@ -918,7 +918,30 @@ pub(crate) fn srgb_to_linear(v: u8) -> f32 {
     LUT.get_or_init(|| std::array::from_fn(|i| srgb_f(i as f32 / 255.0)))[v as usize]
 }
 
+/// Linear light (0–1) → sRGB (0–1), from a table (a `powf` per channel was a good share of a
+/// frame's encoding): within 1/50 000 of the exact curve.
+#[inline]
 pub(crate) fn linear_to_srgb(v: f32) -> f32 {
+    let v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+    if v <= 0.003_130_8 {
+        return v * 12.92;
+    }
+    let lut = srgb_table();
+    let x = v * SRGB_STEPS as f32;
+    let i = (x as usize).min(SRGB_STEPS - 1);
+    let t = x - i as f32;
+    lut[i] + (lut[i + 1] - lut[i]) * t
+}
+
+const SRGB_STEPS: usize = 4096;
+
+fn srgb_table() -> &'static [f32; SRGB_STEPS + 1] {
+    static LUT: std::sync::OnceLock<[f32; SRGB_STEPS + 1]> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| std::array::from_fn(|i| linear_to_srgb_exact(i as f32 / SRGB_STEPS as f32)))
+}
+
+/// The sRGB curve itself.
+pub(crate) fn linear_to_srgb_exact(v: f32) -> f32 {
     let v = v.clamp(0.0, 1.0);
     if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
 }

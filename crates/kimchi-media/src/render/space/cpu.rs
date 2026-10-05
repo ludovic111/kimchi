@@ -211,9 +211,9 @@ pub(crate) fn render(f: &Frame3d, want: Want) -> Drawn {
             let a = acc[3].clamp(0.0, 1.0);
             let px = &mut row[x * 4..x * 4 + 4];
             for k in 0..3 {
-                px[k] = (acc[k].clamp(0.0, a) * 255.0).round() as u8;
+                px[k] = crate::render::byte(acc[k].clamp(0.0, a) * 255.0);
             }
-            px[3] = (a * 255.0).round() as u8;
+            px[3] = crate::render::byte(a * 255.0);
         }
     });
     let pixmap = Pixmap::from_vec(out, tiny_skia::IntSize::from_wh(f.width, f.height).expect("non-empty")).expect("sized");
@@ -304,8 +304,8 @@ fn lit(m: &ShadowMap, p: V3, n: V3, f: &Frame3d) -> f32 {
     let mut sum = 0.0;
     for dy in -taps..=taps {
         for dx in -taps..=taps {
-            let x = ((sx + dx as f32 * step).floor() as i32).clamp(0, m.size as i32 - 1);
-            let y = ((sy + dy as f32 * step).floor() as i32).clamp(0, m.size as i32 - 1);
+            let x = (crate::render::floor(sx + dx as f32 * step) as i32).clamp(0, m.size as i32 - 1);
+            let y = (crate::render::floor(sy + dy as f32 * step) as i32).clamp(0, m.size as i32 - 1);
             let d = m.depth[y as usize * m.size + x as usize];
             let d = if m.res.ortho { d } else { m.res.distance(d) };
             sum += if mine <= d { 1.0 } else { 0.0 };

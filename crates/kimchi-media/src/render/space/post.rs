@@ -98,9 +98,9 @@ pub(crate) fn encode(f: &Frame3d, hdr: &Hdr) -> Pixmap {
             }
             for i in 0..3 {
                 let v = linear_to_srgb(tone(c[i] / a * k, f.filmic));
-                px[i] = (v.clamp(0.0, 1.0) * a * 255.0).round() as u8;
+                px[i] = crate::render::byte(v.clamp(0.0, 1.0) * a * 255.0);
             }
-            px[3] = (a * 255.0).round() as u8;
+            px[3] = crate::render::byte(a * 255.0);
         }
     });
     Pixmap::from_vec(out, tiny_skia::IntSize::from_wh(hdr.width.max(1), hdr.height.max(1)).expect("non-empty")).expect("sized")
@@ -249,40 +249,92 @@ fn depth_of_field(f: &Frame3d, hdr: &mut Hdr) {
     // each step adds the same area); fewer in previews.
     let count = if f.quality == Quality::Final { 160.0 } else { 48.0 };
     let spacing = largest * largest / (2.0 * count);
+    // The spiral is the same for every pixel: its offsets once.
+    let mut spiral: Vec<(f32, f32, f32)> = vec![];
+    let (mut radius, mut angle) = (spacing.sqrt(), 0.0f32);
+    while radius < largest {
+        spiral.push((angle.cos() * radius, angle.sin() * radius, radius));
+        radius += spacing / radius;
+        angle += 2.399_963;
+    }
+    // A sample only counts when the circle of the pixel it lands on reaches back this far, so a
+    // pixel can stop at the largest circle around it: per tile, the largest circle within reach.
+    let reach = tile_reach(&sizes, w, h, largest);
+    let tiles_w = w.div_ceil(DOF_TILE);
     let src = &hdr.rgba;
     let depth = &hdr.depth;
     let out: Vec<[f32; 4]> = (0..w * h)
         .into_par_iter()
         .map(|i| {
-            let (x, y) = ((i % w) as f32, (i / w) as f32);
+            let (xi, yi) = (i % w, i / w);
+            let (x, y) = (xi as f32, yi as f32);
             let (cd, cs) = (depth[i], sizes[i]);
-            let mut acc = src[i];
+            let stop = reach[(yi / DOF_TILE) * tiles_w + xi / DOF_TILE] + 0.5;
+            // The running mean of what was gathered, and how many samples it holds.
+            let mut mean = src[i];
             let mut tot = 1.0f32;
-            let mut radius = spacing.sqrt();
-            let mut angle = 0.0f32;
-            while radius < largest {
-                let (sx, sy) = (x + angle.cos() * radius, y + angle.sin() * radius);
+            for &(dx, dy, radius) in &spiral {
+                if radius >= stop {
+                    // Every sample from here on has no weight.
+                    break;
+                }
+                let (sx, sy) = (x + dx, y + dy);
                 if sx >= 0.0 && sy >= 0.0 && sx < w as f32 && sy < h as f32 {
                     let j = sy as usize * w + sx as usize;
                     let mut ss = sizes[j];
                     if depth[j] > cd {
                         ss = ss.min(cs * 2.0);
                     }
-                    let m = ((ss - radius + 0.5).clamp(0.0, 1.0)).powi(2) * (3.0 - 2.0 * (ss - radius + 0.5).clamp(0.0, 1.0));
-                    let s = src[j];
-                    for k in 0..4 {
-                        let mean = acc[k] / tot;
-                        acc[k] += mean + (s[k] - mean) * m;
-                    }
                     tot += 1.0;
+                    let e = (ss - radius + 0.5).clamp(0.0, 1.0);
+                    if e > 0.0 {
+                        let m = e * e * (3.0 - 2.0 * e) / tot;
+                        let s = src[j];
+                        for k in 0..4 {
+                            mean[k] += (s[k] - mean[k]) * m;
+                        }
+                    }
                 }
-                radius += spacing / radius;
-                angle += 2.399_963;
             }
-            acc.map(|v| v / tot)
+            mean
         })
         .collect();
     hdr.rgba = out;
+}
+
+/// Tiles (pixels a side) of the depth-of-field reach map.
+const DOF_TILE: usize = 16;
+
+/// The largest blur circle any pixel within `largest` of each `DOF_TILE` tile has.
+fn tile_reach(sizes: &[f32], w: usize, h: usize, largest: f32) -> Vec<f32> {
+    let (tw, th) = (w.div_ceil(DOF_TILE), h.div_ceil(DOF_TILE));
+    let own: Vec<f32> = (0..tw * th)
+        .into_par_iter()
+        .map(|t| {
+            let (tx, ty) = (t % tw, t / tw);
+            let mut m = 0.0f32;
+            for y in ty * DOF_TILE..((ty + 1) * DOF_TILE).min(h) {
+                for &s in &sizes[y * w + tx * DOF_TILE..y * w + ((tx + 1) * DOF_TILE).min(w)] {
+                    m = m.max(s);
+                }
+            }
+            m
+        })
+        .collect();
+    let r = (largest / DOF_TILE as f32).ceil() as isize + 1;
+    (0..tw * th)
+        .into_par_iter()
+        .map(|t| {
+            let (tx, ty) = ((t % tw) as isize, (t / tw) as isize);
+            let mut m = 0.0f32;
+            for y in (ty - r).max(0)..(ty + r + 1).min(th as isize) {
+                for x in (tx - r).max(0)..(tx + r + 1).min(tw as isize) {
+                    m = m.max(own[y as usize * tw + x as usize]);
+                }
+            }
+            m
+        })
+        .collect()
 }
 
 /// Glow: what is brighter than the threshold, blurred at two sizes, added back.

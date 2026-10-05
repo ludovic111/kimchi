@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use rayon::prelude::*;
 use tiny_skia::Pixmap;
 use wgpu::util::DeviceExt;
 
@@ -625,42 +626,41 @@ impl Gpu {
 
         let color = read(&self.device, &t.readback)?;
         let (w_, h_) = (w as usize, h as usize);
-        let px = |x: usize, y: usize, k: usize| -> f32 {
-            let at = y * t.row as usize + x * 8 + k * 2;
-            f16_to_f32(u16::from_le_bytes([color[at], color[at + 1]]))
-        };
+        let row = t.row as usize;
+        // Half floats → f32 from a table, rows on every core.
+        let half = half_table();
+        let texel = |line: &[u8], x: usize, k: usize| half[u16::from_le_bytes([line[x * 8 + k * 2], line[x * 8 + k * 2 + 1]]) as usize];
         let pixels = if linear {
-            let mut out = Vec::with_capacity(w_ * h_);
-            for y in 0..h_ {
-                for x in 0..w_ {
-                    out.push([px(x, y, 0), px(x, y, 1), px(x, y, 2), px(x, y, 3)]);
+            let mut out = vec![[0.0f32; 4]; w_ * h_];
+            out.par_chunks_mut(w_).zip(color.par_chunks(row)).for_each(|(dst, line)| {
+                for (x, o) in dst.iter_mut().enumerate() {
+                    *o = std::array::from_fn(|k| texel(line, x, k));
                 }
-            }
+            });
             Pixels::Linear(out)
         } else {
             let mut out = vec![0u8; w_ * h_ * 4];
-            for y in 0..h_ {
-                for x in 0..w_ {
-                    let a = px(x, y, 3).clamp(0.0, 1.0);
-                    let o = &mut out[(y * w_ + x) * 4..(y * w_ + x) * 4 + 4];
+            out.par_chunks_mut(w_ * 4).zip(color.par_chunks(row)).for_each(|(dst, line)| {
+                for (x, o) in dst.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                    let a = texel(line, x, 3).clamp(0.0, 1.0);
                     for (k, v) in o.iter_mut().take(3).enumerate() {
-                        *v = (px(x, y, k).clamp(0.0, a) * 255.0).round() as u8;
+                        *v = crate::render::byte(texel(line, x, k).clamp(0.0, a) * 255.0);
                     }
-                    o[3] = (a * 255.0).round() as u8;
+                    o[3] = crate::render::byte(a * 255.0);
                 }
-            }
+            });
             Pixels::Encoded(Pixmap::from_vec(out, tiny_skia::IntSize::from_wh(w, h).ok_or("size")?).ok_or_else(|| "bad picture".to_string())?)
         };
         let depth = if want.depth {
             let raw = read(&self.device, &t.depth_readback)?;
-            let mut out = Vec::with_capacity(w_ * h_);
-            for y in 0..h_ {
-                for x in 0..w_ {
-                    let at = y * t.depth_row as usize + x * 4;
-                    let z = f32::from_le_bytes([raw[at], raw[at + 1], raw[at + 2], raw[at + 3]]);
-                    out.push(if z >= 1.0 { f32::INFINITY } else { f.camera.distance(z) });
+            let drow = t.depth_row as usize;
+            let mut out = vec![0.0f32; w_ * h_];
+            out.par_chunks_mut(w_).zip(raw.par_chunks(drow)).for_each(|(dst, line)| {
+                for (x, o) in dst.iter_mut().enumerate() {
+                    let z = f32::from_le_bytes([line[x * 4], line[x * 4 + 1], line[x * 4 + 2], line[x * 4 + 3]]);
+                    *o = if z >= 1.0 { f32::INFINITY } else { f.camera.distance(z) };
                 }
-            }
+            });
             out
         } else {
             vec![]
@@ -781,6 +781,12 @@ fn upload_env(device: &wgpu::Device, queue: &wgpu::Queue, maps: Option<&EnvMaps>
 
 fn bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Every half float's value, by its bits.
+fn half_table() -> &'static [f32] {
+    static T: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+    T.get_or_init(|| (0..=u16::MAX).map(f16_to_f32).collect())
 }
 
 /// IEEE half → single.

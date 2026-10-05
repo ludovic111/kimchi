@@ -28,6 +28,7 @@ pub(crate) mod masks;
 pub(crate) mod mix;
 pub(crate) mod noise;
 pub(crate) mod paint;
+pub(crate) mod par;
 pub(crate) mod particles2d;
 pub(crate) mod shapeops;
 pub(crate) mod source;
@@ -98,7 +99,14 @@ impl Layer {
 /// Decoded pictures by file and size.
 type Stills = Mutex<HashMap<(PathBuf, u32, u32), Arc<Pixmap>>>;
 /// Each title's last picture, with the key of what it showed.
-type Titles = Mutex<HashMap<Id, (String, Arc<Pixmap>)>>;
+type Titles = Mutex<HashMap<Id, (String, Arc<Title>)>>;
+
+/// A title's picture: only the part with ink, and where its top left corner goes on the canvas.
+struct Title {
+    pic: Pixmap,
+    x: i32,
+    y: i32,
+}
 
 /// Decoded stills, shared by every renderer (the preview, playback and exports draw the same
 /// pictures).
@@ -432,9 +440,10 @@ impl Renderer {
                 Ok(())
             }
             ClipContent::Text { .. } => {
-                let pic = self.title(clip, &pl, t);
+                let title = self.title(clip, &pl, t);
                 self.layer(canvas, alpha, blur, &fx, |own, a| {
-                    own.draw_pixmap(0, 0, (*pic).as_ref(), &PixmapPaint { opacity: a, ..PixmapPaint::default() }, Transform::identity(), None)
+                    let at = Transform::from_translate(title.x as f32, title.y as f32);
+                    par::draw_pixmap(own, title.pic.as_ref(), &PixmapPaint { opacity: a, ..PixmapPaint::default() }, at)
                 });
                 Ok(())
             }
@@ -475,8 +484,8 @@ impl Renderer {
                         paint::blur(&mut own, blur);
                     }
                     grade::apply(&mut own, &fx, self.sx);
-                    let paint = PixmapPaint { opacity: alpha, quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() };
-                    canvas.draw_pixmap(0, 0, own.as_ref(), &paint, ts, None);
+                    let quality = if ts.is_identity() { tiny_skia::FilterQuality::Nearest } else { tiny_skia::FilterQuality::Bilinear };
+                    par::draw_pixmap(canvas, own.as_ref(), &PixmapPaint { opacity: alpha, quality, ..PixmapPaint::default() }, ts);
                 }
                 Ok(())
             }
@@ -493,7 +502,7 @@ impl Renderer {
         f(&mut own, 1.0);
         paint::blur(&mut own, blur);
         grade::apply(&mut own, fx, self.sx);
-        canvas.draw_pixmap(0, 0, own.as_ref(), &PixmapPaint { opacity: alpha, ..PixmapPaint::default() }, Transform::identity(), None);
+        par::draw_pixmap(canvas, own.as_ref(), &PixmapPaint { opacity: alpha, ..PixmapPaint::default() }, Transform::identity());
     }
 
     /// A media picture with the clip's effects. Stills keep their graded copy while neither the
@@ -520,8 +529,8 @@ impl Renderer {
         out
     }
 
-    /// A title's picture (canvas-sized), redrawn only when what it shows changed.
-    fn title(&mut self, clip: &Clip, pl: &Placement, t: f64) -> Arc<Pixmap> {
+    /// A title's picture, redrawn only when what it shows changed.
+    fn title(&mut self, clip: &Clip, pl: &Placement, t: f64) -> Arc<Title> {
         let style = clip.text_at(t).expect("text clip");
         let key = format!(
             "{}|{}|{}|{}|{}|{}|{}x{}",
@@ -540,7 +549,15 @@ impl Renderer {
             return p.clone();
         }
         let ps = &self.project.settings;
-        let p = Arc::new(crate::text::rasterize_title(&style, pl, ps.width, ps.height, self.sx));
+        let full = crate::text::rasterize_title(&style, pl, ps.width, ps.height, self.sx);
+        // Most of a title's canvas is empty: keep (and blend, every frame) only its ink.
+        let p = Arc::new(match effects2d::ink(&full).and_then(|r| Some((r, tiny_skia::IntRect::from_xywh(r.x0 as i32, r.y0 as i32, r.w() as u32, r.h() as u32)?))) {
+            Some((r, rect)) => match full.clone_rect(rect) {
+                Some(pic) => Title { pic, x: r.x0 as i32, y: r.y0 as i32 },
+                None => Title { pic: full, x: 0, y: 0 },
+            },
+            None => Title { pic: Pixmap::new(1, 1).expect("1×1"), x: 0, y: 0 },
+        });
         let mut map = lock(titles());
         if map.len() > 256 {
             map.clear();
@@ -734,7 +751,7 @@ impl space::Pictures for ScenePictures<'_> {
 fn draw_picture(target: &mut Pixmap, pic: &Pixmap, ts: Transform, alpha: f32) {
     let whole = ts.sx == 1.0 && ts.sy == 1.0 && ts.kx == 0.0 && ts.ky == 0.0 && ts.tx.fract() == 0.0 && ts.ty.fract() == 0.0;
     let quality = if whole { tiny_skia::FilterQuality::Nearest } else { tiny_skia::FilterQuality::Bilinear };
-    target.draw_pixmap(0, 0, pic.as_ref(), &PixmapPaint { opacity: alpha, quality, ..PixmapPaint::default() }, ts, None);
+    par::draw_pixmap(target, pic.as_ref(), &PixmapPaint { opacity: alpha, quality, ..PixmapPaint::default() }, ts);
 }
 
 /// A picture `sw`×`sh` fitted into `w`×`h` per `fit` (the output canvas at scale 1).
@@ -789,6 +806,23 @@ pub(crate) fn playable(tools: &Tools, project: &Project) -> Project {
         Path::new(&a.path).is_file()
     });
     project
+}
+
+/// `x.floor()` for per-pixel maths: Rust's is a library call on baseline x86-64 (no SSE4.1),
+/// a real cost in loops over millions of pixels. Exact; NaN and huge values pass through.
+#[inline(always)]
+pub(crate) fn floor(x: f32) -> f32 {
+    if !(x.abs() < 8_388_608.0) {
+        return x; // NaN, infinities, and floats too big to have a fraction
+    }
+    let t = x as i32 as f32;
+    if t > x { t - 1.0 } else { t }
+}
+
+/// `x.round() as u8` (halves away from zero, saturating, NaN → 0) without the library call.
+#[inline(always)]
+pub(crate) fn byte(x: f32) -> u8 {
+    (x + 0.5) as u8
 }
 
 fn even(x: u32) -> u32 {

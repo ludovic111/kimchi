@@ -698,3 +698,16 @@ fn a_big_floor_running_behind_the_camera_has_no_holes() {
     }
     assert_eq!(holes, 0, "pixels of the background showing through the floor");
 }
+
+#[test]
+fn the_srgb_table_follows_the_curve() {
+    let mut worst = 0.0f32;
+    for i in 0..=200_000 {
+        let v = i as f32 / 200_000.0;
+        worst = worst.max((linear_to_srgb(v) - linear_to_srgb_exact(v)).abs());
+    }
+    assert!(worst < 2e-5, "off by {worst}");
+    assert_eq!(linear_to_srgb(f32::NAN), 0.0);
+    assert_eq!(linear_to_srgb(-1.0), 0.0);
+    assert!((linear_to_srgb(7.0) - 1.0).abs() < 1e-6);
+}

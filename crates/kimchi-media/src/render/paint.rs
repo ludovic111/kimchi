@@ -4,7 +4,7 @@
 use kimchi_core::motion::{Fill, Gradient};
 use kimchi_core::path::Seg;
 use tiny_skia::{
-    BlendMode, Color, FillRule, GradientStop, LinearGradient, Paint, Path, PathBuilder, PathSegment, Pixmap, PixmapPaint, Point,
+    BlendMode, Color, FillRule, GradientStop, LinearGradient, Paint, Path, PathBuilder, PathSegment, Pixmap, Point,
     RadialGradient, Rect, Shader, SpreadMode, Transform,
 };
 
@@ -262,61 +262,14 @@ pub(crate) fn trim_dash(path: &Path, start: f64, end: f64, offset: f64) -> Optio
 // ---------------------------------------------------------------------------------------------
 // Blur and its uses
 
-/// Gaussian blur (radius ≈ 2σ) of a premultiplied pixmap, in place. Large radii are blurred on a
-/// smaller copy and scaled back, which looks the same and is much faster.
+/// Gaussian blur (radius ≈ 2σ) of a premultiplied pixmap, in place, over the area with ink, on
+/// every core (see [`super::effects2d::gaussian`]: three box blurs, on a box-filtered smaller
+/// copy when the radius is big, which looks the same and doesn't shimmer as things move).
 pub(crate) fn blur(p: &mut Pixmap, radius: f32) {
-    if radius < 0.5 {
+    if radius.is_nan() || radius < 0.5 {
         return;
     }
-    let factor = ((radius / 6.0).floor() as u32).clamp(1, 8);
-    if factor > 1 {
-        let (w, h) = ((p.width() / factor).max(1), (p.height() / factor).max(1));
-        let Some(mut small) = Pixmap::new(w, h) else { return };
-        let paint = PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() };
-        let k = 1.0 / factor as f32;
-        small.draw_pixmap(0, 0, p.as_ref(), &paint, Transform::from_scale(k, k), None);
-        blur_exact(&mut small, radius / factor as f32);
-        p.fill(Color::TRANSPARENT);
-        let paint = PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, blend_mode: BlendMode::Source, ..PixmapPaint::default() };
-        p.draw_pixmap(0, 0, small.as_ref(), &paint, Transform::from_scale(p.width() as f32 / w as f32, p.height() as f32 / h as f32), None);
-    } else {
-        blur_exact(p, radius);
-    }
-}
-
-/// Three box blurs per channel over the area that has any ink.
-fn blur_exact(p: &mut Pixmap, radius: f32) {
-    let sigma = radius / 2.0;
-    if sigma < 0.3 {
-        return;
-    }
-    let (w, h) = (p.width() as usize, p.height() as usize);
-    let alpha: Vec<u8> = p.pixels().iter().map(|c| c.alpha()).collect();
-    let Some((x0, y0, x1, y1)) = crate::text::ink_bounds(&alpha, w, h) else { return };
-    let margin = (sigma * 3.0).ceil() as usize + 2;
-    let (x0, y0, x1, y1) = (x0.saturating_sub(margin), y0.saturating_sub(margin), (x1 + margin).min(w - 1), (y1 + margin).min(h - 1));
-    let (bw, bh) = (x1 - x0 + 1, y1 - y0 + 1);
-    let radii = crate::text::box_radii(sigma);
-    let data = p.data_mut();
-    let mut chan = vec![0f32; bw * bh];
-    for c in 0..4 {
-        for (i, v) in chan.iter_mut().enumerate() {
-            *v = data[((y0 + i / bw) * w + x0 + i % bw) * 4 + c] as f32;
-        }
-        for r in radii {
-            crate::text::box_blur(&mut chan, bw, bh, r);
-        }
-        for (i, v) in chan.iter().enumerate() {
-            data[((y0 + i / bw) * w + x0 + i % bw) * 4 + c] = v.round().clamp(0.0, 255.0) as u8;
-        }
-    }
-    // Keep premultiplied invariants (colour ≤ alpha) after rounding.
-    for px in data.as_chunks_mut::<4>().0.iter_mut() {
-        let a = px[3];
-        px[0] = px[0].min(a);
-        px[1] = px[1].min(a);
-        px[2] = px[2].min(a);
-    }
+    super::effects2d::gaussian(p, radius / 2.0, radius / 2.0);
 }
 
 /// A copy of `layer`'s alpha in `tint`, times `opacity`.
@@ -327,7 +280,7 @@ pub(crate) fn tinted(layer: &Pixmap, tint: Color, opacity: f32) -> Pixmap {
     for (dst, src) in out.pixels_mut().iter_mut().zip(layer.pixels()) {
         let a = src.alpha() as f32 / 255.0 * k;
         if a > 0.0 {
-            let m = |v: u8| (v as f32 * a.min(1.0)).round().clamp(0.0, 255.0) as u8;
+            let m = |v: u8| (v as f32 * a.min(1.0) + 0.5) as u8;
             if let Some(px) = tiny_skia::PremultipliedColorU8::from_rgba(m(c.red()), m(c.green()), m(c.blue()), m(c.alpha())) {
                 *dst = px;
             }
