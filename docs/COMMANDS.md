@@ -1391,13 +1391,13 @@ Select clips (or one media item) in the window. _(changes things · needs the wi
 
 ### `ui.showPanel`
 
-Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it. _(changes things · needs the window)_
+Open a panel or dialog: media, generate, text, motion, captions (left panel), inspector, agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it. _(changes things · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `panel` | string | required | Panel name. |
 | `section` | string |  | For settings: models, agent, appearance, updates, diagnostics or about. |
-| `open` | boolean |  | false closes the panel or dialog instead (agent, jobs or a dialog; default true). |
+| `open` | boolean |  | false closes the panel or dialog instead (the left panel, inspector, agent, jobs or a dialog; default true). |
 | `all` | boolean |  | For whatsNew: the notes of every release, not only this one's. |
 
 ### `ui.closeDialogs`
@@ -1425,14 +1425,16 @@ Timeline and playback options in the window: snapping, ripple delete and loop. O
 
 ### `ui.setLayout`
 
-Resize the editor's panels, in pixels (each within its limits), or put them back as they start. Returns the sizes. _(changes things · needs the window)_
+Resize, open or close the editor's panels (sizes in pixels, each within its limits), or put them back as they start. The window keeps the preview at least 340×190: in a small window side panels are drawn smaller, or over the work as drawers, and get their size back when it grows. Returns the sizes as drawn, the window's size and the panels drawn as overlays. _(changes things · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `left` | number |  | Width of the left panel (280-520). |
-| `inspector` | number |  | Width of the inspector, on the right (260-440). |
-| `timeline` | number |  | Height of the timeline (180-620). |
-| `agent` | number |  | Width of the Agent panel (300-560). |
+| `left` | number |  | Width of the left panel (248-520). |
+| `inspector` | number |  | Width of the inspector, on the right (256-460). |
+| `timeline` | number |  | Height of the timeline (150 up to the window's height less the preview's 190). |
+| `agent` | number |  | Width of the Agent panel (300-600). |
+| `leftOpen` | boolean |  | Open (true) or close the left panel; its rail of tabs stays. |
+| `inspectorOpen` | boolean |  | Open (true) or close the inspector. |
 | `reset` | boolean |  | Back to the starting sizes first. |
 
 ### `ui.action`
