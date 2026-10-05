@@ -26,6 +26,7 @@ use serde_json::Value;
 
 use crate::anim::{KeyValue, Keyframes, Rgba, normalize, value_at};
 
+pub mod camera_moves;
 pub mod curve;
 mod eval;
 mod flat;

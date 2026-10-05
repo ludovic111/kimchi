@@ -182,6 +182,125 @@ impl ViewCamera {
         };
         self.position = add(self.target, scale(norm(dir), dist));
     }
+
+    /// The axis view this one looks along (within a degree), if any.
+    pub fn aligned_axis(&self) -> Option<&'static str> {
+        let d = norm(sub(self.position, self.target));
+        [("front", [0.0, 0.0, 1.0]), ("back", [0.0, 0.0, -1.0]), ("right", [1.0, 0.0, 0.0]), ("left", [-1.0, 0.0, 0.0]), ("top", [0.0, 1.0, 0.0]), ("bottom", [0.0, -1.0, 0.0])]
+            .into_iter()
+            .find(|(_, a)| dot(d, *a) > 0.9998)
+            .map(|(n, _)| n)
+    }
+
+    /// The scene camera's view (its position, target, lens and projection).
+    pub fn from_camera(c: &Camera) -> ViewCamera {
+        ViewCamera { position: c.position.0, target: c.target.0, fov: c.fov, ortho: c.orthographic(), ortho_size: c.ortho_size }
+    }
+
+    /// The view's direction, its right and its up (unit vectors).
+    pub fn axes(&self) -> ([f64; 3], [f64; 3], [f64; 3]) {
+        self.basis()
+    }
+
+    /// How far it is from what it looks at.
+    pub fn distance(&self) -> f64 {
+        len(sub(self.position, self.target))
+    }
+
+    /// Turns the view where it stands (looking around, first person): degrees left/right and
+    /// up/down; what it looks at moves, the eye stays.
+    pub fn look(&mut self, yaw: f64, pitch: f64) {
+        let d = sub(self.target, self.position);
+        let dist = len(d).max(1e-6);
+        let mut az = d[2].atan2(d[0]);
+        let mut el = (d[1] / dist).clamp(-1.0, 1.0).asin();
+        az += yaw.to_radians();
+        el = (el + pitch.to_radians()).clamp(-1.55, 1.55);
+        self.target = add(self.position, [dist * el.cos() * az.cos(), dist * el.sin(), dist * el.cos() * az.sin()]);
+    }
+
+    /// Moves the eye and what it looks at together, along the view (`forward`), its right and
+    /// the world's up, in world units: flying through the scene.
+    pub fn fly(&mut self, forward: f64, right: f64, up: f64) {
+        let (f, r, _) = self.basis();
+        let m = add(add(scale(f, forward), scale(r, right)), [0.0, up, 0.0]);
+        self.position = add(self.position, m);
+        self.target = add(self.target, m);
+    }
+
+    /// The point under pixel (`x`, `y`) of a `w`×`h` view on the plane through the target
+    /// facing the view: where zooming to the pointer heads.
+    pub fn point_under(&self, w: f64, h: f64, x: f64, y: f64) -> [f64; 3] {
+        let (o, d) = self.ray(w, h, x, y);
+        let (f, _, _) = self.basis();
+        let denom = dot(d, f);
+        if denom.abs() < 1e-9 {
+            return self.target;
+        }
+        let t = dot(sub(self.target, o), f) / denom;
+        add(o, scale(d, t.max(0.0)))
+    }
+
+    /// Zooms like [`zoom`](Self::zoom) but towards `point` (closer when `factor` < 1): the point
+    /// stays where it is on the screen.
+    pub fn zoom_toward(&mut self, factor: f64, point: [f64; 3]) {
+        let factor = factor.clamp(0.05, 20.0);
+        let (_, r, u) = self.basis();
+        if self.ortho {
+            // The picture scales around the point: slide the view by what it no longer covers.
+            let off = sub(point, self.target);
+            let (x, y) = (dot(off, r), dot(off, u));
+            let shift = add(scale(r, x * (1.0 - factor)), scale(u, y * (1.0 - factor)));
+            self.position = add(self.position, shift);
+            self.target = add(self.target, shift);
+            self.ortho_size = (self.ortho_size * factor).max(0.01);
+            return;
+        }
+        // Everything scales around the point: the ray to it keeps its direction.
+        let near = len(sub(self.position, self.target)) * factor < 1e-3;
+        if near {
+            return;
+        }
+        self.position = add(point, scale(sub(self.position, point), factor));
+        self.target = add(point, scale(sub(self.target, point), factor));
+    }
+
+    /// The view `k` of the way (0–1) to `other`: what it looks at and how far it is move in
+    /// straight lines, the direction turns around (a smooth move between two views).
+    pub fn blend(&self, other: &ViewCamera, k: f64) -> ViewCamera {
+        let k = k.clamp(0.0, 1.0);
+        let lerp3 = |a: [f64; 3], b: [f64; 3]| add(a, scale(sub(b, a), k));
+        let (d0, d1) = (sub(self.position, self.target), sub(other.position, other.target));
+        let (l0, l1) = (len(d0).max(1e-6), len(d1).max(1e-6));
+        let dir = slerp(scale(d0, 1.0 / l0), scale(d1, 1.0 / l1), k);
+        // Distances change by the same factor each step (zooming feels even).
+        let dist = l0 * (l1 / l0).powf(k);
+        let target = lerp3(self.target, other.target);
+        ViewCamera {
+            position: add(target, scale(dir, dist)),
+            target,
+            fov: self.fov + (other.fov - self.fov) * k,
+            ortho: if k < 0.5 { self.ortho } else { other.ortho },
+            ortho_size: self.ortho_size * (other.ortho_size.max(1e-6) / self.ortho_size.max(1e-6)).powf(k),
+        }
+    }
+}
+
+/// Between two unit directions, along the sphere.
+fn slerp(a: [f64; 3], b: [f64; 3], k: f64) -> [f64; 3] {
+    let c = dot(a, b).clamp(-1.0, 1.0);
+    if c > 0.9999 {
+        return norm(add(a, scale(sub(b, a), k)));
+    }
+    if c < -0.9999 {
+        // Opposite: go round over the top (or the side when they are up and down).
+        let side = if a[1].abs() > 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+        let mid = norm(sub(side, scale(a, dot(side, a))));
+        return if k < 0.5 { slerp(a, mid, k * 2.0) } else { slerp(mid, b, k * 2.0 - 1.0) };
+    }
+    let w = c.acos();
+    let (sa, sb) = (((1.0 - k) * w).sin() / w.sin(), (k * w).sin() / w.sin());
+    norm(add(scale(a, sa), scale(b, sb)))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -841,5 +960,47 @@ mod tests {
         let mut o = v;
         o.orbit(90.0, 0.0);
         assert!((len(sub(o.position, o.target)) - len(sub(v.position, v.target))).abs() < 1e-9, "orbit keeps the distance");
+    }
+
+    #[test]
+    fn the_view_flies_looks_zooms_to_a_point_and_blends() {
+        let v = ViewCamera::default();
+        // Zooming towards a point keeps it under the same pixel.
+        let at = [900.0, 200.0];
+        let p = v.point_under(1280.0, 720.0, at[0], at[1]);
+        for ortho in [false, true] {
+            let mut z = ViewCamera { ortho, ..v };
+            let p = z.point_under(1280.0, 720.0, at[0], at[1]);
+            z.zoom_toward(0.5, p);
+            let q = z.project(1280.0, 720.0, p).unwrap();
+            assert!((q[0] - at[0]).abs() < 1e-6 && (q[1] - at[1]).abs() < 1e-6, "{ortho}: {q:?}");
+        }
+        let mut z = v;
+        z.zoom_toward(0.5, p);
+        assert!((z.distance() - v.distance() * 0.5).abs() < 1e-9);
+        // Flying moves both ends; looking turns around the eye.
+        let mut f = v;
+        f.fly(1.0, 0.0, 0.5);
+        assert!((len(sub(f.position, v.position)) - 1.25f64.sqrt()).abs() < 1e-9 && (f.distance() - v.distance()).abs() < 1e-9);
+        let mut l = v;
+        l.look(30.0, 0.0);
+        assert_eq!(l.position, v.position);
+        let turned = dot(norm(sub(l.target, l.position)), norm(sub(v.target, v.position)));
+        assert!((turned - 30f64.to_radians().cos()).abs() < 1e-6, "{turned}");
+        // Blends: the ends are the views, the middle keeps a sane distance.
+        let mut top = v;
+        top.align("top");
+        top.target = [1.0, 0.0, 0.0];
+        top.position = add(top.target, [0.0, 2.0, 0.0001]);
+        let a = v.blend(&top, 0.0);
+        let b = v.blend(&top, 1.0);
+        assert!(len(sub(a.position, v.position)) < 1e-9 && len(sub(b.position, top.position)) < 1e-6, "{b:?}");
+        let mid = v.blend(&top, 0.5);
+        assert!(mid.distance() < v.distance() && mid.distance() > top.distance());
+        let mut back = v;
+        back.position = add(v.target, scale(sub(v.position, v.target), -1.0));
+        assert!(v.blend(&back, 0.5).distance() > v.distance() * 0.99, "opposite views go round, not through");
+        assert_eq!(top.aligned_axis(), Some("top"));
+        assert_eq!(v.aligned_axis(), None);
     }
 }

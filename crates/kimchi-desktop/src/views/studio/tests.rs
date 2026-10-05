@@ -302,3 +302,287 @@ fn motion_clips_say_whether_they_are_live_rendered_or_out_of_date(cx: &mut TestA
     assert_eq!(now(cx), Some(RenderState::Rendering(0.4, "r1".into())));
     assert_eq!(RenderState::Outdated.label(), "Out of date");
 }
+
+// ---- moving around ------------------------------------------------------------------------------
+
+/// The open clip's camera (`id`) as the project has it now.
+fn camera_of(p: &Project, clip: Id, id: &str) -> kimchi_core::motion::Camera {
+    match scene_of(p, clip) {
+        Scene::Space(s) => s.camera_by_id(id).cloned().expect("the camera"),
+        _ => panic!("3d"),
+    }
+}
+
+/// A 3D clip with a box and the camera at (0, 2, 8) looking at (0, 1, 0), open in the Studio.
+fn open_box(f: &Fixture, cx: &mut VisualTestContext) -> Id {
+    let v = f.call("motion.add", json!({ "scene": { "type": "3d", "camera": { "position": [0, 2, 8], "target": [0, 1, 0] }, "objects": [{ "id": "box", "type": "box", "position": [0, 0.5, 0] }] }, "start": 0, "duration": 4 }));
+    let clip: Id = v["clips"][0]["id"].as_str().unwrap().parse().unwrap();
+    store_settles(cx, |s| s.clip(clip).is_some());
+    ui(f, cx, "ui.studio", json!({ "clipId": clip.to_string() })).unwrap();
+    cx.run_until_parked();
+    clip
+}
+
+fn len3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// A drag with the left button from `a` to `b`, as the pointer would do it.
+fn drag(cx: &mut VisualTestContext, a: gpui::Point<gpui::Pixels>, b: gpui::Point<gpui::Pixels>) {
+    use gpui::{Modifiers, MouseButton};
+    cx.simulate_mouse_down(a, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    for k in 1..=4 {
+        let p = a + (b - a) * (k as f32 / 4.0);
+        cx.simulate_mouse_move(p, Some(MouseButton::Left), Modifiers::none());
+    }
+    cx.simulate_mouse_up(b, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn the_navigation_gizmo_and_gestures_move_the_view(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, TouchPhase};
+    let (f, view, cx) = setup(cx);
+    open_box(&f, cx);
+    let st = studio(&view, cx);
+    let vp = cx.update(|_, cx| st.read(cx).viewport.clone());
+    let b = cx.update(|_, cx| vp.read(cx).bounds_for_test());
+    assert!(b.size.width > px(200.) && b.size.height > px(200.), "{b:?}");
+    let (right, top) = (b.origin.x + b.size.width, b.origin.y);
+    let shown = |cx: &mut VisualTestContext| cx.update(|_, cx| st.read(cx).view_shown());
+    let settle = |cx: &mut VisualTestContext| cx.update(|_, cx| st.update(cx, |s, cx| s.finish_view_anim(cx)));
+
+    // A click on the ball's Y: the view from the top; again: from the bottom.
+    let ball = point(right - px(8. + 84.), top + px(8.));
+    let y_dot = |v: kimchi_media::render::space::viewport::ViewCamera| {
+        let (_, r, u) = v.axes();
+        point(ball.x + px((42.0 + r[1] * 29.0) as f32), ball.y + px((42.0 - u[1] * 29.0) as f32))
+    };
+    let v0 = shown(cx).0;
+    cx.simulate_click(y_dot(v0), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(shown(cx).0.aligned_axis(), Some("top"), "the Y axis looks from the top");
+    settle(cx);
+    let v1 = shown(cx).0;
+    assert!((v1.distance() - v0.distance()).abs() < 1e-6, "same distance");
+    cx.simulate_click(y_dot(v1), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(shown(cx).0.aligned_axis(), Some("bottom"), "and again from below");
+    settle(cx);
+
+    // Dragging the ball orbits.
+    let before = shown(cx).0;
+    let centre = point(ball.x + px(42.), ball.y + px(60.));
+    // (Up and down: it looks from below, where left and right only spin it in place.)
+    drag(cx, centre, centre + point(px(20.), px(-40.)));
+    let after = shown(cx).0;
+    assert!(len3(after.position, before.position) > 0.1 && (after.distance() - before.distance()).abs() < 1e-6, "turned around the same point: {before:?} → {after:?}");
+
+    // The buttons under it: orbit, pan, zoom.
+    let column = |i: f32| point(ball.x + px(42.), top + px(8. + 84. + 8. + 3. + 15. + 32. * i));
+    let before = shown(cx).0;
+    drag(cx, column(0.), column(0.) + point(px(-30.), px(10.)));
+    let after = shown(cx).0;
+    assert!(len3(after.position, before.position) > 0.1 && len3(after.target, before.target) < 1e-9, "the orbit button orbits");
+    drag(cx, column(1.), column(1.) + point(px(30.), px(0.)));
+    let panned = shown(cx).0;
+    assert!(len3(panned.target, after.target) > 0.01, "the hand pans");
+    drag(cx, column(2.), column(2.) - point(px(0.), px(40.)));
+    let zoomed = shown(cx).0;
+    assert!(zoomed.distance() < panned.distance() * 0.9, "dragging the magnifier up comes closer");
+
+    // The wheel zooms to the pointer, Shift+wheel pans, two fingers orbit, a pinch zooms.
+    let mid = b.center();
+    let scroll = |cx: &mut VisualTestContext, delta: ScrollDelta, modifiers: Modifiers| {
+        cx.simulate_event(ScrollWheelEvent { position: mid, delta, modifiers, touch_phase: TouchPhase::Moved });
+        cx.run_until_parked();
+    };
+    let a = shown(cx).0;
+    scroll(cx, ScrollDelta::Lines(point(0., 3.)), Modifiers::none());
+    let b2 = shown(cx).0;
+    assert!(b2.distance() < a.distance(), "the wheel up comes closer");
+    scroll(cx, ScrollDelta::Lines(point(0., 3.)), Modifiers::shift());
+    let c = shown(cx).0;
+    assert!(len3(c.target, b2.target) > 1e-6 && (c.distance() - b2.distance()).abs() < 1e-6, "Shift+wheel pans");
+    scroll(cx, ScrollDelta::Pixels(point(px(30.), px(0.))), Modifiers::none());
+    let d = shown(cx).0;
+    assert!(len3(d.position, c.position) > 1e-3 && len3(d.target, c.target) < 1e-9, "two fingers orbit");
+    scroll(cx, ScrollDelta::Pixels(point(px(0.), px(20.))), Modifiers::secondary_key());
+    let e = shown(cx).0;
+    assert!(e.distance() < d.distance(), "Ctrl/Cmd+scroll zooms");
+    cx.simulate_event(gpui::PinchEvent { position: mid, delta: 0.25, modifiers: Modifiers::none(), phase: TouchPhase::Moved });
+    cx.run_until_parked();
+    assert!(shown(cx).0.distance() < e.distance(), "a pinch zooms");
+
+    // Keys: 7 glides to the top (the state says where it is going), Home frames everything.
+    cx.simulate_keystrokes("7");
+    cx.run_until_parked();
+    assert_eq!(shown(cx).0.aligned_axis(), Some("top"));
+    let state = ui(&f, cx, "ui.studio", json!({})).unwrap();
+    assert!(state["view"]["position"][1].as_f64().unwrap() > 0.5, "{state}");
+    cx.simulate_keystrokes("home");
+    cx.run_until_parked();
+    settle(cx);
+    let all = shown(cx).0;
+    assert!(len3(all.target, [0.0, 0.5, 0.0]) < 0.1, "the box in the middle: {all:?}");
+
+    // The middle button orbits too, and a right-click (no drag) still opens the menu.
+    let before = shown(cx).0;
+    cx.simulate_mouse_down(mid, MouseButton::Middle, Modifiers::none());
+    cx.run_until_parked();
+    cx.simulate_mouse_move(mid + point(px(30.), px(0.)), Some(MouseButton::Middle), Modifiers::none());
+    cx.simulate_mouse_up(mid + point(px(30.), px(0.)), MouseButton::Middle, Modifiers::none());
+    cx.run_until_parked();
+    assert!(len3(shown(cx).0.position, before.position) > 0.05);
+    cx.simulate_mouse_down(mid, MouseButton::Right, Modifiers::none());
+    cx.run_until_parked();
+    cx.simulate_mouse_up(mid, MouseButton::Right, Modifiers::none());
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| cx.store().read(cx).menu.is_some()), "the right-click menu");
+}
+
+#[gpui::test]
+fn fly_mode_moves_with_the_keys_and_esc_puts_the_view_back(cx: &mut TestAppContext) {
+    use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
+    let (f, view, cx) = setup(cx);
+    open_box(&f, cx);
+    let st = studio(&view, cx);
+    let start = cx.update(|_, cx| st.read(cx).view);
+    let state = ui(&f, cx, "ui.studio", json!({ "fly": true })).unwrap();
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| st.read(cx).viewport.read(cx).flying()), "{state}");
+    let key = |cx: &mut VisualTestContext, k: &str, down: bool| {
+        let keystroke = Keystroke::parse(k).unwrap();
+        if down {
+            cx.simulate_event(KeyDownEvent { keystroke, is_held: false, prefer_character_input: false });
+        } else {
+            cx.simulate_event(KeyUpEvent { keystroke });
+        }
+        cx.run_until_parked();
+    };
+    key(cx, "w", true);
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.run_until_parked();
+    key(cx, "w", false);
+    let moved = cx.update(|_, cx| st.read(cx).view);
+    let (fwd, _, _) = start.axes();
+    let step = [moved.position[0] - start.position[0], moved.position[1] - start.position[1], moved.position[2] - start.position[2]];
+    assert!(step.iter().zip(fwd).map(|(a, b)| a * b).sum::<f64>() > 0.01, "W flies forward: {step:?}");
+    assert!((moved.distance() - start.distance()).abs() < 1e-6, "the eye and what it looks at move together");
+    // S isn't Scale while flying, and Esc goes back.
+    key(cx, "escape", true);
+    assert!(!cx.update(|_, cx| st.read(cx).viewport.read(cx).flying()));
+    assert_eq!(cx.update(|_, cx| st.read(cx).view), start, "Esc puts it back");
+    assert_eq!(cx.update(|_, cx| st.read(cx).tool), super::Tool::Move);
+    // Shift+` starts it; Enter keeps where it went.
+    cx.simulate_keystrokes("shift-`");
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| st.read(cx).viewport.read(cx).flying()));
+    key(cx, "e", true);
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    key(cx, "e", false);
+    key(cx, "enter", true);
+    let kept = cx.update(|_, cx| st.read(cx).view);
+    assert!(kept.position[1] > start.position[1] + 0.01, "E rises, and Enter keeps it: {kept:?}");
+}
+
+#[gpui::test]
+fn lock_camera_to_view_moves_the_scene_camera_one_step_at_a_time(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    let clip = open_box(&f, cx);
+    let st = studio(&view, cx);
+    let state = ui(&f, cx, "ui.studio", json!({ "lockCamera": true })).unwrap();
+    assert_eq!((state["view"].as_str(), state["lockCamera"].as_bool()), (Some("camera"), Some(true)), "locking looks through the camera: {state}");
+
+    // Navigating moves the scene's camera: a command, one undo step.
+    ui(&f, cx, "ui.studio", json!({ "navigate": { "orbit": [90, 0] } })).unwrap();
+    let x = |p: &Project| camera_of(p, clip, "camera").position.0[0];
+    let p = f.settle(cx, |p| x(p).abs() > 7.0);
+    let cam = camera_of(&p, clip, "camera");
+    assert!((x(&p).abs() - 8.0).abs() < 0.05 && cam.target.0 == [0.0, 1.0, 0.0], "a quarter turn around what it looks at: {:?}", cam.position);
+    let steps = f.call("history.list", json!({}));
+    assert_eq!((steps["undo"][0]["label"].as_str(), steps["undo"][1]["label"].as_str()), (Some("motion.updateLayer"), Some("motion.add")));
+
+    // A drag on the orbit button while locked: the camera again, one more step.
+    let vp = cx.update(|_, cx| st.read(cx).viewport.clone());
+    let b = cx.update(|_, cx| vp.read(cx).bounds_for_test());
+    let orbit = point(b.origin.x + b.size.width - px(8. + 42.), b.origin.y + px(8. + 84. + 8. + 3. + 15.));
+    let before = camera_of(&f.project(), clip, "camera").position.0;
+    {
+        // One quick move: a slow machine can let the edits of a long drag drift apart in time.
+        use gpui::{Modifiers, MouseButton};
+        cx.simulate_mouse_down(orbit, MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        cx.simulate_mouse_move(orbit + point(px(50.), px(0.)), Some(MouseButton::Left), Modifiers::none());
+        cx.simulate_mouse_up(orbit + point(px(50.), px(0.)), MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+    }
+    let p = f.settle(cx, |p| len3(camera_of(p, clip, "camera").position.0, before) > 0.1);
+    assert!(len3(camera_of(&p, clip, "camera").position.0, before) > 0.1, "the camera turned");
+    let steps = f.call("history.list", json!({}));
+    assert_eq!(steps["undo"][1]["label"], "motion.updateLayer");
+    assert_eq!(steps["undo"][2]["label"], "motion.add", "one step for the whole drag");
+
+    // An animated camera gets a keyframe at the playhead.
+    f.call("motion.setKeyframes", json!({ "clipId": clip.to_string(), "id": "camera", "property": "position", "keyframes": [[0, [0, 2, 8]], [2, [0, 2, 6]]] }));
+    f.call("timeline.seek", json!({ "time": 1.0 }));
+    cx.run_until_parked();
+    ui(&f, cx, "ui.studio", json!({ "navigate": { "zoom": 2 } })).unwrap();
+    let keys = |p: &Project| camera_of(p, clip, "camera").keyframes.get("position").map(Vec::len).unwrap_or(0);
+    assert_eq!(keys(&f.settle(cx, |p| keys(p) == 3)), 3, "a keyframe at 1 s");
+
+    // Align the camera to a view, add one here, keyframe it.
+    ui(&f, cx, "ui.studio", json!({ "lockCamera": false, "view": { "position": [5, 3, 5], "target": [0, 0, 0], "fov": 30 } })).unwrap();
+    ui(&f, cx, "ui.studio", json!({ "alignCamera": true })).unwrap();
+    let p = f.settle(cx, |p| (camera_of(p, clip, "camera").fov - 30.0).abs() < 1e-6);
+    assert_eq!(camera_of(&p, clip, "camera").fov, 30.0);
+    ui(&f, cx, "ui.studio", json!({ "addCamera": true })).unwrap();
+    let cams = |p: &Project| match scene_of(p, clip) {
+        Scene::Space(s) => s.cameras.len(),
+        _ => 0,
+    };
+    assert_eq!(cams(&f.settle(cx, |p| cams(p) == 1)), 1);
+    let id = match scene_of(&f.project(), clip) {
+        Scene::Space(s) => s.cameras[0].id.clone(),
+        _ => unreachable!(),
+    };
+    wait(cx, |cx| cx.update(|_, cx| st.read(cx).selection == [id.clone()]));
+    ui(&f, cx, "ui.studio", json!({ "keyframeCamera": true })).unwrap();
+    let keyed = |p: &Project| camera_of(p, clip, &id).keyframes.contains_key("target");
+    assert!(keyed(&f.settle(cx, keyed)), "the selected camera keyframed");
+
+    // A move from the Camera menu: a turntable, editable keyframes on a constraint.
+    cx.update(|_, cx| st.update(cx, |s, cx| s.camera_move("turntable", json!({}), cx)));
+    let orbits = |p: &Project| camera_of(p, clip, &id).keyframes.contains_key("constraints.orbit.progress");
+    assert!(orbits(&f.settle(cx, orbits)));
+}
+
+#[gpui::test]
+fn the_2d_canvas_zooms_pans_and_fits(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+    let (f, view, cx) = setup(cx);
+    open(&f, cx, "lowerThird");
+    let st = studio(&view, cx);
+    let state = ui(&f, cx, "ui.studio", json!({ "zoom": "100%" })).unwrap();
+    assert_eq!((state["zoom"].as_f64(), state["fit"].as_bool()), (Some(1.0), Some(false)), "{state}");
+    cx.simulate_keystrokes("=");
+    cx.run_until_parked();
+    assert!((cx.update(|_, cx| st.read(cx).canvas.zoom) - 1.25).abs() < 1e-9, "= zooms in");
+    cx.simulate_keystrokes("/");
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| st.read(cx).canvas.zoom), 1.0, "/ is 100%");
+    let vp = cx.update(|_, cx| st.read(cx).viewport.clone());
+    let mid = cx.update(|_, cx| vp.read(cx).bounds_for_test()).center();
+    // Two fingers pan; Ctrl/Cmd+scroll zooms to the pointer.
+    cx.simulate_event(ScrollWheelEvent { position: mid, delta: ScrollDelta::Pixels(point(px(40.), px(-20.))), modifiers: Modifiers::none(), touch_phase: TouchPhase::Moved });
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| st.read(cx).canvas.pan), [40.0, -20.0]);
+    cx.simulate_event(ScrollWheelEvent { position: mid, delta: ScrollDelta::Pixels(point(px(0.), px(50.))), modifiers: Modifiers::secondary_key(), touch_phase: TouchPhase::Moved });
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| st.read(cx).canvas.zoom) > 1.1);
+    let state = ui(&f, cx, "ui.studio", json!({ "zoom": "fit" })).unwrap();
+    assert_eq!(state["fit"], true);
+    assert!(ui(&f, cx, "ui.studio", json!({ "navigate": { "orbit": [1, 1] } })).unwrap_err().contains("3D"));
+}

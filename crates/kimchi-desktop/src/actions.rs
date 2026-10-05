@@ -110,6 +110,11 @@ actions!(
         StudioGraph,
         StudioHide,
         StudioUnhide,
+        StudioAlignCamera,
+        StudioFly,
+        StudioZoomIn,
+        StudioZoomOut,
+        StudioZoom100,
     ]
 );
 
@@ -222,6 +227,11 @@ pub static SHORTCUTS: &[Shortcut] = &[
     sc!("Studio", "Frame (edit mode: fill)", ["f"], Studio, StudioFill),
     sc!("Studio", "Frame everything", ["home"], Studio, StudioFrameAll),
     sc!("Studio", "Fit the canvas (2D)", ["shift-z"], Studio, StudioFit),
+    sc!("Studio", "Zoom in", ["=", "+"], Studio, StudioZoomIn),
+    sc!("Studio", "Zoom out", ["-"], Studio, StudioZoomOut),
+    sc!("Studio", "Canvas at 100% (2D)", ["/"], Studio, StudioZoom100),
+    sc!("Studio", "Fly through the scene (WASD, QE, mouse to look)", ["shift-`", "~"], Studio, StudioFly),
+    sc!("Studio", "Align the active camera to the view", ["M-alt-0"], Studio, StudioAlignCamera),
     sc!("Studio", "Select tool", ["v"], Studio, StudioToolSelect),
     sc!("Studio", "Next tool", ["w"], Studio, StudioToolCycle),
     sc!("Studio", "Pen (2D)", ["p"], Studio, StudioPen),

@@ -444,6 +444,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             Ok(json!({ "live": ids }))
         }
         "motion.convertToMesh" | "motion.applyModifier" | "motion.editMesh" => Box::pin(super::motion_mesh::run(s, cx, a)).await,
+        "motion.cameraMove" => Box::pin(super::motion_camera::run(s, cx, a)).await,
         _ => Err(crate::commands::unhandled(cx)),
     }
 }
