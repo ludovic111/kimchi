@@ -27,12 +27,21 @@ pub struct EffectBrowser {
 /// catalogue's order (stock first).
 pub fn matching<'a>(all: &'a [EffectInfo], query: &str) -> Vec<&'a EffectInfo> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    all.iter()
+    let found: Vec<&EffectInfo> = all
+        .iter()
         .filter(|e| {
             let hay = format!("{} {} {} {}", e.name, e.vendor, e.category, e.format).to_lowercase();
             words.iter().all(|w| hay.contains(w.as_str()))
         })
-        .collect()
+        .collect();
+    // Grouped by category, in the order the categories first appear.
+    let mut categories: Vec<&str> = vec![];
+    for e in &found {
+        if !categories.contains(&e.category.as_str()) {
+            categories.push(&e.category);
+        }
+    }
+    categories.iter().flat_map(|c| found.iter().filter(move |e| e.category == *c).copied()).collect()
 }
 
 impl EffectBrowser {

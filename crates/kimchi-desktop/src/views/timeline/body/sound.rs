@@ -58,10 +58,28 @@ pub(in crate::views::timeline) struct VolumeDrag {
     moved: bool,
 }
 
+/// The quietest level the line shows above the clip's bottom edge, in dB.
+const LINE_FLOOR: f64 = -36.;
+
+/// Where a level factor sits in the line's band, 0 (bottom: -36 dB and below) to 1 (+12 dB):
+/// linear in dB, so the small changes the ear hears move the line visibly.
+fn level_pos(volume: f64) -> f32 {
+    ((gain_to_db(volume) - LINE_FLOOR) / (kimchi_core::audio::MAX_DB - LINE_FLOOR)).clamp(0., 1.) as f32
+}
+
+/// The level factor at a position of the band (at the bottom: silence).
+fn pos_level(pos: f32) -> f64 {
+    if pos <= 0.001 {
+        return 0.;
+    }
+    let db = LINE_FLOOR + pos.clamp(0., 1.) as f64 * (kimchi_core::audio::MAX_DB - LINE_FLOOR);
+    kimchi_core::audio::db_to_gain((db * 10.).round() / 10.).min(4.)
+}
+
 /// The band's y (clip-local) for a level factor.
 pub(in crate::views::timeline) fn line_y(volume: f64, h: f32) -> f32 {
     let band = (h - LINE_TOP - 3.).max(6.);
-    LINE_TOP + band * (1. - widgets::db_to_pos(gain_to_db(volume)))
+    LINE_TOP + band * (1. - level_pos(volume))
 }
 
 /// Whether a clip shows its volume line: clips with sound on audio tracks, and selected ones.
@@ -102,7 +120,7 @@ impl TimelineBody {
             Some(k) => (k.value.as_f64().unwrap_or(clip.volume), k.time),
             None => (clip.volume, 0.),
         };
-        self.volume = Some(VolumeDrag { clip: id, key, x0: e.position.x, y0: e.position.y, pos0: widgets::db_to_pos(gain_to_db(volume)), band: (h - LINE_TOP - 3.).max(6.), t0, volume, time: t0, moved: false });
+        self.volume = Some(VolumeDrag { clip: id, key, x0: e.position.x, y0: e.position.y, pos0: level_pos(volume), band: (h - LINE_TOP - 3.).max(6.), t0, volume, time: t0, moved: false });
         cx.notify();
     }
 
@@ -116,7 +134,7 @@ impl TimelineBody {
         d.moved = true;
         let fine = if e.modifiers.shift { 0.2 } else { 1. };
         let pos = (d.pos0 + dy / d.band * fine).clamp(0., 1.);
-        d.volume = kimchi_core::audio::db_to_gain(widgets::pos_to_db(pos)).min(4.);
+        d.volume = pos_level(pos);
         if d.key.is_some() {
             d.time = (d.t0 + dx as f64 / pps).max(0.);
         }
@@ -433,7 +451,8 @@ pub(in crate::views::timeline) fn header_toggles(track: &kimchi_core::Track, cx:
     let key = |name: &'static str, label: &'static str, on: bool, color: Hsla, tip: &'static str, field: &'static str| {
         div()
             .id(name)
-            .size(px(20.))
+            .w(px(16.))
+            .h(px(20.))
             .flex()
             .items_center()
             .justify_center()
@@ -449,7 +468,12 @@ pub(in crate::views::timeline) fn header_toggles(track: &kimchi_core::Track, cx:
             .on_click(move |_, _, cx| crate::views::mixer::run_cmd(cx, "audio.setTrack", json!({ "trackId": id, field: !on })))
             .into_any_element()
     };
-    out.push(key("solo", "S", track.mix.solo, t.accent_text, if track.mix.solo { "Unsolo" } else { "Solo" }, "solo"));
+    // Picture tracks only get a solo when they carry sound.
+    let sounding = track.kind == TrackKind::Audio
+        || crate::store::StoreExt::store(cx).read(cx).project.as_ref().is_some_and(|p| track.clips.iter().any(|c| kimchi_control::commands::audio::has_sound(p, c)));
+    if sounding || track.mix.solo {
+        out.push(key("solo", "S", track.mix.solo, t.accent_text, if track.mix.solo { "Unsolo" } else { "Solo" }, "solo"));
+    }
     if track.kind == TrackKind::Audio {
         out.push(key("arm", "R", track.mix.armed, t.danger, if track.mix.armed { "Disarm" } else { "Arm for a voice-over take" }, "armed"));
     }
@@ -490,5 +514,6 @@ mod tests {
         assert!(line_y(2.0, 50.) < line_y(1.0, 50.));
         assert!(line_y(1.0, 50.) < line_y(0.25, 50.));
         assert!(line_y(0.0, 50.) <= 47.0 + 1e-3);
+        assert!((pos_level(level_pos(0.5)) - 0.5).abs() < 0.01);
     }
 }

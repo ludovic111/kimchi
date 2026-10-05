@@ -53,7 +53,19 @@ fn a_fader_drag_is_one_undo_step(cx: &mut TestAppContext) {
     let Some((f, _, cx, mixer)) = with_sound(cx) else { return eprintln!("ffmpeg not found; skipping") };
     let track = audio_track(&f);
     let key = format!("track:{}", track.id);
-    let b = cx.update(|_, cx| mixer.read(cx).faders.borrow().get(&key).copied()).expect("the fader was drawn");
+    // The strips settle on their detail once their height is known: wait for the fader to stay put.
+    let fader = |cx: &mut VisualTestContext| cx.update(|_, cx| mixer.read(cx).faders.borrow().get(&key).copied());
+    let mut b = fader(cx);
+    for _ in 0..20 {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(20));
+        let now = fader(cx);
+        if now == b && now.is_some() {
+            break;
+        }
+        b = now;
+    }
+    let b = b.expect("the fader was drawn");
     let steps = f.session.read(|ed| ed.undo_steps().len()).unwrap();
     // The cap sits at 0 dB, about two thirds up: grab it and pull it down a quarter of the travel.
     let from = point(b.origin.x + b.size.width / 2., b.origin.y + b.size.height * (1. - super::widgets::db_to_pos(0.0)));

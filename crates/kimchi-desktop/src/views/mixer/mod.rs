@@ -241,7 +241,7 @@ enum Detail {
     Full,
 }
 
-const STRIP_W: f32 = 78.;
+const STRIP_W: f32 = 88.;
 const MASTER_W: f32 = 118.;
 const SLOT_H: f32 = 18.;
 /// Effect slots a full strip lists before folding the rest into "N more".
@@ -1245,7 +1245,7 @@ impl MixerView {
         };
         let lufs = |v: Option<f64>| v.map(widgets::lufs_text).unwrap_or_else(|| "—".into());
         let target_label = match master.loudness {
-            None => "Off".to_string(),
+            None => "Target".to_string(),
             Some(l) => format!("{l:.0} LUFS"),
         };
         let limiter = master.limiter;
@@ -1621,9 +1621,9 @@ pub fn record_toggle(cx: &mut App) {
     store.update(cx, |s, cx| s.run("audio.record", json!({ "action": action }), cx));
 }
 
-/// ryolune's mark, where a song or a hand-off is shown.
-pub fn ryolune_mark(size: f32, cx: &App) -> AnyElement {
-    icon("music").size(px(size)).text_color(cx.theme().accent_text).into_any_element()
+/// ryolune's logo, where a song or a hand-off is shown.
+pub fn ryolune_mark(size: f32, _cx: &App) -> AnyElement {
+    crate::ui::logo("ryolune", px(size)).into_any_element()
 }
 
 /// The export dialog's loudness choice: the master's target (`audio.setMaster loudness`).
@@ -1637,4 +1637,54 @@ pub fn export_loudness(cx: &App) -> AnyElement {
         cx,
     )
     .into_any_element()
+}
+
+/// The sound part of a clip's context menu: its effects, loudness, beats, and for a ryolune
+/// song, opening it there.
+pub fn clip_menu_items(p: &Project, clip: &kimchi_core::Clip, locked: bool) -> Vec<MenuEntry> {
+    if !kimchi_control::commands::audio::has_sound(p, clip) {
+        return vec![];
+    }
+    let id = clip.id;
+    let asset = clip.asset_id().and_then(|a| p.asset(a));
+    let mut items = vec![
+        MenuEntry::Separator,
+        MenuItem::new("Add an effect…", move |w, cx| open_browser(Target::Clip(id), w.mouse_position(), cx)).icon("sliders-horizontal").shortcut_of(&crate::actions::AddEffect).disabled(locked).entry(),
+        MenuItem::new("Normalize loudness", move |_, cx| {
+            cx.store().update(cx, |s, cx| {
+                s.run_then("audio.normalize", json!({ "clipIds": [id] }), cx, |s, v, cx| match v["clips"][0]["gainDb"].as_f64() {
+                    Some(g) => s.flash(format!("Normalized: {} dB", widgets::db_text(g)), cx),
+                    None => s.info(v["clips"][0]["note"].as_str().unwrap_or("Nothing to normalize.").to_string(), cx),
+                })
+            })
+        })
+        .icon("audio-waveform")
+        .disabled(locked)
+        .entry(),
+        MenuItem::new("Measure loudness", move |_, cx| measure(json!({ "clipId": id }), cx)).icon("gauge").entry(),
+    ];
+    match asset.and_then(|a| a.beats.as_ref()) {
+        Some(_) => items.push(
+            MenuItem::new("Cut the picture on the bars", move |_, cx| {
+                cx.store().update(cx, |s, cx| s.run_then("audio.beatCut", json!({ "musicClipId": id }), cx, |s, v, cx| s.flash(format!("{} cuts on the beat", v["cuts"].as_u64().unwrap_or(0)), cx)))
+            })
+            .icon("scissors")
+            .entry(),
+        ),
+        None => items.push(
+            MenuItem::new("Detect beats", move |_, cx| {
+                cx.store().update(cx, |s, cx| {
+                    s.flash("Listening for the beat…", cx);
+                    s.run_then("audio.detectBeats", json!({ "clipId": id }), cx, |s, v, cx| s.flash(format!("{:.0} BPM", v["tempo"].as_f64().unwrap_or(0.)), cx))
+                })
+            })
+            .icon("music")
+            .entry(),
+        ),
+    }
+    if asset.is_some_and(|a| matches!(a.origin, kimchi_core::AssetOrigin::Song(_))) {
+        items.push(MenuItem::new("Open in ryolune", move |_, cx| run_cmd(cx, "audio.openInRyolune", json!({ "clipId": id }))).logo("ryolune").entry());
+        items.push(MenuItem::new("Render the song again", move |_, cx| run_cmd(cx, "audio.refreshSongs", json!({ "force": true }))).icon("refresh-cw").entry());
+    }
+    items
 }
