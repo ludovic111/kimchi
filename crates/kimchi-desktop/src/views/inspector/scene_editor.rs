@@ -9,12 +9,12 @@ use kimchi_core::{Clip, ClipContent, Id, KeyValue, Scene};
 use serde_json::{Value, json};
 
 use super::color::{ColorChange, ColorField};
-use super::{Inspector, grid2, section};
+use super::{Inspector, grid2};
 use crate::store::StoreExt;
 use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::scrub::{Scrub, ScrubChange};
-use crate::ui::{Button, caps};
+use crate::ui::Button;
 
 /// How a property is edited.
 #[derive(Clone, Copy, PartialEq)]
@@ -180,7 +180,7 @@ impl Inspector {
                     })
                 })
         }));
-        let mut out = section(cx).child(caps("Scene", cx)).child(chips);
+        let mut out = self.fold("scene", "Scene", cx).child(chips);
 
         if let Some(item) = picked {
             out = out.child(self.item_editor(clip, scene, &item, window, cx));

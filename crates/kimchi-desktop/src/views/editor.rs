@@ -582,14 +582,9 @@ impl Editor {
         let t = cx.theme().clone();
         let panel = div()
             .id(id)
-            .debug_selector(move || id.into())
             .occlude()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .w(px(width))
-            .when(right, |d| d.right_0())
-            .when(!right, |d| d.left(px(offset)))
+            .relative()
+            .size_full()
             .bg(t.bg_raised)
             .shadow(t.glass_shadow())
             .border_color(t.line_strong)
@@ -605,7 +600,18 @@ impl Editor {
                     this.close_drawers(cx);
                 })),
             )
-            .child(motion::enter(panel, (id, 2usize), motion::BASE, (if right { 24. } else { -24. }, 0.)))
+            // The slot holds the place; the panel slides within it.
+            .child(
+                div()
+                    .debug_selector(move || id.into())
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(width))
+                    .when(right, |d| d.right_0())
+                    .when(!right, |d| d.left(px(offset)))
+                    .child(motion::enter(panel, (id, 2usize), motion::BASE, (if right { 24. } else { -24. }, 0.))),
+            )
             .into_any_element()
     }
 }

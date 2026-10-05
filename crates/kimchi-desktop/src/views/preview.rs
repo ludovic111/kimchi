@@ -645,7 +645,11 @@ impl Render for PreviewView {
                             move |bounds, _, cx| {
                                 if viewport.get() != bounds {
                                     viewport.set(bounds);
-                                    entity.update(cx, |this, cx| this.refresh(cx));
+                                    // Draw the stage at the new size at once (the frame follows).
+                                    entity.update(cx, |this, cx| {
+                                        this.refresh(cx);
+                                        cx.notify();
+                                    });
                                 }
                             },
                             |_, _, _, _| {},

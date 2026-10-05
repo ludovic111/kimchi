@@ -49,6 +49,9 @@ pub const PREVIEW_MIN_H: f32 = 190.;
 /// The Agent panel docks only while the editor beside it keeps this much width; below,
 /// it floats over the editor.
 pub const EDITOR_MIN_BESIDE_AGENT: f32 = 760.;
+/// What a splitter between two docked panels takes from the row (5 px wide, 2 px of it
+/// over each neighbour).
+pub const SPLITTER_W: f32 = 1.;
 /// A drawer leaves this much of the window uncovered, so a click outside closes it.
 pub const DRAWER_GUTTER: f32 = 48.;
 
@@ -210,7 +213,9 @@ pub fn solve(window: Size<Pixels>, prefs: &Prefs, open: Open) -> Solved {
     };
 
     // Left panel and inspector share what the rail, the agent and the preview leave.
-    let room = ww - RAIL_W - agent.row_width() - PREVIEW_MIN_W;
+    let agent_row = if agent.row_width() > 0. { agent.row_width() + SPLITTER_W } else { 0. };
+    // Each docked side panel brings a splitter: counted in the room it needs.
+    let room = ww - RAIL_W - agent_row - PREVIEW_MIN_W - 2. * SPLITTER_W;
     let mut left = if prefs.left_open { prefs.left } else { 0. };
     let mut insp = if prefs.inspector_open { prefs.inspector } else { 0. };
     let left_min = if prefs.left_open { LEFT_MIN } else { 0. };
@@ -258,7 +263,8 @@ pub fn solve(window: Size<Pixels>, prefs: &Prefs, open: Open) -> Solved {
     } else {
         Dock::Hidden
     };
-    let center_w = (ww - RAIL_W - agent.row_width() - left.row_width() - inspector.row_width()).max(0.);
+    let splitters = [left, inspector].iter().filter(|d| d.row_width() > 0.).count() as f32 * SPLITTER_W;
+    let center_w = (ww - RAIL_W - agent_row - left.row_width() - inspector.row_width() - splitters).max(0.);
 
     // The timeline: its share of the height, within its limits and the preview's minimum.
     let body = (wh - TOPBAR_H).max(0.);
@@ -275,7 +281,7 @@ pub fn timeline_share(height: f32, window_h: f32) -> f32 {
 
 /// The widest a docked side panel may be dragged in this window, given what else is docked.
 pub fn max_side(solved: &Solved, other: f32, max: f32) -> f32 {
-    (solved.window.0 - RAIL_W - solved.agent.row_width() - other - PREVIEW_MIN_W).min(max)
+    (solved.window.0 - RAIL_W - solved.agent.row_width() - other - PREVIEW_MIN_W - 3. * SPLITTER_W).min(max)
 }
 
 #[cfg(test)]
@@ -297,7 +303,8 @@ mod tests {
                     for (lo, io) in [(true, true), (false, true), (true, false), (false, false)] {
                         let prefs = Prefs { left_open: lo, inspector_open: io, ..Default::default() };
                         let s = solve(win(w as f32, h), &prefs, Open { agent, ..Default::default() });
-                        let row = RAIL_W + s.left.row_width() + s.inspector.row_width() + s.agent.row_width() + s.center_w;
+                        let docked = [s.left, s.inspector, s.agent].iter().filter(|d| d.row_width() > 0.).count() as f32;
+                        let row = RAIL_W + s.left.row_width() + s.inspector.row_width() + s.agent.row_width() + docked * SPLITTER_W + s.center_w;
                         assert!((row - w as f32).abs() < 1., "{w}x{h}: the row is {row}");
                         assert!(s.center_w >= PREVIEW_MIN_W - 0.5, "{w}x{h} agent {agent}: preview {}", s.center_w);
                         if let Dock::Docked(l) = s.left {

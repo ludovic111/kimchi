@@ -138,9 +138,7 @@ impl Inspector {
             .child(Button::icon("key-prev", "chevron-left", "Previous keyframe").small().disabled(prev.is_none()).on_click(seek(prev)))
             .child(Button::icon("key-next", "chevron-right", "Next keyframe").small().disabled(next.is_none()).on_click(seek(next)));
 
-        let mut body = section(cx)
-            .child(div().flex().items_center().justify_between().child(caps("Animation", cx)).child(nav))
-            .child(chips);
+        let mut body = self.fold("animation", "Animation", cx).trailing(nav).child(chips);
 
         // Easing of the keyframes under the playhead.
         let here: Vec<(String, Easing)> =

@@ -2,6 +2,7 @@
 //! surfaces, segmented controls, switches, tooltips, numeric fields.
 
 pub mod drag;
+pub mod fold;
 pub mod input;
 pub mod layout;
 pub mod logos;
@@ -249,7 +250,8 @@ impl RenderOnce for Button {
             .h(px(h))
             .when(icon_only, |d| d.w(px(h)))
             .when(!icon_only, |d| d.px(px(if self.small { 8. } else { 12. })))
-            .when(self.full, |d| d.w_full())
+            // A full-width button gives way to its row; its label then ends in an ellipsis.
+            .when(self.full, |d| d.w_full().min_w_0().overflow_hidden())
             .rounded(px(sz::R_SM))
             .bg(bg)
             .border_1()
@@ -258,7 +260,7 @@ impl RenderOnce for Button {
             .text_size(px(if self.small { sz::SM } else { sz::BASE }))
             .font_weight(if self.variant == Variant::Primary { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
             .when_some(self.icon, |d, i| d.child(icon(i).text_color(fg)))
-            .when_some(self.label, |d, l| d.child(l))
+            .when_some(self.label, |d, l| d.child(div().min_w_0().truncate().child(l)))
             .when_some(self.icon_after, |d, i| d.child(icon(i).text_color(fg)));
         if self.disabled {
             b = b.opacity(0.45).cursor_not_allowed();
@@ -328,6 +330,7 @@ pub fn segmented<T: Clone + PartialEq + 'static>(
             div()
                 .id((id.clone(), i))
                 .flex_1()
+                .min_w_0()
                 .flex()
                 .justify_center()
                 .px(px(8.))
@@ -337,7 +340,7 @@ pub fn segmented<T: Clone + PartialEq + 'static>(
                 .cursor_pointer()
                 .when(selected, |d| d.bg(t.accent_soft).text_color(t.accent_text).font_weight(FontWeight::SEMIBOLD))
                 .when(!selected, |d| d.text_color(t.text_2).hover(|s| s.bg(t.hover)))
-                .child(label)
+                .child(div().min_w_0().truncate().child(label))
                 .on_click(move |_, w, cx| on_change(&v, w, cx))
         }))
 }

@@ -689,7 +689,7 @@ impl Render for SettingsDialog {
                     .flex_shrink_1()
                     .flex()
                     .child(nav)
-                    .child(div().id("settings-body").flex_1().min_w_0().h_full().overflow_y_scroll().track_scroll(&self.body_scroll).p(px(20.)).child(body)),
+                    .child(div().id("settings-body").debug_selector(|| "settings-body".into()).flex_1().min_w_0().h_full().overflow_y_scroll().track_scroll(&self.body_scroll).p(px(20.)).child(body)),
             )
     }
 }

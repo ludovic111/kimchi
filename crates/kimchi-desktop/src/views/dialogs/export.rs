@@ -635,7 +635,7 @@ impl Render for ExportDialog {
                     .child(body)
                     .when(empty && status.is_none(), |d| d.child(div().mt(px(12.)).text_size(px(sz::SM)).text_color(t.warning).child("The timeline is empty: add something to export."))),
             )
-            .child(div().flex_none().px(px(20.)).py(px(14.)).border_t_1().border_color(t.line).child(footer))
+            .child(div().flex_none().debug_selector(|| "export-footer".into()).px(px(20.)).py(px(14.)).border_t_1().border_color(t.line).child(footer))
     }
 }
 

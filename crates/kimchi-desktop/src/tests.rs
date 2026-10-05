@@ -406,3 +406,116 @@ fn scripts_reach_what_the_window_does(cx: &mut TestAppContext) {
     }
     assert!(has_card(cx), "the script's command is a card in the Agent panel");
 }
+
+// ---- the window at every size ----------------------------------------------------------
+
+fn bounds_of(cx: &mut VisualTestContext, name: &'static str) -> Option<gpui::Bounds<gpui::Pixels>> {
+    cx.debug_bounds(name)
+}
+
+fn resize(cx: &mut VisualTestContext, w: f32, h: f32) {
+    cx.simulate_resize(gpui::size(gpui::px(w), gpui::px(h)));
+    cx.run_until_parked();
+    // A second frame: the editor lays out from the size the first one measured.
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+}
+
+fn inside(b: gpui::Bounds<gpui::Pixels>, w: f32, h: f32) -> bool {
+    let (x0, y0) = (f32::from(b.origin.x), f32::from(b.origin.y));
+    let (x1, y1) = (x0 + f32::from(b.size.width), y0 + f32::from(b.size.height));
+    x0 >= -0.5 && y0 >= -0.5 && x1 <= w + 0.5 && y1 <= h + 0.5
+}
+
+/// Overlap area of two boxes, in pixels (splitters overlap their neighbours by 2 px on purpose).
+fn overlap(a: gpui::Bounds<gpui::Pixels>, b: gpui::Bounds<gpui::Pixels>) -> f32 {
+    let i = a.intersect(&b);
+    (f32::from(i.size.width).max(0.)) * (f32::from(i.size.height).max(0.))
+}
+
+/// The editor at sizes from the smallest window to 4K, very wide and very tall, with and without
+/// the Agent panel: every panel inside the window, none on top of another, the preview and the
+/// timeline never squeezed below their minimums.
+#[gpui::test]
+fn the_editor_fits_every_window_size(cx: &mut TestAppContext) {
+    use crate::ui::layout::{PREVIEW_MIN_W, TIMELINE_MIN, WINDOW_MIN_H, WINDOW_MIN_W};
+    let (_f, _, cx) = setup(cx);
+    for (w, h) in [(WINDOW_MIN_W, WINDOW_MIN_H), (800., 600.), (1024., 640.), (1366., 768.), (1920., 1080.), (3840., 2160.), (2560., 700.), (900., 1400.)] {
+        for agent in [false, true] {
+            cx.update(|_, cx| cx.store().update(cx, |s, cx| s.set_agent_open(agent, cx)));
+            resize(cx, w, h);
+            let names = ["top-bar", "rail", "left-panel", "preview", "inspector", "timeline", "agent", "transport"];
+            let found: Vec<(&str, gpui::Bounds<gpui::Pixels>)> = names.iter().filter_map(|n| bounds_of(cx, n).map(|b| (*n, b))).collect();
+            let get = |n: &str| found.iter().find(|(m, _)| *m == n).map(|(_, b)| *b);
+            for n in ["top-bar", "rail", "preview", "timeline", "transport"] {
+                assert!(get(n).is_some(), "{w}x{h} agent {agent}: {n} is drawn");
+            }
+            for (n, b) in &found {
+                assert!(inside(*b, w, h), "{w}x{h} agent {agent}: {n} leaves the window: {b:?}");
+            }
+            // Docked panels side by side: no two cover each other.
+            for (i, (a, ba)) in found.iter().enumerate() {
+                for (b, bb) in &found[i + 1..] {
+                    if matches!((*a, *b), ("preview", "transport")) {
+                        continue;
+                    }
+                    assert!(overlap(*ba, *bb) < 1., "{w}x{h} agent {agent}: {a} and {b} overlap ({ba:?} / {bb:?})");
+                }
+            }
+            let preview = get("preview").unwrap();
+            assert!(f32::from(preview.size.width) >= PREVIEW_MIN_W - 1., "{w}x{h} agent {agent}: the preview is {preview:?}");
+            assert!(f32::from(get("timeline").unwrap().size.height) >= TIMELINE_MIN - 1.);
+            // The agent docks beside a wide editor, else it floats in a drawer.
+            if agent {
+                assert!(get("agent").is_some() || bounds_of(cx, "agent-drawer").is_some(), "{w}x{h}: the agent shows");
+            }
+        }
+    }
+}
+
+/// A narrow window: a tab of the rail opens the left panel as a drawer over the work, Escape
+/// closes it; `ui.state` says so.
+#[gpui::test]
+fn narrow_windows_open_the_left_panel_as_a_drawer(cx: &mut TestAppContext) {
+    let (f, _, cx) = setup(cx);
+    resize(cx, 720., 480.);
+    assert!(bounds_of(cx, "left-panel").is_none(), "no room to dock it");
+    cx.simulate_keystrokes(&format!("{M}-2"));
+    cx.run_until_parked();
+    let drawer = bounds_of(cx, "left-drawer").expect("the Generate tab opens as a drawer");
+    assert!(inside(drawer, 720., 480.));
+    assert_eq!(f.call("ui.state", json!({}))["layout"]["overlays"], json!(["left"]));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(bounds_of(cx, "left-drawer").is_none(), "escape closes it");
+    // Wide again: the panel docks, at the size it had.
+    resize(cx, 1600., 1000.);
+    let left = bounds_of(cx, "left-panel").expect("docked");
+    assert_eq!(f32::from(left.size.width).round(), crate::ui::layout::LEFT_W);
+}
+
+/// Dialogs at the smallest window: inside it, with their buttons in view.
+#[gpui::test]
+fn dialogs_fit_the_smallest_window(cx: &mut TestAppContext) {
+    use crate::ui::layout::{WINDOW_MIN_H, WINDOW_MIN_W};
+    let (_f, _, cx) = setup(cx);
+    resize(cx, WINDOW_MIN_W, WINDOW_MIN_H);
+    for (dialog, name, inner) in [
+        (Dialog::Settings { section: None }, "dialog-settings", Some("settings-body")),
+        (Dialog::Settings { section: Some("agent".into()) }, "dialog-settings", Some("settings-body")),
+        (Dialog::Export, "dialog-export", Some("export-footer")),
+        (Dialog::Shortcuts, "dialog-shortcuts", None),
+        (Dialog::Palette, "dialog-palette", None),
+        (Dialog::WhatsNew { since: None, all: true }, "dialog-whats-new", None),
+    ] {
+        cx.update(|_, cx| cx.store().update(cx, |s, cx| s.open_dialog(dialog.clone(), cx)));
+        resize(cx, WINDOW_MIN_W, WINDOW_MIN_H);
+        let b = bounds_of(cx, name).unwrap_or_else(|| panic!("{dialog:?} is drawn"));
+        assert!(inside(b, WINDOW_MIN_W, WINDOW_MIN_H), "{dialog:?} leaves the window: {b:?}");
+        if let Some(inner) = inner {
+            let i = bounds_of(cx, inner).unwrap_or_else(|| panic!("{inner} is drawn"));
+            assert!(f32::from(i.origin.y + i.size.height) <= f32::from(b.origin.y + b.size.height) + 0.5, "{inner} is cut off: {i:?} in {b:?}");
+        }
+        cx.update(|_, cx| cx.store().update(cx, |s, cx| s.close_dialog(cx)));
+    }
+}
