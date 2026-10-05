@@ -201,6 +201,42 @@ pub(crate) struct ShadowRes {
     pub far: f32,
     /// Orthographic: world size of the whole map; perspective: tan of half its field of view.
     pub extent: f32,
+    /// A point light's maps are the six faces of a cube around it (in [`cube_face`] order,
+    /// one after the other): which face this is.
+    pub face: Option<u8>,
+}
+
+/// Point lights casting shadows, at most (each takes six maps).
+pub(crate) const POINT_SHADOWS: usize = 2;
+/// Half the field of view of a point light's cube faces: a little wider than 45° so the
+/// filter's taps near a face's edge stay on that face's map.
+const CUBE_HALF_ANGLE: f32 = 47.5;
+
+/// Which cube face (+x, −x, +y, −y, +z, −z) direction `d` from a point light falls on. The GPU
+/// picks the same (`cube_face` in gpu.wgsl).
+pub(crate) fn cube_face(d: V3) -> usize {
+    let (ax, ay, az) = (d.0.abs(), d.1.abs(), d.2.abs());
+    if ax >= ay && ax >= az {
+        if d.0 > 0.0 { 0 } else { 1 }
+    } else if ay >= az {
+        if d.1 > 0.0 { 2 } else { 3 }
+    } else if d.2 > 0.0 {
+        4
+    } else {
+        5
+    }
+}
+
+/// Where each cube face looks, and its up direction.
+fn cube_axes(face: usize) -> (V3, V3) {
+    match face {
+        0 => (V3(1.0, 0.0, 0.0), V3(0.0, 1.0, 0.0)),
+        1 => (V3(-1.0, 0.0, 0.0), V3(0.0, 1.0, 0.0)),
+        2 => (V3(0.0, 1.0, 0.0), V3(0.0, 0.0, 1.0)),
+        3 => (V3(0.0, -1.0, 0.0), V3(0.0, 0.0, 1.0)),
+        4 => (V3(0.0, 0.0, 1.0), V3(0.0, 1.0, 0.0)),
+        _ => (V3(0.0, 0.0, -1.0), V3(0.0, 1.0, 0.0)),
+    }
 }
 
 impl ShadowRes {
@@ -296,7 +332,8 @@ pub(crate) struct Frame3d {
     /// Light-space transform of the main directional light, and which light it is (the first of
     /// `shadows` when it is a sun).
     pub shadow: Option<(M4, usize)>,
-    /// Every shadow map: the main sun's first, then spot and area lights (four at most).
+    /// Every shadow map: the main sun's first, then spot and area lights (four at most), then
+    /// six per point light (see [`POINT_SHADOWS`]).
     pub shadows: Vec<ShadowRes>,
     /// Fog: distance where it starts, where it is complete, and its colour (linear).
     pub fog: Option<(f32, f32, [f32; 3])>,
@@ -624,7 +661,7 @@ impl Space {
                 let lproj = M4::ortho(-reach, reach, -reach, reach, 0.01, reach * 8.0);
                 // A sun of `size` degrees blurs its shadows over a share of the scene's size.
                 let softness = l.size[0].tan() * reach * 0.15;
-                shadows.push(ShadowRes { light: i, viewproj: lproj * lview, ortho: true, softness, near: 0.01, far: reach * 8.0, extent: reach * 2.0 });
+                shadows.push(ShadowRes { light: i, viewproj: lproj * lview, ortho: true, softness, near: 0.01, far: reach * 8.0, extent: reach * 2.0, face: None });
             }
             let mut spots: Vec<(usize, &LightRes)> = lights.iter().enumerate().filter(|(_, l)| matches!(l.kind, LightKind::Spot | LightKind::Area) && l.shadows).collect();
             spots.sort_by(|a, b| lum(b.1.color).total_cmp(&lum(a.1.color)));
@@ -640,7 +677,25 @@ impl Space {
                     LightKind::Area => l.size[0].max(l.size[1]) * 0.25,
                     _ => l.size[0] * 0.5,
                 };
-                shadows.push(ShadowRes { light: i, viewproj: lproj * lview, ortho: false, softness, near, far, extent: half.tan() });
+                shadows.push(ShadowRes { light: i, viewproj: lproj * lview, ortho: false, softness, near, far, extent: half.tan(), face: None });
+            }
+            // Point lights shine every way: six maps, the faces of a cube around the bulb.
+            let mut bulbs: Vec<(usize, &LightRes)> = lights.iter().enumerate().filter(|(_, l)| l.kind == LightKind::Point && l.shadows).collect();
+            bulbs.sort_by(|a, b| lum(b.1.color).total_cmp(&lum(a.1.color)));
+            for (i, l) in bulbs.into_iter().take(POINT_SHADOWS) {
+                let mut far = corners(lo, hi).iter().map(|c| (*c - l.v).len()).fold(0.1f32, f32::max) * 1.05;
+                if l.range > 0.0 {
+                    far = far.min(l.range * 1.05).max(0.1);
+                }
+                let near = (far * 1e-3).max(0.02);
+                let half = CUBE_HALF_ANGLE.to_radians();
+                let lproj = M4::perspective(CUBE_HALF_ANGLE * 2.0, 1.0, near, far);
+                for face in 0..6 {
+                    let (dir, up) = cube_axes(face);
+                    let lview = M4::look_at(l.v, l.v + dir, up);
+                    let softness = l.size[0] * 0.5;
+                    shadows.push(ShadowRes { light: i, viewproj: lproj * lview, ortho: false, softness, near, far, extent: half.tan(), face: Some(face as u8) });
+                }
             }
         }
         let shadow = shadows.first().filter(|s| s.ortho).map(|s| (s.viewproj, s.light));

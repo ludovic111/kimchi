@@ -94,7 +94,38 @@ fn n(base: usize, o: &Opts) -> usize {
 }
 
 fn report(name: &str, frames: usize, secs: f64) {
-    println!("{name:<40} {:>8.2} frames/s  ({frames} frames in {secs:.2} s, {:.1} ms/frame)", frames as f64 / secs, secs * 1000.0 / frames as f64);
+    // Processor time too: on a busy machine it says more about the work than the clock does.
+    let cpu = CPU.with(|c| {
+        let now = cpu_seconds();
+        let spent = now - c.get();
+        c.set(now);
+        spent
+    });
+    println!(
+        "{name:<40} {:>8.2} frames/s  ({frames} frames in {secs:.2} s, {:.1} ms/frame; cpu {:.1} ms/frame)",
+        frames as f64 / secs,
+        secs * 1000.0 / frames as f64,
+        cpu * 1000.0 / frames as f64
+    );
+}
+
+thread_local! {
+    static CPU: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+}
+
+/// Starts the processor-time count for the next report.
+fn start_cpu() {
+    CPU.with(|c| c.set(cpu_seconds()));
+}
+
+/// Processor seconds this process and its finished children (ffmpeg) used so far (Linux; 0
+/// elsewhere).
+fn cpu_seconds() -> f64 {
+    let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else { return 0.0 };
+    // Fields after the command name (which is in parentheses): utime is the 14th field.
+    let rest = stat.rsplit_once(')').map_or("", |(_, r)| r);
+    let f: Vec<f64> = rest.split_whitespace().skip(11).take(4).filter_map(|v| v.parse().ok()).collect();
+    f.iter().sum::<f64>() / 100.0
 }
 
 /// `count` frames in order from `from`, as an export renders them.
@@ -106,10 +137,14 @@ fn frames(name: &str, tools: &Tools, p: &Project, w: u32, h: u32, from: f64, cou
     let first = r.frame(from).expect("frame");
     dump(o, name, &first);
     let started = Instant::now();
+    start_cpu();
     for k in 1..=count {
         r.frame(from + k as f64 / fps).expect("frame");
     }
-    report(name, count, started.elapsed().as_secs_f64());
+    let secs = started.elapsed().as_secs_f64();
+    // Stopping the decoders counts their processor time.
+    drop(r);
+    report(name, count, secs);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -128,10 +163,13 @@ fn template(name: &str, tools: &Tools, id: &str, values: serde_json::Value, w: u
     let first = r.frame(from).expect("frame");
     dump(o, name, &first);
     let started = Instant::now();
+    start_cpu();
     for k in 1..=count {
         r.frame(from + k as f64 * step).expect("frame");
     }
-    report(name, count, started.elapsed().as_secs_f64());
+    let secs = started.elapsed().as_secs_f64();
+    drop(r);
+    report(name, count, secs);
 }
 
 async fn export(tools: &Tools, p: &Project) {
@@ -143,6 +181,7 @@ async fn export(tools: &Tools, p: &Project) {
     }))
     .expect("settings");
     let started = Instant::now();
+    start_cpu();
     let done = kimchi_media::export::export(tools, p, &settings, |_| {}, Default::default()).await.expect("export");
     let secs = started.elapsed().as_secs_f64();
     let frames = (p.duration() * p.settings.fps).round() as usize;
@@ -151,6 +190,7 @@ async fn export(tools: &Tools, p: &Project) {
 
 async fn preview(tools: &Tools, p: &Project, count: usize) {
     let started = Instant::now();
+    start_cpu();
     let mut stream = PreviewStream::start(tools, p, 7.0, 1280, 720, p.settings.fps).await.expect("stream");
     let drain = stream.audio().map(|mut a| tokio::spawn(async move { while a.recv().await.is_some() {} }));
     let mut first = None;
@@ -184,6 +224,7 @@ async fn scrub(tools: &Tools, p: &Project, count: usize, o: &Opts) {
         times.push((x % 1000) as f64 / 1000.0 * (p.duration() - 0.1));
     }
     let mut each = vec![];
+    start_cpu();
     for (i, t) in times.iter().enumerate() {
         let started = Instant::now();
         let f = render_frame(tools, p, *t, 1280, 720).await.expect("frame");
