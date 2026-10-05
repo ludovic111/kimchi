@@ -222,6 +222,15 @@ impl Scene3d {
         s.camera(i)
     }
 
+    /// The camera `id` (`"camera"` is the main one) at scene time `t`, solved like the one
+    /// filming (keyframes, expressions, constraints); `None` when there is no such camera.
+    pub fn camera_by_id_at(&self, id: &str, t: f64) -> Option<Camera> {
+        let opts = EvalOptions::default();
+        let mut s = Solver::new(self, t, &opts);
+        let i = s.camera_index(id)?;
+        Some(s.camera(i))
+    }
+
     /// Objects, lights and the camera at scene time `t`, solved once (cheaper than the three
     /// calls when constraints tie them together).
     pub fn evaluate_at(&self, t: f64, opts: &EvalOptions) -> Evaluated3d {

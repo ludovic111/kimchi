@@ -134,6 +134,11 @@ pub const ACTIONS: &[(&str, Perm)] = &[
     ("ArmTrack", Perm::Edit),
     ("RecordVoiceOver", Perm::Files),
     ("AddEffect", Perm::Edit),
+    ("StudioAlignCamera", Perm::Edit),
+    ("StudioFly", Perm::Edit),
+    ("StudioZoomIn", Perm::Edit),
+    ("StudioZoomOut", Perm::Edit),
+    ("StudioZoom100", Perm::Edit),
 ];
 
 pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {

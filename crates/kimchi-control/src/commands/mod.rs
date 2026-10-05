@@ -12,6 +12,7 @@ pub mod handoff;
 pub mod history;
 pub mod media;
 pub mod motion;
+pub mod motion_camera;
 pub mod motion_edit;
 pub mod motion_mesh;
 pub mod project;
@@ -624,6 +625,22 @@ pub static SPECS: &[Spec] = &[
         opt("times", Array, "Only the keyframes at these timeline times (seconds)."),
         crate::registry::COALESCE,
     ]),
+    edit("motion.cameraMove", "Animate a 3D scene's camera with a classic move, written as ordinary keyframes, constraints and expressions you can edit afterwards: orbit (around what it looks at, an object or a point, by degrees), turntable (a whole turn at an even speed), dolly (in or out along the view), truck (sideways), crane (up or down, still looking at the same point), zoom (the lens), flyThrough (along a curve: a followPath constraint), handheld (a gentle shake: wiggle expressions), or clear (the camera's animation goes). A new move replaces the one it would fight. One undo step.", &[
+        CLIP_ID,
+        req("move", String, "orbit, turntable, dolly, truck, crane, zoom, flyThrough, handheld or clear."),
+        opt("camera", String, "Which camera (\"camera\" is the main one; default the active one)."),
+        opt("around", Any, "orbit, turntable: an object id (it keeps facing it) or a point [x, y, z] (default: what the camera looks at). flyThrough: an object to keep facing."),
+        opt("degrees", Number, "orbit, turntable: how far around; positive goes to the camera's right (default 90, turntable 360)."),
+        opt("distance", Number, "dolly (+ in, − out), truck (+ right, − left), crane (+ up, − down), in world units (default a third of the way to what it looks at)."),
+        opt("amount", Number, "zoom: degrees of field of view added (− zooms in; default −15). handheld: how much it shakes (1 gentle, 3 running, 0 off; default 1)."),
+        opt("path", String, "flyThrough: a curve object to follow."),
+        opt("points", Array, "flyThrough: [[x, y, z], …] points of a new curve to follow (default: a sweep past what it looks at)."),
+        opt("lookAt", String, "flyThrough: an object to keep facing (default: facing along the path)."),
+        opt("from", Number, "Scene seconds the move starts (default the clip's start)."),
+        opt("to", Number, "Scene seconds it ends (default the clip's end)."),
+        opt("easing", String, "How it moves (default easeInOut; a whole turn linear): linear, easeIn, easeOut, easeInOut, easeInOutCubic…"),
+        crate::registry::COALESCE,
+    ]),
     edit("motion.render", "Render motion clips ahead at full quality (the 3D engine and samples the scene asks for, motion blur…) into a file the timeline then plays: smooth playback and fast exports for heavy scenes. A clip that isn't rendered is drawn live (quick in the preview, full quality in the export). Editing the scene afterwards makes the render out of date: the clip is drawn live again until it is rendered again. Returns render ids; follow them with motion.renderStatus, or pass wait.", &[
         req("clipIds", Array, "Motion clips (ids or names)."),
         WAIT,
@@ -846,7 +863,7 @@ pub static SPECS: &[Spec] = &[
         opt("reset", Boolean, "Back to the starting sizes first."),
     ]).window(),
     edit("ui.action", "Do what a keyboard shortcut or menu item of the window does, by its action name. It acts on the window's selection, playhead and clipboard as the key would, a moment after the answer. Agents need the permission of what it does (NewProject: projects, ToggleTheme: settings, Quit: app control…).", &[
-        req("action", String, "PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide; sound: ToggleMixer, MuteTrack, SoloTrack, ArmTrack, RecordVoiceOver, AddEffect."),
+        req("action", String, "PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide, StudioAlignCamera, StudioFly, StudioZoomIn, StudioZoomOut, StudioZoom100; sound: ToggleMixer, MuteTrack, SoloTrack, ArmTrack, RecordVoiceOver, AddEffect."),
     ]).window(),
     edit("ui.reveal", "Show a file in the file manager (Finder, Explorer…): a path, or a media item's file.", &[
         opt("path", String, "A file or folder (an export, a log folder…)."),
@@ -869,6 +886,14 @@ pub static SPECS: &[Spec] = &[
         opt("composition", String, "2D: show and edit this composition (\"\" = the scene)."),
         opt("showGraph", Boolean, "The timeline area shows the graph editor (true) or the dope sheet."),
         opt("graphProperty", String, "The property the graph editor shows, e.g. position.x (of the selected item)."),
+        opt("navigate", Object, "3D: move around, as the mouse would: {\"orbit\": [yaw°, pitch°], \"pan\": [dx, dy] (shares of the view), \"zoom\": 2 (twice as close), \"fly\": [forward, right, up] (world units), \"look\": [yaw°, pitch°] (turning where it stands)}. Through the camera with lockCamera, this moves the scene's camera (one undo step, a keyframe at the playhead when it is animated)."),
+        opt("lockCamera", Boolean, "3D: while looking through the camera, navigating moves the scene's camera (Blender's Lock camera to view)."),
+        opt("alignCamera", Boolean, "3D: put the active camera where the view is (then look through it)."),
+        opt("addCamera", Boolean, "3D: add a camera where the view is."),
+        opt("keyframeCamera", Boolean, "3D: keyframe the camera's position and target at the playhead (true), or remove those keyframes (false). The selected camera, else the active one."),
+        opt("fly", Boolean, "3D: start (true) or end (false) fly mode: WASD / arrows move, Q and E down and up, the mouse looks, the wheel sets the speed; a click keeps the view, Esc puts it back."),
+        opt("zoom", Any, "2D: the canvas's zoom: \"fit\", \"100%\" or a number (1 = 100%)."),
+        opt("pan", Array, "2D: [x, y] screen pixels the canvas's centre sits from the view's centre."),
     ]).window(),
 ];
 

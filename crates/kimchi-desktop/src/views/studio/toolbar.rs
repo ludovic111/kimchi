@@ -126,7 +126,7 @@ pub fn render(this: &mut Studio, _window: &mut Window, cx: &mut Context<Studio>)
             },
             cx,
         )));
-        let (me_g, me_h, me_o, me_c) = (me.clone(), me.clone(), me.clone(), me.clone());
+        let (me_g, me_h) = (me.clone(), me.clone());
         bar = bar
             .child(Button::icon("grid", "grid-3x3", "Floor grid and axes").selected(this.grid).on_click(move |_, _, cx| {
                 me_g.update(cx, |s, cx| {
@@ -139,20 +139,12 @@ pub fn render(this: &mut Studio, _window: &mut Window, cx: &mut Context<Studio>)
                     s.helpers = !s.helpers;
                     s.changed(cx);
                 })
-            }))
-            .child(Button::icon("ortho", if this.view.ortho { "square" } else { "box" }, tip(if this.view.ortho { "Orthographic (switch to perspective)" } else { "Perspective (switch to orthographic)" }, &act::StudioOrtho)).on_click(move |_, _, cx| {
-                me_o.update(cx, |s, cx| {
-                    s.view.ortho = !s.view.ortho;
-                    s.through_camera = false;
-                    s.changed(cx);
-                })
-            }))
-            .child(Button::icon("cam-view", "video", tip("Through the camera", &act::StudioKey0)).selected(this.through_camera).on_click(move |_, _, cx| {
-                me_c.update(cx, |s, cx| {
-                    s.through_camera = !s.through_camera;
-                    s.changed(cx);
-                })
             }));
+        let me_cam = me.clone();
+        bar = bar.child(Button::new("camera-menu", "Camera").small().ghost().with_icon("video").icon_after("chevron-down").selected(this.through_camera || this.lock_camera).tooltip("The camera: look through it, lock it to the view, put it where you are, keyframe it, and moves (orbit, dolly, crane, fly-through…)").on_click(move |e, _, cx| {
+            let entries = super::menus::camera_menu(&me_cam, cx);
+            super::menus::open_menu(e.position(), entries, cx);
+        }));
     } else {
         bar = bar
             .child(tool_button(Tool::Select, "mouse-pointer-2", "Select", &act::StudioToolSelect))
