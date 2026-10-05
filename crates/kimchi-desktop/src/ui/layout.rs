@@ -91,6 +91,12 @@ pub fn dialog_size(width: f32, max_h: f32, window: Size<Pixels>) -> (f32, f32) {
     (w, h)
 }
 
+/// The tallest a popover (a list under a button) may be in this window: `want`, or less in a
+/// short window, so it stays inside it once `anchored` snaps it to the edges.
+pub fn popover_max_h(window: &gpui::Window, want: f32) -> f32 {
+    want.min(f32::from(window.viewport_size().height) - 2. * DIALOG_MARGIN - 40.).max(160.)
+}
+
 /// What the person chose for the editor's panels: kept as they set them (the editor draws
 /// them clamped to the window), saved in `<config>/window-layout.json`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

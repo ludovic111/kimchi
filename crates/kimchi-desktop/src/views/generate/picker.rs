@@ -44,7 +44,9 @@ impl GeneratePanel {
         cx.notify();
     }
 
-    pub(crate) fn picker(&mut self, model: Option<&ModelInfo>, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn picker(&mut self, model: Option<&ModelInfo>, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        // The list never runs past the window (it scrolls inside).
+        let max_h = crate::ui::layout::popover_max_h(window, 460.);
         let t = cx.theme().clone();
         let loading = self.store.read(cx).models_loading;
         let (title, sub, local): (SharedString, Option<String>, Option<bool>) = match model {
@@ -110,11 +112,11 @@ impl GeneratePanel {
             .min_w_0()
             .child(bounds_probe(self.picker_anchor.clone()))
             .child(trigger)
-            .when(self.picker_open, |d| d.child(div().absolute().left_0().top(relative(1.)).child(deferred(anchored().snap_to_window_with_margin(px(8.)).child(crate::ui::motion::enter(div().relative().child(self.picker_popover(model, cx)), "picker-in", crate::ui::motion::FAST, (0., -4.)))).with_priority(3))))
+            .when(self.picker_open, |d| d.child(div().absolute().left_0().top(relative(1.)).child(deferred(anchored().snap_to_window_with_margin(px(8.)).child(crate::ui::motion::enter(div().relative().child(self.picker_popover(model, max_h, cx)), "picker-in", crate::ui::motion::FAST, (0., -4.)))).with_priority(3))))
             .into_any_element()
     }
 
-    fn picker_popover(&mut self, current: Option<&ModelInfo>, cx: &mut Context<Self>) -> AnyElement {
+    fn picker_popover(&mut self, current: Option<&ModelInfo>, max_h: f32, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let loading = self.store.read(cx).models_loading;
         let total = self.available(cx).len();
@@ -241,7 +243,7 @@ impl GeneratePanel {
             .occlude()
             .mt(px(10.))
             .w(px(400.))
-            .max_h(px(460.))
+            .max_h(px(max_h))
             .flex()
             .flex_col()
             .rounded(px(sz::R_LG))
