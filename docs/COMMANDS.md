@@ -1520,7 +1520,7 @@ Render the open project to a file: every frame drawn as in the preview (titles, 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `path` | string | required | Destination file. The extension should match the format. |
-| `format` | string |  | mp4 (default), hevc, prores, webm, gif, audio (AAC) or wav. |
+| `format` | string |  | mp4 (default), hevc, prores, webm, gif, audio (sound only: AAC unless audioFormat says) or wav. |
 | `quality` | string |  | draft, standard (default) or high. |
 | `width` | integer |  | Output width (default: the project's). |
 | `height` | integer |  | Output height (default: the project's). |
@@ -1529,6 +1529,13 @@ Render the open project to a file: every frame drawn as in the preview (titles, 
 | `to` | number |  | End of the range in seconds (default: the end). |
 | `encoder` | string |  | auto (default: the GPU or media engine when there is one, redone on the CPU if it fails), hardware (GPU only; WebM may be AV1) or software (CPU only: slower, smallest files). |
 | `captions` | string |  | burn (default: in the picture), file (an .srt next to the video instead), both, or none. |
+| `audioFormat` | string |  | Sound-only exports (format audio or wav): wav, aiff, flac, mp3, aac (m4a), opus or vorbis (ogg). |
+| `sampleRate` | integer |  | 44100, 48000 or 96000 Hz (default: the project's; Opus is always 48000). |
+| `bitDepth` | integer |  | 16 or 24 (or 32-bit float in WAV) for WAV, AIFF, FLAC and ProRes' sound (default 24). |
+| `bitrate` | integer |  | kbit/s of lossy sound: MP3, AAC, Opus, Vorbis (default: by quality). |
+| `stems` | boolean |  | Sound-only: one file per track with sound and per bus, into the folder path names. |
+| `stemsMaster` | boolean |  | With stems: through the master's effects, fader and limiter too (default false). |
+| `loudness` | any |  | Loudness of this export in LUFS, or youtube (-14), podcast (-16), broadcast (-23); default: the master's target (audio.setMaster). |
 | `wait` | boolean |  | Wait until the job finishes and return it (always true with --file). |
 
 ### `export.status`

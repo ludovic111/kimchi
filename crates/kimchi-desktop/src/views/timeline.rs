@@ -55,7 +55,14 @@ impl Timeline {
         let playback = store.read(cx).playback.clone();
         let body = cx.new(|cx| TimelineBody::new(window, cx));
         let lanes = body.read(cx).lanes.clone();
-        let subs = vec![cx.observe(&store, |_, _, cx| cx.notify()), cx.observe(&playback, |_, _, cx| cx.notify())];
+        let subs = vec![
+            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe(&playback, |_, _, cx| {
+                // Hear the sound where the playhead lands, when it moves while nothing plays.
+                crate::views::mixer::scrub::on_playhead(cx);
+                cx.notify();
+            }),
+        ];
         let mixer = cx.new(|cx| crate::views::mixer::MixerView::new(window, cx));
         let browser = cx.new(|cx| crate::views::mixer::browser::EffectBrowser::new(window, cx));
         let effect = cx.new(|cx| crate::views::mixer::effect_panel::EffectPanel::new(window, cx));

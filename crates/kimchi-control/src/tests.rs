@@ -1086,3 +1086,24 @@ async fn audio_live_commands_and_settings() {
     let e = registry::call(&s, Source::Cli, "audio.openInRyolune", json!({})).await.unwrap_err();
     assert!(e.contains("clipId"), "{e}");
 }
+
+/// Loudness through the mixer: a quiet tone measured, normalized to a target, measured again.
+#[tokio::test(flavor = "multi_thread")]
+async fn audio_loudness_measure_and_normalize() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Cli, "project.create", json!({})).await;
+    let Ok(tools) = kimchi_media::Tools::locate() else { return eprintln!("ffmpeg not found; skipping") };
+    let wav = dir.path().join("quiet.wav");
+    std::process::Command::new(&tools.ffmpeg).args(["-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=1000:duration=4,volume=0.5"]).arg(&wav).status().unwrap();
+    ok(&s, Source::Cli, "media.import", json!({ "paths": [wav], "place": true, "start": 0, "trackId": "Audio 1" })).await;
+    let before = ok(&s, Source::Mcp, "audio.measure", json!({ "clipId": "quiet.wav" })).await;
+    let loud = before["integrated"].as_f64().unwrap();
+    assert!(loud < -20.0 && loud > -40.0, "{before}");
+    let n = ok(&s, Source::Agent, "audio.normalize", json!({ "clipIds": ["quiet.wav"], "target": -16 })).await;
+    assert!((n["clips"][0]["gainDb"].as_f64().unwrap() - (-16.0 - loud)).abs() < 0.2, "{n}");
+    let after = ok(&s, Source::Mcp, "audio.measure", json!({})).await;
+    assert!((after["integrated"].as_f64().unwrap() + 16.0).abs() < 1.5, "{after}");
+    let e = registry::call(&s, Source::Cli, "audio.normalize", json!({ "clipIds": ["quiet.wav"], "mode": "peak", "target": 3 })).await.unwrap_err();
+    assert!(e.contains("Peak targets"), "{e}");
+}

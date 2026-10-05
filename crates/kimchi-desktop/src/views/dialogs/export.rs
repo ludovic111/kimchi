@@ -23,7 +23,7 @@ const FORMATS: [(&str, &str, &str, &str); 6] = [
     ("prores", "ProRes", "mov", "422 HQ · for finishing"),
     ("webm", "WebM", "webm", "VP9 · for the web"),
     ("gif", "GIF", "gif", "Loops, no sound"),
-    ("audio", "Audio", "m4a", "AAC soundtrack only"),
+    ("audio", "Audio", "m4a", "Sound only · WAV, FLAC, MP3…"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,6 +57,8 @@ pub struct ExportDialog {
     range: Range,
     from: Entity<Scrub>,
     to: Entity<Scrub>,
+    /// A sound-only export's file type, rate, depth or bitrate, and stems.
+    pub(crate) sound: crate::views::mixer::export::SoundOptions,
     /// The export this dialog follows.
     job: Option<String>,
     /// The save panel is up, or `export.start` is running.
@@ -99,6 +101,7 @@ impl ExportDialog {
             range: Range::Whole,
             from,
             to,
+            sound: Default::default(),
             job: None,
             preparing: false,
             focus: cx.focus_handle(),
@@ -205,6 +208,13 @@ impl ExportDialog {
         let (id, _, ext, _) = FORMATS[self.format];
         let (w, h) = self.dims(cx);
         let mut params = json!({ "format": id, "quality": self.quality });
+        // Sound only: its file type (and stems go into a folder, without an extension).
+        let ext = if id == "audio" { self.sound.extension().unwrap_or("") } else { ext };
+        if id == "audio"
+            && let (Some(o), Some(extra)) = (params.as_object_mut(), self.sound.params().as_object().cloned())
+        {
+            o.extend(extra);
+        }
         if !project.captions().is_empty() {
             params["captions"] = json!(self.captions);
         }
@@ -235,7 +245,7 @@ impl ExportDialog {
                     cx.notify();
                     return;
                 };
-                if path.extension().is_none_or(|e| !e.eq_ignore_ascii_case(ext)) {
+                if !ext.is_empty() && path.extension().is_none_or(|e| !e.eq_ignore_ascii_case(ext)) {
                     path.set_extension(ext);
                 }
                 params["path"] = json!(path.to_string_lossy());
@@ -287,6 +297,8 @@ impl ExportDialog {
 
     fn options(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
+        // A sound-only export's file type, rate, depth or bitrate, and stems.
+        let sound_rows = if FORMATS[self.format].0 == "audio" { crate::views::mixer::export::rows(&self.sound, cx.entity().downgrade(), |d: &mut Self| &mut d.sound, cx) } else { vec![] };
         let s = self.store.read(cx);
         let p = s.project.clone();
         let audio = FORMATS[self.format].0 == "audio";
@@ -463,6 +475,7 @@ impl ExportDialog {
                 )
             })
             .when(has_captions && !audio, |d| d.child(row("Captions", captions.into_any_element())))
+            .children(sound_rows.into_iter().map(|(label, el)| row(label, el)))
             .child(row("Loudness", crate::views::mixer::export_loudness(cx)))
             .into_any_element()
     }

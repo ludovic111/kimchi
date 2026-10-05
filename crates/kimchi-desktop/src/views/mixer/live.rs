@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{App, Global};
-use kimchi_audio::meter::{Level, Meters, Snapshot};
+use kimchi_audio::meter::{Level, Snapshot};
 use kimchi_core::Id;
 use kimchi_core::audio::MIN_DB;
 use serde_json::{Value, json};
@@ -23,8 +23,8 @@ const HOLD: Duration = Duration::from_millis(1500);
 /// What the window knows about the sound playing.
 #[derive(Default)]
 pub struct Live {
-    /// The playing stream's meters (`None` while nothing plays).
-    pub meters: Option<Arc<Meters>>,
+    /// The sound playing (or last played): its meters for what is heard now.
+    pub source: Option<Arc<crate::preview::AudioBuffer>>,
     holds: HashMap<String, ([f64; 2], Instant)>,
     /// Meters that went over full scale since their light was last cleared.
     clipped: std::collections::HashSet<String>,
@@ -35,22 +35,21 @@ pub struct Live {
 
 impl Global for Live {}
 
-/// Where the speakers' meters come from: the preview stream calls this when it starts (with
-/// the mixer's meters) and stops (`None`).
-pub fn set_meters(cx: &mut App, meters: Option<Arc<Meters>>) {
+/// Where the meters come from: the preview calls this when it starts playing a stream.
+pub fn set_source(cx: &mut App, source: Option<Arc<crate::preview::AudioBuffer>>) {
     let live = cx.default_global::<Live>();
-    if meters.is_some() {
+    if source.is_some() {
         live.momentary.clear();
     }
-    live.meters = meters;
+    live.source = source;
 }
 
-/// The snapshot for the playhead while playing.
-pub fn snapshot(cx: &App, playhead: f64, playing: bool) -> Option<Snapshot> {
+/// The levels heard now, while playing.
+pub fn snapshot(cx: &App, _playhead: f64, playing: bool) -> Option<Snapshot> {
     if !playing {
         return None;
     }
-    cx.try_global::<Live>()?.meters.as_ref()?.at(playhead)
+    cx.try_global::<Live>()?.source.as_ref()?.meters()
 }
 
 /// A meter's key: `track:<id>`, `bus:<id>`, `master`.

@@ -406,10 +406,16 @@ preview) and ffmpeg encodes them with the mixed sound. Formats are `mp4` (defaul
 `draft`, `standard` (default) and `high` (`export.formats` lists them with their extensions).
 `width`, `height` and `fps` override the project's; `from` and `to` export a range. With captions,
 `captions` is `burn` (default, in the picture), `file` (an `.srt` beside the video instead), `both` or `none`.
+The sound: `audioFormat` (`wav`, `aiff`, `flac`, `mp3`, `aac`, `opus`, `vorbis`) for sound-only exports,
+`sampleRate` (44100, 48000, 96000), `bitDepth` (16, 24, or 32-bit float WAV), `bitrate` (lossy kbit/s),
+`stems` (one file per track and bus into the folder `path` names; `stemsMaster` runs them through the
+master) and `loudness` (LUFS or `youtube` / `podcast` / `broadcast`; by default the master's target).
 
 ```sh
 kimchi-cli export.start --path ~/Movies/cut.mp4 --quality high --wait
 kimchi-cli export.start --path ~/Movies/teaser.gif --format gif --from 10 --to 16 --width 640
+kimchi-cli export.start --path ~/Music/cut.flac --format audio --audioFormat flac --sampleRate 96000
+kimchi-cli export.start --path ~/Music/stems --format audio --audioFormat wav --stems true
 kimchi-cli export.status            # progress of every export; export.cancel stops one
 ```
 

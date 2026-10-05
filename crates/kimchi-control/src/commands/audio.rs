@@ -1388,7 +1388,7 @@ async fn measure(s: &Arc<Session>, a: &Args) -> CmdResult {
     let mut what = "the whole mix".to_string();
     if let Some(k) = a.opt_str("trackId") {
         let id = resolve::track(&p, k)?;
-        range.selection = kimchi_audio::mixer::Selection { tracks: Some(vec![id]), skip_master: true };
+        range.selection = kimchi_audio::mixer::Selection { tracks: Some(vec![id]), skip_master: true, ..Default::default() };
         what = format!("the track {}", p.track(id).map(|t| t.name.clone()).unwrap_or_default());
     }
     if end <= 0.0 {

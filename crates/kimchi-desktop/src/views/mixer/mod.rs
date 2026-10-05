@@ -13,7 +13,9 @@
 
 pub mod browser;
 pub mod effect_panel;
+pub mod export;
 pub mod live;
+pub mod scrub;
 #[cfg(test)]
 mod tests;
 pub mod widgets;
@@ -192,21 +194,18 @@ pub fn ui_command(command: &str, params: Value, cx: &mut App) -> kimchi_control:
 
 /// Outputs and inputs on this computer, and the ones the settings ask for.
 pub fn devices_json(settings: &kimchi_control::Settings) -> Value {
-    use cpal::traits::{DeviceTrait, HostTrait};
-    let host = cpal::default_host();
-    let names = |list: Option<Vec<cpal::Device>>| list.unwrap_or_default().iter().filter_map(|d| d.name().ok()).collect::<Vec<String>>();
-    let outputs = names(host.output_devices().ok().map(Iterator::collect));
-    let inputs = names(host.input_devices().ok().map(Iterator::collect));
-    let default_out = host.default_output_device().and_then(|d| d.name().ok());
-    let default_in = host.default_input_device().and_then(|d| d.name().ok());
+    let outputs = kimchi_audio::devices::outputs();
+    let inputs = kimchi_audio::devices::inputs();
+    let names = |list: &[kimchi_audio::devices::Device]| list.iter().map(|d| d.name.clone()).collect::<Vec<_>>();
+    let default = |list: &[kimchi_audio::devices::Device]| list.iter().find(|d| d.default).map(|d| d.name.clone());
     json!({
-        "outputs": outputs,
-        "inputs": inputs,
-        "defaultOutput": default_out,
-        "defaultInput": default_in,
+        "outputs": names(&outputs),
+        "inputs": names(&inputs),
+        "defaultOutput": default(&outputs),
+        "defaultInput": default(&inputs),
         "output": if settings.audio.output_device.is_empty() { Value::Null } else { json!(settings.audio.output_device) },
         "input": if settings.audio.input_device.is_empty() { Value::Null } else { json!(settings.audio.input_device) },
-        "host": host.id().name(),
+        "devices": { "outputs": outputs, "inputs": inputs },
     })
 }
 
