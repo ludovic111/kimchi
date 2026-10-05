@@ -338,3 +338,23 @@ async fn beats_of_an_encoded_click_track_and_a_session_for_ryolune() {
     let (a, b) = (rms(&heard[48_000..3 * 48_000]), rms(&ours[48_000..3 * 48_000]));
     assert!((kimchi_core::audio::gain_to_db(a / b)).abs() < 1.5, "ryolune {a} vs kimchi {b}");
 }
+
+#[tokio::test]
+async fn a_file_that_cant_be_decoded_fails_the_mix_plainly() {
+    let Some(tools) = tools() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let tone = dir.path().join("tone.wav");
+    ff(&tools, &["-f", "lavfi", "-i", "sine=f=440:d=2", tone.to_str().unwrap()]);
+    let mut a = asset(&tools, &tone).await;
+    // The file changes under the project: now it isn't sound at all.
+    std::fs::write(&tone, b"not a sound file").unwrap();
+    a.meta.duration = Some(2.0);
+    let p = project(vec![a.clone()], vec![vec![clip(&a, 0.0, 2.0)]]);
+    let e = render(&tools, &p, &Range::default()).await.unwrap_err().to_string();
+    assert!(e.contains("couldn't decode the sound of tone.wav"), "{e}");
+    // Gone altogether: the export says which file.
+    std::fs::remove_file(&tone).unwrap();
+    let st = ExportSettings { path: dir.path().join("x.wav").to_string_lossy().into(), format: ExportFormat::Wav, quality: Quality::Draft, width: None, height: None, fps: None, range: None, encoder: Default::default(), audio: Default::default() };
+    let e = export(&tools, &p, &st, |_| {}, CancellationToken::new()).await.unwrap_err().to_string();
+    assert!(e.contains("missing media file"), "{e}");
+}

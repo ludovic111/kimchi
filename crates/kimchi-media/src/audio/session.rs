@@ -46,7 +46,7 @@ pub async fn write_ryolune_session(tools: &Tools, project: &Project, path: &Path
                 m.seek(clip.start);
                 let mut frames = vec![[0.0f32; 2]; (clip.duration * rate as f64).round() as usize];
                 m.render(&mut frames);
-                if let Some(p) = m.problems().into_iter().find(|p| p.contains("missing media file") || p.contains("ffmpeg")) {
+                if let Some(p) = m.problems().into_iter().find(|p| p.contains("missing media file") || p.contains("couldn't decode") || p.contains("ffmpeg wasn't found")) {
                     return Err(MediaError::Unsupported(p));
                 }
                 let curve = if h.fade_in > 0.0 { h.fade_in_curve } else { h.fade_out_curve };

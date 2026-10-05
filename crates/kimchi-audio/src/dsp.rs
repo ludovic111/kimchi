@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 
 use crate::Frame;
-use crate::loudness::{TRUE_PEAK_DELAY, TruePeak};
+use crate::loudness::{TRUE_PEAK_DELAY, TRUE_PEAK_GAIN, TruePeak};
 
 /// Left and right gains for `pan` (-1 left … 1 right), ryolune's law: the centre keeps both
 /// sides at full level and a side fades out as the sound moves away from it (a square-root
@@ -109,6 +109,8 @@ pub struct Limiter {
     count: u64,
     /// The lowest gain since it was last read (meters).
     reduction: f32,
+    /// Until this sample, something in the interpolator's reach was loud enough to matter.
+    loud_until: u64,
 }
 
 impl Limiter {
@@ -130,6 +132,7 @@ impl Limiter {
             gain: 1.0,
             count: 0,
             reduction: 1.0,
+            loud_until: 0,
         };
         l.set_ceiling(ceiling_db);
         // A release of about 80 ms: quick enough not to pump on speech, slow enough not to
@@ -175,6 +178,7 @@ impl Limiter {
         self.sum = self.window as f64;
         self.gain = 1.0;
         self.count = 0;
+        self.loud_until = 0;
     }
 
     pub fn process(&mut self, block: &mut [Frame]) {
@@ -182,14 +186,23 @@ impl Limiter {
             let x = *f;
             // Peak around the sample TRUE_PEAK_DELAY frames back: both neighbours and what the
             // interpolator finds between them.
-            let tp = self.detector.push(x);
+            // Only sound loud enough to reach the ceiling between samples is measured.
+            let i = self.count;
+            if x[0].abs().max(x[1].abs()) * TRUE_PEAK_GAIN > self.ceiling {
+                self.loud_until = i + 13;
+            }
+            let tp = if self.enabled && i < self.loud_until {
+                self.detector.push(x)
+            } else {
+                self.detector.skip(x);
+                0.0
+            };
             self.recent.pop_front();
             self.recent.push_back(x[0].abs().max(x[1].abs()));
             let n = self.recent.len();
             let peak = tp.max(self.recent[n - 1 - TRUE_PEAK_DELAY]).max(self.recent[n - TRUE_PEAK_DELAY]);
             let need = if self.enabled && peak > self.ceiling { self.ceiling / peak } else { 1.0 };
             // Sliding minimum over the window.
-            let i = self.count;
             self.count += 1;
             while self.minima.back().is_some_and(|&(_, g)| g >= need) {
                 self.minima.pop_back();

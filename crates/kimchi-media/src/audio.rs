@@ -82,7 +82,7 @@ fn pull(mixer: &mut Mixer, frames: u64, mut each: impl FnMut(&[Frame]) -> MediaR
 /// quietly); effects that couldn't be loaded only warn.
 fn check(mixer: &Mixer) -> MediaResult<()> {
     let problems = mixer.problems();
-    if let Some(p) = problems.iter().find(|p| p.contains("missing media file") || p.contains("ffmpeg")) {
+    if let Some(p) = problems.iter().find(|p| p.contains("missing media file") || p.contains("couldn't decode") || p.contains("ffmpeg wasn't found")) {
         return Err(MediaError::Unsupported(p.clone()));
     }
     for p in &problems {

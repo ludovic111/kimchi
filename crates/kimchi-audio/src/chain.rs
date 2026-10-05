@@ -48,8 +48,9 @@ struct Slot {
 }
 
 pub(crate) struct Chain {
-    // Declared before the slots: the rack (the processors) drops before the editors.
-    rack: Rack,
+    // Declared before the slots: the rack (the processors) drops before the editors. Made with
+    // the first effect (most clips have none).
+    rack: Option<Rack>,
     slots: Vec<Slot>,
     free: Vec<u32>,
     rate: u32,
@@ -64,7 +65,7 @@ impl Chain {
     pub(crate) fn new(rate: u32) -> Self {
         let capacity = kimchi_core::audio::MAX_EFFECTS;
         Self {
-            rack: Rack::with_parameter_capacity(capacity, PARAMETER_CAPACITY),
+            rack: None,
             slots: vec![],
             free: (0..capacity as u32).rev().collect(),
             rate,
@@ -105,7 +106,7 @@ impl Chain {
             // Parameter values: changed ones are sent, ones no longer saved go back to default.
             for (&id, &value) in &insert.params {
                 if slot.applied.get(&id).is_none_or(|v| (v - value).abs() > 1e-12) {
-                    self.rack.set_param(slot.index, id, value);
+                    self.rack().set_param(slot.index, id, value);
                     slot.applied.insert(id, value);
                 }
             }
@@ -113,7 +114,7 @@ impl Chain {
             for id in gone {
                 slot.applied.remove(&id);
                 if let Some(&d) = slot.defaults.get(&id) {
-                    self.rack.set_param(slot.index, id, d);
+                    self.rack().set_param(slot.index, id, d);
                 }
             }
             slot.latency = slot.editor.latency();
@@ -143,11 +144,12 @@ impl Chain {
                 return Err(e);
             }
         };
-        if let Some(previous) = self.rack.mount(index, processor) {
+        let rack = self.rack();
+        if let Some(previous) = rack.mount(index, processor) {
             drop(previous);
         }
         for (&id, &value) in &insert.params {
-            self.rack.set_param(index, id, value);
+            rack.set_param(index, id, value);
         }
         let defaults = editor.params().iter().map(|p| (p.id, p.default)).collect();
         Ok(Slot {
@@ -167,9 +169,13 @@ impl Chain {
 
     fn unload(&mut self, slot: Slot) {
         // The processor stops and goes before its editor.
-        drop(self.rack.unmount(slot.index));
+        drop(self.rack().unmount(slot.index));
         self.free.push(slot.index);
         drop(slot);
+    }
+
+    fn rack(&mut self) -> &mut Rack {
+        self.rack.get_or_insert_with(|| Rack::with_parameter_capacity(kimchi_core::audio::MAX_EFFECTS, PARAMETER_CAPACITY))
     }
 
     /// Which parameters follow keyframes: `effects.<slot>.<param>` names in `keys`.
@@ -181,8 +187,8 @@ impl Chain {
                 .collect();
             // A parameter no longer automated goes back to its saved value.
             for (param, _) in slot.automated.iter().filter(|(p, _)| !automated.iter().any(|(q, _)| q == p)) {
-                if let Some(&v) = slot.applied.get(param).or(slot.defaults.get(param)) {
-                    self.rack.set_param(slot.index, *param, v);
+                if let (Some(&v), Some(rack)) = (slot.applied.get(param).or(slot.defaults.get(param)), self.rack.as_mut()) {
+                    rack.set_param(slot.index, *param, v);
                 }
             }
             slot.automated = automated;
@@ -204,8 +210,10 @@ impl Chain {
 
     /// Silences tails and voices (a seek).
     pub(crate) fn reset(&mut self) {
-        for s in &self.slots {
-            self.rack.reset(s.index);
+        if let Some(rack) = self.rack.as_mut() {
+            for s in &self.slots {
+                rack.reset(s.index);
+            }
         }
         self.quiet = 0;
     }
@@ -223,6 +231,7 @@ impl Chain {
         }
         let n = block.len();
         let rate = self.rate as f64;
+        let Some(rack) = self.rack.as_mut() else { return };
         for slot in self.slots.iter().filter(|s| !s.bypassed) {
             if let Some((keys, t0)) = automation {
                 for (param, name) in &slot.automated {
@@ -232,14 +241,14 @@ impl Chain {
                         if let Some(v) = number_at(keys, name, t0 + frame as f64 / rate)
                             && sent.is_none_or(|s: f64| (s - v).abs() > 1e-9)
                         {
-                            self.rack.set_param_at(slot.index, frame as u32, *param, v);
+                            rack.set_param_at(slot.index, frame as u32, *param, v);
                             sent = Some(v);
                         }
                         frame += AUTOMATION_GRAIN;
                     }
                 }
             }
-            self.rack.process(slot.index, block, &[], ctx);
+            rack.process(slot.index, block, &[], ctx);
         }
         crate::dsp::sanitize(block);
         if silent_in && crate::dsp::peak(block) < 1e-6 {

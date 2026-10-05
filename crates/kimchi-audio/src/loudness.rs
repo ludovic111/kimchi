@@ -131,10 +131,26 @@ impl TruePeak {
         peak as f32
     }
 
+    /// Takes a frame into the history without measuring (the limiter does this while the sound
+    /// is too quiet for any peak to matter).
+    #[inline]
+    pub fn skip(&mut self, frame: Frame) {
+        self.at = if self.at == 0 { 11 } else { self.at - 1 };
+        for (c, &x) in frame.iter().enumerate() {
+            let x = if x.is_finite() { x as f64 } else { 0.0 };
+            self.history[c][self.at] = x;
+            self.history[c][self.at + 12] = x;
+        }
+    }
+
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 }
+
+/// The most the interpolator can make of samples no louder than 1: the largest sum of absolute
+/// taps of a phase. Samples under `ceiling / TRUE_PEAK_GAIN` can't reconstruct above `ceiling`.
+pub const TRUE_PEAK_GAIN: f32 = 2.05;
 
 /// Loudness of a mean-square energy (already K-weighted and summed over the channels).
 fn lufs(energy: f64) -> f64 {

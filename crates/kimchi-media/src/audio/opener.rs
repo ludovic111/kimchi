@@ -124,7 +124,7 @@ impl Reader {
         let worker = shared.clone();
         let spawned = std::thread::Builder::new().name("kimchi-sound".into()).spawn(move || {
             let result = decode(&worker, &tools, &path, &clip, from, rate);
-            let error = result.err().map(|e| format!("{}: {e}", path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())));
+            let error = result.err().map(|e| format!("couldn't decode the sound of {}: {e}", path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())));
             worker.finish(error);
         });
         if let Err(e) = spawned {

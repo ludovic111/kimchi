@@ -252,6 +252,7 @@ impl AudioOut {
             .map_err(|e| tracing::warn!("audio output: {e}"))
             .ok()?;
         stream.play().map_err(|e| tracing::warn!("audio output: {e}")).ok()?;
+        tracing::debug!(device = %device.name().unwrap_or_default(), rate, channels, "playing sound");
         Some(Self { _stream: stream, buffer })
     }
 }
