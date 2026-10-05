@@ -654,6 +654,7 @@ async fn projects_keep_to_themselves() {
         filmstrip: None,
         waveform: None,
         proxy: None,
+        beats: None,
     };
     s.apply("test", Source::Window, &kimchi_core::Edit::AddAsset { asset }, None).unwrap();
     let copy = ok(&s, Source::Window, "project.duplicate", json!({})).await;

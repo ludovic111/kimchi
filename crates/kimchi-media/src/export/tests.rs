@@ -28,6 +28,7 @@ fn asset(kind: MediaKind, path: &str, has_audio: bool) -> Asset {
         filmstrip: None,
         waveform: None,
         proxy: None,
+        beats: None,
     }
 }
 

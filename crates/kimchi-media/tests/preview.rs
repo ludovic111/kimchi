@@ -46,6 +46,7 @@ async fn asset(tools: &Tools, kind: MediaKind, path: &Path) -> Asset {
         filmstrip: None,
         waveform: None,
         proxy: None,
+        beats: None,
     }
 }
 

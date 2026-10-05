@@ -91,6 +91,7 @@ pub async fn import_named(s: &Arc<Session>, cx: &Ctx, paths: &[String], name: Op
                 filmstrip: None,
                 waveform: None,
                 proxy: None,
+                beats: None,
             }),
             Err(e) => failures.push(format!("{}: {e}", p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())),
         }

@@ -42,6 +42,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 hidden: a.opt_bool("hidden"),
                 locked: a.opt_bool("locked"),
                 captions: a.opt_bool("captions"),
+                mix: None,
             };
             s.apply(cx.label(), cx.source, &Edit::UpdateTrack { track_id: id, patch }, None)?;
             Ok(json!(s.read(|ed| ed.project().track(id).map(|t| json!({ "id": t.id, "name": t.name, "muted": t.muted, "hidden": t.hidden, "locked": t.locked, "captions": t.captions })))?))

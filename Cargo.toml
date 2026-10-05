@@ -11,6 +11,7 @@ rust-version = "1.90"
 
 [workspace.dependencies]
 kimchi-core = { path = "crates/kimchi-core" }
+kimchi-audio = { path = "crates/kimchi-audio" }
 kimchi-media = { path = "crates/kimchi-media" }
 kimchi-gen = { path = "crates/kimchi-gen" }
 kimchi-control = { path = "crates/kimchi-control" }

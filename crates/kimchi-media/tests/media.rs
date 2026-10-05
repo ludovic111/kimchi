@@ -196,6 +196,7 @@ fn asset(kind: MediaKind, path: &Path, meta: kimchi_core::MediaMeta) -> Asset {
         filmstrip: None,
         waveform: None,
         proxy: None,
+        beats: None,
     }
 }
 
