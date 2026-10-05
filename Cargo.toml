@@ -49,3 +49,7 @@ wiremock = "0.6"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# The mixer runs in real time behind the preview: even debug builds need it optimised.
+[profile.dev.package.kimchi-audio]
+opt-level = 2

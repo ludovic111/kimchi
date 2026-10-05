@@ -24,6 +24,10 @@ use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBackgroundAppear
 use kimchi_control::{Session, SessionOptions};
 
 fn main() {
+    // The plugin scanner runs this program to probe one bundle in a child process.
+    if let Some(code) = kimchi_audio::plugins::scan_child() {
+        std::process::exit(code);
+    }
     // Logs to `<data>/logs/kimchi.log` (and stderr), crash reports, and the note of how the last
     // run ended: first, so everything after is recorded.
     let data_dir = kimchi_control::session::default_data_dir();

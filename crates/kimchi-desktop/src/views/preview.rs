@@ -104,6 +104,10 @@ struct Playing {
     synced: bool,
     _task: Task<()>,
     _audio: Option<AudioOut>,
+    /// The sound on its way out: changes to the mix go to it, its time keeps the picture in step.
+    sound: Arc<AudioBuffer>,
+    /// The project the sound was last told about.
+    mixed: usize,
     generation: u64,
 }
 
@@ -186,6 +190,10 @@ impl PreviewView {
         if playing {
             if self.playing.as_ref().is_none_or(|p| p.generation != generation) {
                 self.start_stream(project, playhead, generation, cx);
+            } else if let Some(play) = self.playing.as_mut().filter(|p| p.mixed != Arc::as_ptr(&project) as usize) {
+                // Edited while playing: the mix follows without restarting.
+                play.mixed = Arc::as_ptr(&project) as usize;
+                play.sound.update(project);
             }
             cx.notify();
             return;
@@ -249,6 +257,8 @@ impl PreviewView {
             tracing::debug!("no audio output device; playing without sound");
             audio.close();
         }
+        let mixed = Arc::as_ptr(&project) as usize;
+        let sound = audio.clone();
         let task = gpui_tokio::Tokio::spawn(cx, crate::preview::stream(session, project, from, w.max(320), h.max(180), tx, audio));
         let task = cx.spawn(async move |this, cx| {
             if let Ok(Err(e)) = task.await {
@@ -259,7 +269,7 @@ impl PreviewView {
                 .ok();
             }
         });
-        self.playing = Some(Playing { frames: rx, queue: VecDeque::new(), synced: false, _task: task, _audio: audio_out, generation });
+        self.playing = Some(Playing { frames: rx, queue: VecDeque::new(), synced: false, _task: task, _audio: audio_out, sound, mixed, generation });
     }
 
     /// While playing: advance the clock and show the latest frame that is due.
@@ -285,6 +295,13 @@ impl PreviewView {
             } else {
                 window.request_animation_frame();
                 return;
+            }
+        }
+        // The clock follows the sound being heard, when there is any.
+        if let Some(heard) = self.playing.as_ref().and_then(|p| p.sound.time()) {
+            let ahead = self.playback.read(cx).playhead;
+            if (heard - ahead).abs() > 0.04 {
+                self.playback.update(cx, |p, _| p.resync(heard));
             }
         }
         let still = self.playback.update(cx, |p, cx| p.tick(cx));

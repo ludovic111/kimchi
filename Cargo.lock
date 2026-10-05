@@ -3829,8 +3829,11 @@ dependencies = [
 name = "kimchi-audio"
 version = "0.7.0"
 dependencies = [
+ "cpal",
+ "hound",
  "kimchi-core",
  "parking_lot",
+ "rtrb",
  "ryolune-engine",
  "serde",
  "serde_json",
@@ -3860,6 +3863,7 @@ dependencies = [
 name = "kimchi-cli"
 version = "0.7.0"
 dependencies = [
+ "kimchi-audio",
  "kimchi-control",
  "kimchi-core",
  "kimchi-gen",
@@ -3941,6 +3945,7 @@ dependencies = [
 name = "kimchi-mcp"
 version = "0.7.0"
 dependencies = [
+ "kimchi-audio",
  "kimchi-cli",
  "kimchi-control",
  "serde_json",

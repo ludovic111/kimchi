@@ -56,6 +56,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                     (f, t) => Some((f.unwrap_or(0.0), t.unwrap_or(f64::MAX))),
                 },
                 encoder: encoder(a.opt_str("encoder").unwrap_or("auto"))?,
+                audio: Default::default(),
             };
             let mut project = s.project()?;
             // Captions: in the picture, in a file next to it, both or neither.

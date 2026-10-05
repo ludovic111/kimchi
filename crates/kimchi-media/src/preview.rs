@@ -3,8 +3,10 @@
 //!
 //! [`render_frame`] draws one frame for scrubbing; [`PreviewStream`] plays from a point: the
 //! compositor runs ahead of the clock on a worker thread (each playing video decoded by its own
-//! ffmpeg), and the sound is mixed by one ffmpeg graph, both with small bounded buffers.
-//! Speakers are the caller's business: the stream only hands out PCM.
+//! ffmpeg), and the sound comes from kimchi-audio's mixer in real time on its own thread, a
+//! little over 100 ms ahead of the speakers, following changes to the mix while it plays
+//! ([`PreviewStream::update`]) and feeding the meters ([`PreviewStream::meters`]). Speakers are
+//! the caller's business: the stream only hands out PCM.
 //!
 //! Sources are read through each asset's `proxy` when it exists on disk, and clips whose media
 //! is missing are left out rather than failing the preview (an export reports them instead).
@@ -15,19 +17,21 @@
 //! When a stream falls behind (many 4K layers without proxies, heavy 3D on the CPU) frames
 //! arrive late; their `pts` says when they belong.
 
-use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
+use kimchi_audio::meter::Meters;
+use kimchi_audio::mixer::{Mixer, Mode, SourceOpener};
 use kimchi_core::Project;
-use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::export::{self, ExportFormat, ExportSettings, PREVIEW_SAMPLE_RATE, Quality, Sink};
+use crate::export;
 use crate::render::Renderer;
-use crate::{Caps, MediaError, MediaResult, Tools, process};
+use crate::{Caps, MediaError, MediaResult, Tools};
 
 /// Sample rate of [`AudioChunk`]s.
-pub const SAMPLE_RATE: u32 = PREVIEW_SAMPLE_RATE;
+pub const SAMPLE_RATE: u32 = 48_000;
 /// Channels of [`AudioChunk`]s (interleaved stereo).
 pub const CHANNELS: u16 = 2;
 
@@ -104,6 +108,9 @@ pub struct PreviewStream {
     frames: mpsc::Receiver<MediaResult<(f64, Frame)>>,
     audio: Option<mpsc::Receiver<AudioChunk>>,
     tasks: Vec<JoinHandle<()>>,
+    /// The mixer thread's inbox (a newer project) and its stop flag.
+    mixing: Option<Arc<Live>>,
+    meters: Arc<Meters>,
     from: f64,
     fps: f64,
     duration: f64,
@@ -112,10 +119,17 @@ pub struct PreviewStream {
 
 /// Frames decoded ahead of the consumer (≈ 0.2 s at 30 fps).
 const FRAMES_AHEAD: usize = 6;
-/// Audio frames per [`AudioChunk`] (≈ 21 ms).
-const CHUNK_FRAMES: usize = 1024;
-/// Chunks decoded ahead (≈ 5 s): plenty for the device buffer, small enough to stop quickly.
-const CHUNKS_AHEAD: usize = 256;
+/// Audio frames per [`AudioChunk`] (≈ 10.7 ms).
+const CHUNK_FRAMES: usize = 512;
+/// Chunks mixed ahead (≈ 85 ms): with the device's own buffer, the sound leaves the mixer a
+/// little over 100 ms before it is heard, so a change to the mix is heard that soon.
+const CHUNKS_AHEAD: usize = 8;
+
+/// What the mixer thread and the stream share.
+struct Live {
+    project: Mutex<Option<Arc<Project>>>,
+    stop: AtomicBool,
+}
 
 impl PreviewStream {
     /// Starts rendering from `from` (snapped to the frame grid at `fps`) to the end of the
@@ -137,6 +151,8 @@ impl PreviewStream {
             frames: mpsc::channel(1).1,
             audio: None,
             tasks: vec![],
+            mixing: None,
+            meters: Arc::new(Meters::default()),
             from,
             fps,
             duration: (end - from).max(0.0),
@@ -146,9 +162,9 @@ impl PreviewStream {
             stream.duration = 0.0;
             return Ok(stream);
         }
+        let sound = project.clone();
         let project = crate::render::playable(tools, project);
         let caps = Caps::detect(tools).await?;
-        let st = settings(width, height, fps, (from, end));
 
         let (tx, rx) = mpsc::channel(FRAMES_AHEAD);
         stream.frames = rx;
@@ -167,52 +183,60 @@ impl PreviewStream {
             }
         }));
 
-        let (plan, audible) = export::compile(&project, &st, &caps, Sink::Samples)?;
-        if audible > 0 {
-            let script = Script::write(&plan.graph).await?;
-            let mut args = head();
-            args.extend(plan.body(script.path(), &caps));
-            args.push("-".into());
-            let mut child = process::spawn(&tools.ffmpeg, &args, true)?;
+        if sound.tracks.iter().any(|t| !kimchi_audio::mixer::heard(&sound, t).is_empty()) {
             let (tx, rx) = mpsc::channel(CHUNKS_AHEAD);
             stream.audio = Some(rx);
-            stream.tasks.push(tokio::spawn(async move {
-                let _script = script;
-                let stderr = process::collect_stderr(&mut child);
-                let mut stdout = child.stdout.take().expect("piped stdout");
-                let bytes = CHUNK_FRAMES * CHANNELS as usize * 4;
-                let mut sent = 0u64; // samples per channel so far
-                loop {
-                    let mut buf = vec![0u8; bytes];
-                    let mut filled = 0;
-                    while filled < bytes {
-                        match stdout.read(&mut buf[filled..]).await {
-                            Ok(0) => break,
-                            Ok(k) => filled += k,
-                            Err(_) => return,
-                        }
-                    }
-                    // Whole stereo frames only (a short read only happens at the very end).
-                    let usable = filled - filled % (CHANNELS as usize * 4);
-                    if usable > 0 {
-                        let samples: Vec<f32> =
-                            buf[..usable].as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
-                        let start = from + sent as f64 / SAMPLE_RATE as f64;
-                        sent += (samples.len() / CHANNELS as usize) as u64;
-                        if tx.send(AudioChunk { start, samples }).await.is_err() {
+            let live = Arc::new(Live { project: Mutex::new(None), stop: AtomicBool::new(false) });
+            stream.mixing = Some(live.clone());
+            let opener: Arc<dyn SourceOpener> = crate::audio::FfmpegOpener::new(tools.clone());
+            let meters = stream.meters.clone();
+            let sound = Arc::new(sound);
+            std::thread::Builder::new()
+                .name("kimchi-mixer".into())
+                .spawn(move || {
+                    let mut mixer = match Mixer::new(sound, opener, SAMPLE_RATE, Mode::Realtime) {
+                        Ok(m) => m.with_meters(meters),
+                        Err(e) => {
+                            tracing::warn!("preview sound: {e}");
                             return;
                         }
+                    };
+                    mixer.seek(from);
+                    mixer.prime(std::time::Duration::from_millis(400));
+                    let mut block = vec![[0.0f32; 2]; CHUNK_FRAMES];
+                    let mut sent = 0u64;
+                    let frames = ((end - from) * SAMPLE_RATE as f64).ceil() as u64;
+                    while sent < frames && !live.stop.load(Ordering::Relaxed) {
+                        if let Some(p) = live.project.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                            mixer.update(p);
+                        }
+                        let n = (frames - sent).min(CHUNK_FRAMES as u64) as usize;
+                        mixer.render(&mut block[..n]);
+                        let samples: Vec<f32> = block[..n].iter().flatten().copied().collect();
+                        let start = from + sent as f64 / SAMPLE_RATE as f64;
+                        sent += n as u64;
+                        if tx.blocking_send(AudioChunk { start, samples }).is_err() {
+                            return; // the stream was dropped
+                        }
                     }
-                    if filled < bytes {
-                        break;
-                    }
-                }
-                if let Err(e) = finish(child, stderr).await {
-                    tracing::warn!("preview audio: {e}");
-                }
-            }));
+                })
+                .map_err(MediaError::Io)?;
         }
         Ok(stream)
+    }
+
+    /// The mix changed while playing (a fader, an effect, a clip): the sound follows within a
+    /// block or two, without restarting. Pictures keep playing what they started with.
+    pub fn update(&self, project: Arc<Project>) {
+        if let Some(live) = &self.mixing {
+            *live.project.lock().unwrap_or_else(|e| e.into_inner()) = Some(project);
+        }
+    }
+
+    /// The levels of what is playing: read them for the time the speakers are at
+    /// ([`Meters::at`]).
+    pub fn meters(&self) -> Arc<Meters> {
+        self.meters.clone()
     }
 
     /// The next frame and its timeline time, in order; `Ok(None)` once the end is reached.
@@ -257,57 +281,8 @@ impl Drop for PreviewStream {
         for task in &self.tasks {
             task.abort();
         }
-    }
-}
-
-/// Waits for ffmpeg after its output ended; its stderr when it failed.
-async fn finish(mut child: tokio::process::Child, stderr: JoinHandle<String>) -> MediaResult<()> {
-    let status = child.wait().await?;
-    if status.success() {
-        return Ok(());
-    }
-    Err(MediaError::Ffmpeg(process::summarize(&stderr.await.unwrap_or_default(), status)))
-}
-
-fn head() -> Vec<String> {
-    ["-hide_banner", "-nostdin", "-loglevel", "error", "-nostats"].map(String::from).to_vec()
-}
-
-fn settings(width: u32, height: u32, fps: f64, range: (f64, f64)) -> ExportSettings {
-    ExportSettings {
-        path: String::new(),
-        format: ExportFormat::Mp4,
-        quality: Quality::Draft,
-        width: Some(width),
-        height: Some(height),
-        fps: Some(fps),
-        range: Some(range),
-        encoder: Default::default(),
-    }
-}
-
-/// Long graphs go through a temporary file, removed on drop.
-struct Script(Option<PathBuf>);
-
-impl Script {
-    async fn write(graph: &str) -> MediaResult<Self> {
-        if graph.len() <= export::INLINE_GRAPH_MAX {
-            return Ok(Self(None));
-        }
-        let path = export::script_path("preview")?;
-        tokio::fs::write(&path, graph).await?;
-        Ok(Self(Some(path)))
-    }
-
-    fn path(&self) -> Option<&Path> {
-        self.0.as_deref()
-    }
-}
-
-impl Drop for Script {
-    fn drop(&mut self) {
-        if let Some(path) = &self.0 {
-            let _ = std::fs::remove_file(path);
+        if let Some(live) = &self.mixing {
+            live.stop.store(true, Ordering::Relaxed);
         }
     }
 }
