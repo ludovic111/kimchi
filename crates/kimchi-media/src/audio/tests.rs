@@ -276,3 +276,65 @@ fn cpu_seconds() -> Option<f64> {
     let ticks: f64 = fields.get(11)?.parse::<f64>().ok()? + fields.get(12)?.parse::<f64>().ok()?;
     Some(ticks / 100.0)
 }
+
+#[tokio::test]
+async fn beats_of_real_music() {
+    // The test media of this machine, when it is there.
+    let Some(tools) = tools() else { return };
+    let path = Path::new("/home/ludovic/.cache/kimchi-shots/media/music.m4a");
+    if !path.exists() {
+        return;
+    }
+    let a = asset(&tools, path).await;
+    let samples = asset_samples(&tools, &a, 22_050).await.unwrap();
+    // (This machine's `music.m4a` is a steady synthetic tone: no onsets, so no beats is right.)
+    let Some(beats) = kimchi_audio::beats::detect(&samples, 22_050) else {
+        let level = |s: &[Frame]| rms(s);
+        let parts: Vec<f64> = samples.chunks(22_050).map(level).collect();
+        let (lo, hi) = parts.iter().fold((f64::MAX, 0.0f64), |(a, b), v| (a.min(*v), b.max(*v)));
+        eprintln!("music.m4a: no steady pulse (level {lo:.4}..{hi:.4} over every second)");
+        assert!(hi - lo < 0.2 * hi, "a piece whose level moves this much should have beats");
+        return;
+    };
+    let gaps: Vec<f64> = beats.times.windows(2).map(|w| w[1] - w[0]).collect();
+    let steady = gaps.iter().filter(|g| (*g * beats.tempo / 60.0 - 1.0).abs() < 0.1).count();
+    eprintln!("music.m4a: {:.1} BPM, {} beats, first downbeat at {:.2} s, {steady} of {} gaps steady", beats.tempo, beats.times.len(), beats.times[beats.first_downbeat], gaps.len());
+    assert!((60.0..=200.0).contains(&beats.tempo), "{}", beats.tempo);
+    assert!(steady as f64 > 0.8 * gaps.len() as f64);
+}
+
+#[tokio::test]
+async fn beats_of_an_encoded_click_track_and_a_session_for_ryolune() {
+    let Some(tools) = tools() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    // A kick every beat at 128 BPM, louder on the one, through AAC.
+    let kicks = dir.path().join("kicks.m4a");
+    let beat = 60.0 / 128.0;
+    let expr = format!("(0.5+0.4*eq(mod(floor(t/{beat}),4),0))*sin(2*PI*(50+80*exp(-40*mod(t,{beat})))*mod(t,{beat}))*exp(-12*mod(t,{beat}))");
+    ff(&tools, &["-f", "lavfi", "-i", &format!("aevalsrc='{expr}':d=20:s=44100"), "-c:a", "aac", "-b:a", "128k", kicks.to_str().unwrap()]);
+    let a = asset(&tools, &kicks).await;
+    let samples = asset_samples(&tools, &a, 44_100).await.unwrap();
+    let found = kimchi_audio::beats::detect(&samples, 44_100).unwrap();
+    assert!((found.tempo - 128.0).abs() < 1.5, "{}", found.tempo);
+    let d = found.times[found.first_downbeat];
+    let bar = 4.0 * beat;
+    assert!((d / bar - (d / bar).round()).abs() * bar < 0.05, "downbeat at {d}");
+
+    // The cut as a ryolune session: the clips' sound (a reversed one, a fast one), their fades
+    // and gains, and what ryolune makes of it.
+    let mut p = project(vec![a.clone()], vec![vec![Clip { fade_in: 0.5, volume: 0.5, ..clip(&a, 0.0, 4.0) }, Clip { reverse: true, speed: 2.0, ..clip(&a, 5.0, 2.0) }]]);
+    p.tracks[0].mix.gain_db = -3.0;
+    p.markers.push(kimchi_core::Marker { id: kimchi_core::new_id(), time: 2.0, label: "Hit".into(), color: "#ffffff".into() });
+    let path = write_ryolune_session(&tools, &p, &dir.path().join("cut.ryolune")).await.unwrap();
+    let song = kimchi_audio::song::info(&path).unwrap();
+    assert_eq!(song.tracks.len(), 1);
+    assert_eq!(song.markers, [(2.0, "Hit".to_string())]);
+    assert!((song.seconds - 7.0).abs() < 0.01, "{}", song.seconds);
+    let wav = dir.path().join("ryolune.wav");
+    kimchi_audio::song::render(&path, None, &wav, 48_000).unwrap();
+    let heard = decode(&tools, &wav, 48_000);
+    // ryolune plays the clip where kimchi does, at about the same level.
+    let ours = render(&tools, &p, &Range::default()).await.unwrap();
+    let (a, b) = (rms(&heard[48_000..3 * 48_000]), rms(&ours[48_000..3 * 48_000]));
+    assert!((kimchi_core::audio::gain_to_db(a / b)).abs() < 1.5, "ryolune {a} vs kimchi {b}");
+}

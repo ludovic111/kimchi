@@ -11,12 +11,12 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
+tempfile.workspace = true
 # ryolune's own engine: its stock effects, CLAP / VST3 / Audio Unit / native plugin hosting and
 # plugin scan, and its renderer for `.ryolune` songs, so both apps sound the same.
 ryolune-engine = { git = "https://github.com/ludovic111/ryolune", rev = "50751d8" }
 # Speakers and microphones (the same version as ryolune's), and WAV files for voice-over takes.
 cpal = "0.16"
 hound = "3.5"
+rtrb = "0.3"
 
-[dev-dependencies]
-tempfile.workspace = true

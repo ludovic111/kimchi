@@ -3,6 +3,9 @@
 //! and encodes the finished mix. Effects and plugins are ryolune's ([`plugins`]), so a chain
 //! sounds the same in both apps; ryolune songs are rendered by ryolune's own engine ([`song`]).
 //!
+//! Also: loudness ([`loudness`], EBU R128), beats ([`beats`]), speakers and microphones
+//! ([`devices`]), voice-over takes ([`record`]).
+//!
 //! The model (what is mixed and how) lives in `kimchi_core::audio`.
 
 pub mod beats;
@@ -13,6 +16,7 @@ pub mod loudness;
 pub mod meter;
 pub mod mixer;
 pub mod plugins;
+pub mod record;
 pub mod song;
 pub mod testing;
 
