@@ -59,6 +59,7 @@ impl GeneratePanel {
             None if loading => ("Loading models…".into(), None, None),
             None => ("No model for this".into(), Some("Connect a provider".into()), None),
         };
+        let provider_id = model.map(|m| m.provider.clone());
         let trigger = div()
             .id("model-picker")
             .flex()
@@ -86,7 +87,10 @@ impl GeneratePanel {
                         .justify_center()
                         .bg(if local { t.success.opacity(0.16) } else { t.hover })
                         .text_color(if local { t.success } else { t.text_2 })
-                        .child(icon(if local { "cpu" } else { "cloud" }).size(px(12.))),
+                        .child(match provider_id.as_deref().filter(|id| crate::ui::logos::logo_file(id).is_some()) {
+                            Some(id) => crate::ui::logo(id, px(16.)).into_any_element(),
+                            None => icon(if local { "cpu" } else { "cloud" }).size(px(12.)).into_any_element(),
+                        }),
                 )
             })
             .child(
@@ -154,7 +158,10 @@ impl GeneratePanel {
                 .flex_col()
                 .children(groups.into_iter().map(|(provider, models)| {
                     let name = self.provider_name(&provider, cx);
-                    div().flex().flex_col().child(eyebrow(&name, cx).px(px(8.)).pt(px(10.)).pb(px(4.))).children(models.into_iter().map(|m| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(div().flex().items_center().gap(px(6.)).px(px(8.)).pt(px(10.)).pb(px(4.)).child(crate::ui::logo(&provider, px(12.))).child(eyebrow(&name, cx))).children(models.into_iter().map(|m| {
                         let key = model_key(&m);
                         let on = current.as_ref() == Some(&key);
                         let tip: SharedString = m.description.clone().unwrap_or_else(|| m.id.clone()).into();
