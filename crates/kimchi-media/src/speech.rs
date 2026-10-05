@@ -1,42 +1,25 @@
-//! The sound of a project as speech recognition hears it: the export's mix, 16 kHz mono.
+//! The sound of a project as speech recognition hears it: the mixer's output, 16 kHz mono.
 
 use kimchi_core::Project;
-use tokio::io::AsyncReadExt;
 
-use crate::export::{self, ExportFormat, ExportSettings, Quality, SPEECH_SAMPLE_RATE, Sink};
-use crate::{Caps, MediaError, MediaResult, Tools, process};
+use crate::audio::Range;
+use crate::export::SPEECH_SAMPLE_RATE;
+use crate::{MediaResult, Tools};
 
 /// The project's sound between `range` (the whole timeline by default), mixed as it exports
-/// (volumes, fades, mutes, transitions), as mono f32 samples at [`SPEECH_SAMPLE_RATE`].
+/// (volumes, fades, mutes, transitions, effects), as mono f32 samples at [`SPEECH_SAMPLE_RATE`].
 /// Silence when nothing makes a sound.
 pub async fn speech_samples(tools: &Tools, project: &Project, range: Option<(f64, f64)>) -> MediaResult<Vec<f32>> {
-    let caps = Caps::detect(tools).await?;
-    let st = ExportSettings { path: String::new(), format: ExportFormat::Wav, quality: Quality::Draft, width: None, height: None, fps: None, range, encoder: Default::default() };
-    let (plan, audible) = export::compile(project, &st, &caps, Sink::Speech)?;
-    if audible == 0 {
-        return Ok(vec![0.0; (plan.duration * SPEECH_SAMPLE_RATE as f64) as usize]);
+    let mut p = project.clone();
+    // Whisper wants the words as they are: no loudness target, no limiter pumping on them.
+    p.mixer.master.loudness = None;
+    p.mixer.master.limiter = false;
+    p.settings.sample_rate = SPEECH_SAMPLE_RATE;
+    let end = project.duration();
+    let span = range.map_or((0.0, end), |(a, b)| (a.max(0.0), b.min(end)));
+    if span.1 - span.0 < 1e-3 {
+        return Ok(vec![]);
     }
-    let script = (plan.graph.len() > export::INLINE_GRAPH_MAX).then(|| export::script_path("speech")).transpose()?;
-    if let Some(path) = &script {
-        tokio::fs::write(path, &plan.graph).await?;
-    }
-    let mut args: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-nostats"].map(String::from).to_vec();
-    args.extend(plan.body(script.as_deref(), &caps));
-    args.push("-".into());
-    let result = async {
-        let mut child = process::spawn(&tools.ffmpeg, &args, true)?;
-        let stderr = process::collect_stderr(&mut child);
-        let mut bytes = vec![];
-        child.stdout.take().expect("piped stdout").read_to_end(&mut bytes).await?;
-        let status = child.wait().await?;
-        if !status.success() {
-            return Err(MediaError::Ffmpeg(process::summarize(&stderr.await.unwrap_or_default(), status)));
-        }
-        Ok(bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect())
-    }
-    .await;
-    if let Some(path) = &script {
-        let _ = tokio::fs::remove_file(path).await;
-    }
-    result
+    let mix = crate::audio::render(tools, &p, &Range { span: Some(span), ..Default::default() }).await?;
+    Ok(mix.into_iter().map(|[l, r]| (l + r) * 0.5).collect())
 }
