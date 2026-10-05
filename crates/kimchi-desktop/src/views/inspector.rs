@@ -741,7 +741,11 @@ impl Inspector {
                     .text_size(px(sz::SM))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(t.accent_text)
-                    .child(icon("sparkles").text_color(t.accent_text))
+                    .child(if crate::ui::logos::logo_file(&g.provider).is_some() {
+                        crate::ui::logo(&g.provider, px(14.)).into_any_element()
+                    } else {
+                        icon("sparkles").text_color(t.accent_text).into_any_element()
+                    })
                     .child(g.model_name.clone()),
             )
             .child(div().text_size(px(sz::MD)).line_height(px(sz::MD * 1.35)).text_color(t.text).child(g.prompt.clone()))

@@ -260,8 +260,14 @@ impl SettingsDialog {
             );
             for p in providers.iter().filter(|p| p.info.kind == kind) {
                 let selected = matches!(self.section, Section::Provider(_)) && current.as_deref() == Some(p.info.id.as_str());
-                let dot = status_dot(p, cx);
-                children.push(item(ElementId::Name(format!("nav-provider-{}", p.info.id).into()), p.info.name.clone().into(), dot, selected, Section::Provider(p.info.id.clone()), cx));
+                // The provider's logo, its status dot at the corner.
+                let lead = div()
+                    .relative()
+                    .flex_none()
+                    .child(crate::ui::logo(&p.info.id, px(16.)))
+                    .child(div().absolute().right(px(-3.)).bottom(px(-3.)).child(status_dot(p, cx)))
+                    .into_any_element();
+                children.push(item(ElementId::Name(format!("nav-provider-{}", p.info.id).into()), p.info.name.clone().into(), lead, selected, Section::Provider(p.info.id.clone()), cx));
             }
         }
         if providers.is_empty() {
@@ -545,6 +551,8 @@ impl SettingsDialog {
         let mcp_path = mcp.clone().unwrap_or_else(|| crate::ui::mcp_fallback().into());
         let claude = format!("claude mcp add kimchi -- {} --live", crate::ui::shell_quote(&mcp_path));
         let codex = format!("codex mcp add kimchi -- {} --live", crate::ui::shell_quote(&mcp_path));
+        // What Cursor and Claude Desktop take in their MCP config files.
+        let json_config = json!({ "mcpServers": { "kimchi": { "command": mcp_path, "args": ["--live"] } } }).to_string();
         let cli = self.cli.as_ref().map(|p| format!("{} app.commands", crate::ui::shell_quote(&p.display().to_string())));
         let link = |id: &'static str, label: &'static str, url: &'static str| {
             Button::new(id, label).small().ghost().icon_after("arrow-up-right").on_click(move |_, _, cx| cx.open_url(url))
@@ -579,13 +587,21 @@ impl SettingsDialog {
                     .child(link("about-docs", "AI control guide", crate::app::HELP_URL)),
             )
             .child(div().h(px(1.)).bg(t.line))
-            .child(group(
+            .child(app_group(
+                &["claude-code"],
                 "Connect Claude Code",
                 Some("Every command in kimchi is a tool for Claude Code, Codex or any MCP client. Live, it drives this window, and your permissions in Settings › Agent apply."),
                 self.code_line("copy-claude", claude, cx),
                 cx,
             ))
-            .child(group("Connect Codex", None, self.code_line("copy-codex", codex, cx), cx))
+            .child(app_group(&["codex"], "Connect Codex", None, self.code_line("copy-codex", codex, cx), cx))
+            .child(app_group(
+                &["cursor", "claude-desktop", "vscode"],
+                "Connect Cursor, Claude Desktop or VS Code",
+                Some("Add this server to Cursor's mcp.json or Claude Desktop's claude_desktop_config.json. VS Code takes the same server under \"servers\" in .vscode/mcp.json."),
+                self.code_line("copy-json", json_config, cx),
+                cx,
+            ))
             .when_some(cli, |d, cli| d.child(group("From a terminal", Some("kimchi-cli runs the same commands, on the open window or on a project file."), self.code_line("copy-cli", cli, cx), cx)))
             .when(mcp.is_none(), |d| {
                 d.child(note("circle-alert", "kimchi-mcp wasn't found next to this copy of kimchi (a development build?). Build it with `cargo build -p kimchi-mcp`.", t.warning, cx))
@@ -688,6 +704,26 @@ fn group(title: &str, help: Option<&str>, control: AnyElement, cx: &App) -> AnyE
         .flex_col()
         .gap(px(7.))
         .child(div().text_size(px(sz::SM)).font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child(title.to_string()))
+        .when_some(help, |d, h| d.child(div().text_size(px(sz::SM)).text_color(t.text_2).child(h.to_string())))
+        .child(control)
+        .into_any_element()
+}
+
+/// A `group` for connecting outside apps: their logos before the title.
+fn app_group(logos: &[&str], title: &str, help: Option<&str>, control: AnyElement, cx: &App) -> AnyElement {
+    let t = cx.theme();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(7.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .children(logos.iter().map(|id| crate::ui::logo(id, px(16.))))
+                .child(div().ml(px(2.)).text_size(px(sz::SM)).font_weight(FontWeight::SEMIBOLD).text_color(t.text_2).child(title.to_string())),
+        )
         .when_some(help, |d, h| d.child(div().text_size(px(sz::SM)).text_color(t.text_2).child(h.to_string())))
         .child(control)
         .into_any_element()

@@ -243,7 +243,14 @@ impl SettingsDialog {
                                     .items_center()
                                     .justify_between()
                                     .gap(px(8.))
-                                    .child(div().font_weight(FontWeight::SEMIBOLD).when(on, |d| d.text_color(t.accent_text)).child(kind.label()))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(7.))
+                                            .child(crate::ui::logo(kind.id(), px(16.)))
+                                            .child(div().font_weight(FontWeight::SEMIBOLD).when(on, |d| d.text_color(t.accent_text)).child(kind.label())),
+                                    )
                                     .child(div().flex().items_center().gap(px(5.)).text_size(px(sz::XS)).text_color(state_color).when(!state.is_empty(), |d| d.child(div().size(px(6.)).rounded_full().bg(state_color))).child(state)),
                             )
                             .when_some(status.map(|s| s.message.clone()), |d, m| d.child(div().text_size(px(sz::SM)).text_color(t.text_2).child(m))),

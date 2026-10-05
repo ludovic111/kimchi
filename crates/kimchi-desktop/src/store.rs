@@ -96,6 +96,8 @@ pub type MenuAction = Rc<dyn Fn(&mut Window, &mut App)>;
 pub struct MenuItem {
     pub label: SharedString,
     pub icon: Option<&'static str>,
+    /// A service's logo before the label (`ui::logo` id), e.g. the agent's providers.
+    pub logo: Option<&'static str>,
     pub shortcut: Option<SharedString>,
     pub danger: bool,
     /// Uses the accent: an AI action.
@@ -106,10 +108,14 @@ pub struct MenuItem {
 
 impl MenuItem {
     pub fn new(label: impl Into<SharedString>, action: impl Fn(&mut Window, &mut App) + 'static) -> Self {
-        Self { label: label.into(), icon: None, shortcut: None, danger: false, ai: false, disabled: false, action: Rc::new(action) }
+        Self { label: label.into(), icon: None, logo: None, shortcut: None, danger: false, ai: false, disabled: false, action: Rc::new(action) }
     }
     pub fn icon(mut self, icon: &'static str) -> Self {
         self.icon = Some(icon);
+        self
+    }
+    pub fn logo(mut self, id: &'static str) -> Self {
+        self.logo = Some(id);
         self
     }
     pub fn shortcut(mut self, s: impl Into<SharedString>) -> Self {

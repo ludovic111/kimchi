@@ -224,6 +224,7 @@ impl Home {
         let t = cx.theme().clone();
         let s = self.store.read(cx);
         let connected = s.providers.iter().filter(|p| p.ready).count();
+        let connected_logos: Vec<String> = s.providers.iter().filter(|p| p.ready && crate::ui::logos::logo_file(&p.info.id).is_some()).take(4).map(|p| p.info.id.clone()).collect();
         let update = s.update.available.clone();
         let fullscreen = window.is_fullscreen();
         let controls = crate::ui::window_controls(window, cx);
@@ -279,6 +280,7 @@ impl Home {
                             .role(gpui::Role::Button)
                             .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: Some("models".into()) }, cx)))
                             .child(icon("key-round").text_color(if connected > 0 { t.success } else { t.text_2 }))
+                            .children(connected_logos.iter().map(|id| crate::ui::logo(id, px(14.))))
                             .child(if connected > 0 {
                                 format!("{connected} model provider{} connected", if connected == 1 { "" } else { "s" })
                             } else {
