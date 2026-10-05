@@ -158,7 +158,7 @@ pub fn open_main_window(cx: &mut App) {
         titlebar: Some(TitlebarOptions { title: Some("kimchi".into()), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(17.))) }),
         focus: true,
         show: true,
-        window_min_size: Some(size(px(1100.), px(680.))),
+        window_min_size: Some(size(px(crate::ui::layout::WINDOW_MIN_W), px(crate::ui::layout::WINDOW_MIN_H))),
         // The window material on macOS; the CSS-like tiers sit on top of it.
         window_background: if transparent { WindowBackgroundAppearance::Blurred } else { WindowBackgroundAppearance::Opaque },
         app_id: Some("kimchi".into()),

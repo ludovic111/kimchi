@@ -208,7 +208,7 @@ impl SettingsDialog {
 
     // ---- the frame ------------------------------------------------------------
 
-    fn nav(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn nav(&self, narrow: bool, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let providers = self.store.read(cx).providers.clone();
         let current = self.current_provider(cx).map(|p| p.info.id.clone());
@@ -269,7 +269,7 @@ impl SettingsDialog {
         }
         div()
             .id("settings-nav")
-            .w(px(210.))
+            .w(px(if narrow { 168. } else { 210. }))
             .flex_none()
             .h_full()
             .overflow_y_scroll()
@@ -624,7 +624,9 @@ impl Render for SettingsDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let (title, subtitle) = self.title();
-        let nav = self.nav(cx);
+        // A narrow window gets a narrower list of sections.
+        let narrow = f32::from(window.viewport_size().width) < 760.;
+        let nav = self.nav(narrow, cx);
         let body = match self.section.clone() {
             Section::Provider(_) => self.provider_detail(window, cx),
             Section::Agent => self.agent_section(window, cx),
@@ -638,6 +640,8 @@ impl Render for SettingsDialog {
             .key_context("SettingsDialog")
             .role(gpui::Role::Dialog)
             .aria_label("Settings")
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
             .child(
@@ -662,8 +666,11 @@ impl Render for SettingsDialog {
                     .child(Button::icon("settings-x", "x", "Close (Esc)").on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.close_dialog(cx)))),
             )
             .child(
+                // As tall as the window allows (the dialog frame caps it), both sides scroll.
                 div()
                     .h(px(560.))
+                    .min_h_0()
+                    .flex_shrink_1()
                     .flex()
                     .child(nav)
                     .child(div().id("settings-body").flex_1().min_w_0().h_full().overflow_y_scroll().track_scroll(&self.body_scroll).p(px(20.)).child(body)),

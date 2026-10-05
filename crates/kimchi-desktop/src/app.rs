@@ -182,6 +182,11 @@ impl Workspace {
             }
             "ui.showPanel" if params["open"] == json!(false) => {
                 let panel = params["panel"].as_str().unwrap_or("");
+                // The left panel closes to its rail (whichever tab is named); the inspector closes.
+                if matches!(panel, "media" | "generate" | "text" | "motion" | "captions" | "inspector") {
+                    self.editor.update(cx, |e, cx| if panel == "inspector" { e.set_inspector_open(false, cx) } else { e.set_left_open(false, cx) });
+                    return Ok(json!({ "panel": panel, "open": false }));
+                }
                 store.update(cx, |s, cx| match panel {
                     "agent" => s.set_agent_open(false, cx),
                     "jobs" => s.set_jobs_open(false, cx),
@@ -194,7 +199,7 @@ impl Workspace {
                     _ => {}
                 });
                 if !matches!(panel, "agent" | "jobs" | "settings" | "diagnostics" | "export" | "palette" | "shortcuts" | "whatsNew") {
-                    return Err(format!("`{panel}` can't be closed: the left panel always shows one tab (open another), and home is left by opening a project."));
+                    return Err(format!("`{panel}` can't be closed: home is left by opening a project."));
                 }
                 Ok(json!({ "panel": panel, "open": false }))
             }
@@ -216,6 +221,9 @@ impl Workspace {
                     "diagnostics" | "logs" => s.open_dialog(Dialog::Settings { section: Some("diagnostics".into()) }, cx),
                     _ => {}
                 });
+                if panel == "inspector" {
+                    self.editor.update(cx, |e, cx| e.set_inspector_open(true, cx));
+                }
                 if panel == "home" {
                     store.update(cx, |s, cx| s.run("project.close", json!({}), cx));
                 }
@@ -642,6 +650,14 @@ impl Workspace {
     }
 
     fn deselect(&mut self, _: &Deselect, _: &mut Window, cx: &mut Context<Self>) {
+        let (menu, dialog) = {
+            let s = self.store.read(cx);
+            (s.menu.is_some(), s.dialog.is_some())
+        };
+        // A drawer over the work (narrow windows) goes before the selection does.
+        if !menu && !dialog && self.has_project(cx) && self.editor.update(cx, |e, cx| e.close_drawers(cx)) {
+            return;
+        }
         self.store.update(cx, |s, cx| {
             if s.menu.is_some() {
                 s.close_menu(cx);

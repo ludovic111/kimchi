@@ -171,8 +171,8 @@ pub struct UiState {
     pub layout: UiLayout,
 }
 
-/// The editor's panel sizes (`ui.setLayout`).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+/// The editor's panel sizes as drawn (`ui.setLayout`), and how the window's size placed them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UiLayout {
     /// The left panel (media, generate, text, motion, captions).
@@ -182,6 +182,19 @@ pub struct UiLayout {
     pub timeline: f32,
     /// The Agent panel, when open.
     pub agent: f32,
+    /// The left panel is open (false: only its rail of tabs shows).
+    #[serde(default)]
+    pub left_open: bool,
+    /// The inspector is open.
+    #[serde(default)]
+    pub inspector_open: bool,
+    /// Panels drawn over the work because the window is too narrow to dock them beside it
+    /// (`left`, `inspector`, `agent`).
+    #[serde(default)]
+    pub overlays: Vec<String>,
+    /// The window's size in pixels, `[width, height]`.
+    #[serde(default)]
+    pub window: [f32; 2],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

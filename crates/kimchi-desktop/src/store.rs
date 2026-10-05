@@ -221,6 +221,9 @@ pub struct Store {
     pub snapping: bool,
     pub ripple: bool,
     pub left_tab: LeftTab,
+    /// Counts the times a left tab was asked for (`set_left_tab`): the editor shows the left
+    /// panel (or its drawer, in a narrow window) when it changes.
+    pub left_reveal: u64,
     pub dialog: Option<Dialog>,
     pub agent_open: bool,
     pub jobs_open: bool,
@@ -295,6 +298,7 @@ impl Store {
             snapping: true,
             ripple: false,
             left_tab: LeftTab::Media,
+            left_reveal: 0,
             dialog: None,
             agent_open: false,
             jobs_open: false,
@@ -679,8 +683,10 @@ impl Store {
         cx.notify();
     }
 
+    /// Shows a tab of the left panel (opening the panel if it was closed).
     pub fn set_left_tab(&mut self, tab: LeftTab, cx: &mut Context<Self>) {
         self.left_tab = tab;
+        self.left_reveal += 1;
         self.sync_ui(cx);
         cx.notify();
     }

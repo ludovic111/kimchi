@@ -89,7 +89,9 @@ pub fn sheet(cx: &App) -> AnyElement {
             SHORTCUTS.iter().enumerate().filter(|(_, s): &(usize, &Shortcut)| s.group == name).map(|(i, s)| row(s.label, keys_of(i), cx)).collect::<Vec<_>>(),
         )
     };
-    let column = |names: &[&'static str], cx: &App| div().flex_1().min_w_0().flex().flex_col().children(names.iter().map(|n| group(n, cx)).collect::<Vec<_>>());
+    // Columns of at least 250 px side by side; a narrow window stacks them.
+    let col = || div().flex_grow_1().flex_shrink_1().flex_basis(px(250.)).min_w(px(230.)).flex().flex_col();
+    let column = |names: &[&'static str], cx: &App| col().children(names.iter().map(|n| group(n, cx)).collect::<Vec<_>>());
     let mouse = div()
         .flex()
         .flex_col()
@@ -100,6 +102,8 @@ pub fn sheet(cx: &App) -> AnyElement {
         .id("shortcuts")
         .role(gpui::Role::Dialog)
         .aria_label("Keyboard shortcuts")
+        .flex_1()
+        .min_h_0()
         .flex()
         .flex_col()
         .child(
@@ -117,8 +121,9 @@ pub fn sheet(cx: &App) -> AnyElement {
         .child(
             div()
                 .id("shortcuts-body")
+                .flex_1()
+                .min_h_0()
                 .overflow_y_scroll()
-                .max_h(px(640.))
                 .px(px(20.))
                 .pt(px(16.))
                 .pb(px(6.))
@@ -127,10 +132,11 @@ pub fn sheet(cx: &App) -> AnyElement {
                 .child(
                     div()
                         .flex()
-                        .gap(px(28.))
+                        .flex_wrap()
+                        .gap_x(px(28.))
                         .child(column(&["Playback", "Timeline"], cx))
                         .child(column(&["Editing"], cx))
-                        .child(div().flex_1().min_w_0().flex().flex_col().child(group("Panels", cx)).child(group("Project", cx)).child(mouse)),
+                        .child(col().child(group("Panels", cx)).child(group("Project", cx)).child(mouse)),
                 )
                 .child(studio(cx)),
         )

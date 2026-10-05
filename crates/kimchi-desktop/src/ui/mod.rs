@@ -3,6 +3,7 @@
 
 pub mod drag;
 pub mod input;
+pub mod layout;
 pub mod markdown;
 pub mod scrub;
 

@@ -627,10 +627,10 @@ pub static SPECS: &[Spec] = &[
     // ---- ui ---------------------------------------------------------------
     query("ui.state", "What the window shows: home or editor, playhead, playing, selection, zoom, open panel and dialogs, theme.", &[]),
     edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears.").of(String), opt("assetId", String, "A media item to select instead.")]).window(),
-    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it.", &[
+    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), inspector, agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it.", &[
         req("panel", String, "Panel name."),
         opt("section", String, "For settings: models, agent, appearance, updates, diagnostics or about."),
-        opt("open", Boolean, "false closes the panel or dialog instead (agent, jobs or a dialog; default true)."),
+        opt("open", Boolean, "false closes the panel or dialog instead (the left panel, inspector, agent, jobs or a dialog; default true)."),
         opt("all", Boolean, "For whatsNew: the notes of every release, not only this one's."),
     ]).window(),
     edit("ui.closeDialogs", "Close open dialogs and popovers.", &[]).window(),
@@ -640,11 +640,13 @@ pub static SPECS: &[Spec] = &[
         opt("ripple", Boolean, "Deleting in the window closes the gap, as clip.delete ripple does."),
         opt("loop", Boolean, "Playback starts over at the end."),
     ]).window(),
-    edit("ui.setLayout", "Resize the editor's panels, in pixels (each within its limits), or put them back as they start. Returns the sizes.", &[
-        opt("left", Number, "Width of the left panel (280-520)."),
-        opt("inspector", Number, "Width of the inspector, on the right (260-440)."),
-        opt("timeline", Number, "Height of the timeline (180-620)."),
-        opt("agent", Number, "Width of the Agent panel (300-560)."),
+    edit("ui.setLayout", "Resize, open or close the editor's panels (sizes in pixels, each within its limits), or put them back as they start. The window keeps the preview at least 340×190: in a small window side panels are drawn smaller, or over the work as drawers, and get their size back when it grows. Returns the sizes as drawn, the window's size and the panels drawn as overlays.", &[
+        opt("left", Number, "Width of the left panel (248-520)."),
+        opt("inspector", Number, "Width of the inspector, on the right (256-460)."),
+        opt("timeline", Number, "Height of the timeline (150 up to the window's height less the preview's 190)."),
+        opt("agent", Number, "Width of the Agent panel (300-600)."),
+        opt("leftOpen", Boolean, "Open (true) or close the left panel; its rail of tabs stays."),
+        opt("inspectorOpen", Boolean, "Open (true) or close the inspector."),
         opt("reset", Boolean, "Back to the starting sizes first."),
     ]).window(),
     edit("ui.action", "Do what a keyboard shortcut or menu item of the window does, by its action name. It acts on the window's selection, playhead and clipboard as the key would, a moment after the answer. Agents need the permission of what it does (NewProject: projects, ToggleTheme: settings, Quit: app control…).", &[

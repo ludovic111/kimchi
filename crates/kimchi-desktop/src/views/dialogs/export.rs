@@ -602,6 +602,8 @@ impl Render for ExportDialog {
             .on_action(cx.listener(Self::confirm))
             .role(gpui::Role::Dialog)
             .aria_label("Export")
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
             .child(
@@ -624,12 +626,16 @@ impl Render for ExportDialog {
             )
             .child(
                 div()
+                    .id("export-body")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .px(px(20.))
                     .pb(px(16.))
                     .child(body)
                     .when(empty && status.is_none(), |d| d.child(div().mt(px(12.)).text_size(px(sz::SM)).text_color(t.warning).child("The timeline is empty: add something to export."))),
             )
-            .child(div().px(px(20.)).py(px(14.)).border_t_1().border_color(t.line).child(footer))
+            .child(div().flex_none().px(px(20.)).py(px(14.)).border_t_1().border_color(t.line).child(footer))
     }
 }
 

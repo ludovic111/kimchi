@@ -316,6 +316,8 @@ impl Render for Palette {
             .on_action(cx.listener(Self::select_next))
             .role(gpui::Role::Dialog)
             .aria_label("Command palette")
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
             .max_h(px(440.))

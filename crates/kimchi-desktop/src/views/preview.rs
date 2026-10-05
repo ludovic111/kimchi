@@ -466,32 +466,38 @@ impl PreviewView {
         };
         let pb_toggle = self.playback.clone();
         let pb_loop = self.playback.clone();
+        // A narrow preview keeps the play button and the time; the rest goes as room runs out.
+        let width = f32::from(self.viewport.get().size.width);
+        let (narrow, tiny) = (width < 560., width < 420.);
+        let side = || div().flex_1().min_w_0().flex().items_center().overflow_hidden();
         div()
+            .id("transport")
+            .debug_selector(|| "transport".into())
             .h(px(TRANSPORT_H))
             .flex_none()
             .flex()
             .items_center()
-            .justify_between()
+            .gap(px(8.))
             .px(px(12.))
             .border_t_1()
             .border_color(t.line)
             .child(
-                div()
-                    .w(px(200.))
-                    .flex()
+                side()
                     .gap(px(6.))
                     .font_family(MONO)
                     .text_size(px(sz::SM))
-                    .child(div().text_color(t.text).child(smpte(now, fps)))
-                    .child(div().text_color(t.text_3).child(format!("/ {}", smpte(total, fps))))
-                    .when(shuttle != 0., |d| d.child(div().text_color(t.accent_text).child(crate::views::timeline::rate_label(shuttle)))),
+                    .whitespace_nowrap()
+                    .child(div().flex_none().text_color(if playing || shuttle != 0. { t.accent_text } else { t.text }).child(smpte(now, fps)))
+                    .when(!narrow, |d| d.child(div().text_color(t.text_3).child(format!("/ {}", smpte(total, fps)))))
+                    .when(shuttle != 0., |d| d.child(div().flex_none().text_color(t.accent_text).child(crate::views::timeline::rate_label(shuttle)))),
             )
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .items_center()
                     .gap(px(2.))
-                    .child(Button::icon("tp-start", "skip-back", tip("Go to start", &act::GoToStart)).on_click(seek(0.0)))
+                    .when(!tiny, |d| d.child(Button::icon("tp-start", "skip-back", tip("Go to start", &act::GoToStart)).on_click(seek(0.0))))
                     .child(Button::icon("tp-prev", "step-back", tip("Previous frame", &act::StepBack)).on_click(step(-1.0)))
                     .child(
                         div()
@@ -506,24 +512,22 @@ impl PreviewView {
                             .text_color(t.text_on_accent)
                             .cursor_pointer()
                             .hover(|s| s.bg(t.accent_hover))
+                            .active(|s| s.opacity(0.85))
                             .tooltip(move |_, cx| crate::ui::tooltip(tip(if playing { "Pause" } else { "Play" }, &act::PlayPause), cx))
                             .on_click(move |_, _, cx| pb_toggle.update(cx, |p, cx| p.toggle(cx)))
                             .child(icon(if playing { "pause" } else { "play" }).size(px(16.)).text_color(t.text_on_accent)),
                     )
                     .child(Button::icon("tp-next", "step-forward", tip("Next frame", &act::StepForward)).on_click(step(1.0)))
-                    .child(Button::icon("tp-end", "skip-forward", tip("Go to end", &act::GoToEnd)).on_click(seek(total))),
+                    .when(!tiny, |d| d.child(Button::icon("tp-end", "skip-forward", tip("Go to end", &act::GoToEnd)).on_click(seek(total)))),
             )
             .child(
-                div()
-                    .w(px(200.))
-                    .flex()
+                side()
                     .justify_end()
-                    .items_center()
                     .gap(px(8.))
                     .child(Button::icon("tp-loop", "repeat", tip(if looping { "Loop: on" } else { "Loop: off" }, &act::ToggleLoop)).selected(looping).on_click(move |_, _, cx| {
                         pb_loop.update(cx, |p, cx| p.set_looping(!p.looping, cx))
                     }))
-                    .child(div().font_family(MONO).text_size(px(sz::XS)).text_color(t.text_3).child(format!("{scale_pct}%"))),
+                    .when(!narrow, |d| d.child(div().flex_none().font_family(MONO).text_size(px(sz::XS)).text_color(t.text_3).child(format!("{scale_pct}%")))),
             )
     }
 }
