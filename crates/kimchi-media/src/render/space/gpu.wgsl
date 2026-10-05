@@ -6,7 +6,8 @@ struct Light {
     v: vec4<f32>,
     // rgb: colour × intensity; w: range (point and spot; 0 = no fall-off).
     color: vec4<f32>,
-    // xyz: where spot and area lights face; w: its shadow map (-1: none).
+    // xyz: where spot and area lights face; w: its shadow map (-1: none; 4 and up: the first of
+    // a point light's six cube faces).
     dir: vec4<f32>,
     // cos_outer, cos_inner, size (area: width, height; bulb radius; sun softness in radians).
     cone: vec4<f32>,
@@ -53,7 +54,8 @@ struct Globals {
     // Irradiance, spherical harmonics (already / π).
     sh: array<vec4<f32>, 9>,
     lights: array<Light, 8>,
-    shadows: array<Shadow, 4>,
+    // The 2D maps' (sun, spot and area lights), then point lights' cube faces.
+    shadows: array<Shadow, 16>,
 };
 
 struct Item {
@@ -75,6 +77,7 @@ struct Item {
 @group(0) @binding(2) var env_maps: texture_2d<f32>;
 @group(0) @binding(3) var env_image: texture_2d<f32>;
 @group(0) @binding(4) var env_samp: sampler;
+@group(0) @binding(5) var cube_maps: texture_depth_2d_array;
 
 @group(1) @binding(0) var<uniform> it: Item;
 @group(1) @binding(1) var tex: texture_2d<f32>;
@@ -268,11 +271,28 @@ fn shadow_distance(s: Shadow, z: f32) -> f32 {
     return r * s.p.z / (z + r);
 }
 
+// Which cube face (+x, -x, +y, -y, +z, -z) a direction from a point light falls on; the same
+// as `cube_face` in space/mod.rs.
+fn cube_face(d: vec3<f32>) -> i32 {
+    let a = abs(d);
+    if (a.x >= a.y && a.x >= a.z) {
+        return select(1, 0, d.x > 0.0);
+    }
+    if (a.y >= a.z) {
+        return select(3, 2, d.y > 0.0);
+    }
+    return select(5, 4, d.z > 0.0);
+}
+
 fn shadow_lit(li: i32, world: vec3<f32>, n: vec3<f32>) -> f32 {
     let l = g.lights[li];
-    let si = i32(l.dir.w);
+    var si = i32(l.dir.w);
     if (si < 0) {
         return 1.0;
+    }
+    let cube = si >= 4;
+    if (cube) {
+        si += cube_face(world - l.v.xyz);
     }
     let s = g.shadows[si];
     var to_light: vec3<f32>;
@@ -296,7 +316,10 @@ fn shadow_lit(li: i32, world: vec3<f32>, n: vec3<f32>) -> f32 {
     if (ortho) {
         fade = clamp((edge - 0.9) / 0.1, 0.0, 1.0);
     }
-    let size = f32(textureDimensions(shadow_maps).x);
+    var size = f32(textureDimensions(shadow_maps).x);
+    if (cube) {
+        size = f32(textureDimensions(cube_maps).x);
+    }
     let sx = (q.x * 0.5 + 0.5) * size;
     let sy = (0.5 - q.y * 0.5) * size;
     var texel: f32;
@@ -313,7 +336,14 @@ fn shadow_lit(li: i32, world: vec3<f32>, n: vec3<f32>) -> f32 {
         step = radius / 2.0;
     }
     let ndl = max(abs(dot(n, to_light)), 0.05);
-    let slope = min(sqrt(1.0 - ndl * ndl) / ndl, 8.0);
+    var slope = sqrt(1.0 - ndl * ndl) / ndl;
+    if (!ortho) {
+        // Depth along the map's axis: how the surface turns from the axis (see cpu.rs).
+        let axis = normalize(vec3<f32>(s.vp[0][3], s.vp[1][3], s.vp[2][3]));
+        let nda = max(abs(dot(n, axis)), 0.05);
+        slope = max(slope, sqrt(1.0 - nda * nda) / nda);
+    }
+    slope = min(slope, 8.0);
     var reach = 0.0;
     if (taps > 1) {
         reach = texel * slope * step * f32(taps);
@@ -330,7 +360,12 @@ fn shadow_lit(li: i32, world: vec3<f32>, n: vec3<f32>) -> f32 {
         for (var dx = -taps; dx <= taps; dx++) {
             let x = clamp(i32(floor(sx + f32(dx) * step)), 0, last);
             let y = clamp(i32(floor(sy + f32(dy) * step)), 0, last);
-            var d = textureLoad(shadow_maps, vec2<i32>(x, y), si, 0);
+            var d: f32;
+            if (cube) {
+                d = textureLoad(cube_maps, vec2<i32>(x, y), si - 4, 0);
+            } else {
+                d = textureLoad(shadow_maps, vec2<i32>(x, y), si, 0);
+            }
             if (!ortho) {
                 d = shadow_distance(s, d);
             }

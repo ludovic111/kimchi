@@ -30,7 +30,7 @@ fn frame(s: &Scene3d, w: u32, h: u32) -> Frame3d {
 }
 
 fn settings(samples: u32, denoise: bool) -> Settings {
-    Settings { samples, bounces: 4, denoise, seed: 0, filter: Filter::BlackmanHarris }
+    Settings { samples, bounces: 4, denoise, seed: 0, filter: Filter::BlackmanHarris, noise: 0.0 }
 }
 
 fn rgba(p: &Pixmap, x: u32, y: u32) -> [u8; 4] {
@@ -440,6 +440,39 @@ fn odd_scenes_do_not_break_it() {
     f.exposure = f32::INFINITY;
     let p = render(&f, &Settings { bounces: 64, ..settings(4, true) });
     assert_eq!(p.width(), 16);
+}
+
+/// Adaptive sampling stops converged pixels early (the flat background, the lit floor), keeps
+/// sampling noisy ones, gives the picture all samples give, and the same picture however the
+/// samples are added.
+#[test]
+fn adaptive_sampling_saves_rays_where_the_picture_is_clean() {
+    let s = scene(json!({"background": "#202020", "fog": false, "camera": {"position": [0, 2, 5], "target": [0, 0.5, 0]},
+        "lights": [{"id": "sun", "type": "directional", "direction": [-0.4, -1, -0.3], "size": [6, 0]}], "render": {"engine": "path"},
+        "objects": [
+            {"id": "floor", "type": "plane", "width": 4, "height": 3, "rotation": [-90, 0, 0], "material": {"color": "#c0c0c0", "roughness": 1}},
+            {"id": "ball", "type": "sphere", "radius": 0.6, "position": [0, 0.6, 0], "material": {"color": "#ff5a36", "roughness": 0.3}}
+        ]}));
+    let f = frame(&s, 80, 45);
+    let mut all = Progressive::new(&f, settings(64, false));
+    all.add(64);
+    let mut adaptive = Progressive::new(&f, Settings { noise: 0.5, ..settings(64, false) });
+    adaptive.add(64);
+    let (rays_all, rays_adaptive) = (all.stats().0, adaptive.stats().0);
+    assert!(rays_adaptive * 10 < rays_all * 8, "fewer rays: {rays_adaptive} vs {rays_all}");
+    let (a, b) = (all.picture(), adaptive.picture());
+    dump("adaptive-all", &a);
+    dump("adaptive", &b);
+    let diff = a.data().iter().zip(b.data()).map(|(x, y)| x.abs_diff(*y) as f64).sum::<f64>() / a.data().len() as f64;
+    assert!(diff < 1.5, "the same picture, give or take grain: {diff}");
+    // The background stopped at the first check; the penumbra kept going.
+    assert!(adaptive.px.iter().filter(|p| p.n == ADAPTIVE_MIN).count() > 100);
+    assert!(adaptive.px.iter().any(|p| p.n == 64));
+    let mut steps = Progressive::new(&f, Settings { noise: 0.5, ..settings(64, false) });
+    for n in [5, 11, 16, 9, 23] {
+        steps.add(n);
+    }
+    assert_eq!(steps.picture().data(), b.data(), "added in steps");
 }
 
 /// `cargo test --release -p kimchi-media --lib template_speed -- --ignored --nocapture`

@@ -104,7 +104,7 @@ fn masked(a: &Pixmap, b: &Pixmap, k: impl Fn(f32, f32) -> f32 + Sync) -> Pixmap 
                 continue;
             }
             for c in 0..4 {
-                o[c] = (o[c] as f32 + (bp[c] as f32 - o[c] as f32) * m).round() as u8;
+                o[c] = (o[c] as f32 + (bp[c] as f32 - o[c] as f32) * m + 0.5) as u8;
             }
         }
     });

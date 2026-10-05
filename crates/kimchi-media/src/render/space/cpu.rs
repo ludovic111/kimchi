@@ -18,6 +18,8 @@ const BAND: usize = 16;
 /// The main sun's shadow map; spot and area lights get smaller ones.
 const SHADOW_SIZE: usize = 1536;
 const SPOT_SHADOW_SIZE: usize = 1024;
+/// Each face of a point light's cube.
+const CUBE_SHADOW_SIZE: usize = 512;
 
 /// A triangle on screen (or in the shadow map), with what is needed to shade it.
 #[derive(Clone)]
@@ -56,7 +58,13 @@ pub(crate) fn render(f: &Frame3d, want: Want) -> Drawn {
         .iter()
         .enumerate()
         .map(|(k, s)| {
-            let size = if k == 0 && s.ortho { SHADOW_SIZE } else { SPOT_SHADOW_SIZE };
+            let size = if k == 0 && s.ortho {
+                SHADOW_SIZE
+            } else if s.face.is_some() {
+                CUBE_SHADOW_SIZE
+            } else {
+                SPOT_SHADOW_SIZE
+            };
             ShadowMap { res: *s, size, depth: shadow_map(f, &s.viewproj, size) }
         })
         .collect();
@@ -211,9 +219,9 @@ pub(crate) fn render(f: &Frame3d, want: Want) -> Drawn {
             let a = acc[3].clamp(0.0, 1.0);
             let px = &mut row[x * 4..x * 4 + 4];
             for k in 0..3 {
-                px[k] = (acc[k].clamp(0.0, a) * 255.0).round() as u8;
+                px[k] = crate::render::byte(acc[k].clamp(0.0, a) * 255.0);
             }
-            px[3] = (a * 255.0).round() as u8;
+            px[3] = crate::render::byte(a * 255.0);
         }
     });
     let pixmap = Pixmap::from_vec(out, tiny_skia::IntSize::from_wh(f.width, f.height).expect("non-empty")).expect("sized");
@@ -256,7 +264,12 @@ fn shade_at(f: &Frame3d, t: &Tri, b1: f32, b2: f32, maps: &[ShadowMap], linear: 
     let n = (t.normal[0] * b0 + t.normal[1] * b1 + t.normal[2] * b2).norm();
     let uv = [t.uv[0][0] * b0 + t.uv[1][0] * b1 + t.uv[2][0] * b2, t.uv[0][1] * b0 + t.uv[1][1] * b1 + t.uv[2][1] * b2];
     let item = &f.items[t.item as usize];
-    let lit = |i: usize| maps.iter().find(|m| m.res.light == i).map_or(1.0, |m| lit(m, p, n, f));
+    let lit = |i: usize| match maps.iter().position(|m| m.res.light == i) {
+        None => 1.0,
+        // A point light's six maps: the one facing `p`.
+        Some(k) if maps[k].res.face.is_some() => maps.get(k + super::cube_face(p - f.lights[i].v)).map_or(1.0, |m| lit(m, p, n, f)),
+        Some(k) => lit(&maps[k], p, n, f),
+    };
     let c = shade(f, &item.mat, &Surface { p, n, uv, dpdu: t.dpdu, dpdv: t.dpdv }, &lit);
     finish(f, c, item.mat.unlit, linear)
 }
@@ -291,7 +304,18 @@ fn lit(m: &ShadowMap, p: V3, n: V3, f: &Frame3d) -> f32 {
     // slanted the surface is to the light (no acne on grazing floors); wide filters reach
     // further across a slanted surface, so they need more.
     let ndl = n.dot(to_light).abs().max(0.05);
-    let slope = ((1.0 - ndl * ndl).sqrt() / ndl).min(8.0);
+    let mut slope = (1.0 - ndl * ndl).sqrt() / ndl;
+    if !m.res.ortho {
+        // A perspective map stores depth along its axis, which changes across the map with
+        // how the surface turns from the axis, not from the light: a floor right under a lamp
+        // aimed sideways faces the lamp yet slopes in its map (and the filter's far taps saw
+        // the floor itself as an occluder there).
+        let vp = &m.res.viewproj.0;
+        let axis = V3(vp[0][3], vp[1][3], vp[2][3]).norm();
+        let nda = n.dot(axis).abs().max(0.05);
+        slope = slope.max((1.0 - nda * nda).sqrt() / nda);
+    }
+    let slope = slope.min(8.0);
     let reach = if taps > 1 { texel * slope * step * taps as f32 } else { 0.0 };
     // The sun's map is orthographic: depths are distances, so its bias is in world units too,
     // a few texels' worth on slanted surfaces (not a share of its depth range, which on a big
@@ -304,8 +328,8 @@ fn lit(m: &ShadowMap, p: V3, n: V3, f: &Frame3d) -> f32 {
     let mut sum = 0.0;
     for dy in -taps..=taps {
         for dx in -taps..=taps {
-            let x = ((sx + dx as f32 * step).floor() as i32).clamp(0, m.size as i32 - 1);
-            let y = ((sy + dy as f32 * step).floor() as i32).clamp(0, m.size as i32 - 1);
+            let x = (crate::render::floor(sx + dx as f32 * step) as i32).clamp(0, m.size as i32 - 1);
+            let y = (crate::render::floor(sy + dy as f32 * step) as i32).clamp(0, m.size as i32 - 1);
             let d = m.depth[y as usize * m.size + x as usize];
             let d = if m.res.ortho { d } else { m.res.distance(d) };
             sum += if mine <= d { 1.0 } else { 0.0 };

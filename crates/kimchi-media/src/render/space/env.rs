@@ -230,7 +230,7 @@ pub(crate) fn sky(d: V3, sun: V3, sun_color: [f32; 3], strength: f32) -> [f32; 3
 fn sample_level(l: &EnvLevel, u: f32, v: f32) -> [f32; 3] {
     let (w, h) = (l.width as f32, l.height as f32);
     let (x, y) = (u.rem_euclid(1.0) * w - 0.5, v.clamp(0.0, 1.0) * h - 0.5);
-    let (x0, y0) = (x.floor(), y.floor());
+    let (x0, y0) = (crate::render::floor(x), crate::render::floor(y));
     let (fx, fy) = (x - x0, y - y0);
     let at = |xi: f32, yi: f32| -> [f32; 4] {
         let xi = (xi as i64).rem_euclid(l.width as i64) as usize;
@@ -245,7 +245,7 @@ fn sample_level(l: &EnvLevel, u: f32, v: f32) -> [f32; 3] {
 pub(crate) fn sample_srgb_clamped(t: &Texture, u: f32, v: f32) -> [f32; 3] {
     let (w, h) = (t.width.max(1) as f32, t.height.max(1) as f32);
     let (x, y) = (u.rem_euclid(1.0) * w - 0.5, v.clamp(0.0, 1.0) * h - 0.5);
-    let (x0, y0) = (x.floor(), y.floor());
+    let (x0, y0) = (crate::render::floor(x), crate::render::floor(y));
     let (fx, fy) = (x - x0, y - y0);
     let at = |xi: f32, yi: f32| -> [f32; 3] {
         let xi = (xi as i64).rem_euclid(t.width.max(1) as i64) as usize;

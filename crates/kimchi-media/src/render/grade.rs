@@ -44,11 +44,11 @@ pub(crate) fn apply(p: &mut Pixmap, e: &Effects, scale: f32) {
             if a == 0 {
                 continue;
             }
-            let inv = 1.0 / a as f32;
+            let inv = if a == 255 { 1.0 / 255.0 } else { 1.0 / a as f32 };
             let mut rgb = [px[0] as f32 * inv, px[1] as f32 * inv, px[2] as f32 * inv];
-            let mut alpha = a as f32 / 255.0;
+            let mut a8 = a as f32;
             if let Some(k) = &key {
-                alpha *= k.keep(&mut rgb);
+                a8 = ((a8 * k.keep(&mut rgb)).clamp(0.0, 255.0) + 0.5) as u8 as f32;
             }
             tone.apply(&mut rgb);
             if let Some((lut, strength)) = &lut {
@@ -65,9 +65,8 @@ pub(crate) fn apply(p: &mut Pixmap, e: &Effects, scale: f32) {
                     *v *= k;
                 }
             }
-            let a8 = (alpha * 255.0).round().clamp(0.0, 255.0);
             for c in 0..3 {
-                px[c] = (rgb[c].clamp(0.0, 1.0) * a8).round() as u8;
+                px[c] = (rgb[c].clamp(0.0, 1.0) * a8 + 0.5) as u8;
             }
             px[3] = a8 as u8;
         }
@@ -83,12 +82,11 @@ fn luma(c: [f32; 3]) -> f32 {
     0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
 }
 
-/// The corrections, as factors.
+/// The corrections, as one affine map of the colour: gains, lift and contrast per channel, then
+/// saturation around the luma (a matrix), folded together.
 struct Tone {
-    lift: f32,
-    contrast: f32,
-    saturation: f32,
-    gains: [f32; 3],
+    m: [[f32; 3]; 3],
+    t: [f32; 3],
     identity: bool,
 }
 
@@ -97,19 +95,26 @@ impl Tone {
         let (t, n) = (e.temperature as f32, e.tint as f32);
         let gains = [1.0 + 0.2 * t, 1.0 - 0.2 * n, 1.0 - 0.2 * t];
         let identity = e.brightness == 0.0 && e.contrast == 0.0 && e.saturation == 0.0 && t == 0.0 && n == 0.0;
-        Self { lift: e.brightness as f32 * 0.4, contrast: 1.0 + e.contrast as f32, saturation: 1.0 + e.saturation as f32, gains, identity }
+        let (lift, contrast, sat) = (e.brightness as f32 * 0.4, 1.0 + e.contrast as f32, 1.0 + e.saturation as f32);
+        // Per channel: v · gain · contrast + ((lift − ½) · contrast + ½).
+        let scale = gains.map(|g| g * contrast);
+        let offset = (lift - 0.5) * contrast + 0.5;
+        // Saturation: s · v + (1 − s) · luma(v).
+        let luma = [0.2126, 0.7152, 0.0722];
+        let mix: [[f32; 3]; 3] = std::array::from_fn(|r| std::array::from_fn(|c| (if r == c { sat } else { 0.0 }) + (1.0 - sat) * luma[c]));
+        let m = std::array::from_fn(|r| std::array::from_fn(|c| mix[r][c] * scale[c]));
+        let t = std::array::from_fn(|r| offset * mix[r].iter().sum::<f32>());
+        Self { m, t, identity }
     }
 
+    #[inline]
     fn apply(&self, rgb: &mut [f32; 3]) {
         if self.identity {
             return;
         }
-        for (v, g) in rgb.iter_mut().zip(self.gains) {
-            *v = ((*v * g + self.lift) - 0.5) * self.contrast + 0.5;
-        }
-        let y = luma(*rgb);
-        for v in rgb.iter_mut() {
-            *v = y + (*v - y) * self.saturation;
+        let v = *rgb;
+        for (o, (row, t)) in rgb.iter_mut().zip(self.m.iter().zip(self.t)) {
+            *o = row[0] * v[0] + row[1] * v[1] + row[2] * v[2] + t;
         }
     }
 }
@@ -170,7 +175,7 @@ fn sharpen(p: &mut Pixmap, amount: f32, radius: f32) {
         let a = px[3] as f32;
         for c in 0..3 {
             let v = px[c] as f32 + (px[c] as f32 - s[c] as f32) * k;
-            px[c] = v.round().clamp(0.0, a) as u8;
+            px[c] = (v.clamp(0.0, a) + 0.5) as u8;
         }
     });
 }

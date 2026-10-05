@@ -73,7 +73,7 @@ pub(crate) fn multiply(p: &mut Pixmap, cov: &[f32]) {
             continue;
         }
         for v in px.iter_mut() {
-            *v = (*v as f32 * c).round() as u8;
+            *v = super::byte(*v as f32 * c);
         }
     }
 }
