@@ -230,6 +230,8 @@ pub struct Store {
     pub clipboard: Clipboard,
     /// What the Studio shows while it is open (its `ui.studio` state), for `ui.state`.
     pub studio: Option<Value>,
+    /// The audio views: the mixer, the selected strip, the effect panel and browser, recording.
+    pub audio: crate::views::mixer::AudioView,
     next_toast: u64,
     _pump: Task<()>,
 }
@@ -303,6 +305,7 @@ impl Store {
             dropping: false,
             clipboard: Clipboard::default(),
             studio: None,
+            audio: Default::default(),
             next_toast: 1,
             _pump: pump,
         };
@@ -376,6 +379,8 @@ impl Store {
                 self.refresh_project();
                 self.library = self.session.library.list();
                 self.playback.update(cx, |p, cx| p.reset(cx));
+                self.audio.forget_project();
+                crate::views::mixer::refresh_songs(self, cx);
             }
             Event::Job { job } => match self.jobs.iter_mut().find(|j| j.id == job.id) {
                 Some(j) => *j = *job,
@@ -475,6 +480,7 @@ impl Store {
             ripple: self.ripple,
             // The editor keeps its panel sizes up to date itself.
             layout: self.session.ui_state().layout,
+            audio: Some(self.audio.to_json(self.project.as_deref())),
         });
     }
 
@@ -720,6 +726,16 @@ impl Store {
         cx.emit(StoreEvent::Compose(Box::new(req)));
         self.sync_ui(cx);
         cx.notify();
+    }
+
+    /// Changes what the audio views show (mixer, strip, effect panel…).
+    pub fn set_audio(&mut self, f: impl FnOnce(&mut crate::views::mixer::AudioView), cx: &mut Context<Self>) {
+        let before = self.audio.clone();
+        f(&mut self.audio);
+        if self.audio != before {
+            self.sync_ui(cx);
+            cx.notify();
+        }
     }
 
     pub fn set_zoom(&mut self, pps: f64, cx: &mut Context<Self>) {

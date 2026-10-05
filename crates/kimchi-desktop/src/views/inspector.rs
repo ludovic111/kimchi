@@ -13,6 +13,7 @@
 
 pub mod ai;
 pub mod animation;
+pub mod audio;
 pub mod color;
 pub mod effects;
 pub mod fonts;
@@ -76,6 +77,8 @@ pub struct Inspector {
     item_fields: scene_editor::ItemFields,
     /// Colour, transition and speed controls.
     fx: effects::EffectFields,
+    /// Sound controls (the clip's Audio section, a mixer strip's mix).
+    audio: audio::AudioFields,
     _subs: Vec<Subscription>,
 }
 
@@ -183,6 +186,7 @@ impl Inspector {
         let background = cx.new(|cx| ColorField::new(None, cx));
         subs.push(cx.subscribe(&background, |this: &mut Self, _, ch: &ColorChange, cx| this.set_settings(json!({ "background": ch.0.get(..7).unwrap_or(&ch.0) }), cx)));
         let fx = effects::EffectFields::new(&mut subs, cx);
+        let audio = audio::AudioFields::new(&mut subs, cx);
 
         Self {
             store,
@@ -213,6 +217,7 @@ impl Inspector {
             scene_item: None,
             item_fields: Default::default(),
             fx,
+            audio,
             _subs: subs,
         }
     }
@@ -515,12 +520,7 @@ impl Inspector {
         );
 
         if has_sound {
-            body.push(
-                section(cx)
-                    .child(caps("Sound", cx))
-                    .child(labeled("Volume", self.volume.clone().into_any_element(), format!("{}%", (clip.volume * 100.0).round()), cx))
-                    .into_any_element(),
-            );
+            body.push(self.audio_section(clip, project, cx));
         }
 
         if let Some(a) = &asset {
@@ -793,6 +793,8 @@ impl Render for Inspector {
                     self.multi_view(clips, cx)
                 } else if let Some(a) = selected_asset.and_then(|id| p.asset(id).cloned()) {
                     self.asset_view(&a, cx)
+                } else if let Some(v) = self.strip_view(&p, cx) {
+                    v
                 } else {
                     self.project_view(&p, window, cx)
                 }

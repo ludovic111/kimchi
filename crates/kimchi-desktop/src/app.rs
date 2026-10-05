@@ -141,6 +141,12 @@ impl Workspace {
         subs.push(cx.subscribe_in(&studio, window, |ws, _, e: &views::studio::StudioEvent, window, cx| match e {
             views::studio::StudioEvent::Closed => window.focus(&ws.focus, cx),
         }));
+        // Back to the front: ryolune songs saved meanwhile are rendered again.
+        subs.push(cx.observe_window_activation(window, |ws, window, cx| {
+            if window.is_window_active() {
+                ws.store.update(cx, views::mixer::refresh_songs);
+            }
+        }));
         store.update(cx, |s, cx| s.sync_ui(cx));
         Self { store, focus, home, editor, dialogs, _subs: subs }
     }
@@ -269,6 +275,7 @@ impl Workspace {
                 Ok(json!({ "revealed": path }))
             }
             "ui.screenshot" => views::screenshot::capture(params["path"].as_str(), window),
+            c if c.starts_with("audio.") => views::mixer::ui_command(c, params, cx),
             "ui.studio" => {
                 if store.read(cx).project.is_none() {
                     return Err(kimchi_control::session::NO_PROJECT.into());
@@ -1005,6 +1012,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::restart_app))
             .on_action(cx.listener(Self::help))
             .on_action(cx.listener(Self::support))
+            .map(views::mixer::on_actions)
             .on_drop(cx.listener(Self::on_drop_paths))
             .on_drag_move::<ExternalPaths>(cx.listener(|ws, _, _, cx| {
                 ws.store.update(cx, |s, cx| {

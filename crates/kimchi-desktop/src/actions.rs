@@ -110,6 +110,12 @@ actions!(
         StudioGraph,
         StudioHide,
         StudioUnhide,
+        ToggleMixer,
+        MuteTrack,
+        SoloTrack,
+        ArmTrack,
+        RecordVoiceOver,
+        AddEffect,
     ]
 );
 
@@ -142,7 +148,7 @@ macro_rules! sc {
 }
 
 #[cfg(test)]
-const GROUPS: [&str; 7] = ["Playback", "Editing", "Timeline", "Panels", "Project", "Studio", "Studio: modelling"];
+const GROUPS: [&str; 8] = ["Playback", "Editing", "Timeline", "Audio", "Panels", "Project", "Studio", "Studio: modelling"];
 
 pub static SHORTCUTS: &[Shortcut] = &[
     sc!("Playback", "Play / pause", ["space"], Editing, PlayPause),
@@ -198,6 +204,13 @@ pub static SHORTCUTS: &[Shortcut] = &[
     sc!("Project", "Settings", ["M-,"], App, OpenSettings),
     sc!("", "Quit", ["M-q"], App, Quit),
     sc!("Timeline", "Open in the Studio", ["M-shift-o"], Editing, OpenStudio),
+    // Sound: the mixer key is ryolune's.
+    sc!("Audio", "Mixer", ["x"], Editing, ToggleMixer),
+    sc!("Audio", "Mute the selected track", ["alt-m"], Editing, MuteTrack),
+    sc!("Audio", "Solo the selected track", ["alt-s"], Editing, SoloTrack),
+    sc!("Audio", "Arm the selected track for recording", ["alt-a"], Editing, ArmTrack),
+    sc!("Audio", "Record a voice-over / stop", ["shift-r"], Editing, RecordVoiceOver),
+    sc!("Audio", "Add an effect", ["M-shift-e"], Editing, AddEffect),
     // The Studio: Blender's keys in 3D, After Effects' in 2D.
     sc!("Studio", "Back to the edit", ["escape"], Studio, StudioEscape),
     sc!("Studio", "Play / pause the clip", ["space"], Studio, StudioPlay),
@@ -410,6 +423,15 @@ pub fn menus() -> Vec<Menu> {
             MenuItem::action("Zoom Out", ZoomOut),
             MenuItem::action("Zoom to Fit", ZoomFit),
             MenuItem::action("Snapping", ToggleSnap),
+        ]),
+        Menu::new("Audio").items([
+            MenuItem::action("Mixer", ToggleMixer),
+            MenuItem::action("Add Effect…", AddEffect),
+            MenuItem::separator(),
+            MenuItem::action("Mute Track", MuteTrack),
+            MenuItem::action("Solo Track", SoloTrack),
+            MenuItem::action("Arm Track", ArmTrack),
+            MenuItem::action("Record Voice-Over", RecordVoiceOver),
         ]),
         Menu::new("View").items([
             MenuItem::action("Command Palette", Palette),

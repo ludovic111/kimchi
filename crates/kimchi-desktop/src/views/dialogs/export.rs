@@ -463,6 +463,7 @@ impl ExportDialog {
                 )
             })
             .when(has_captions && !audio, |d| d.child(row("Captions", captions.into_any_element())))
+            .child(row("Loudness", crate::views::mixer::export_loudness(cx)))
             .into_any_element()
     }
 

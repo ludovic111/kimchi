@@ -8,7 +8,12 @@
 //! stays until the session announces the changed project, so nothing jumps.
 //! Transitions draw over the clips ([`transitions`]).
 
+mod sound;
 mod transitions;
+
+pub(in crate::views::timeline) use sound::{Geometry, beat_points, decorations, fades, header_meters, shows_line, wave};
+#[cfg(test)]
+pub(in crate::views::timeline) use sound::line_y as line_y_for_tests;
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -112,6 +117,8 @@ pub struct TimelineBody {
     /// A clip, handle or marker took this mouse down; the lane / ruler under it ignores it.
     /// (Propagation isn't stopped, so the workspace still closes menus and takes focus.)
     consumed: bool,
+    /// A clip's volume line being dragged.
+    volume: Option<sound::VolumeDrag>,
     /// Taken on any click in the tracks (GPUI focuses a tracked element on mouse down), so the
     /// timeline's shortcuts (Delete, S, Space…) apply to what was clicked.
     focus: gpui::FocusHandle,
@@ -163,6 +170,7 @@ impl TimelineBody {
             agent: AgentMarks::default(),
             drags: 0,
             consumed: false,
+            volume: None,
             focus: cx.focus_handle(),
             _subs: subs,
         }
@@ -905,7 +913,7 @@ impl TimelineBody {
                         .child(track.name.clone())
                         .into_any_element(),
                 };
-                let any_on = track.muted || track.hidden || track.locked;
+                let any_on = track.muted || track.hidden || track.locked || track.mix.solo || track.mix.armed;
                 Some(
                     div()
                         .id(ElementId::Uuid(id))
@@ -932,6 +940,7 @@ impl TimelineBody {
                                 .group_hover(group, |s| s.opacity(1.))
                                 .when(track.kind == TrackKind::Video, |d| d.child(toggle("hide", track.hidden, "eye-off", "eye", "Show", "Hide", "hidden")))
                                 .child(toggle("mute", track.muted, "volume-x", "volume-2", "Unmute", "Mute", "muted"))
+                                .children(sound::header_toggles(track, cx))
                                 .child(toggle("lock", track.locked, "lock", "lock-open", "Unlock", "Lock", "locked")),
                         ))
                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, e, window, cx| this.header_down(id, i, e, window, cx)))
@@ -1014,6 +1023,9 @@ impl TimelineBody {
                         }
                     }
                     _ => {}
+                }
+                if let Some(c) = self.volume_shown(&shown) {
+                    shown = std::borrow::Cow::Owned(c);
                 }
                 draws.push((ti, shown, row, moving, false));
             }
@@ -1183,6 +1195,7 @@ impl Render for TimelineBody {
         let t = cx.theme().clone();
         let s = self.store.read(cx);
         let project = s.project.clone();
+        self.sync_sound_settings(cx);
         // Zoom changed elsewhere (keys, menus, ui.zoom): keep the playhead where it is if it is in
         // view, else the time at the left edge.
         if (s.pps - self.last_pps).abs() > 1e-9 {
@@ -1232,6 +1245,7 @@ impl Render for TimelineBody {
             .child(ruler)
             .children(main)
             .when(dragging, |d| d.child(drag::track(cx.entity(), Self::drag_move, Self::drag_up)))
+            .children(self.sound_tracker(cx))
     }
 }
 
