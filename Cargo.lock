@@ -3829,6 +3829,8 @@ dependencies = [
 name = "kimchi-audio"
 version = "0.7.0"
 dependencies = [
+ "cpal",
+ "hound",
  "kimchi-core",
  "parking_lot",
  "ryolune-engine",

@@ -1,5 +1,5 @@
 use chrono::Utc;
-use kimchi_core::{Asset, AssetOrigin, Keyframe, MediaMeta, ProjectSettings, TextStyle, Track, TrackKind, new_id};
+use kimchi_core::{Asset, AssetOrigin, Clip, ClipContent, MediaKind, MediaMeta, ProjectSettings, TextStyle, Track, TrackKind, new_id};
 
 use super::*;
 
@@ -53,6 +53,7 @@ fn settings(format: ExportFormat) -> ExportSettings {
         fps: None,
         range: None,
         encoder: Default::default(),
+        audio: Default::default(),
     }
 }
 
@@ -72,46 +73,67 @@ fn pictures_come_from_the_compositor_through_a_pipe() {
         vec![top, bottom],
     );
     let plan = plan(&p, ExportFormat::Mp4);
-    // Input 0 is the rendered picture; media files are only read for their sound.
+    // Input 0 is the rendered picture, input 1 the mixer's sound; the media files are read by
+    // the compositor and the mixer, not by this ffmpeg.
     assert_eq!(&plan.inputs[..10], ["-f", "rawvideo", "-pix_fmt", "rgba", "-s", "640x360", "-r", "25.0", "-i", "pipe:0"]);
-    assert_eq!(input_files(&plan), ["pipe:0", "bottom.mp4"]);
+    assert_eq!(&plan.inputs[10..17], ["-f", "f32le", "-ar", "48000", "-ac", "2", "-i"]);
+    let mix = plan.mix.clone().unwrap();
+    assert_eq!(input_files(&plan), ["pipe:0", mix.path.to_str().unwrap()]);
+    assert_eq!((mix.rate, mix.from, mix.to), (48_000, 0.0, 4.0));
+    assert_eq!(plan.sources, [PathBuf::from("bottom.mp4")]);
     assert_eq!(plan.video, Some(VideoFeed { width: 640, height: 360, fps: 25.0, from: 0.0, frames: 100 }));
     assert_eq!(plan.duration, 4.0);
     let g = &plan.graph;
-    assert!(g.starts_with("[0:v]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p[vout]"), "{g}");
-    assert!(g.contains("[1:a:0]atrim=start=0.0:end=4.0,asetpts=PTS-STARTPTS,aresample=48000,aformat="), "{g}");
+    assert_eq!(g, "[0:v]scale=out_color_matrix=bt709:out_range=tv,format=yuv420p[vout]");
     let out = plan.output.join(" ");
     assert!(out.contains("-c:v libx264") && out.contains("-colorspace bt709"), "{out}");
+    assert!(out.contains("-map 1:a -c:a aac -b:a 192k -ar 48000"), "{out}");
     // The picture comes on stdin, so ffmpeg must read it.
     let args = plan.args(Path::new("o.mp4"), None, &caps());
     assert!(!args.contains(&"-nostdin".to_string()));
 }
 
 #[test]
-fn speed_trims_source_and_chains_atempo() {
+fn sound_formats_rates_and_depths() {
     assert_eq!(atempo(3.0), [2.0, 1.5]);
-    assert_eq!(atempo(0.25), [0.5, 0.5]);
-    assert!(atempo(1.0).is_empty());
-
-    let v = asset(MediaKind::Video, "v.mp4", true);
-    let mut clip = media(&v, 2.0, 1.0);
-    clip.speed = 3.0;
-    clip.in_point = 1.0;
-    let p = project(vec![(TrackKind::Video, vec![clip])], vec![v]);
-    let plan = plan(&p, ExportFormat::Mp4);
-    // 1 s on the timeline at 3x = 3 s of source starting at the in point (input 1, after the
-    // picture): read from a quarter second before, then cut by timestamp.
-    assert_eq!(&plan.inputs[10..], ["-ss", "0.75", "-t", "3.25", "-i", "v.mp4"]);
-    let g = &plan.graph;
-    assert!(g.contains("[1:a:0]atrim=start=0.25:end=3.25,asetpts=PTS-STARTPTS,aresample=48000,aformat="), "{g}");
-    assert!(g.contains("atempo=2.0,atempo=1.5,asetpts=N/48000/TB"), "{g}");
-    assert!(g.contains("adelay=delays=96000S:all=1[a"), "{g}");
-    assert!(
-        g.contains(
-            "amix=inputs=1:normalize=0:dropout_transition=0,asetpts=N/48000/TB,apad=whole_dur=3.0,atrim=end=3.0[aout]"
-        ),
-        "{g}"
-    );
+    let snd = asset(MediaKind::Audio, "a.wav", true);
+    let p = project(vec![(TrackKind::Audio, vec![media(&snd, 0.0, 2.0)])], vec![snd]);
+    let caps = Caps::new(9, ["libx264", "prores_ks", "libvpx-vp9", "aac", "libmp3lame", "libopus", "libvorbis", "flac"]);
+    let out = |audio: AudioOptions, format: ExportFormat| build(&p, &ExportSettings { audio, ..settings(format) }, &caps).map(|plan| (plan.output.join(" "), plan.mix.unwrap().rate));
+    // Defaults: AAC in M4A, 24-bit WAV, at the project's rate.
+    assert!(out(AudioOptions::default(), ExportFormat::Audio).unwrap().0.contains("-c:a aac -b:a 192k -ar 48000 -movflags +faststart -f ipod"));
+    assert!(out(AudioOptions::default(), ExportFormat::Wav).unwrap().0.contains("-c:a pcm_s24le -ar 48000 -rf64 auto -f wav"));
+    let with = |format: AudioFormat| AudioOptions { format: Some(format), ..Default::default() };
+    let (o, _) = out(AudioOptions { bit_depth: Some(16), sample_rate: Some(44_100), ..with(AudioFormat::Wav) }, ExportFormat::Audio).unwrap();
+    assert!(o.contains("-c:a pcm_s16le -af aresample=dither_method=triangular,aformat=sample_fmts=s16 -ar 44100"), "{o}");
+    assert!(out(AudioOptions { bit_depth: Some(32), ..with(AudioFormat::Wav) }, ExportFormat::Audio).unwrap().0.contains("pcm_f32le"));
+    assert!(out(with(AudioFormat::Aiff), ExportFormat::Audio).unwrap().0.contains("-c:a pcm_s24be -ar 48000 -f aiff"));
+    assert!(out(AudioOptions { bit_depth: Some(32), ..with(AudioFormat::Aiff) }, ExportFormat::Audio).is_err());
+    assert!(out(with(AudioFormat::Flac), ExportFormat::Audio).unwrap().0.contains("-c:a flac -sample_fmt s32 -bits_per_raw_sample 24"));
+    let (o, rate) = out(AudioOptions { bitrate_kbps: Some(320), sample_rate: Some(96_000), ..with(AudioFormat::Mp3) }, ExportFormat::Audio).unwrap();
+    assert!(o.contains("-c:a libmp3lame -b:a 320k -ar 48000 -f mp3") && rate == 48_000, "{o}");
+    let (o, rate) = out(AudioOptions { sample_rate: Some(44_100), ..with(AudioFormat::Opus) }, ExportFormat::Audio).unwrap();
+    assert!(o.contains("-c:a libopus -b:a 128k -ar 48000 -f ogg") && rate == 48_000, "{o}");
+    assert!(out(with(AudioFormat::Vorbis), ExportFormat::Audio).unwrap().0.contains("-c:a libvorbis -q:a 6"));
+    assert!(out(AudioOptions { sample_rate: Some(22_050), ..Default::default() }, ExportFormat::Audio).is_err());
+    assert!(out(AudioOptions { bit_depth: Some(20), ..Default::default() }, ExportFormat::Wav).is_err());
+    // An ffmpeg without LAME says so.
+    let lame = build(&p, &ExportSettings { audio: with(AudioFormat::Mp3), ..settings(ExportFormat::Audio) }, &Caps::new(9, ["aac"]));
+    assert!(matches!(lame, Err(MediaError::Unsupported(m)) if m.contains("libmp3lame")));
+    // Video exports keep their codec; ProRes takes the bit depth; WebM's Opus runs at 48 kHz.
+    assert!(out(AudioOptions { bit_depth: Some(24), ..Default::default() }, ExportFormat::Prores).unwrap().0.contains("pcm_s24le"));
+    assert_eq!(out(AudioOptions { sample_rate: Some(96_000), ..Default::default() }, ExportFormat::Webm).unwrap().1, 48_000);
+    assert_eq!(out(AudioOptions { sample_rate: Some(96_000), ..Default::default() }, ExportFormat::Mp4).unwrap().1, 96_000);
+    // Old settings without `audio` still read, and the options read back.
+    let old: ExportSettings = serde_json::from_str(r#"{"path":"a.mp4","format":"mp4","quality":"draft","width":null,"height":null,"fps":null,"range":null}"#).unwrap();
+    assert_eq!(old.audio, AudioOptions::default());
+    let o: AudioOptions = serde_json::from_str(r#"{"format":"m4a","sampleRate":44100,"bitDepth":16,"stems":true}"#).unwrap();
+    assert_eq!((o.format, o.sample_rate, o.bit_depth, o.stems), (Some(AudioFormat::Aac), Some(44_100), Some(16), true));
+    assert_eq!(AudioFormat::parse("ogg"), Ok(AudioFormat::Vorbis));
+    assert!(AudioFormat::parse("mp4").unwrap_err().contains("flac"));
+    let mut used = vec![];
+    assert_eq!(stem_name(1, "Dialogue / VO", "wav", &mut used), "01-Dialogue _ VO.wav");
+    assert_eq!(stem_name(1, "Dialogue / VO", "wav", &mut used), "01-Dialogue _ VO 2.wav");
 }
 
 #[test]
@@ -134,20 +156,13 @@ fn skips_hidden_muted_and_pending() {
     p.tracks[0].hidden = true;
     p.tracks[2].muted = true;
     let plan = plan(&p, ExportFormat::Mp4);
-    assert_eq!(input_files(&plan), ["pipe:0"], "{:?}", plan.inputs);
-    assert!(plan.graph.contains("anullsrc=r=48000:cl=stereo,atrim=end=2.0[aout]"));
+    // No sound file is read; the mix (silence) is still there for players.
+    assert!(plan.sources.is_empty(), "{:?}", plan.sources);
+    assert!(plan.mix.is_some());
 }
 
 #[test]
-fn volume_keyframes_become_an_expression() {
-    let snd = asset(MediaKind::Audio, "a.wav", true);
-    let mut clip = media(&snd, 0.0, 2.0);
-    clip.keyframes.insert("volume".into(), vec![Keyframe::new(0.0, 0.0, Default::default()), Keyframe::new(1.0, 1.0, Default::default())]);
-    let p = project(vec![(TrackKind::Audio, vec![clip.clone()])], vec![snd]);
-    let g = plan(&p, ExportFormat::Audio).graph;
-    assert!(g.contains("volume=eval=frame:volume='if(lt(t,0.05),0.0+(1.0)*(t-0.0),if("), "{g}");
-    // The curve holds the last value past its last keyframe.
-    assert!(volume_curve(&clip, 0.0).trim_end_matches(')').ends_with(",1.0"), "{g}");
+fn text_clips_last_their_frames() {
     let text = Clip::new("t", 0.0, 1.0, ClipContent::Text { style: TextStyle::default() });
     let p = project(vec![(TrackKind::Video, vec![text])], vec![]);
     assert_eq!(plan(&p, ExportFormat::Mp4).video.unwrap().frames, 25);
@@ -167,21 +182,10 @@ fn range_shifts_and_cuts_clips() {
     let plan = build(&p, &st, &caps()).unwrap();
     assert_eq!(plan.duration, 3.0);
     assert_eq!(plan.video.unwrap().from, 3.0);
-    // `a` is still fading in at 3 s: decode from its start, fade, then drop the first 3 s.
-    // `b` starts inside the window; `late` is outside and ignored. Both read the same seconds of
-    // v.mp4: one input, split and cut for each.
-    assert_eq!(&plan.inputs[10..], ["-t", "4.0", "-i", "v.mp4"]);
-    let g = &plan.graph;
-    assert!(g.contains("[1:a:0]asplit=2[s1_0][s1_1]"), "{g}");
-    assert!(g.contains("[s1_0]atrim=start=0.0:end=4.0,asetpts=PTS-STARTPTS,aresample=48000,aformat="), "{g}");
-    assert!(g.contains("[s1_1]atrim=start=1.0:end=3.0,asetpts=PTS-STARTPTS,aresample=48000,aformat="), "{g}");
-    assert!(g.contains("afade=t=in:st=0.0:d=3.5"), "{g}");
-    assert!(g.contains("atrim=start=3.0:end=4.0,asetpts=PTS-STARTPTS"), "{g}");
-    assert!(g.contains("adelay=delays=48000S:all=1"), "{g}");
-
-    // Without a fade the input is simply seeked further.
-    let w = Window::of(&media(&asset(MediaKind::Video, "x", false), 0.0, 4.0), 3.0, 6.0).unwrap();
-    assert_eq!((w.start, w.len, w.decode_from, w.trim), (0.0, 1.0, 3.0, 0.0));
+    // The mix covers the same window; `late` is outside and no file of it is checked twice.
+    let mix = plan.mix.unwrap();
+    assert_eq!((mix.from, mix.to), (3.0, 6.0));
+    assert_eq!(plan.sources, [PathBuf::from("v.mp4")]);
 }
 
 #[test]
@@ -190,13 +194,16 @@ fn formats_and_fallbacks() {
     let p = project(vec![(TrackKind::Audio, vec![media(&snd, 0.0, 2.0)])], vec![snd]);
 
     let gif = plan(&p, ExportFormat::Gif);
-    assert!(!gif.graph.contains("aout") && input_files(&gif) == ["pipe:0"]);
+    assert!(gif.mix.is_none() && input_files(&gif) == ["pipe:0"]);
     assert!(gif.graph.contains("palettegen") && gif.output.join(" ").contains("-c:v gif"));
     // GIF fps is capped.
     assert_eq!(gif.video.unwrap().fps, 15.0);
 
     let audio = plan(&p, ExportFormat::Audio);
-    assert!(!audio.graph.contains("vout") && audio.output.join(" ").contains("-c:a aac"));
+    assert!(audio.graph.is_empty() && audio.output.join(" ").contains("-c:a aac"));
+    // Sound only: no filter graph at all, the mix mapped as it is.
+    let args = audio.args(Path::new("o.m4a"), None, &caps());
+    assert!(!args.iter().any(|a| a.contains("filter_complex")) && args.windows(2).any(|w| w == ["-map", "0:a"]), "{args:?}");
     assert!(audio.video.is_none() && audio.args(Path::new("o.m4a"), None, &caps()).contains(&"-nostdin".to_string()));
     assert!(audio.output.join(" ").contains("-f ipod"));
 
@@ -261,7 +268,7 @@ fn hardware_encodes_the_compositor_pipe_and_uploads_vaapi_frames() {
     assert!(plan.hardware);
     assert_eq!(plan.encoder.as_deref(), Some("h264_vaapi"));
     assert!(plan.video.is_some());
-    assert_eq!(input_files(&plan), ["pipe:0"]);
+    assert_eq!(input_files(&plan)[0], "pipe:0");
     assert!(plan.graph.contains("format=nv12,hwupload[vout]"), "{}", plan.graph);
     assert!(plan.inputs.iter().any(|a| a == "-init_hw_device"));
     let mut st = settings(ExportFormat::Mp4);
@@ -272,36 +279,16 @@ fn hardware_encodes_the_compositor_pipe_and_uploads_vaapi_frames() {
 }
 
 #[test]
-fn many_clips_from_one_file_share_inputs() {
-    let v = asset(MediaKind::Video, "-interview.mp4", true);
+fn many_clips_from_one_file_are_one_source() {
+    let mut v = asset(MediaKind::Video, "-interview.mp4", true);
     let other = asset(MediaKind::Audio, "music.wav", true);
-    // 300 one-second clips cut from all over one long recording, and a far-off second file.
-    let mut v = v;
     v.meta.duration = Some(3600.0);
     let clips: Vec<Clip> = (0..300).map(|n| Clip { in_point: ((n * 7919) % 3500) as f64, ..media(&v, n as f64, 1.0) }).collect();
     let p = project(vec![(TrackKind::Video, clips), (TrackKind::Audio, vec![media(&other, 0.0, 2.0)])], vec![v, other]);
-    let plan = plan(&p, ExportFormat::Mp4);
-    let files = input_files(&plan);
-    assert!(files.len() <= MAX_INPUTS + 1, "{} inputs", files.len());
-    assert_eq!(files.iter().filter(|f| **f == "music.wav").count(), 1);
-    // A path that looks like an option is still read as a file.
-    let safe = Path::new(".").join("-interview.mp4");
-    assert!(files.contains(&safe.to_str().unwrap()), "{files:?}");
-    assert_eq!(plan.sources.len(), 2);
-    let g = &plan.graph;
-    assert_eq!(g.matches("adelay=").count(), 299, "every clip but the first is delayed to its start");
-    assert!(g.contains("amix=inputs=301:"), "{g}");
-    // Every split output is used once.
-    for (i, chain) in g.split(";\n").enumerate().filter(|(_, c)| c.contains("asplit=")) {
-        let n: usize = chain.split("asplit=").nth(1).unwrap().split('[').next().unwrap().parse().unwrap();
-        let input = chain[1..].split(':').next().unwrap();
-        for k in 0..n {
-            assert_eq!(g.matches(&format!("[s{input}_{k}]")).count(), 2, "chain {i}: {chain}");
-        }
-    }
-    // A short, sparse timeline keeps one seeked input per clip.
-    let few = Project { tracks: vec![Track { clips: p.tracks[0].clips[..3].to_vec(), ..Track::new(TrackKind::Video, "t") }], ..p.clone() };
-    assert_eq!(input_files(&plan_of(&few)).len(), 4);
+    let plan = plan_of(&p);
+    assert_eq!(plan.sources, [PathBuf::from("-interview.mp4"), PathBuf::from("music.wav")]);
+    // ffmpeg reads the picture pipe and the mix, nothing else.
+    assert_eq!(input_files(&plan).len(), 2);
 }
 
 fn plan_of(p: &Project) -> Plan {
