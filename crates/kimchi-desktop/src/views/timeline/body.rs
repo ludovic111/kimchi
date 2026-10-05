@@ -895,15 +895,21 @@ impl TimelineBody {
                 };
                 let name_el = match &renaming {
                     Some((rid, input)) if *rid == id => div().flex_1().min_w_0().child(crate::ui::stop(input.clone())).into_any_element(),
-                    _ => div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(sz::SM))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(t.text_2)
-                        .child(track.name.clone())
-                        .into_any_element(),
+                    _ => {
+                        let full: gpui::SharedString = track.name.clone().into();
+                        div()
+                            .id(("track-name", i))
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(sz::SM))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(t.text_2)
+                            // The whole name when the header cuts it short.
+                            .tooltip(move |_, cx| crate::ui::tooltip(full.clone(), cx))
+                            .child(track.name.clone())
+                            .into_any_element()
+                    }
                 };
                 let any_on = track.muted || track.hidden || track.locked;
                 Some(

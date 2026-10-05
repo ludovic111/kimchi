@@ -519,3 +519,26 @@ fn dialogs_fit_the_smallest_window(cx: &mut TestAppContext) {
         cx.update(|_, cx| cx.store().update(cx, |s, cx| s.close_dialog(cx)));
     }
 }
+
+/// The panel shortcuts and `ui.setLayout` close and open the side panels; the preview takes the room.
+#[gpui::test]
+fn side_panels_close_and_open(cx: &mut TestAppContext) {
+    let (f, _, cx) = setup(cx);
+    resize(cx, 1600., 1000.);
+    let preview_w = |cx: &mut VisualTestContext| f32::from(bounds_of(cx, "preview").unwrap().size.width);
+    let before = preview_w(cx);
+    cx.simulate_keystrokes(&format!("{M}-alt-i"));
+    resize(cx, 1600., 1000.);
+    assert!(bounds_of(cx, "inspector").is_none(), "the shortcut hides the inspector");
+    assert!(preview_w(cx) > before + 200.);
+    remote(&f, cx, "ui.setLayout", json!({ "leftOpen": false }));
+    resize(cx, 1600., 1000.);
+    assert!(bounds_of(cx, "left-panel").is_none() && bounds_of(cx, "rail").is_some(), "the rail stays");
+    let state = f.call("ui.state", json!({}));
+    assert_eq!((&state["layout"]["leftOpen"], &state["layout"]["inspectorOpen"]), (&json!(false), &json!(false)), "{state}");
+    // A tab asked for opens the left panel again; so does the inspector's shortcut.
+    cx.simulate_keystrokes(&format!("{M}-3"));
+    cx.simulate_keystrokes(&format!("{M}-alt-i"));
+    resize(cx, 1600., 1000.);
+    assert!(bounds_of(cx, "left-panel").is_some() && bounds_of(cx, "inspector").is_some());
+}

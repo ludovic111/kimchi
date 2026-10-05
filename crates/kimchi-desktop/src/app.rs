@@ -733,6 +733,18 @@ impl Workspace {
         self.store.update(cx, |s, cx| if s.dialog == Some(Dialog::Shortcuts) { s.close_dialog(cx) } else { s.open_dialog(Dialog::Shortcuts, cx) });
     }
 
+    fn toggle_left_panel(&mut self, _: &ToggleLeftPanel, _: &mut Window, cx: &mut Context<Self>) {
+        if self.has_project(cx) {
+            self.editor.update(cx, |e, cx| e.toggle_left(cx));
+        }
+    }
+
+    fn toggle_inspector(&mut self, _: &ToggleInspector, _: &mut Window, cx: &mut Context<Self>) {
+        if self.has_project(cx) {
+            self.editor.update(cx, |e, cx| e.toggle_inspector(cx));
+        }
+    }
+
     fn toggle_agent(&mut self, _: &ToggleAgent, _: &mut Window, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| s.set_agent_open(!s.agent_open, cx));
     }
@@ -1008,6 +1020,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::add_marker))
             .on_action(cx.listener(Self::add_text))
             .on_action(cx.listener(Self::toggle_agent))
+            .on_action(cx.listener(Self::toggle_left_panel))
+            .on_action(cx.listener(Self::toggle_inspector))
             .on_action(cx.listener(Self::toggle_jobs))
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::open_settings))

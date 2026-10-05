@@ -178,6 +178,8 @@ impl Palette {
                 ]);
             }
             v.push(Cmd::action("Agent", "bot", act::ToggleAgent).keywords("assistant chat ai").ai());
+            v.push(Cmd::action("Show / hide the left panel", "panel-left", act::ToggleLeftPanel).keywords("sidebar media tabs layout"));
+            v.push(Cmd::action("Show / hide the inspector", "panel-right", act::ToggleInspector).keywords("properties sidebar layout"));
         }
         v.extend([
             Cmd::action("New project", "file-plus", act::NewProject),

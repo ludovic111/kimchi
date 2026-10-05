@@ -68,6 +68,8 @@ pub const ACTIONS: &[(&str, Perm)] = &[
     ("ShowMotion", Perm::Edit),
     ("ShowCaptions", Perm::Edit),
     ("ToggleAgent", Perm::Edit),
+    ("ToggleLeftPanel", Perm::Edit),
+    ("ToggleInspector", Perm::Edit),
     ("ToggleJobs", Perm::Edit),
     ("ShowShortcuts", Perm::Edit),
     ("OpenSettings", Perm::Edit),

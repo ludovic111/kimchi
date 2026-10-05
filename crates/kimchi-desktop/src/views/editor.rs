@@ -225,6 +225,18 @@ impl Editor {
         cx.notify();
     }
 
+    /// The left panel's button and shortcut: shows it or hides it.
+    pub fn toggle_left(&mut self, cx: &mut Context<Self>) {
+        let shown = self.left_shown();
+        self.set_left_open(!shown, cx);
+    }
+
+    /// The inspector's button and shortcut.
+    pub fn toggle_inspector(&mut self, cx: &mut Context<Self>) {
+        let shown = self.solved.inspector != Dock::Hidden;
+        self.set_inspector_open(!shown, cx);
+    }
+
     /// A click on a tab of the rail: shows it, or closes the panel when it is the one showing.
     fn pick_tab(&mut self, tab: LeftTab, cx: &mut Context<Self>) {
         if self.store.read(cx).left_tab == tab && self.left_shown() {
@@ -537,11 +549,11 @@ impl Editor {
                     .when(!studio_open, |d| {
                         let (e1, e2) = (this.clone(), this.clone());
                         d.child(sep())
-                            .child(Button::icon("toggle-left", "panel-left", if left_on { "Hide the left panel" } else { "Show the left panel" }).selected(left_on).on_click(move |_, _, cx| {
-                                e1.update(cx, |e, cx| e.set_left_open(!left_on, cx))
+                            .child(Button::icon("toggle-left", "panel-left", tip(if left_on { "Hide the left panel" } else { "Show the left panel" }, &act::ToggleLeftPanel)).selected(left_on).on_click(move |_, _, cx| {
+                                e1.update(cx, |e, cx| e.toggle_left(cx))
                             }))
-                            .child(Button::icon("toggle-inspector", "panel-right", if insp_on { "Hide the inspector" } else { "Show the inspector" }).selected(insp_on).on_click(move |_, _, cx| {
-                                e2.update(cx, |e, cx| e.set_inspector_open(!insp_on, cx))
+                            .child(Button::icon("toggle-inspector", "panel-right", tip(if insp_on { "Hide the inspector" } else { "Show the inspector" }, &act::ToggleInspector)).selected(insp_on).on_click(move |_, _, cx| {
+                                e2.update(cx, |e, cx| e.toggle_inspector(cx))
                             }))
                     })
                     .child(sep())
