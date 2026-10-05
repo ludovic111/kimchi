@@ -103,21 +103,21 @@ impl AudioOut {
         let wanted = device
             .supported_output_configs()
             .ok()
-            .and_then(|mut it| it.find(|c| c.min_sample_rate() <= SAMPLE_RATE && c.max_sample_rate() >= SAMPLE_RATE && c.sample_format() == cpal::SampleFormat::F32))
-            .map(|c| c.with_sample_rate(SAMPLE_RATE));
+            .and_then(|mut it| it.find(|c| c.min_sample_rate().0 <= SAMPLE_RATE && c.max_sample_rate().0 >= SAMPLE_RATE && c.sample_format() == cpal::SampleFormat::F32))
+            .map(|c| c.with_sample_rate(cpal::SampleRate(SAMPLE_RATE)));
         let config = wanted.unwrap_or(supported);
         if config.sample_format() != cpal::SampleFormat::F32 {
             tracing::warn!("audio device doesn't take f32 samples; playing silently");
             return None;
         }
         let out_channels = config.channels() as usize;
-        let ratio = SAMPLE_RATE as f64 / config.sample_rate() as f64;
+        let ratio = SAMPLE_RATE as f64 / config.sample_rate().0 as f64;
         let buf = buffer.clone();
         // Fractional read position for resampling (linear).
         let mut pos = 0.0f64;
         let stream = device
             .build_output_stream::<f32, _, _>(
-                config.config(),
+                &config.config(),
                 move |data: &mut [f32], _| {
                     let volume = *buf.volume.lock();
                     let mut q = buf.samples.lock();
