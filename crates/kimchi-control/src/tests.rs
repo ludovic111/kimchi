@@ -857,3 +857,232 @@ async fn window_actions_are_named_and_checked() {
     let e = registry::call(&s, Source::Cli, "agent.runs", json!({})).await.unwrap_err();
     assert!(e.contains("built-in agent runs"), "{e}");
 }
+
+// ---- audio -----------------------------------------------------------------------------------
+
+/// A sine tone as a WAV file (the test is skipped without ffmpeg).
+fn tone(dir: &std::path::Path, name: &str, hz: u32, seconds: u32) -> Option<std::path::PathBuf> {
+    let tools = kimchi_media::Tools::locate().ok()?;
+    let out = dir.join(name);
+    let ok = std::process::Command::new(&tools.ffmpeg).args(["-y", "-v", "error", "-f", "lavfi", "-i", &format!("sine=frequency={hz}:duration={seconds}")]).arg(&out).status().ok()?.success();
+    ok.then_some(out)
+}
+
+fn undo_steps(s: &Session) -> usize {
+    s.read(|ed| ed.undo_steps().len()).unwrap()
+}
+
+/// Tracks, clips, buses, sends and the master: every edit one undo step, names everywhere,
+/// mistakes explained.
+#[tokio::test(flavor = "multi_thread")]
+async fn audio_mix_tracks_clips_buses_and_master() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Cli, "project.create", json!({ "name": "Mix" })).await;
+    let Some(wav) = tone(dir.path(), "voice.wav", 440, 4) else { return eprintln!("ffmpeg not found; skipping") };
+    ok(&s, Source::Cli, "media.import", json!({ "paths": [wav], "place": true, "start": 0, "trackId": "Audio 1" })).await;
+
+    // Track: fader, pan, solo; a drag is one step; mistakes are explained.
+    let before = undo_steps(&s);
+    ok(&s, Source::Agent, "audio.setTrack", json!({ "trackId": "audio 1", "gainDb": -3, "coalesce": "drag" })).await;
+    let t = ok(&s, Source::Agent, "audio.setTrack", json!({ "trackId": "Audio 1", "gainDb": -6, "pan": 0.25, "coalesce": "drag" })).await;
+    assert_eq!((t["gainDb"].as_f64(), t["pan"].as_f64()), (Some(-6.0), Some(0.25)), "{t}");
+    assert_eq!(undo_steps(&s), before + 1, "a drag is one undo step");
+    let e = registry::call(&s, Source::Cli, "audio.setTrack", json!({ "trackId": "Audio 1", "gainDb": 20 })).await.unwrap_err();
+    assert!(e.contains("+12 dB"), "{e}");
+    let e = registry::call(&s, Source::Cli, "audio.setTrack", json!({ "trackId": "Audio 1", "pan": 2 })).await.unwrap_err();
+    assert!(e.contains("-1 (left)"), "{e}");
+    let e = registry::call(&s, Source::Cli, "audio.setTrack", json!({ "trackId": "Audoi 1", "gainDb": 0 })).await.unwrap_err();
+    assert!(e.contains("Did you mean Audio 1"), "{e}");
+    let e = registry::call(&s, Source::Cli, "audio.setTrack", json!({ "trackId": "Video 1", "armed": true })).await.unwrap_err();
+    assert!(e.contains("audio tracks"), "{e}");
+    ok(&s, Source::Window, "history.undo", json!({})).await;
+    assert_eq!(s.project().unwrap().tracks[1].mix.gain_db, 0.0, "undo puts the fader back");
+
+    // Clips: gain in dB, fade shape, channels; only clips with sound.
+    let c = ok(&s, Source::Cli, "audio.setClip", json!({ "clipIds": ["voice.wav"], "gainDb": -6, "fadeCurve": "equal power", "channels": "mono", "pitch": 2, "preservePitch": false })).await;
+    assert!((c[0]["volume"].as_f64().unwrap() - 0.501).abs() < 1e-3, "{c}");
+    assert_eq!(c[0]["fadeCurve"], "equalPower");
+    assert_eq!(c[0]["channels"], "mono");
+    let e = registry::call(&s, Source::Cli, "audio.setClip", json!({ "clipIds": ["voice.wav"], "fadeCurve": "logarithmic" })).await.unwrap_err();
+    assert!(e.contains("linear, equalPower"), "{e}");
+    let e = registry::call(&s, Source::Cli, "audio.setClip", json!({ "clipIds": ["voice.wav"], "pitch": 30 })).await.unwrap_err();
+    assert!(e.contains("semitones"), "{e}");
+    ok(&s, Source::Cli, "clip.addText", json!({ "text": "Title", "start": 0 })).await;
+    let e = registry::call(&s, Source::Cli, "audio.setClip", json!({ "clipIds": ["Title"], "gainDb": 0 })).await.unwrap_err();
+    assert!(e.contains("has no sound"), "{e}");
+    // Clip pan animates like any clip property.
+    ok(&s, Source::Cli, "clip.setKeyframes", json!({ "clipId": "voice.wav", "property": "pan", "keyframes": [[0, -1], [2, 1]] })).await;
+    let p = s.project().unwrap();
+    let clip = p.clips().find(|(_, c)| c.name == "voice.wav").unwrap().1;
+    assert!((clip.pan_at(1.0)).abs() < 1e-9);
+
+    // A reverb bus, a send to it, the track feeding it; removing it routes back to the master.
+    let bus = ok(&s, Source::Cli, "audio.addBus", json!({ "name": "Reverb", "effect": "space" })).await;
+    assert_eq!(bus["effects"][0]["effect"], "Space", "{bus}");
+    let t = ok(&s, Source::Cli, "audio.setSend", json!({ "trackId": "Audio 1", "busId": "reverb", "levelDb": -12 })).await;
+    assert_eq!(t["sends"][0]["levelDb"], -12.0, "{t}");
+    let e = registry::call(&s, Source::Cli, "audio.setTrack", json!({ "trackId": "Audio 1", "output": "Reverbb" })).await;
+    assert!(e.unwrap_err().contains("Did you mean Reverb"));
+    ok(&s, Source::Cli, "audio.addBus", json!({ "name": "Dialogue" })).await;
+    let t = ok(&s, Source::Cli, "audio.setTrack", json!({ "trackId": "Audio 1", "output": "Dialogue" })).await;
+    assert_eq!(t["output"], "Dialogue");
+    ok(&s, Source::Cli, "audio.setBus", json!({ "busId": "Dialogue", "gainDb": -2, "name": "Voices" })).await;
+    ok(&s, Source::Cli, "audio.removeBus", json!({ "busId": "Voices" })).await;
+    let p = s.project().unwrap();
+    assert_eq!(p.tracks[1].mix.output, None, "a track whose bus is gone goes to the master");
+    ok(&s, Source::Cli, "audio.removeSend", json!({ "trackId": "Audio 1", "busId": "Reverb" })).await;
+    assert!(s.project().unwrap().tracks[1].mix.sends.is_empty());
+
+    // The master: loudness by name, off again, the limiter's ceiling checked.
+    let m = ok(&s, Source::Cli, "audio.setMaster", json!({ "loudness": "podcast", "ceilingDb": -2 })).await;
+    assert_eq!((m["loudness"].as_f64(), m["loudnessFor"].as_str()), (Some(-16.0), Some("podcast")), "{m}");
+    let m = ok(&s, Source::Cli, "audio.setMaster", json!({ "loudness": null })).await;
+    assert!(m["loudness"].is_null(), "{m}");
+    let e = registry::call(&s, Source::Cli, "audio.setMaster", json!({ "ceilingDb": 3 })).await.unwrap_err();
+    assert!(e.contains("ceiling"), "{e}");
+
+    // The overview reads it all back, with what may surprise.
+    ok(&s, Source::Cli, "audio.setTrack", json!({ "trackId": "Audio 1", "solo": true })).await;
+    let o = ok(&s, Source::Mcp, "audio.overview", json!({})).await;
+    assert_eq!(o["buses"][0]["name"], "Reverb", "{o}");
+    assert!(o["problems"].as_array().unwrap().iter().any(|p| p.as_str().unwrap().contains("Solo is on")), "{o}");
+    assert!(o["problems"].as_array().unwrap().iter().any(|p| p.as_str().unwrap().contains("Nothing feeds the bus Reverb")), "{o}");
+    assert_eq!(o["clips"][0]["channels"], "mono", "{o}");
+}
+
+/// Effect chains in ryolune's insert format: add by name with typed values, change, bypass,
+/// move, presets, copy, remove; automation of faders and parameters.
+#[tokio::test(flavor = "multi_thread")]
+async fn audio_effects_and_automation() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Cli, "project.create", json!({})).await;
+    let list = ok(&s, Source::Mcp, "audio.effects", json!({ "query": "eq" })).await;
+    assert!(list.as_array().unwrap().iter().any(|e| e["id"] == "stock:Channel EQ"), "{list}");
+    let params = ok(&s, Source::Mcp, "audio.effectParams", json!({ "effect": "Channel EQ" })).await;
+    assert_eq!(params["params"][0]["name"], "Low Gain", "{params}");
+
+    let fx = ok(&s, Source::Agent, "audio.addEffect", json!({ "target": "Audio 1", "effect": "channel eq", "params": { "low gain": "-6 dB", "High Freq": "8k" } })).await;
+    assert!(fx["params"]["Low Gain"].as_str().unwrap().starts_with("-6.0"), "{fx}");
+    assert!(fx["params"]["High Freq"].as_str().unwrap().starts_with("8000"), "{fx}");
+    let slot = fx["slot"].as_str().unwrap().to_string();
+    let e = registry::call(&s, Source::Cli, "audio.addEffect", json!({ "target": "Audio 1", "effect": "Chanel EQ" })).await.unwrap_err();
+    assert!(e.contains("Did you mean `Channel EQ`"), "{e}");
+    let e = registry::call(&s, Source::Cli, "audio.addEffect", json!({ "target": "Audio 1", "effect": "Space", "params": { "Sise": 50 } })).await.unwrap_err();
+    assert!(e.contains("Did you mean `Size`"), "{e}");
+    let e = registry::call(&s, Source::Cli, "audio.addEffect", json!({ "target": "Audio 1", "effect": "Space", "params": { "Mix": 300 } })).await.unwrap_err();
+    assert!(e.contains("goes from"), "{e}");
+    let e = registry::call(&s, Source::Cli, "audio.addEffect", json!({ "target": "Nowhere", "effect": "Space" })).await.unwrap_err();
+    assert!(e.contains("No track, bus or clip"), "{e}");
+
+    ok(&s, Source::Cli, "audio.addEffect", json!({ "target": "track:Audio 1", "effect": "Space", "index": 0 })).await;
+    let chain = || s.project().unwrap().tracks[1].mix.effects.clone();
+    assert_eq!(chain()[0].name, "Space");
+    ok(&s, Source::Cli, "audio.moveEffect", json!({ "target": "Audio 1", "slot": "Space", "index": 1 })).await;
+    assert_eq!(chain()[1].name, "Space");
+    let v = ok(&s, Source::Cli, "audio.setEffect", json!({ "target": "Audio 1", "slot": 2, "params": { "Mix": 45 }, "bypassed": true })).await;
+    assert!(v["params"]["Mix"].as_str().unwrap().starts_with("45") && v["bypassed"] == true, "{v}");
+    let v = ok(&s, Source::Cli, "audio.applyPreset", json!({ "target": "Audio 1", "slot": slot, "preset": "telephone" })).await;
+    assert!(v["params"]["Low Gain"].as_str().unwrap().starts_with("-15.0"), "{v}");
+    let e = registry::call(&s, Source::Cli, "audio.applyPreset", json!({ "target": "Audio 1", "slot": "Space", "preset": "Cathedrall" })).await.unwrap_err();
+    assert!(e.contains("Did you mean `Cathedral`"), "{e}");
+    let presets = ok(&s, Source::Cli, "audio.effectPresets", json!({ "effect": "Space" })).await;
+    assert!(presets.as_array().unwrap().iter().any(|p| p["preset"] == "Small room"), "{presets}");
+
+    // The chain goes to the master and a bus as one step.
+    ok(&s, Source::Cli, "audio.addBus", json!({ "name": "Group" })).await;
+    let before = undo_steps(&s);
+    ok(&s, Source::Cli, "audio.copyEffects", json!({ "from": "Audio 1", "to": ["master", "Group"] })).await;
+    assert_eq!(undo_steps(&s), before + 1);
+    let p = s.project().unwrap();
+    assert_eq!(p.mixer.master.effects.len(), 2);
+    assert_eq!(p.mixer.buses[0].mix.effects.len(), 2);
+
+    // Automation: the fader over time, a parameter by its readable name.
+    ok(&s, Source::Cli, "audio.setAutomation", json!({ "target": "Audio 1", "property": "gainDb", "keyframes": [[0, -12], [2, 0, "easeOut"]] })).await;
+    let mix = s.project().unwrap().tracks[1].mix.clone();
+    assert!((mix.gain_db_at(0.0) + 12.0).abs() < 1e-9 && mix.gain_db_at(3.0).abs() < 1e-9);
+    let v = ok(&s, Source::Cli, "audio.addAutomationKey", json!({ "target": "Audio 1", "property": "Space.Mix", "time": 1, "value": "60%" })).await;
+    let key = v["property"].as_str().unwrap().to_string();
+    assert!(key.starts_with("effects.") && key.ends_with(".4"), "{v}");
+    // An automated parameter set by value gets a keyframe at the playhead instead.
+    ok(&s, Source::Cli, "audio.setEffect", json!({ "target": "Audio 1", "slot": "Space", "params": { "Mix": 20 } })).await;
+    let mix = s.project().unwrap().tracks[1].mix.clone();
+    assert_eq!(mix.keyframes[&key].len(), 2, "{:?}", mix.keyframes);
+    let e = registry::call(&s, Source::Cli, "audio.setAutomation", json!({ "target": "master", "property": "pan", "keyframes": [[0, 0]] })).await.unwrap_err();
+    assert!(e.contains("master has no pan"), "{e}");
+    let e = registry::call(&s, Source::Cli, "audio.addAutomationKey", json!({ "target": "Audio 1", "property": "Space.Wetness" })).await.unwrap_err();
+    assert!(e.contains("Did you mean") || e.contains("no parameter"), "{e}");
+    ok(&s, Source::Cli, "audio.removeAutomationKey", json!({ "target": "Audio 1", "property": "gainDb" })).await;
+    assert!(!s.project().unwrap().tracks[1].mix.keyframes.contains_key("gainDb"));
+    // Removing an effect takes its automation with it.
+    ok(&s, Source::Cli, "audio.removeEffect", json!({ "target": "Audio 1", "slot": "Space" })).await;
+    assert!(s.project().unwrap().tracks[1].mix.keyframes.is_empty());
+}
+
+/// Ducking the music under the dialogue, guessed from the tracks; cutting on beats.
+#[tokio::test(flavor = "multi_thread")]
+async fn audio_ducking_and_beat_cuts() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Cli, "project.create", json!({})).await;
+    let (Some(music), Some(voice)) = (tone(dir.path(), "song.wav", 220, 8), tone(dir.path(), "take.wav", 440, 4)) else { return eprintln!("ffmpeg not found; skipping") };
+    ok(&s, Source::Cli, "track.update", json!({ "trackId": "Audio 1", "name": "Music" })).await;
+    ok(&s, Source::Cli, "track.add", json!({ "kind": "audio" })).await;
+    ok(&s, Source::Cli, "track.update", json!({ "trackId": "Audio 2", "name": "Voice" })).await;
+    ok(&s, Source::Cli, "media.import", json!({ "paths": [music], "place": true, "start": 0, "trackId": "Music" })).await;
+    ok(&s, Source::Cli, "media.import", json!({ "paths": [voice], "place": true, "start": 1, "trackId": "Voice" })).await;
+    let d = ok(&s, Source::Agent, "audio.autoDuck", json!({ "amountDb": 10 })).await;
+    assert_eq!((d["music"].clone(), d["dialogue"].clone()), (json!(["Music"]), json!(["Voice"])), "{d}");
+    let p = s.project().unwrap();
+    let duck = p.tracks.iter().find(|t| t.name == "Music").unwrap().mix.duck.clone().unwrap();
+    assert_eq!(duck.amount_db, -10.0);
+    assert_eq!(duck.under, vec![p.tracks.iter().find(|t| t.name == "Voice").unwrap().id]);
+    ok(&s, Source::Cli, "audio.autoDuck", json!({ "off": true, "music": ["Music"] })).await;
+    assert!(s.project().unwrap().tracks.iter().all(|t| t.mix.duck.is_none()));
+
+    // Beats stored with the music (as detection or a song would), then cut on every bar.
+    let p = s.project().unwrap();
+    let mut asset = p.assets.iter().find(|a| a.name == "song.wav").unwrap().clone();
+    asset.beats = Some(kimchi_core::Beats { tempo: 120.0, beats_per_bar: 4, times: (0..16).map(|i| i as f64 * 0.5).collect(), first_downbeat: 0, source: "detected".into() });
+    s.apply("test", Source::Cli, &kimchi_core::Edit::UpdateAsset { asset }, None).unwrap();
+    ok(&s, Source::Cli, "clip.addSolid", json!({ "color": "#202020", "start": 0, "duration": 8, "trackId": "Video 1" })).await;
+    let before = undo_steps(&s);
+    let cut = ok(&s, Source::Agent, "audio.beatCut", json!({ "musicClipId": "song.wav", "every": 4 })).await;
+    // Bars at 0, 2, 4, 6 s: the clip is cut at 2, 4 and 6 (0 is its start).
+    assert_eq!(cut["cuts"], 3, "{cut}");
+    assert_eq!(undo_steps(&s), before + 1);
+    let p = s.project().unwrap();
+    let starts: Vec<f64> = p.tracks[0].clips.iter().map(|c| c.start).collect();
+    assert_eq!(starts, vec![0.0, 2.0, 4.0, 6.0]);
+    let m = ok(&s, Source::Cli, "audio.beatCut", json!({ "musicClipId": "song.wav", "every": 8, "markers": true })).await;
+    assert_eq!(m["markers"], 2, "{m}");
+    let o = ok(&s, Source::Cli, "audio.overview", json!({})).await;
+    assert_eq!(o["beats"][0]["tempo"], 120.0, "{o}");
+}
+
+/// Window-only audio commands need the window; settings take audio values.
+#[tokio::test(flavor = "multi_thread")]
+async fn audio_live_commands_and_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Cli, "project.create", json!({})).await;
+    for name in ["audio.meters", "audio.devices", "audio.showMixer"] {
+        let e = registry::call(&s, Source::Cli, name, json!({})).await.unwrap_err();
+        assert!(e.contains("needs the kimchi window"), "{name}: {e}");
+    }
+    let e = registry::call(&s, Source::Cli, "audio.record", json!({ "action": "start" })).await.unwrap_err();
+    assert!(e.contains("needs the kimchi window"), "{e}");
+    ok(&s, Source::Cli, "audio.scrub", json!({ "on": false })).await;
+    assert!(!s.settings().audio.scrub);
+    ok(&s, Source::Cli, "app.setSetting", json!({ "key": "audio.pluginFolders", "value": ["/opt/plugins"] })).await;
+    assert_eq!(s.settings().audio.plugin_folders, vec!["/opt/plugins".to_string()]);
+    let e = registry::call(&s, Source::Cli, "app.setSetting", json!({ "key": "audio.defaultLoudness", "value": 3 })).await.unwrap_err();
+    assert!(e.contains("-40 to -5"), "{e}");
+    // A song that isn't a song.
+    let e = registry::call(&s, Source::Cli, "audio.importSong", json!({ "path": dir.path().join("a.wav") })).await.unwrap_err();
+    assert!(e.contains("isn't a ryolune song"), "{e}");
+    let e = registry::call(&s, Source::Cli, "audio.openInRyolune", json!({})).await.unwrap_err();
+    assert!(e.contains("clipId"), "{e}");
+}

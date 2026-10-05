@@ -475,6 +475,7 @@ pub fn current_value(clip: &Clip, property: &str, t: f64) -> CmdResult<kimchi_co
         "opacity" => KeyValue::Number(pl.opacity),
         "blur" => KeyValue::Number(pl.blur),
         "volume" => KeyValue::Number(clip.volume_at(t)),
+        "pan" => KeyValue::Number(clip.pan_at(t)),
         "fontSize" => KeyValue::Number(style.ok_or("fontSize is for text clips")?.font_size),
         "letterSpacing" => KeyValue::Number(style.ok_or("letterSpacing is for text clips")?.letter_spacing),
         "color" => KeyValue::Text(style.ok_or("color is for text clips")?.color),

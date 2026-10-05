@@ -16,6 +16,7 @@ pub struct Settings {
     pub appearance: Appearance,
     pub generate: GenerateDefaults,
     pub diagnostics: DiagnosticsSettings,
+    pub audio: AudioSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -89,6 +90,43 @@ pub struct DiagnosticsSettings {
 impl Default for DiagnosticsSettings {
     fn default() -> Self {
         Self { log_level: "debug".into() }
+    }
+}
+
+/// Settings › Audio: devices, loudness, plugins and how the timeline treats sound.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AudioSettings {
+    /// The speakers the preview plays through, by name (empty: the system's default).
+    pub output_device: String,
+    /// The microphone voice-overs are recorded from, by name (empty: the system's default).
+    pub input_device: String,
+    /// Loudness clips are normalised to (`audio.normalize`), in LUFS.
+    pub default_loudness: f64,
+    /// More folders to look for plugins in, besides the standard ones.
+    pub plugin_folders: Vec<String>,
+    /// Hear the sound while the playhead is dragged.
+    pub scrub: bool,
+    /// Dragged clips and the playhead also stick to the beats of music on the timeline.
+    pub snap_to_beats: bool,
+    /// Seconds counted in before a voice-over take starts recording.
+    pub count_in: f64,
+    /// Render ryolune songs again when the window comes back to the front and they were saved.
+    pub refresh_songs: bool,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            output_device: String::new(),
+            input_device: String::new(),
+            default_loudness: -16.0,
+            plugin_folders: vec![],
+            scrub: true,
+            snap_to_beats: false,
+            count_in: 3.0,
+            refresh_songs: true,
+        }
     }
 }
 
@@ -166,7 +204,7 @@ impl Settings {
         let same_type = matches!(
             (&*slot, &value),
             (Value::Bool(_), Value::Bool(_)) | (Value::String(_), Value::String(_)) | (Value::Number(_), Value::Number(_))
-        );
+        ) || matches!((&*slot, &value), (Value::Array(_), Value::Array(items)) if items.iter().all(Value::is_string));
         if !same_type {
             return Err(format!("`{key}` expects {}, got {value}", type_name(slot)));
         }
@@ -174,6 +212,11 @@ impl Settings {
             && !value.as_str().is_some_and(|v| allowed.contains(&v))
         {
             return Err(format!("`{key}` is one of {}, not {value}.", allowed.iter().map(|a| format!("\"{a}\"")).collect::<Vec<_>>().join(", ")));
+        }
+        if let (Some((lo, hi)), Some(v)) = (range(key), value.as_f64())
+            && !(lo..=hi).contains(&v)
+        {
+            return Err(format!("`{key}` goes from {lo} to {hi}, not {v}."));
         }
         *slot = value;
         *self = serde_json::from_value(root).map_err(|e| e.to_string())?;
@@ -191,6 +234,15 @@ pub fn choices(key: &str) -> Option<&'static [&'static str]> {
     })
 }
 
+/// The range of a number setting, for those with one.
+pub fn range(key: &str) -> Option<(f64, f64)> {
+    Some(match key {
+        "audio.defaultLoudness" => (-40.0, -5.0),
+        "audio.countIn" => (0.0, 10.0),
+        _ => return None,
+    })
+}
+
 fn unknown(key: &str) -> String {
     format!("Unknown setting `{key}`. app.settings lists them.")
 }
@@ -200,6 +252,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Bool(_) => "true or false",
         Value::Number(_) => "a number",
         Value::String(_) => "a string",
+        Value::Array(_) => "a list of strings",
         _ => "an object",
     }
 }

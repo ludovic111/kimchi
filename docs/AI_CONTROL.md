@@ -335,6 +335,70 @@ kimchi-cli captions.transcribe --language en
 kimchi-cli export.start --path ~/Movies/cut.mp4 --captions both --wait
 ```
 
+## Sound: the mix, effects and ryolune
+
+Every sample of the preview and the export comes from kimchi's mixer. Read the mix first:
+`audio.overview` gives every track's fader, pan, mute, solo, routing, sends, ducking and effects
+(with their parameters as ryolune shows them: `"-6.0 dB"`, `"Hall"`), the buses, the master, clips
+whose sound was changed, ryolune songs (and whether they were saved since), the beats found in music,
+and problems (a solo left on, an effect missing on this computer, a bus nothing feeds).
+
+- **Tracks and clips**: `audio.setTrack {trackId, gainDb, pan, muted, solo, output, duck, armed}`
+  (`output` is `"master"` or a bus; `duck` is `true`, `false` or `{under, amountDb, thresholdDb, attack,
+  release}`); `audio.setClip {clipIds, gainDb | volume, pan, fadeIn, fadeOut, fadeCurve, channels, pitch,
+  preservePitch, muted}`. Fade curves are `linear`, `equalPower`, `exponential`, `sCurve`; channels
+  `stereo`, `mono`, `left`, `right`, `swap`. A clip's level and pan over time are clip keyframes
+  (`clip.setKeyframes {property: "volume" | "pan"}`).
+- **Buses and the master**: `audio.addBus {name, effect}` (a shared reverb: `effect: "Space"`),
+  `audio.setBus`, `audio.removeBus`, `audio.setSend {trackId, busId, levelDb, preFader}`,
+  `audio.removeSend`; `audio.setMaster {gainDb, limiter, ceilingDb, loudness}` where `loudness` is LUFS,
+  `"youtube"` (−14), `"podcast"` (−16), `"broadcast"` (−23) or `null`: exports are brought to it.
+- **Effects** are ryolune's: its stock effects (Channel EQ, ryolune Comp, Space, Echo, De-Esser, Limiter…)
+  and the CLAP, VST3, Audio Unit and ryolune plugins on the computer, in ryolune's own insert format, so a
+  chain moves between the two apps unchanged. `audio.effects {query}` lists them, `audio.effectParams
+  {effect | target, slot}` their parameters. A `target` is a track, a bus or a clip (id or name; prefix
+  `track:`, `bus:` or `clip:` when names clash) or `"master"`; a `slot` is a slot id, the effect's name or
+  its position from 1. `audio.addEffect {target, effect, params, index}`, `audio.setEffect {target, slot,
+  params, bypassed, reset}` (values as numbers in the parameter's unit or as text: `"-6 dB"`, `"2.5k"`,
+  `"Hall"`), `audio.moveEffect`, `audio.removeEffect`, `audio.copyEffects {from, to}`,
+  `audio.effectPresets` / `audio.applyPreset`, `audio.rescanPlugins`.
+- **Automation** on tracks, buses and the master: `audio.setAutomation {target, property, keyframes}`,
+  `audio.addAutomationKey`, `audio.removeAutomationKey`; `property` is `gainDb`, `pan` or
+  `"<effect>.<parameter>"` (`"Space.Mix"`). Times are timeline seconds. An automated parameter set with
+  `audio.setEffect` gets a keyframe at the playhead.
+- **Analysis and quick fixes**: `audio.measure {clipId | trackId | from, to}` (EBU R128: integrated LUFS,
+  range, true peak), `audio.normalize {clipIds, target, mode}` (speech: −16 LUFS by default),
+  `audio.detectBeats {assetId | clipId}` (stored with the media; the timeline draws the beats and can
+  snap to them, `app.setSetting audio.snapToBeats`), `audio.beatCut {musicClipId, every, trackId, from,
+  to, markers}` (cut the picture on the music), `audio.autoDuck {music, dialogue, amountDb}` (the
+  music tracks go down while the dialogue speaks; guessed from names and content when not given).
+- **ryolune songs**: `audio.importSong {path, as: "mix" | "stems", markers}` (or `media.import` of a
+  `.ryolune` file) renders the song with ryolune's own engine onto the timeline, with its beats;
+  `audio.refreshSongs` renders it again once it was saved in ryolune (the window does it by itself when a
+  project opens and when it comes back to the front); `audio.openInRyolune {clipId}` opens the song there.
+  `handoff.toRyolune {as: "session"}` sends the whole audio timeline to ryolune as a multitrack session
+  (one track per kimchi track, with its clips, fades, gains, effects, fader and pan).
+- **The window** (needs the running app): `audio.meters` (levels playing now), `audio.devices`,
+  `audio.record {action: start | stop | cancel | status}` (a voice-over take on the armed track at the
+  playhead, after a count-in), `audio.showMixer {open, layout: "replace" | "beside", target, slot}`;
+  `ui.state` reports the mixer as `audio`. `audio.scrub {on}` and the `audio.*` settings
+  (`outputDevice`, `inputDevice`, `defaultLoudness`, `pluginFolders`, `snapToBeats`, `countIn`,
+  `refreshSongs`) are the person's preferences.
+
+```sh
+kimchi-cli audio.overview
+kimchi-cli audio.addEffect --target "Voice" --effect "De-Esser"
+kimchi-cli audio.addEffect --target "Voice" --effect "Channel EQ" --params '{"Low Gain": "-4 dB", "High Gain": "+3 dB"}'
+kimchi-cli audio.addBus --name Reverb --effect Space
+kimchi-cli audio.setSend --trackId Voice --busId Reverb --levelDb -14
+kimchi-cli audio.autoDuck
+kimchi-cli audio.normalize --clipIds '["interview.mov"]'
+kimchi-cli audio.setAutomation --target Music --property gainDb --keyframes '[[0, -30], [2, 0, "easeOut"]]'
+kimchi-cli audio.setMaster --loudness youtube
+kimchi-cli audio.importSong --path ~/Music/theme.ryolune --as stems --markers true
+kimchi-cli audio.beatCut --musicClipId theme --every 4
+```
+
 ## Export
 
 `export.start` renders the open project: the compositor draws every frame (exactly as in the

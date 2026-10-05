@@ -486,6 +486,7 @@ pub const CLIP_PROPS: &[&str] = &[
     "opacity",
     "blur",
     "volume",
+    "pan",
     "fontSize",
     "color",
     "letterSpacing",

@@ -3888,6 +3888,7 @@ dependencies = [
  "minisign-verify",
  "parking_lot",
  "reqwest",
+ "ryolune-engine",
  "semver",
  "serde",
  "serde_json",

@@ -125,6 +125,13 @@ pub const ACTIONS: &[(&str, Perm)] = &[
     ("StudioGraph", Perm::Edit),
     ("StudioHide", Perm::Edit),
     ("StudioUnhide", Perm::Edit),
+    // Sound.
+    ("ToggleMixer", Perm::Edit),
+    ("MuteTrack", Perm::Edit),
+    ("SoloTrack", Perm::Edit),
+    ("ArmTrack", Perm::Edit),
+    ("RecordVoiceOver", Perm::Files),
+    ("AddEffect", Perm::Edit),
 ];
 
 pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
