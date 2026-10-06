@@ -1,14 +1,17 @@
 //! kimchi-agent: the engine behind the Agent panel.
 //!
-//! The panel runs the model the person already has: their Claude Code or Codex
-//! CLI, an Anthropic or OpenAI API key, or a local model in Ollama. Whatever the
+//! The panel runs the model the person already has: their Claude Code, Codex or
+//! Gemini CLI, a key for one of many model APIs (Anthropic, OpenAI, Gemini, OpenRouter,
+//! Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon
+//! Bedrock), or a model on a local server (Ollama, LM Studio, any OpenAI-compatible one).
+//! [`providers`] describes each. Whatever the
 //! provider, the agent acts only through kimchi's command registry
 //! (`kimchi_control::call`), so permissions (`settings.agent.permissions`),
 //! validation and the one undo history behave exactly as for MCP and the CLI.
 //!
 //! * API and local providers get every registry command as a tool
 //!   (`family_verb`) and are run here, as [`Source::Agent`].
-//! * Claude Code and Codex run as child processes with `kimchi-mcp --live`
+//! * Claude Code, Codex and Gemini CLI run as child processes with `kimchi-mcp --live`
 //!   attached; their commands reach the app through the bridge as
 //!   [`Source::Mcp`] and are picked up from the session's event stream.
 //!
@@ -18,8 +21,12 @@
 
 mod api;
 mod cli;
+mod eventstream;
 mod host;
 mod http;
+mod models;
+pub mod providers;
+mod sigv4;
 mod status;
 mod tools;
 
@@ -41,8 +48,10 @@ use tokio_util::sync::CancellationToken;
 
 pub use cli::{cli_executable, mcp_executable};
 pub use host::{Entry, Host, RunInfo, RunState, Snapshot};
-pub use status::{ProviderStatus, provider_status};
-pub use tools::{SYSTEM_PROMPT, TOOL_OUTPUT_LIMIT, ToolDef, tool_defs};
+pub use models::{ModelInfo, ModelList, list as list_models};
+pub use providers::Group;
+pub use status::{Action, KeyStatus, Next, ProviderStatus, provider_status, status_of};
+pub use tools::{RUN_TOOL, SYSTEM_PROMPT, TOOL_OUTPUT_LIMIT, ToolDef, ToolSet, tool_defs};
 
 /// Most model round trips in one run before it stops and says so.
 pub const MAX_STEPS: usize = 40;
@@ -53,88 +62,132 @@ pub const MAX_HISTORY: usize = 80;
 
 // ---- configuration --------------------------------------------------------
 
-/// Which model runs the agent (`settings.agent.provider`).
+/// Which model runs the agent (`settings.agent.provider`). [`providers::ALL`] has the facts
+/// about each.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderKind {
     #[serde(rename = "claude-code")]
     ClaudeCode,
     #[serde(rename = "codex")]
     Codex,
+    #[serde(rename = "gemini-cli")]
+    GeminiCli,
     #[serde(rename = "anthropic")]
     Anthropic,
     #[serde(rename = "openai")]
     OpenAi,
+    #[serde(rename = "gemini")]
+    Gemini,
+    #[serde(rename = "openrouter")]
+    OpenRouter,
+    #[serde(rename = "groq")]
+    Groq,
+    #[serde(rename = "mistral")]
+    Mistral,
+    #[serde(rename = "deepseek")]
+    DeepSeek,
+    #[serde(rename = "xai")]
+    Xai,
+    #[serde(rename = "together")]
+    Together,
+    #[serde(rename = "fireworks")]
+    Fireworks,
+    #[serde(rename = "cerebras")]
+    Cerebras,
+    #[serde(rename = "azure-openai")]
+    AzureOpenAi,
+    #[serde(rename = "bedrock")]
+    Bedrock,
     #[serde(rename = "ollama")]
     Ollama,
+    #[serde(rename = "lmstudio")]
+    LmStudio,
+    #[serde(rename = "openai-compatible")]
+    OpenAiCompatible,
 }
 
 impl ProviderKind {
-    pub const ALL: [ProviderKind; 5] = [ProviderKind::ClaudeCode, ProviderKind::Codex, ProviderKind::Anthropic, ProviderKind::OpenAi, ProviderKind::Ollama];
+    /// Every provider, grouped: the CLIs, the model APIs, the local servers.
+    pub const ALL: [ProviderKind; 19] = [
+        ProviderKind::ClaudeCode,
+        ProviderKind::Codex,
+        ProviderKind::GeminiCli,
+        ProviderKind::Anthropic,
+        ProviderKind::OpenAi,
+        ProviderKind::Gemini,
+        ProviderKind::OpenRouter,
+        ProviderKind::Groq,
+        ProviderKind::Mistral,
+        ProviderKind::DeepSeek,
+        ProviderKind::Xai,
+        ProviderKind::Together,
+        ProviderKind::Fireworks,
+        ProviderKind::Cerebras,
+        ProviderKind::AzureOpenAi,
+        ProviderKind::Bedrock,
+        ProviderKind::Ollama,
+        ProviderKind::LmStudio,
+        ProviderKind::OpenAiCompatible,
+    ];
+
+    pub fn info(self) -> &'static providers::Info {
+        providers::info(self)
+    }
 
     /// The id used in settings.
     pub fn id(self) -> &'static str {
-        match self {
-            ProviderKind::ClaudeCode => "claude-code",
-            ProviderKind::Codex => "codex",
-            ProviderKind::Anthropic => "anthropic",
-            ProviderKind::OpenAi => "openai",
-            ProviderKind::Ollama => "ollama",
-        }
+        self.info().id
     }
 
     pub fn label(self) -> &'static str {
-        match self {
-            ProviderKind::ClaudeCode => "Claude Code",
-            ProviderKind::Codex => "Codex",
-            ProviderKind::Anthropic => "Anthropic API",
-            ProviderKind::OpenAi => "OpenAI API",
-            ProviderKind::Ollama => "Ollama (on this computer)",
-        }
+        self.info().label
     }
 
+    pub fn group(self) -> providers::Group {
+        self.info().group
+    }
+
+    /// An id, or a name people use for it (`claude`, `google`, `aws`, `lm-studio`, `grok`…).
     pub fn parse(id: &str) -> Option<Self> {
-        let id = id.trim().to_ascii_lowercase();
+        let id = id.trim().to_ascii_lowercase().replace([' ', '_'], "-");
+        if let Some(i) = providers::ALL.iter().find(|i| i.id == id) {
+            return Some(i.kind);
+        }
         Some(match id.as_str() {
-            "claude-code" | "claude" | "claudecode" => ProviderKind::ClaudeCode,
-            "codex" => ProviderKind::Codex,
-            "anthropic" => ProviderKind::Anthropic,
-            "openai" => ProviderKind::OpenAi,
-            "ollama" | "local" => ProviderKind::Ollama,
+            "claude" | "claudecode" => ProviderKind::ClaudeCode,
+            "gemini-code" | "geminicli" => ProviderKind::GeminiCli,
+            "google" | "google-gemini" | "ai-studio" | "aistudio" => ProviderKind::Gemini,
+            "x.ai" | "grok" => ProviderKind::Xai,
+            "together-ai" | "togetherai" => ProviderKind::Together,
+            "fireworks-ai" => ProviderKind::Fireworks,
+            "azure" | "azureopenai" | "azure-ai" => ProviderKind::AzureOpenAi,
+            "aws" | "amazon-bedrock" | "aws-bedrock" => ProviderKind::Bedrock,
+            "local" => ProviderKind::Ollama,
+            "lm-studio" => ProviderKind::LmStudio,
+            "openai-compat" | "compatible" | "custom" | "vllm" | "llama.cpp" | "litellm" => ProviderKind::OpenAiCompatible,
             _ => return None,
         })
     }
 
     /// Model used when `settings.agent.model` is empty. Empty for the CLIs (their own
-    /// default) and Ollama (the first installed model).
+    /// default), the local servers (the first model they have) and Azure (a deployment name
+    /// the person gives).
     pub fn default_model(self) -> &'static str {
-        match self {
-            ProviderKind::Anthropic => "claude-sonnet-5-5",
-            ProviderKind::OpenAi => "gpt-5",
-            ProviderKind::ClaudeCode | ProviderKind::Codex | ProviderKind::Ollama => "",
-        }
+        self.info().default_model
     }
 
     pub fn default_base_url(self) -> &'static str {
-        match self {
-            ProviderKind::Anthropic => "https://api.anthropic.com",
-            ProviderKind::OpenAi => "https://api.openai.com/v1",
-            ProviderKind::Ollama => "http://127.0.0.1:11434",
-            ProviderKind::ClaudeCode | ProviderKind::Codex => "",
-        }
+        self.info().default_base_url
     }
 
-    /// Keychain id of the API key, and the environment variable read when it is missing.
+    /// Keychain id of the API key, and the first environment variable read when it is missing.
     pub fn key_source(self) -> Option<(&'static str, &'static str)> {
-        match self {
-            ProviderKind::Anthropic => Some(("anthropic", "ANTHROPIC_API_KEY")),
-            ProviderKind::OpenAi => Some(("openai", "OPENAI_API_KEY")),
-            _ => None,
-        }
+        self.info().key.map(|k| (k.id, k.env.first().copied().unwrap_or("")))
     }
 
     /// Runs as the person's installed CLI, connected back through `kimchi-mcp --live`.
     pub fn is_cli(self) -> bool {
-        matches!(self, ProviderKind::ClaudeCode | ProviderKind::Codex)
+        self.group() == providers::Group::Cli
     }
 }
 
@@ -184,11 +237,30 @@ impl AgentConfig {
         b.trim_end_matches('/').to_string()
     }
 
-    /// The API key: the keychain (`anthropic` / `openai`), else the environment.
+    /// The API key: the keychain, else the provider's environment variables.
     pub fn api_key(&self, session: &Session) -> Option<String> {
-        let (id, env) = self.provider.key_source()?;
-        session.secret(id).or_else(|| std::env::var(env).ok().map(|k| k.trim().to_string()).filter(|k| !k.is_empty()))
+        key_for(session, self.provider).map(|(k, _)| k)
     }
+}
+
+/// Where a key was found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KeySource {
+    Keychain,
+    Env(&'static str),
+}
+
+/// A provider's key and where it came from: the keychain, else its environment variables.
+pub fn key_for(session: &Session, kind: ProviderKind) -> Option<(String, KeySource)> {
+    let spec = kind.info().key?;
+    if let Some(k) = session.secret(spec.id) {
+        return Some((k, KeySource::Keychain));
+    }
+    spec.env.iter().find_map(|var| std::env::var(var).ok().map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).map(|k| (k, KeySource::Env(var))))
+}
+
+impl AgentConfig {
 }
 
 // ---- conversation ----------------------------------------------------------

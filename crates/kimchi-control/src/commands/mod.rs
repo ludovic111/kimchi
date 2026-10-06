@@ -846,9 +846,12 @@ pub static SPECS: &[Spec] = &[
         req("key", String, "Dotted key from app.settings."),
         req("value", Any, "New value, of the same type."),
     ]).perm(Perm::Settings),
-    edit("app.setAgentKey", "Save (or with no key, remove) the API key the built-in agent uses, in the OS keychain.", &[
-        req("provider", String, "An API provider from agent.providers (anthropic, openai, gemini, openrouter, groq, mistral, deepseek, xai, together, fireworks, cerebras, azure-openai, bedrock, openai-compatible…)."),
-        opt("key", String, "The key; omit to remove it."),
+    edit("app.setAgentKey", "Save (or with no key, remove) the API key the built-in agent uses, in the OS keychain. Keys for services that also generate (OpenAI, Gemini, OpenRouter, xAI, Together) are the same key generation uses.", &[
+        req("provider", String, "An API provider from agent.providers (anthropic, openai, gemini, openrouter, groq, mistral, deepseek, xai, together, fireworks, cerebras, azure-openai, bedrock, lmstudio, openai-compatible)."),
+        opt("key", String, "The key (for bedrock, a Bedrock API key); omit to remove it."),
+        opt("accessKeyId", String, "bedrock: an AWS access key id, instead of an API key (with secretAccessKey)."),
+        opt("secretAccessKey", String, "bedrock: the secret access key."),
+        opt("sessionToken", String, "bedrock: the session token of temporary credentials."),
     ]).perm(Perm::PersonOnly),
     query("app.checkUpdates", "Check GitHub Releases for a newer kimchi and report it.", &[]),
     edit("app.installUpdate", "Download, verify (signature) and install the update found by app.checkUpdates; kimchi restarts into it.", &[]).perm(Perm::AppControl),
@@ -871,10 +874,14 @@ pub static SPECS: &[Spec] = &[
     edit("app.notify", "Show a short message in the window.", &[req("text", String, "Message."), opt("kind", String, "info (default), success or error.")]).window(),
     // ---- agent ------------------------------------------------------------
     query("agent.providers", "What can run the built-in agent: coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not, and which one is chosen.", &[]).window(),
-    edit("agent.setProvider", "Choose what runs the built-in agent (Settings › Agent).", &[
+    query("agent.models", "The models a provider offers for the agent (the chosen one by default): fetched from the provider's own list where it has one (kept for a few hours), else a short built-in list; models that can't use tools are marked tools=false.", &[
+        opt("provider", String, "A provider id from agent.providers."),
+        opt("refresh", Boolean, "Fetch the list again now."),
+    ]).window(),
+    edit("agent.setProvider", "Choose what runs the built-in agent (Settings › Agent). Answers whether it is ready and, if not, what to do next.", &[
         req("provider", String, "A provider id from agent.providers."),
-        opt("model", String, "Model id for the API providers and Ollama; empty for the provider's default."),
-        opt("baseUrl", String, "Server address for Ollama or an OpenAI-compatible server; empty for the default."),
+        opt("model", String, "Model id (agent.models lists them; for Azure OpenAI, the deployment name); empty for the provider's default."),
+        opt("baseUrl", String, "Address: a local or compatible server's URL, an Azure OpenAI resource (name or URL), or Bedrock's region; empty for the default."),
     ]).perm(Perm::PersonOnly),
     edit("agent.send", "Ask the built-in agent (the Agent panel) to do something, in words. It continues the panel's conversation, runs commands like any client (permissions apply) and shows them as cards. Returns the run at once, or once it ends with wait. One run at a time. Uses the person's model account, so agents need the generate permission.", &[
         req("prompt", String, "The request, e.g. \"Add a title saying Hello at 0 s and fade it in\"."),
