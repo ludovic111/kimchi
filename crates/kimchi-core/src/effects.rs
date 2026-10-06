@@ -166,6 +166,7 @@ impl Effects {
 }
 
 /// A ready-made look: effect values that can be adjusted afterwards.
+#[derive(Debug)]
 pub struct Look {
     pub id: &'static str,
     pub label: &'static str,
