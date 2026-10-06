@@ -18,7 +18,6 @@ pub mod motion_camera;
 pub mod motion_edit;
 pub mod motion_mesh;
 pub mod onboarding;
-pub mod plugins;
 pub mod project;
 pub mod timeline;
 pub mod track;
@@ -251,22 +250,6 @@ pub static SPECS: &[Spec] = &[
         crate::registry::COALESCE,
     ]),
     query("clip.looks", "The ready-made looks clip.setEffects applies, with their values.", &[]),
-    edit("clip.addPlugin", "Put a video plugin on clips' pictures, after their colour effects: kimchi's own (kimchi-plugin SDK), frei0r (Kdenlive, Shotcut) or OpenFX (Resolve, Natron, VEGAS, Nuke). Animate its numbers with clip.setKeyframes on plugins.<slot>.<parameter>. One undo step; returns the slot ids.", &[
-        req("clipIds", Array, "Clips (ids or names).").of(String),
-        req("plugin", String, "Plugin id or name from plugins.list."),
-        opt("params", Object, "Starting values by parameter name: numbers, true/false, [x, y], colours #rrggbb, text or a choice's label."),
-        opt("index", Integer, "Position among the clip's plugins from 0 (default: last)."),
-    ]),
-    edit("clip.setPlugin", "Change a plugin on a clip: parameter values, bypass, or its name. One undo step.", &[
-        CLIP_ID,
-        req("slot", Any, "Slot id (p1…), plugin name or position from 1."),
-        opt("params", Object, "Values by parameter name (others stay)."),
-        opt("bypass", Boolean, "Switch it off (true) or on."),
-        opt("name", String, "What the inspector calls it."),
-        crate::registry::COALESCE,
-    ]),
-    edit("clip.removePlugin", "Take a plugin off a clip (its keyframes go too). One undo step.", &[CLIP_ID, req("slot", Any, "Slot id, plugin name or position from 1.")]),
-    edit("clip.movePlugin", "Move a plugin to another place among the clip's plugins. One undo step.", &[CLIP_ID, req("slot", Any, "Slot id, plugin name or position from 1."), req("index", Integer, "New position from 0.")]),
     // ---- looks ------------------------------------------------------------
     query("looks.list", "The look library: kimchi's built-in looks, and the looks imported from other apps (LUTs, Lightroom / Camera Raw presets, Lumetri presets) or saved from clips, with what each sets.", &[
         opt("query", String, "Only looks whose name, folder or source app contains this."),
@@ -275,7 +258,7 @@ pub static SPECS: &[Spec] = &[
         req("paths", Array, "Files or folders.").of(String),
         opt("folder", String, "Library folder to put them in (default: the source folder's name)."),
     ]).perm(Perm::Files),
-    edit("looks.apply", "Put a look on clips: a built-in look or one from the library. Its corrections and LUT replace the clips' (the chroma key and plugins stay). One undo step.", &[
+    edit("looks.apply", "Put a look on clips: a built-in look or one from the library. Its corrections and LUT replace the clips' (the chroma key stays). One undo step.", &[
         req("clipIds", Array, "Clips (ids or names).").of(String),
         req("look", String, "Look id or name from looks.list."),
         opt("strength", Number, "0-1: how much of a LUT shows (default 1)."),
@@ -291,17 +274,6 @@ pub static SPECS: &[Spec] = &[
         opt("time", Number, "Timeline time inside the clip (default: the playhead)."),
         opt("duration", Number, "Seconds to hold the frame (default 2)."),
     ]),
-    // ---- plugins ----------------------------------------------------------
-    query("plugins.list", "Video plugins clips can use (clip.addPlugin): kimchi's own (built with the kimchi-plugin SDK), frei0r (Kdenlive, Shotcut) and OpenFX (Resolve, Natron, VEGAS, Nuke) found on this computer, with format, kind (effect, generator, transition), vendor and category. Sound plugins are audio.effects.", &[
-        opt("query", String, "Only plugins whose name, vendor, category or format contains this."),
-        opt("format", String, "kimchi, frei0r or ofx."),
-    ]),
-    query("plugins.params", "A video plugin's parameters: name, type, range, default and choices. With clipId and slot, also the values that slot has now.", &[
-        opt("plugin", String, "Plugin id or name (plugins.list)."),
-        opt("clipId", String, "A clip, with slot."),
-        opt("slot", Any, "The plugin on the clip: slot id, name or position from 1."),
-    ]),
-    edit("plugins.rescan", "Look for video plugins again in the standard folders (OpenFX, frei0r, kimchi) and Settings › Plugins' folders; returns how many there are and the ones that failed to load.", &[]),
     // ---- transition -------------------------------------------------------
     query("transition.kinds", "The transitions kimchi draws, with what each looks like.", &[]),
     query("transition.list", "Every transition in the project: the clip it leads into, the clip it leaves (on a cut), kind, length and where it plays.", &[]),
@@ -743,13 +715,12 @@ pub static SPECS: &[Spec] = &[
     edit("history.checkpoint", "Remember the project as it is now; history.revertTo puts it back.", &[]),
     edit("history.revertTo", "Put the project back as it was at a checkpoint, as one new undo step (so the revert can be undone too).", &[req("checkpoint", Integer, "Id returned by history.checkpoint.")]),
     // ---- generate ---------------------------------------------------------
-    query("generate.providers", "Image, video and sound providers with whether each is ready (enabled, and has a key when it needs one).", &[]),
+    query("generate.providers", "Image and video providers with whether each is ready (enabled, and has a key when it needs one).", &[]),
     query("generate.models", "Models of one provider, or of every ready provider, with what each can do (tasks, aspect ratios, durations, frames, sound).", &[
         opt("provider", String, "Provider id; omit for every ready provider."),
-        opt("task", String, "Only models that can do text_to_image, image_to_image, text_to_video, image_to_video, text_to_speech, text_to_music or text_to_sound."),
+        opt("task", String, "Only models that can do text_to_image, image_to_image, text_to_video or image_to_video."),
         opt("refresh", Boolean, "Fetch the list again instead of using the cache."),
     ]),
-    query("generate.voices", "The voices a speech model offers (text_to_speech), with language and a description.", &[opt("provider", String, "Provider id."), opt("model", String, "Model id or provider::model.")]),
     query("generate.check", "Check that a provider answers with the saved key or address.", &[req("provider", String, "Provider id.")]),
     edit("generate.setKey", "Save (or with no key, remove) a provider's API key in the OS keychain.", &[req("provider", String, "Provider id."), opt("key", String, "The key; omit to remove it.")]).perm(Perm::PersonOnly),
     edit("generate.setProvider", "Turn a provider on or off, or point it at another address.", &[
@@ -758,12 +729,11 @@ pub static SPECS: &[Spec] = &[
         opt("baseUrl", String, "Server address (local providers and gateways)."),
         opt("options", Object, "Provider options, e.g. the ComfyUI workflows folder."),
     ]).perm(Perm::Settings),
-    edit("generate.submit", "Generate an image, a video or sound (speech, music, sound effects). By default a placeholder clip appears on the timeline and becomes the result when it is done; place \"library\" only adds it to the media.", &[
+    edit("generate.submit", "Generate an image or a video. By default a placeholder clip appears on the timeline and becomes the result when it is done; place \"library\" only adds it to the media.", &[
         PROMPT,
         PROVIDER,
         MODEL,
-        opt("task", String, "text_to_image, image_to_image, text_to_video, image_to_video, text_to_speech (a voice reading the prompt), text_to_music or text_to_sound (a sound effect). Defaults from video and the images given."),
-        opt("voice", String, "text_to_speech: a voice id or name from generate.voices."),
+        opt("task", String, "text_to_image, image_to_image, text_to_video or image_to_video. Defaults from video and the images given."),
         opt("video", Boolean, "Make a video rather than an image (when task is omitted)."),
         opt("negativePrompt", String, "What to avoid, for models that take it."),
         opt("images", Array, "Input images: [{role: reference|start_frame|end_frame, path?, assetId?, clipId?, time?}]. A clip gives the frame it shows at time.").of(Object),
@@ -997,7 +967,6 @@ pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
     // stack of a 2 MB thread (tests, tokio workers in debug builds) they overflow it.
     match cx.spec.name {
         "project.formats" | "project.importFrom" | "project.exportTo" | "media.relink" => return Box::pin(interop::run(s, cx, a)).await,
-        "clip.addPlugin" | "clip.setPlugin" | "clip.removePlugin" | "clip.movePlugin" => return Box::pin(plugins::run(s, cx, a)).await,
         "app.onboarding" | "app.finishOnboarding" | "app.keymaps" => return Box::pin(onboarding::run(s, cx, a)).await,
         _ => {}
     }
@@ -1010,7 +979,6 @@ pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "transition" => Box::pin(transition::run(s, cx, a)).await,
         "captions" => Box::pin(captions::run(s, cx, a)).await,
         "looks" => Box::pin(looks::run(s, cx, a)).await,
-        "plugins" => Box::pin(plugins::run(s, cx, a)).await,
         "audio" => Box::pin(audio::run(s, cx, a)).await,
         "timeline" => Box::pin(timeline::run(s, cx, a)).await,
         "history" => Box::pin(history::run(s, cx, a)).await,

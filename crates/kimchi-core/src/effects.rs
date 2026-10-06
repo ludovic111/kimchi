@@ -1,8 +1,7 @@
 //! A clip's colour and picture effects: corrections (brightness, contrast, saturation,
 //! temperature, tint), vignette, sharpen, chroma key, a LUT and video plugins. They are
 //! parameters, drawn by the compositor in the preview and the export; the numeric ones take
-//! keyframes like any clip property ([`crate::model::CLIP_PROPS`]), plugin parameters as
-//! `plugins.<slot id>.<parameter>`.
+//! keyframes like any clip property ([`crate::model::CLIP_PROPS`]).
 
 use std::collections::BTreeMap;
 
@@ -30,14 +29,14 @@ pub struct Effects {
     pub chroma_key: Option<ChromaKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lut: Option<Lut>,
-    /// Video plugins run on the picture after the effects above, first to last.
+    /// Video plugins on the picture after the effects above, first to last (kept, not drawn yet).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<PluginEffect>,
 }
 
-/// One video plugin on a clip: kimchi's own (`kimchi:<id>`, built with the `kimchi-plugin`
-/// SDK), frei0r (`frei0r:<name>`) or OpenFX (`ofx:<identifier>`). Hosted by
-/// `kimchi_media::render::plugins`; listed by `plugins.list`.
+/// One video plugin on a clip: kimchi's own (`kimchi:<id>`), frei0r (`frei0r:<name>`) or OpenFX
+/// (`ofx:<identifier>`). Kept in the project so files from newer versions keep their plugins;
+/// this version doesn't draw them yet.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginEffect {
