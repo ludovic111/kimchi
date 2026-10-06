@@ -3,6 +3,32 @@
 What changed in each kimchi release. The app shows the newest section in **What's new** after it
 updates, and the release workflow puts the section in the update's notes.
 
+## 0.9.0 — 2026-10-06
+
+### New
+- **A new look.** kimchi now wears lsuite's design system v2: black and white, square corners, hard shadows, film grain behind the chrome, Chakra Petch for the interface and a new mark. Red is kept for what deletes or records.
+- **An organised editor.** Every area has a title, toolbars are grouped by what goes together, track headers show their switches at all times, and there is one sidebar on the left for everything (including the Studio's Scene, Properties and Model views) and one on the right for agents.
+- **The agent can see.** When it makes a title, an animation or a 3D scene, it looks at the frame it made and fixes what looks wrong before saying it's done. Every picture it looks at appears in the Agent panel, so you see what it saw. It can also look at your media before using it, to pick the best take or describe footage you imported.
+- **The agent knows what you mean by "this".** Your selection, the playhead and the clip open in the Studio go along with each request, so "make this shorter" or "put a title here" just works. The line above the message box shows what it will be told.
+- **Conversations that stay with a project.** Keep several named conversations per project, go back to earlier ones, and save project memory that every request shares. History survives restarting kimchi.
+- **Steer an agent while it works.** Send a new direction without stopping it or losing the edits it already made.
+- **Pick the model** right in the Agent panel, including live lists from Zenith and Ollama and custom model names.
+- **Zenith agents in kimchi.** Choose Zenith's providers and models from the Agent panel; each project gets its own Zenith workspace.
+- **Generate sound.** ElevenLabs brings voices, sound effects and music, and Stability AI brings Stable Audio. Sound lands on audio tracks, keeps its prompt and settings, and can be regenerated like a shot.
+- **A modelling workbench in the Studio.** Tools grouped by task with search, selection tools (linked, grow, shrink, invert, boundaries, edge loops and rings), pivots, align and distribute, and moving, rotating and scaling mesh parts with G, R and S.
+
+### Better
+- Animation in the Studio is quicker to work with: zoom and frame the timeline, box-select, duplicate and retime keys from the keyboard, jump between keys with Alt+Left/Right, and type exact values. Keyframe drags snap to frames (hold Alt for in-between).
+- Path-traced views keep outlines, highlights, the grid and camera and light helpers visible while the picture refines.
+- Duplicating, deleting and dragging groups of objects or keys is one undo step and keeps their links, order and animation.
+- Claude Code, Codex and other MCP apps see the same pictures as the built-in agent, and so do Ollama models that support images.
+- The docs now include a user guide, configuration, project format, architecture and development guides.
+
+### Fixed
+- Very large scene coordinates no longer crash the viewport controls, and mesh edits that would overflow are refused without touching the scene or its undo history.
+- Switching clips, scenes or projects ends any tool in progress, so a late result can no longer land in the wrong scene.
+- Conversation files are saved safely: unreadable history is kept with a visible error instead of being lost.
+
 ## 0.8.0 — 2026-10-05
 
 ### New

@@ -199,9 +199,23 @@ llvmpipe. Live recording, placement and undo were checked against the virtual au
 a 48 kHz mono WAV completed with no dropped samples. Physical microphones/speakers, macOS
 Audio Units/Metal and Windows devices still need checks on those systems.
 
-## Next session
+## Design v2, agents that see, conversations, sound generation, Studio workbench (0.9.0, released 2026-10-06)
 
-0.8.0 is prepared on the update branch; publication is separate from local integration.
+Integrated by a coordinator session from parallel sessions: #10 design system v2 (black/white, square,
+grain `ui/grain.rs`, Chakra Petch, new mark), #8 docs (`docs/guide/`, configuration, project format,
+architecture), #12 harness (`kimchi_control::vision`, `Part::Image`, `media.look`, `kimchi_agent::context`
+block per request, MCP image content), #11 Studio/agent (two sidebars: everything left, agents right;
+conversations per project with memory, `agent.steer`, model selector, zenith provider in
+`kimchi-agent/src/zenith.rs` using zenith-cli `thread.new/send/get/interrupt/steer`, ElevenLabs and Stable
+Audio sound generation, Studio modelling workbench and animation tools). ryolune is private now: CI and
+releases fetch `ryolune-engine` over SSH with the `RYOLUNE_DEPLOY_KEY` deploy key.
+
+- [ ] Compatibility work (PR #9, branches `t3code/090-*`): interop (OTIO/FCPXML/EDL…), looks, onboarding,
+      more agent providers, video plugins (frei0r/OFX/SDK), more sound tasks (090-gen), and ryolune LV2/LADSPA
+      (`claude/lv2-ladspa`) — deferred to the next release; never fully built. Briefs in
+      `~/.local/share/kimchi-coordination/090-briefs`.
+
+## Next session
 
 - [ ] A pass with real mouse input in the running app: clicks, drags and typing are covered by GPUI
       UI tests and the app was driven through `kimchi-cli`, but nobody has used the window by hand yet.

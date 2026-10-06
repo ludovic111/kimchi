@@ -69,6 +69,14 @@ images and for video. That choice is also the default for scripts and agents tha
 without placing them. When one of the actions below chose a spot, a **Lands …** chip above the prompt
 names it; its × goes back to the playhead.
 
+### Sound and speech
+
+The Generate panel also makes sound. ElevenLabs supplies speech with your account's voices, sound
+effects and music; Stability AI supplies Stable Audio. Write what you want to hear (for speech, the
+words to say, and pick a voice), then **Generate**. Results land on an audio track (or in the media
+library), keep their prompt and settings, and can be regenerated like a shot. Connect the providers
+in Settings › Models & keys, or set `ELEVENLABS_API_KEY` / `STABILITY_API_KEY`.
+
 ## Generation in the edit
 
 These prefill the Generate panel with the right pictures and destination; you still choose the
@@ -116,7 +124,7 @@ it took, its cost, what it avoided, and the pictures it was made from.
   clip; press Generate.
 - **Variation** does the same with a random seed.
 
-Both are also in the clip's right-click menu. In 0.8.0 they don't bring back the input pictures, the
+Both are also in the clip's right-click menu. As of 0.9.0 they don't bring back the input pictures, the
 resolution or the model's settings; `generate.regenerate` repeats the request exactly. **Reuse
 prompt**, in the Recent list's menu, puts an earlier prompt back in the composer.
 

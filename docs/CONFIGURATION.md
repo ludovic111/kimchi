@@ -29,7 +29,7 @@ only with the **Settings** permission, and never the `agent.*` ones.
 | `audio.snapToBeats` | boolean | `false` | | Snap to detected music beats on the timeline. |
 | `audio.countIn` | number | `3` | 0 to 10 seconds | The voice-over count-in. |
 | `audio.refreshSongs` | boolean | `true` | | Render ryolune songs again when kimchi comes to the front after they changed. |
-| `audio.pluginFolders` | array of strings | `[]` | folder paths | Extra plugin folders. Saved, but not yet used by the plugin scan in 0.8.0. |
+| `audio.pluginFolders` | array of strings | `[]` | folder paths | Extra plugin folders. Saved, but not yet used by the plugin scan as of 0.9.0. |
 | `generate.imageModel` | string | `""` | `provider::model` | The image model used when a command names none. The Generate panel sets it. |
 | `generate.videoModel` | string | `""` | `provider::model` | The same, for video. |
 | `updates.checkOnStart` | boolean | `true` | | Check for updates at start and every 6 hours. |

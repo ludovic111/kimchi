@@ -146,7 +146,7 @@ Settings › Plugins. Each CLAP, VST3 and ryolune plugin is checked in a separat
 crashes can't take kimchi down. The list of plugins found is shared with ryolune. **Rescan plugins**
 (in the browser or Settings › Audio) looks again after you install one.
 
-> In 0.8.0, the extra folders listed under Settings › Audio › Plugins are saved but not yet
+> As of 0.9.0, the extra folders listed under Settings › Audio › Plugins are saved but not yet
 > scanned. For plugins outside the standard folders, use `CLAP_PATH`, `VST3_PATH` or ryolune's
 > plugin settings.
 

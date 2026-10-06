@@ -18,8 +18,10 @@ Choose who runs it in the panel's header, or in **Settings › Agent**:
 | Anthropic API | An Anthropic API key, saved in Settings › Agent or in `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` |
 | OpenAI API | An OpenAI API key, or `OPENAI_API_KEY` | `gpt-5` |
 | Ollama | Ollama running on this computer with a model that supports tools (for example `ollama pull qwen3`) | The most recently pulled |
+| Zenith | Zenith installed (lsuite); its providers and models appear in the panel | Chosen in Zenith or in the panel |
 
-Claude Code and Codex use your existing subscription or sign-in. API keys are billed by the provider
+Pick the model in the panel's header: it lists the models Zenith and Ollama report, and you can type
+any model name. Claude Code and Codex use your existing subscription or sign-in. API keys are billed by the provider
 per use, separately from any chat subscription. **Model** in Settings › Agent overrides the default;
 **Address** points the Anthropic, OpenAI or Ollama choice at a proxy or another compatible server;
 an OpenAI-compatible address needs no key. The OpenAI key is the same one image generation uses.
@@ -36,14 +38,30 @@ Type in the box at the bottom and press ⌘Enter. While it works, each command i
 card with its name, a summary of its parameters, and whether it succeeded; click a card for the
 full parameters and answer. **Stop** ends the run and keeps the edits already made.
 
-A run ends with a summary: how many changes it made, how long it took, and the tokens it used.
-The conversation continues across requests until **New conversation** (+). Switching to another
-project stops a run in progress and starts afresh: earlier runs can then no longer be reverted from
-the panel (⌘Z still undoes their steps). Conversations aren't saved. Runs through the APIs or Ollama
-stop after 40 steps.
+**Steer it while it works:** type a new direction and send it during a run. The agent takes it into
+account from its next step, without losing the edits it already made.
 
-For motion graphics and 3D, the agent reads kimchi's motion guide, writes the scene, renders frames
-to look at them (from any angle in 3D), and corrects what it sees.
+**It knows what "this" is.** Each request carries what you're looking at: the project, the playhead
+and what's under it, the selected clips or media, and the clip open in the Studio. The line above
+the message box shows what it will be told (hover it for the full text), so "make this shorter" or
+"put a title here" works without naming anything.
+
+**It can see.** When it makes a title, an animation or a 3D scene, it renders frames, looks at them
+(from any angle in 3D) and corrects what looks wrong before saying it's done. It can also look at
+your media (a picture as it is, a video as a sheet of frames) to choose between takes or describe
+footage. Every picture it looks at appears in its command's card, so you see what it saw. Models
+that can't read pictures get a short text note instead.
+
+A run ends with a summary: how many changes it made, how long it took, and the tokens it used.
+
+### Conversations
+
+Each project keeps its own conversations. **New conversation** (+) starts another; the list in the
+panel's header switches between them, and you can rename them. They are saved with your kimchi data
+and come back after restarting. **Project memory** is a short text every conversation of the project
+shares: preferences, names, the style of the edit. Switching to another project stops a run in
+progress; earlier runs can then no longer be reverted from the panel (⌘Z still undoes their steps).
+Runs through the APIs or Ollama stop after 40 steps.
 
 ## Undoing a run
 
