@@ -364,6 +364,11 @@ fn parse_3dl(text: &str) -> Result<ColorLut, String> {
             return Err(format!("line {} should be three numbers", n + 1));
         }
     }
+    // A 3-point mesh's shaper line has three numbers, like a colour: it is the extra first row
+    // when it starts at 0 and rises.
+    if shaper.is_none() && rows.len() == 28 && rows[0][0] == 0.0 && rows[0][0] < rows[0][1] && rows[0][1] < rows[0][2] {
+        shaper = Some(rows.remove(0).to_vec());
+    }
     let size = match &shaper {
         Some(s) => s.len(),
         None => (rows.len() as f64).cbrt().round() as usize,
