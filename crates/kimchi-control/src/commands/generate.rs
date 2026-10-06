@@ -146,9 +146,21 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         }
         "generate.regenerate" => {
             let p = s.project()?;
-            let clip_id = resolve::clip(&p, a.str("clipId")?)?;
-            let clip = p.clip(clip_id).ok_or("clip not found")?.clone();
-            let asset = clip.asset_id().and_then(|id| p.asset(id)).ok_or("Only generated media clips can be regenerated.")?;
+            // A clip's result lands after it; a media item's goes to the library.
+            let (asset, placement) = match (a.opt_str("clipId"), a.opt_str("assetId")) {
+                (Some(k), _) => {
+                    let clip_id = resolve::clip(&p, k)?;
+                    let clip = p.clip(clip_id).ok_or("clip not found")?;
+                    let asset = clip.asset_id().and_then(|id| p.asset(id)).ok_or("Only generated media clips can be regenerated.")?;
+                    let track = p.locate_clip(clip_id).map(|(ti, _)| p.tracks[ti].id);
+                    (asset, Placement::Timeline { track_id: track, start: clip.end(), duration: clip.duration })
+                }
+                (None, Some(k)) => {
+                    let id = resolve::asset(&p, k)?;
+                    (p.asset(id).ok_or("media not found")?, Placement::Library)
+                }
+                (None, None) => return Err("Give clipId (a generated clip) or assetId (a generated media item).".into()),
+            };
             let AssetOrigin::Generated(g) = &asset.origin else { return Err(format!("\"{}\" wasn't generated.", asset.name)) };
             let mut request: GenRequest = serde_json::from_value(g.params.clone()).map_err(|e| format!("This clip's generation settings can't be read back: {e}"))?;
             if let Some(prompt) = a.opt_str("prompt") {
@@ -159,13 +171,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             for img in &mut request.images {
                 img.data = Default::default();
             }
-            let track = p.locate_clip(clip_id).map(|(ti, _)| p.tracks[ti].id);
-            let sub = Submit {
-                provider: g.provider.clone(),
-                request,
-                placement: Placement::Timeline { track_id: track, start: clip.end(), duration: clip.duration },
-                input_assets: g.inputs.clone(),
-            };
+            let sub = Submit { provider: g.provider.clone(), request, placement, input_assets: g.inputs.clone() };
             finish(s, &a, submit(s, sub)?).await
         }
         "generate.jobs" => {

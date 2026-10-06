@@ -1,10 +1,11 @@
 //! The AI actions that tie generation into the cut (as in kimchi 0.1's editor):
 //! each one grabs the frames it needs with `media.frame` and prefills the composer
 //! (`Store::compose`); the person still writes the prompt and presses Generate.
+//! Regenerate and Variation run `generate.regenerate` instead: the request is already written.
 
 use gpui::App;
 use kimchi_core::{Asset, AssetOrigin, Clip, ClipContent, Id, MediaKind};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::store::{ComposeRef, ComposeRequest, ComposeTarget, Store, StoreExt};
 
@@ -119,42 +120,19 @@ pub fn bridge(a: &Clip, b: &Clip, cx: &mut App) {
     });
 }
 
-/// The composer prefilled with a generation's original settings (`variation`: a new seed).
-fn regenerate_request(asset: &Asset, variation: bool) -> Option<ComposeRequest> {
-    let AssetOrigin::Generated(g) = &asset.origin else { return None };
-    Some(ComposeRequest {
-        video: g.task.contains("video"),
-        audio_task: match g.task.as_str() { "text_to_audio" => Some(kimchi_gen::Task::TextToAudio), "text_to_speech" => Some(kimchi_gen::Task::TextToSpeech), _ => None },
-        params: g.params.get("params").and_then(|v| v.as_object()).cloned().unwrap_or_default(),
-        prompt: Some(g.prompt.clone()),
-        negative: Some(g.negative_prompt.clone().unwrap_or_default()),
-        model: Some(format!("{}::{}", g.provider, g.model)),
-        seed: Some(if variation { String::new() } else { g.seed.map(|s| s.to_string()).unwrap_or_default() }),
-        duration: g.params.get("duration").and_then(Value::as_f64),
-        aspect: g.params.get("aspect_ratio").and_then(Value::as_str).map(str::to_string),
-        refs: vec![],
-        target: None,
-    })
-}
-
-/// Re-open the composer with a generated clip's settings; the result lands after the clip.
+/// Runs a generated clip's request again with `generate.regenerate` (its input pictures,
+/// resolution and settings too; `variation`: a new seed); the result lands after the clip.
 pub fn regenerate_clip(clip: &Clip, variation: bool, cx: &mut App) {
-    let store = cx.store();
-    let s = store.read(cx);
-    let Some(mut req) = s.asset_of(clip).and_then(|a| regenerate_request(a, variation)) else { return };
-    req.target = Some(ComposeTarget {
-        track_id: s.track_of(clip.id).map(|t| t.id),
-        start: clip.end(),
-        duration: clip.duration,
-        label: format!("after “{}”", clip.name),
-    });
-    store.update(cx, |s, cx| s.compose(req, cx));
+    let params = json!({ "clipId": clip.id, "variation": variation });
+    cx.store().update(cx, |s, cx| s.run("generate.regenerate", params, cx));
 }
 
-/// Re-open the composer with a generated media item's settings; the result goes to the library.
+/// Runs a generated media item's request again (as [`regenerate_clip`]); the result goes to the
+/// library.
 pub fn regenerate_asset(asset: &Asset, variation: bool, cx: &mut App) {
-    if let Some(req) = regenerate_request(asset, variation) {
-        cx.store().update(cx, |s, cx| s.compose(req, cx));
+    if matches!(asset.origin, AssetOrigin::Generated(_)) {
+        let params = json!({ "assetId": asset.id, "variation": variation });
+        cx.store().update(cx, |s, cx| s.run("generate.regenerate", params, cx));
     }
 }
 

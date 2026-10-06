@@ -4,7 +4,7 @@
 //! Svelte editor's `actions.ts` did; the person then picks a model and sends.
 
 use gpui::{App, Context, Pixels, Point};
-use kimchi_core::{AssetOrigin, Clip, ClipContent, Id, MediaKind, TrackKind};
+use kimchi_core::{Clip, ClipContent, Id, MediaKind, TrackKind};
 use serde_json::json;
 
 use super::body::TimelineBody;
@@ -109,8 +109,8 @@ pub fn clip_menu(_: &mut TimelineBody, id: Id, position: Point<Pixels>, cx: &mut
     }
     if asset.as_ref().is_some_and(|a| a.is_generated()) {
         let (c1, c2) = (clip.clone(), clip.clone());
-        items.push(MenuItem::new("Regenerate", move |_, cx| regenerate(&c1, false, cx)).icon("refresh-cw").ai().entry());
-        items.push(MenuItem::new("Variation", move |_, cx| regenerate(&c2, true, cx)).icon("dices").ai().entry());
+        items.push(MenuItem::new("Regenerate", move |_, cx| crate::views::inspector::ai::regenerate_clip(&c1, false, cx)).icon("refresh-cw").ai().entry());
+        items.push(MenuItem::new("Variation", move |_, cx| crate::views::inspector::ai::regenerate_clip(&c2, true, cx)).icon("dices").ai().entry());
     }
     if selected.len() == 2 && selected.iter().all(|c| p.locate_clip(c.id).is_some_and(|(t, _)| p.tracks[t].kind == TrackKind::Video)) {
         let (a, b) = (selected[0].clone(), selected[1].clone());
@@ -326,25 +326,4 @@ pub fn bridge(a: &Clip, b: &Clip, fps: f64, cx: &mut App) {
             cx,
         );
     });
-}
-
-/// Re-opens the composer with a generated clip's original settings (a new seed for a variation).
-pub fn regenerate(clip: &Clip, variation: bool, cx: &mut App) {
-    let s = cx.store().read(cx);
-    let Some(asset) = s.asset_of(clip) else { return };
-    let AssetOrigin::Generated(g) = &asset.origin else { return };
-    let req = ComposeRequest {
-        video: g.task.contains("video"),
-        audio_task: match g.task.as_str() { "text_to_audio" => Some(kimchi_gen::Task::TextToAudio), "text_to_speech" => Some(kimchi_gen::Task::TextToSpeech), _ => None },
-        params: g.params.get("params").and_then(|v| v.as_object()).cloned().unwrap_or_default(),
-        prompt: Some(g.prompt.clone()),
-        negative: Some(g.negative_prompt.clone().unwrap_or_default()),
-        model: Some(format!("{}::{}", g.provider, g.model)),
-        seed: Some(if variation { String::new() } else { g.seed.map(|s| s.to_string()).unwrap_or_default() }),
-        duration: g.params.get("duration").and_then(|v| v.as_f64()),
-        aspect: g.params.get("aspect_ratio").and_then(|v| v.as_str()).map(str::to_string),
-        refs: vec![],
-        target: Some(ComposeTarget { track_id: s.track_of(clip.id).map(|t| t.id), start: clip.end(), duration: clip.duration, label: format!("after “{}”", clip.name) }),
-    };
-    compose(req, cx);
 }
