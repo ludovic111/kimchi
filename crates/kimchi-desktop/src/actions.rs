@@ -472,7 +472,7 @@ pub fn menus() -> Vec<Menu> {
         Menu::new("Help").items([
             MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
             MenuItem::action("What's New", WhatsNew),
-            MenuItem::action("Driving kimchi from AI and scripts", OpenHelp),
+            MenuItem::action("kimchi User Guide", OpenHelp),
             MenuItem::separator(),
             MenuItem::action("Logs and Crash Reports", ShowDiagnostics),
             MenuItem::action("Report a Problem…", ReportProblem),
