@@ -17,6 +17,8 @@ tracing.workspace = true
 uuid.workspace = true
 # XML for FCPXML, Final Cut 7 / Premiere XML, MLT (Kdenlive, Shotcut), Premiere projects, XMP looks.
 quick-xml = "0.38"
+# OpenTimelineIO bundles (.otioz) are zip files: pure Rust, deflate through flate2 (already used).
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
 tempfile.workspace = true
