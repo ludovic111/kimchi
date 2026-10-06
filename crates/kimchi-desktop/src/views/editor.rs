@@ -421,6 +421,7 @@ impl Editor {
         let active = s.jobs.iter().filter(|j| !j.status.is_done()).count();
         let jobs_open = s.jobs_open;
         let agent_open = s.agent_open;
+        let agent_enabled = s.settings.agent.enabled;
         let update = s.update.clone();
         let studio_open = self.studio.read(cx).is_open();
         let name: gpui::SharedString = p.as_ref().map(|p| p.name.clone()).unwrap_or_default().into();
@@ -537,17 +538,22 @@ impl Editor {
                             .relative()
                             .child(group(
                                 [
-                                    {
+                                    Some({
                                         let label = if active > 0 { format!("{active} generating") } else { "Generations".into() };
                                         let labelled = bp >= Breakpoint::Wide || active > 0 && bp > Breakpoint::Compact;
                                         let b = if labelled { Button::new("jobs", label).with_icon(if active > 0 { "loader-circle" } else { "sparkles" }) } else { Button::icon("jobs", if active > 0 { "loader-circle" } else { "sparkles" }, label) };
                                         b.small().flush().selected(jobs_open).tooltip(tip("Generations", &act::ToggleJobs)).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_jobs_open(!s.jobs_open, cx))).into_any_element()
-                                    },
-                                    tool("agent", "bot", "Agent", bp > Breakpoint::Compact, tip("Agent", &act::ToggleAgent))
-                                        .selected(agent_open)
-                                        .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_agent_open(!s.agent_open, cx)))
-                                        .into_any_element(),
-                                ],
+                                    }),
+                                    // Hidden while the Agent panel is turned off (Settings › Agent).
+                                    agent_enabled.then(|| {
+                                        tool("agent", "bot", "Agent", bp > Breakpoint::Compact, tip("Agent", &act::ToggleAgent))
+                                            .selected(agent_open)
+                                            .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_agent_open(!s.agent_open, cx)))
+                                            .into_any_element()
+                                    }),
+                                ]
+                                .into_iter()
+                                .flatten(),
                                 cx,
                             ))
                             .when(jobs_open, |d| d.child(self.jobs.clone())),

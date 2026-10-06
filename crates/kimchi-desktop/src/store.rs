@@ -441,6 +441,10 @@ impl Store {
             }
             Event::SettingsChanged => {
                 self.settings = self.session.settings();
+                // The Agent panel was turned off (Settings › Agent, the first-run setup).
+                if !self.settings.agent.enabled {
+                    self.agent_open = false;
+                }
                 self.refresh_providers(cx);
                 // After this update: it reads the store.
                 cx.defer(crate::app::apply_theme_setting);
@@ -698,7 +702,12 @@ impl Store {
     }
 
     /// The Agent panel, docked on the right.
+    /// Stays closed while `settings.agent.enabled` is off.
     pub fn set_agent_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if open && !self.settings.agent.enabled {
+            self.info("The Agent panel is off. Turn it on in Settings › Agent.", cx);
+            return;
+        }
         self.agent_open = open;
         self.sync_ui(cx);
         cx.notify();

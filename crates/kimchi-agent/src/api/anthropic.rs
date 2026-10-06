@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::{Api, Call, Step, parse_args};
 use crate::http::{self, Lines};
-use crate::tools::SYSTEM_PROMPT;
+use crate::tools::ToolSet;
 use crate::{Message, Part, ProviderKind, Role, Run, ToolDef};
 
 const VERSION: &str = "2023-06-01";
@@ -75,12 +75,12 @@ enum Block {
     Other { block: Value, thinking: String, signature: String },
 }
 
-pub(super) async fn step(api: &Api, run: &Run, defs: &[ToolDef], messages: &[Message]) -> Result<Step, String> {
+pub(super) async fn step(api: &Api, run: &Run, set: &ToolSet, messages: &[Message]) -> Result<Step, String> {
     let mut body = json!({
         "model": api.model,
         "max_tokens": MAX_TOKENS,
-        "system": SYSTEM_PROMPT,
-        "tools": tools(defs),
+        "system": set.system_prompt(),
+        "tools": tools(&set.defs),
         "messages": wire(messages),
         "stream": true,
     });

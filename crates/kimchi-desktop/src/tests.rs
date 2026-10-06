@@ -622,3 +622,25 @@ fn interop_menu_targets() {
     assert_eq!(crate::views::dialogs::interop::extension("xmeml"), "xml");
     assert_eq!(crate::views::dialogs::interop::extension("fcpxml"), "fcpxml");
 }
+
+/// Settings › Agent draws every provider group and follows the chosen one; with the agent
+/// turned off, the panel stays closed.
+#[gpui::test]
+fn the_agent_settings_follow_the_provider_and_the_panel_can_be_turned_off(cx: &mut TestAppContext) {
+    let (f, _, cx) = setup(cx);
+    remote(&f, cx, "ui.showPanel", json!({ "panel": "settings", "section": "agent" }));
+    for provider in ["groq", "bedrock", "lmstudio", "openai-compatible"] {
+        remote(&f, cx, "agent.setProvider", json!({ "provider": provider }));
+        store_settles(cx, |s| s.settings.agent.provider == provider);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("settings-body").is_some(), "{provider}: the section is drawn");
+    }
+    f.call("app.setSetting", json!({ "key": "agent.enabled", "value": false }));
+    store_settles(cx, |s| !s.settings.agent.enabled);
+    cx.update(|_, cx| cx.store().update(cx, |s, cx| s.set_agent_open(true, cx)));
+    assert!(!cx.update(|_, cx| cx.store().read(cx).agent_open), "off keeps the Agent panel closed");
+    f.call("app.setSetting", json!({ "key": "agent.enabled", "value": true }));
+    store_settles(cx, |s| s.settings.agent.enabled);
+    cx.update(|_, cx| cx.store().update(cx, |s, cx| s.set_agent_open(true, cx)));
+    assert!(cx.update(|_, cx| cx.store().read(cx).agent_open));
+}

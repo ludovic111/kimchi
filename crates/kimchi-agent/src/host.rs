@@ -599,15 +599,41 @@ impl Host {
         match command {
             "agent.providers" => {
                 let config = AgentConfig::from_settings(&session.settings().agent);
-                let list = crate::provider_status(&session).await;
-                Ok(json!({ "provider": config.provider, "model": config.model(), "baseUrl": config.base_url(), "providers": list }))
+                let statuses = crate::provider_status(&session).await;
+                // Every provider with its models, for a model picker: the chosen one's fetched
+                // (and kept a few hours), the others' as last fetched or built in.
+                let active_models = crate::list_models(&session, config.provider, a.bool_or("refresh", false)).await;
+                let list: Vec<Value> = statuses
+                    .iter()
+                    .map(|p| {
+                        let (models, source) = if p.provider == config.provider { (active_models.models.clone(), active_models.source) } else { crate::models::known(p.provider) };
+                        let mut v = json!(p);
+                        v["modelList"] = json!(models);
+                        v["modelSource"] = json!(source);
+                        v
+                    })
+                    .collect();
+                let list_ref = &statuses;
+                let groups: Vec<Value> = crate::Group::ALL.iter().map(|g| json!({ "id": g, "label": g.label() })).collect();
+                let model = list_ref.iter().find(|p| p.active).map(|p| if config.model.is_empty() { p.default_model.clone() } else { config.model.clone() }).unwrap_or_default();
+                Ok(json!({
+                    "provider": config.provider,
+                    "model": model,
+                    "baseUrl": config.base_url(),
+                    "enabled": session.settings().agent.enabled,
+                    "groups": groups,
+                    "providers": list,
+                }))
+            }
+            "agent.models" => {
+                let kind = match a.opt_str("provider") {
+                    Some(id) => parse_provider(id)?,
+                    None => AgentConfig::from_settings(&session.settings().agent).provider,
+                };
+                Ok(json!(crate::list_models(&session, kind, a.bool_or("refresh", false)).await))
             }
             "agent.setProvider" => {
-                let id = a.str("provider")?;
-                let kind = ProviderKind::parse(id).ok_or_else(|| {
-                    let ids: Vec<&str> = ProviderKind::ALL.iter().map(|k| k.id()).collect();
-                    format!("Unknown agent provider `{id}`. Providers: {}.", ids.join(", "))
-                })?;
+                let kind = parse_provider(a.str("provider")?)?;
                 let (model, base) = (a.opt_str("model").map(str::trim).map(str::to_string), a.opt_str("baseUrl").map(str::trim).map(str::to_string));
                 let s = session.update_settings(|st| {
                     let changed = st.agent.provider != kind.id();
@@ -620,7 +646,8 @@ impl Host {
                         st.agent.base_url = b;
                     }
                 })?;
-                Ok(json!({ "provider": s.agent.provider, "model": s.agent.model, "baseUrl": s.agent.base_url }))
+                let status = crate::status_of(&session, kind).await;
+                Ok(json!({ "provider": s.agent.provider, "model": s.agent.model, "baseUrl": s.agent.base_url, "ready": status.ready, "message": status.message, "next": status.next }))
             }
             "agent.conversations" => {
                 let snap = self.snapshot();
@@ -687,6 +714,15 @@ impl Host {
             other => Err(format!("`{other}` is not implemented")),
         }
     }
+}
+
+/// A provider id, or what to type instead.
+fn parse_provider(id: &str) -> CmdResult<ProviderKind> {
+    ProviderKind::parse(id).ok_or_else(|| {
+        let ids: Vec<&str> = ProviderKind::ALL.iter().map(|k| k.id()).collect();
+        let hint = kimchi_control::registry::closest(id, &ids).map(|c| format!(" Did you mean {c}?")).unwrap_or_default();
+        format!("Unknown agent provider `{id}`.{hint} Providers: {}.", ids.join(", "))
+    })
 }
 
 fn finish(st: &mut State, id: u64, state: RunState, error: Option<String>, checkpoint: Option<u64>, changes: usize) {

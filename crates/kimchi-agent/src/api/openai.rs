@@ -1,12 +1,17 @@
-//! OpenAI Chat Completions with streamed text and function tools. Also any
-//! compatible server, through `settings.agent.baseUrl`.
+//! OpenAI Chat Completions with streamed text and function tools. Also every compatible
+//! provider (OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure
+//! OpenAI, LM Studio, any server through `settings.agent.baseUrl`): one client, with
+//! [`Quirks`] for where they differ (the reply cap's name, usage in the stream, Mistral's tool
+//! call ids, DeepSeek's reasoning that goes back within a tool loop, Azure's `api-key` header
+//! and its filter-only chunks).
 
 use serde_json::{Value, json};
 
 use super::{Api, Call, Step, parse_args};
 use crate::http::{self, Lines};
-use crate::tools::SYSTEM_PROMPT;
-use crate::{Message, Part, ProviderKind, Role, Run, ToolDef};
+use crate::providers::Quirks;
+use crate::tools::ToolSet;
+use crate::{Message, Part, Role, Run, ToolDef};
 
 pub(super) fn tools(defs: &[ToolDef]) -> Vec<Value> {
     defs.iter().map(|t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.schema } })).collect()
@@ -14,9 +19,31 @@ pub(super) fn tools(defs: &[ToolDef]) -> Vec<Value> {
 
 /// Tool messages carry text only: pictures follow them in a user message (the latest few;
 /// older ones, and all of them for a model that can't see, become a line of text).
-pub(super) fn wire(messages: &[Message], vision: bool) -> Vec<Value> {
+/// A tool call id as Mistral takes them: nine letters and digits, the same for the same id.
+pub(crate) fn short_id(id: &str) -> String {
+    if id.len() == 9 && id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return id.to_string();
+    }
+    // FNV-1a, spelled out in base 62.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in id.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    (0..9)
+        .map(|_| {
+            let c = DIGITS[(h % 62) as usize] as char;
+            h /= 62;
+            c
+        })
+        .collect()
+}
+
+pub(super) fn wire(api: &Api, q: Quirks, system: &str, messages: &[Message], vision: bool) -> Vec<Value> {
+    let call_id = |s: &str| if q.short_ids { short_id(s) } else { s.to_string() };
     let recent = super::recent_pictures(messages, vision);
-    let mut out = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
+    let mut out = vec![json!({ "role": "system", "content": system })];
     for (i, m) in messages.iter().enumerate() {
         let text = m.text();
         match m.role {
@@ -24,7 +51,7 @@ pub(super) fn wire(messages: &[Message], vision: bool) -> Vec<Value> {
                 // Tool answers come first: they must follow the assistant's calls.
                 for p in &m.parts {
                     if let Part::ToolResult { id, output, .. } = p {
-                        out.push(json!({ "role": "tool", "tool_call_id": id, "content": output }));
+                        out.push(json!({ "role": "tool", "tool_call_id": call_id(id), "content": output }));
                     }
                 }
                 let (shown, older) = super::pictures_of(m, i, &recent);
@@ -42,7 +69,7 @@ pub(super) fn wire(messages: &[Message], vision: bool) -> Vec<Value> {
                     .parts
                     .iter()
                     .filter_map(|p| match p {
-                        Part::ToolUse { id, name, input } => Some(json!({ "id": id, "type": "function", "function": { "name": name, "arguments": input.to_string() } })),
+                        Part::ToolUse { id, name, input } => Some(json!({ "id": call_id(id), "type": "function", "function": { "name": name, "arguments": input.to_string() } })),
                         _ => None,
                     })
                     .collect();
@@ -52,6 +79,17 @@ pub(super) fn wire(messages: &[Message], vision: bool) -> Vec<Value> {
                 } else if text.is_empty() {
                     msg["content"] = json!("…");
                 }
+                // What this provider asked to get back with the message (DeepSeek's reasoning).
+                for p in &m.parts {
+                    if let Part::Opaque { provider, block } = p
+                        && *provider == api.kind
+                        && let Some(o) = block.as_object()
+                    {
+                        for (k, v) in o {
+                            msg[k] = v.clone();
+                        }
+                    }
+                }
                 out.push(msg);
             }
         }
@@ -59,36 +97,28 @@ pub(super) fn wire(messages: &[Message], vision: bool) -> Vec<Value> {
     out
 }
 
-pub(super) async fn step(api: &Api, run: &Run, defs: &[ToolDef], messages: &[Message]) -> Result<Step, String> {
+pub(super) async fn step(api: &Api, q: Quirks, run: &Run, set: &ToolSet, messages: &[Message]) -> Result<Step, String> {
     let mut body = json!({
         "model": api.model,
-        "messages": wire(messages, api.sees()),
-        "tools": tools(defs),
+        "messages": wire(api, q, &set.system_prompt(), messages, api.sees()),
+        "tools": tools(&set.defs),
         "tool_choice": "auto",
         "stream": true,
     });
-    let official = api.base == ProviderKind::OpenAi.default_base_url();
-    if official {
+    if q.usage {
         body["stream_options"] = json!({ "include_usage": true });
     }
-    let url = format!("{}/chat/completions", api.base);
-    let label = if official { "the OpenAI API".to_string() } else { api.base.clone() };
-    let response = http::post(
-        &run.cancel,
-        &label,
-        || {
-            let r = api.http.post(&url);
-            match &api.key {
-                Some(k) => r.bearer_auth(k),
-                None => r,
-            }
-        },
-        &body,
-    )
-    .await?;
+    if let Some((name, n)) = q.max_tokens {
+        body[name] = json!(n);
+    }
+    // Azure's whole URL is the base already.
+    let url = if api.base.contains("/chat/completions") { api.base.clone() } else { format!("{}/chat/completions", api.base) };
+    let label = api.label();
+    let response = http::post(&run.cancel, &label, || api.authorized(api.http.post(&url)), &body).await?;
 
     let mut lines = Lines::new(response);
     let mut text = String::new();
+    let mut reasoning = String::new();
     // index → (id, name, arguments)
     let mut calls: Vec<(String, String, String)> = vec![];
     let mut finish = String::new();
@@ -103,20 +133,26 @@ pub(super) async fn step(api: &Api, run: &Run, defs: &[ToolDef], messages: &[Mes
             Ok(v) => v,
             Err(_) => continue,
         };
-        if let Some(e) = chunk["error"]["message"].as_str() {
+        if let Some(e) = chunk["error"]["message"].as_str().or_else(|| chunk["error"].as_str()) {
             return Err(format!("{label} error: {e}"));
         }
         if let Some(u) = chunk.get("usage").filter(|u| u.is_object()) {
             run.usage(u["prompt_tokens"].as_u64().unwrap_or(0), u["completion_tokens"].as_u64().unwrap_or(0));
         }
+        // Azure's content filter notes come as chunks without choices.
         let Some(choice) = chunk["choices"].get(0) else { continue };
         let delta = &choice["delta"];
         if let Some(t) = delta["content"].as_str() {
             text.push_str(t);
             run.text(t);
         }
+        if let Some(r) = delta["reasoning_content"].as_str() {
+            reasoning.push_str(r);
+        }
         for tc in delta["tool_calls"].as_array().into_iter().flatten() {
-            let index = tc["index"].as_u64().unwrap_or(calls.len() as u64) as usize;
+            // Mistral sends whole calls without an index: a new call, unless its id was seen.
+            let seen = tc["id"].as_str().and_then(|id| calls.iter().position(|c| !id.is_empty() && c.0 == id));
+            let index = tc["index"].as_u64().map(|i| i as usize).or(seen).unwrap_or(calls.len());
             while calls.len() <= index {
                 calls.push(Default::default());
             }
@@ -156,5 +192,23 @@ pub(super) async fn step(api: &Api, run: &Run, defs: &[ToolDef], messages: &[Mes
         parts.push(Part::ToolUse { id: id.clone(), name: name.clone(), input: input.clone().unwrap_or_else(|_| json!({})) });
         out.push(Call { id, name, input });
     }
+    if q.reasoning_back && !reasoning.is_empty() && !out.is_empty() {
+        parts.push(Part::Opaque { provider: api.kind, block: json!({ "reasoning_content": reasoning }) });
+    }
     Ok(Step { parts, calls: out })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_id;
+
+    #[test]
+    fn mistral_ids_are_nine_letters_and_digits_and_stable() {
+        let a = short_id("toolu_01ABCdef");
+        assert_eq!(a.len(), 9);
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_eq!(a, short_id("toolu_01ABCdef"));
+        assert_ne!(a, short_id("toolu_01ABCdeg"));
+        assert_eq!(short_id("Ab3dE6gH9"), "Ab3dE6gH9");
+    }
 }
