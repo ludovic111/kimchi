@@ -99,7 +99,8 @@ pub const PROMPTS: [Prompt; 6] = [
                 "Review this cut. Call project_overview and read problems first (missing files, clips still generating, hidden or muted tracks). Then check: gaps on the main \
                  video track (timeline_closeGap), shots that run long or cut too fast for the material, jarring jumps between generated and filmed shots (generate_bridge can fill \
                  a transition), audio clips that overlap or are too loud (clip_update volume, fadeIn, fadeOut), text that runs off the canvas or overlaps other text, and the \
-                 ending. Use clip_get or media_get where you need details, and in live mode ui_screenshot to see the window. {apply}"
+                 ending. Look at the cut itself: project_renderFrame with times=[…] across its length (one labelled sheet, up to 16 frames) shows framing, exposure \
+                 and text as they really are; media_look shows a media item before you use it. Use clip_get or media_get where you need details. {apply}"
             )
         },
     },

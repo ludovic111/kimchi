@@ -199,7 +199,8 @@ pub(super) fn wire(messages: &[Message]) -> Vec<Value> {
                     Some(json!({ "toolResult": { "toolUseId": id, "content": [{ "text": output }], "status": if *is_error { "error" } else { "success" } } }))
                 }
                 Part::Opaque { provider: ProviderKind::Bedrock, block } => Some(block.clone()),
-                Part::Opaque { .. } => None,
+                // Not sent (the run says the model can't see).
+                Part::Opaque { .. } | Part::Image { .. } => None,
             })
             .collect();
         let role = if m.role == Role::User { "user" } else { "assistant" };

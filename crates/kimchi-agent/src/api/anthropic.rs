@@ -19,10 +19,17 @@ fn tools(defs: &[ToolDef]) -> Vec<Value> {
     defs.iter().map(|t| json!({ "name": t.name, "description": t.description, "input_schema": t.schema })).collect()
 }
 
+fn image(media_type: &str, data: &str) -> Value {
+    json!({ "type": "image", "source": { "type": "base64", "media_type": media_type, "data": data } })
+}
+
+/// Pictures go inside the tool result they belong to; a result without one keeps its plain
+/// text, so threads from before pictures replay unchanged.
 pub(super) fn wire(messages: &[Message]) -> Vec<Value> {
     messages
         .iter()
         .map(|m| {
+            let results: Vec<&str> = m.parts.iter().filter_map(|p| if let Part::ToolResult { id, .. } = p { Some(id.as_str()) } else { None }).collect();
             let mut content: Vec<Value> = m
                 .parts
                 .iter()
@@ -31,8 +38,23 @@ pub(super) fn wire(messages: &[Message]) -> Vec<Value> {
                     Part::Text { text } => Some(json!({ "type": "text", "text": text })),
                     Part::ToolUse { id, name, input } => Some(json!({ "type": "tool_use", "id": id, "name": name, "input": input })),
                     Part::ToolResult { id, output, is_error, .. } => {
-                        Some(json!({ "type": "tool_result", "tool_use_id": id, "content": output, "is_error": is_error }))
+                        let pictures: Vec<Value> = m
+                            .parts
+                            .iter()
+                            .filter_map(|p| match p {
+                                Part::Image { call: Some(c), media_type, data } if c == id => Some(image(media_type, data)),
+                                _ => None,
+                            })
+                            .collect();
+                        let content = if pictures.is_empty() {
+                            json!(output)
+                        } else {
+                            json!(std::iter::once(json!({ "type": "text", "text": output })).chain(pictures).collect::<Vec<_>>())
+                        };
+                        Some(json!({ "type": "tool_result", "tool_use_id": id, "content": content, "is_error": is_error }))
                     }
+                    Part::Image { call: Some(c), .. } if results.contains(&c.as_str()) => None,
+                    Part::Image { media_type, data, .. } => Some(image(media_type, data)),
                     Part::Opaque { provider: ProviderKind::Anthropic, block } => Some(block.clone()),
                     Part::Opaque { .. } => None,
                 })

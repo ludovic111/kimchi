@@ -19,6 +19,7 @@ pub mod secrets;
 pub mod session;
 pub mod settings;
 pub mod update;
+pub mod vision;
 
 pub use registry::{Kind, Param, Perm, Spec, call, commands as specs, describe, input_schema, markdown, spec};
 pub use session::{CmdResult, CommandRecord, Event, ExportStatus, Location, Session, SessionOptions, Source, ToastKind, UiCall, UiState};

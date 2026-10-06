@@ -17,6 +17,8 @@ pub(super) fn tools(defs: &[ToolDef]) -> Vec<Value> {
     defs.iter().map(|t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.schema } })).collect()
 }
 
+/// Tool messages carry text only: pictures follow them in a user message (the latest few;
+/// older ones, and all of them for a model that can't see, become a line of text).
 /// A tool call id as Mistral takes them: nine letters and digits, the same for the same id.
 pub(crate) fn short_id(id: &str) -> String {
     if id.len() == 9 && id.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -38,10 +40,11 @@ pub(crate) fn short_id(id: &str) -> String {
         .collect()
 }
 
-pub(super) fn wire(api: &Api, q: Quirks, system: &str, messages: &[Message]) -> Vec<Value> {
+pub(super) fn wire(api: &Api, q: Quirks, system: &str, messages: &[Message], vision: bool) -> Vec<Value> {
     let call_id = |s: &str| if q.short_ids { short_id(s) } else { s.to_string() };
+    let recent = super::recent_pictures(messages, vision);
     let mut out = vec![json!({ "role": "system", "content": system })];
-    for m in messages {
+    for (i, m) in messages.iter().enumerate() {
         let text = m.text();
         match m.role {
             Role::User => {
@@ -50,6 +53,12 @@ pub(super) fn wire(api: &Api, q: Quirks, system: &str, messages: &[Message]) -> 
                     if let Part::ToolResult { id, output, .. } = p {
                         out.push(json!({ "role": "tool", "tool_call_id": call_id(id), "content": output }));
                     }
+                }
+                let (shown, older) = super::pictures_of(m, i, &recent);
+                if !shown.is_empty() || older > 0 {
+                    let mut content = vec![json!({ "type": "text", "text": super::pictures_note(shown.len(), older) })];
+                    content.extend(shown.iter().map(|(media_type, data)| json!({ "type": "image_url", "image_url": { "url": format!("data:{media_type};base64,{data}") } })));
+                    out.push(json!({ "role": "user", "content": content }));
                 }
                 if !text.is_empty() {
                     out.push(json!({ "role": "user", "content": text }));
@@ -91,7 +100,7 @@ pub(super) fn wire(api: &Api, q: Quirks, system: &str, messages: &[Message]) -> 
 pub(super) async fn step(api: &Api, q: Quirks, run: &Run, set: &ToolSet, messages: &[Message]) -> Result<Step, String> {
     let mut body = json!({
         "model": api.model,
-        "messages": wire(api, q, &set.system_prompt(), messages),
+        "messages": wire(api, q, &set.system_prompt(), messages, api.sees()),
         "tools": tools(&set.defs),
         "tool_choice": "auto",
         "stream": true,

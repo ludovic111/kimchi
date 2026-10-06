@@ -123,6 +123,11 @@ pub static SPECS: &[Spec] = &[
         opt("path", String, "The new file for assetId."),
         opt("folder", String, "Look here, with subfolders, for every missing file by name."),
     ]).perm(Perm::Files),
+    query("media.look", "Look at a media item without putting it on the timeline: a picture as it is, a video as a labelled sheet of frames across its length. Returns a PNG path; agents that can see get the picture itself (to choose between takes, check a generation, describe footage).", &[
+        ASSET_ID,
+        opt("frames", Integer, "Video: how many frames, evenly spread over its length (1 to 16, default 6)."),
+        opt("width", Integer, "Width of each frame in pixels (default 480 in a sheet, 960 for one frame)."),
+    ]),
     // ---- track ------------------------------------------------------------
     query("track.list", "List tracks from top to bottom with their kind, flags and clip count. Track 0 is drawn on top.", &[]),
     edit("track.add", "Add a track. New video tracks go on top, new audio tracks at the bottom.", &[

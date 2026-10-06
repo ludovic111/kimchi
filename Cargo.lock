@@ -3810,14 +3810,18 @@ dependencies = [
 name = "kimchi-agent"
 version = "0.8.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
+ "crc32fast",
  "futures",
+ "hmac",
  "kimchi-control",
  "kimchi-core",
  "parking_lot",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-util",

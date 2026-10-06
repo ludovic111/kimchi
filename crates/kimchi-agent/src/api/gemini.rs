@@ -52,6 +52,7 @@ pub(super) fn wire(messages: &[Message]) -> Vec<Value> {
                         let response = if *is_error { json!({ "error": output }) } else { json!({ "result": output }) };
                         Some(with_id(json!({ "functionResponse": { "name": name, "response": response } }), "functionResponse", id))
                     }
+                    Part::Image { media_type, data, .. } => Some(json!({ "inlineData": { "mimeType": media_type, "data": data } })),
                     Part::Opaque { .. } => None,
                 })
                 .collect(),
