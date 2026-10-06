@@ -137,9 +137,9 @@ pub fn parse(text: &str) -> Result<Element, String> {
     loop {
         let pos = reader.buffer_position();
         let ev = reader.read_event().map_err(|e| bad(&e, pos))?;
+        let empty = matches!(ev, Event::Empty(_));
         match ev {
             Event::Start(s) | Event::Empty(s) => {
-                let empty = matches!(ev, Event::Empty(_));
                 let mut el = Element::new(String::from_utf8_lossy(s.name().as_ref()).into_owned());
                 for a in s.attributes().with_checks(false) {
                     let a = a.map_err(|e| bad(&e, pos))?;
@@ -157,7 +157,11 @@ pub fn parse(text: &str) -> Result<Element, String> {
                 }
             }
             Event::End(_) => {
-                if let Some(el) = stack.pop() {
+                if let Some(mut el) = stack.pop() {
+                    // Indentation between child elements isn't text.
+                    if !el.children.is_empty() {
+                        el.text = el.text.trim().to_string();
+                    }
                     attach(&mut stack, &mut root, el);
                 }
             }

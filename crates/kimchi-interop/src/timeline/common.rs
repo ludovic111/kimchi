@@ -43,7 +43,7 @@ pub fn percent_decode(s: &str) -> String {
     while i < b.len() {
         if b[i] == b'%'
             && i + 2 < b.len()
-            && let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2]))
+            && let (Some(h), Some(l)) = (hex_digit(b[i + 1]), hex_digit(b[i + 2]))
         {
             out.push(h * 16 + l);
             i += 3;
@@ -55,7 +55,7 @@ pub fn percent_decode(s: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
-fn hex(c: u8) -> Option<u8> {
+fn hex_digit(c: u8) -> Option<u8> {
     (c as char).to_digit(16).map(|d| d as u8)
 }
 
@@ -280,7 +280,7 @@ impl Builder {
             }
         }
         let mut tracks: Vec<Track> = self.video.drain(..).rev().collect();
-        tracks.extend(self.audio.drain(..));
+        tracks.append(&mut self.audio);
         let mut out = vec![];
         let mut moved = 0;
         for t in tracks {
@@ -617,6 +617,41 @@ pub fn transition_kind(name: &str) -> (TransitionKind, bool) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Keyframes and placement
+
+/// A number property's keyframes on a clip: `(seconds from the clip's start, value, easing)`.
+pub fn keys(c: &Clip, name: &str) -> Vec<(f64, f64, kimchi_core::Easing)> {
+    c.keyframes.get(name).into_iter().flatten().filter_map(|k| k.value.as_f64().map(|v| (k.time, v, k.easing))).collect()
+}
+
+/// Sets a number property from keyframes read from a file: none leaves it, one (or all the same)
+/// sets the plain value through `set`, more become keyframes.
+pub fn set_keys(c: &mut Clip, name: &str, list: Vec<(f64, f64, kimchi_core::Easing)>, set: impl FnOnce(&mut Clip, f64)) {
+    let Some(first) = list.first().map(|k| k.1) else { return };
+    if list.iter().all(|k| (k.1 - first).abs() < 1e-9) {
+        set(c, first);
+        return;
+    }
+    let keys = list.into_iter().map(|(t, v, e)| kimchi_core::Keyframe::new(t, v, e)).collect();
+    c.keyframes.insert(name.to_string(), keys);
+    kimchi_core::anim::normalize(&mut c.keyframes);
+}
+
+/// How much kimchi scales a picture of `w`×`h` to fit (contain) a `cw`×`ch` canvas: a scale of
+/// 1 in kimchi is this many times the picture's own pixels.
+pub fn fit_factor(w: Option<u32>, h: Option<u32>, cw: u32, ch: u32) -> f64 {
+    match (w, h) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => (cw as f64 / w as f64).min(ch as f64 / h as f64),
+        _ => 1.0,
+    }
+}
+
+/// The asset of a media clip, and its size if known.
+pub fn clip_size(p: &Project, c: &Clip) -> (Option<u32>, Option<u32>) {
+    c.asset_id().and_then(|id| p.asset(id)).map_or((None, None), |a| (a.meta.width, a.meta.height))
+}
+
+// ---------------------------------------------------------------------------------------------
 // Colours
 
 /// `#rrggbb[aa]` → 0…1 channels.
@@ -626,7 +661,7 @@ pub fn rgba(hex: &str) -> [f64; 4] {
 
 /// 0…1 channels → `#rrggbb` (with `aa` when not opaque).
 pub fn hex(c: [f64; 4]) -> String {
-    kimchi_core::anim::Rgba(c.map(|v| (v.clamp(0.0, 1.0) * 255.0))).to_hex()
+    kimchi_core::anim::Rgba(c.map(|v| v.clamp(0.0, 1.0) * 255.0)).to_hex()
 }
 
 /// The colour in `palette` (`(name, "#rrggbb")`) nearest to `hex`.

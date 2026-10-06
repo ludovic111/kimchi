@@ -356,10 +356,7 @@ impl Reader {
         // What the clip shows.
         let keep_own = saved.as_ref().is_some_and(|c| !matches!(c.content, ClipContent::Media { .. }));
         if !keep_own {
-            match self.content(item, kind, saved.as_ref()) {
-                Some(content) => clip.content = content,
-                None => return None,
-            }
+            clip.content = self.content(item, kind, saved.as_ref())?;
         }
         if let ClipContent::Media { asset_id } = clip.content
             && self.b.asset_kind(asset_id) == Some(MediaKind::Image)
