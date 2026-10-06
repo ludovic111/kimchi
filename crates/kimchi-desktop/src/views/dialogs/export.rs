@@ -305,6 +305,7 @@ impl ExportDialog {
     // ---- pieces ---------------------------------------------------------------
 
     fn options(&self, cx: &mut Context<Self>) -> AnyElement {
+        let presets = self.presets(cx);
         let t = cx.theme().clone();
         // A sound-only export's file type, rate, depth or bitrate, and stems.
         let sound_rows = if FORMATS[self.format].0 == "audio" { crate::views::mixer::export::rows(&self.sound, cx.entity().downgrade(), |d: &mut Self| &mut d.sound, cx) } else { vec![] };
@@ -349,7 +350,6 @@ impl ExportDialog {
                 .child(div().font_weight(FontWeight::BOLD).when(on, |d| d.text_color(t.accent_text)).child(*name))
                 .child(div().text_size(px(sz::XS)).text_color(t.text_2).child(*desc))
         });
-        let presets = self.presets(cx);
         let row = |label: &str, control: AnyElement| div().flex().items_center().gap(px(12.)).child(div().w(px(100.)).flex_none().child(caps(label.to_string(), cx))).child(div().flex_1().child(control));
         let weak = cx.entity().downgrade();
         let w2 = weak.clone();
