@@ -46,6 +46,9 @@ pub struct EffectFields {
     key_spill: Entity<Slider>,
     lut_strength: Entity<Slider>,
     transition_len: Entity<Scrub>,
+    /// The look library's looks, read again when its folder changes.
+    library: Vec<kimchi_control::looks::LibraryLook>,
+    library_stamp: Option<std::time::SystemTime>,
 }
 
 impl EffectFields {
@@ -79,7 +82,7 @@ impl EffectFields {
             }
             this.store.update(cx, |s, cx| s.run("transition.set", p, cx));
         }));
-        Self { sliders, key_color, key_similarity, key_softness, key_spill, lut_strength, transition_len }
+        Self { sliders, key_color, key_similarity, key_softness, key_spill, lut_strength, transition_len, library: vec![], library_stamp: None }
     }
 }
 
@@ -140,6 +143,8 @@ impl Inspector {
                 .on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.run("clip.setEffects", json!({ "clipIds": [id], "look": look }), cx)))
         }));
 
+        let library = self.library_looks(&fx, id, cx);
+
         let rows = div().flex().flex_col().gap(px(6.)).children(self.fx.sliders.iter().map(|(prop, slider)| {
             let prop: &'static str = prop;
             let label = FIELDS.iter().find(|f| f.0 == prop).map_or(prop, |f| f.1);
@@ -199,7 +204,13 @@ impl Inspector {
         // LUT.
         let lut = clip.effects.lut.clone();
         let lut_el = match &lut {
-            None => Button::new("lut-load", "Load a LUT (.cube)…").small().with_icon("folder-open").full_width().on_click(move |_, _, cx| pick_lut(id, cx)).into_any_element(),
+            None => Button::new("lut-load", "Load a LUT…")
+                .small()
+                .with_icon("folder-open")
+                .full_width()
+                .tooltip(".cube, .3dl, .csp, .spi1d, .spi3d or a Hald CLUT picture")
+                .on_click(move |_, _, cx| pick_lut(id, cx))
+                .into_any_element(),
             Some(l) => {
                 let name = std::path::Path::new(&l.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| l.path.clone());
                 let missing = !std::path::Path::new(&l.path).is_file();
@@ -244,6 +255,7 @@ impl Inspector {
                 })
             }))
             .child(looks)
+            .child(library)
             .child(rows)
             .child(switch(
                 "chroma-key",
@@ -255,6 +267,57 @@ impl Inspector {
             .children(key_rows)
             .child(lut_el)
             .into_any_element()
+    }
+
+    /// The library's looks by folder (`looks.apply`), and Import looks…, Save as look and
+    /// Export .cube….
+    fn library_looks(&mut self, fx: &kimchi_core::Effects, id: Id, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.theme().clone();
+        let lib = kimchi_control::looks::Library::new(&self.store.read(cx).session.data_dir);
+        let stamp = std::fs::metadata(lib.dir()).and_then(|m| m.modified()).ok();
+        if stamp != self.fx.library_stamp || (stamp.is_some() && self.fx.library.is_empty()) {
+            self.fx.library = lib.list();
+            self.fx.library_stamp = stamp;
+        }
+        let mut folders: Vec<(Option<String>, Vec<&kimchi_control::looks::LibraryLook>)> = vec![];
+        for l in &self.fx.library {
+            match folders.iter_mut().find(|(f, _)| *f == l.folder) {
+                Some((_, v)) => v.push(l),
+                None => folders.push((l.folder.clone(), vec![l])),
+            }
+        }
+        let same = |l: &kimchi_control::looks::LibraryLook| {
+            EFFECT_PROPS.iter().all(|p| (fx.get(p).unwrap_or(0.0) - l.effects.get(p).unwrap_or(0.0)).abs() < 1e-6) && fx.lut.as_ref().map(|x| &x.path) == l.effects.lut.as_ref().map(|x| &x.path)
+        };
+        let groups = folders.into_iter().map(|(folder, looks)| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(div().text_size(px(sz::XS)).text_color(t.text_3).truncate().child(folder.unwrap_or_else(|| "Library".into())))
+                .child(div().flex().flex_wrap().gap(px(4.)).children(looks.into_iter().map(|l| {
+                    let look = l.id.clone();
+                    let mut tip = l.source_label();
+                    if !l.report.approximated.is_empty() || !l.report.dropped.is_empty() {
+                        tip.push_str(&format!(" · {} setting(s) approximated, {} left out", l.report.approximated.len(), l.report.dropped.len()));
+                    }
+                    Button::new(SharedString::from(format!("look-lib-{}", l.id)), l.name.clone())
+                        .small()
+                        .selected(same(l))
+                        .tooltip(tip)
+                        .on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.run("looks.apply", json!({ "clipIds": [id], "look": look }), cx)))
+                })))
+        });
+        let has_grade = fx.lut.is_some() || EFFECT_PROPS.iter().any(|p| fx.get(p).unwrap_or(0.0).abs() > 1e-9);
+        let actions = div()
+            .flex()
+            .gap(px(4.))
+            .child(div().flex_1().min_w_0().child(Button::new("looks-import", "Import looks…").small().with_icon("folder-open").full_width().tooltip("LUTs, Lightroom presets (.xmp, .lrtemplate) and Premiere Lumetri presets (.prfpset), or a folder of them").on_click(|_, _, cx| import_looks(cx))))
+            .child(div().flex_1().min_w_0().child(Button::new("looks-save", "Save as look").small().with_icon("star").full_width().disabled(!has_grade).tooltip("Keep this clip's corrections and LUT in the look library").on_click(move |_, _, cx| {
+                cx.store().update(cx, |s, cx| s.run("looks.save", json!({ "clipId": id }), cx))
+            })))
+            .child(div().flex_1().min_w_0().child(Button::new("looks-cube", "Export .cube…").small().with_icon("share").full_width().disabled(!has_grade).tooltip("Write the corrections and LUT as a 33-point .cube for Premiere, Resolve or Final Cut").on_click(move |_, _, cx| export_cube(id, cx))));
+        div().flex().flex_col().gap(px(8.)).children(groups).child(actions).into_any_element()
     }
 
     /// The transition (or, on audio tracks, crossfade) at the clip's start.
@@ -350,7 +413,36 @@ pub fn speed_extras(clip: &Clip, kind: Option<MediaKind>, playhead: f64, fps: f6
     Some(out.into_any_element())
 }
 
-/// Asks for a `.cube` file and puts it on the clip.
+/// Asks for look files or folders and imports them into the look library.
+fn import_looks(cx: &mut App) {
+    let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: true, multiple: true, prompt: Some("Import looks".into()) });
+    let store = cx.store();
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(paths))) = rx.await else { return };
+        let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        store.update(cx, |s, cx| s.run("looks.import", json!({ "paths": paths }), cx));
+    })
+    .detach();
+}
+
+/// Asks where to write the clip's grade as a `.cube`.
+fn export_cube(id: Id, cx: &mut App) {
+    let store = cx.store();
+    let name = store.read(cx).project.as_ref().and_then(|p| p.clip(id)).map(|c| c.name.clone()).unwrap_or_else(|| "look".into());
+    let clean: String = name.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '-' } else { c }).collect();
+    let dir = dirs::document_dir().or_else(dirs::home_dir).unwrap_or_else(std::env::temp_dir);
+    let rx = cx.prompt_for_new_path(&dir, Some(&format!("{}.cube", clean.trim())));
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(mut path))) = rx.await else { return };
+        if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("cube")) {
+            path.set_extension("cube");
+        }
+        store.update(cx, |s, cx| s.run("looks.save", json!({ "clipId": id, "name": name, "path": path.to_string_lossy() }), cx));
+    })
+    .detach();
+}
+
+/// Asks for a LUT file and puts it on the clip.
 fn pick_lut(id: Id, cx: &mut App) {
     let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use LUT".into()) });
     let store = cx.store();
@@ -376,6 +468,11 @@ fn signed(v: f64) -> String {
 
 #[cfg(test)]
 impl Inspector {
+    /// The names of the library looks the Colour section shows, for tests.
+    pub fn library_look_names(&self) -> Vec<String> {
+        self.fx.library.iter().map(|l| l.name.clone()).collect()
+    }
+
     /// The slider of a colour correction, for tests.
     pub fn effect_slider(&self, prop: &str) -> Option<Entity<Slider>> {
         self.fx.sliders.iter().find(|(p, _)| *p == prop).map(|(_, s)| s.clone())

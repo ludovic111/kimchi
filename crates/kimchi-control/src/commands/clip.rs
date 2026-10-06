@@ -254,7 +254,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             let mut edits = vec![];
             for id in &ids {
                 let clip = p.clip(*id).ok_or("clip not found")?;
-                let effects = effects_of(clip, &a)?;
+                let effects = effects_of(clip, &a, &crate::looks::Library::new(&s.data_dir))?;
                 edits.push(Edit::UpdateClip { clip_id: *id, patch: ClipPatch { effects: Some(effects), ..Default::default() } });
             }
             apply_all(s, cx, &edits, a.coalesce())?;
@@ -291,10 +291,10 @@ pub(crate) fn apply_all(s: &Arc<Session>, cx: &Ctx, edits: &[Edit], coalesce: Op
 }
 
 /// The effects `clip.setEffects` asks for, on top of the clip's (or none, with reset).
-fn effects_of(clip: &Clip, a: &Args) -> CmdResult<Effects> {
+fn effects_of(clip: &Clip, a: &Args, looks: &crate::looks::Library) -> CmdResult<Effects> {
     let mut e = if a.bool_or("reset", false) { Effects::default() } else { clip.effects.clone() };
     if let Some(look) = a.opt_str("look") {
-        e = kimchi_core::effects::apply_look(&e, look)?;
+        e = looks.find(look)?.apply(&e, None)?;
     }
     for name in kimchi_core::effects::EFFECT_PROPS {
         if let Some(v) = a.get(name) {
@@ -337,7 +337,7 @@ fn effects_of(clip: &Clip, a: &Args) -> CmdResult<Effects> {
                     o.get("path").and_then(Value::as_str).ok_or("lut needs a path")?.to_string(),
                     o.get("strength").and_then(Value::as_f64),
                 ),
-                other => return Err(format!("lut takes the path of a .cube file, not {other}")),
+                other => return Err(format!("lut takes the path of a LUT file (.cube, .3dl, .csp, .spi1d, .spi3d or a Hald CLUT picture), not {other}")),
             };
             let path = std::path::absolute(&path).map_err(|e| format!("{path}: {e}"))?.to_string_lossy().into_owned();
             kimchi_media::render::grade::cube(std::path::Path::new(&path)).map_err(|e| format!("Can't use {path} as a LUT: {e}"))?;

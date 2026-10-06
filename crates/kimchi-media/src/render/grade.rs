@@ -23,7 +23,7 @@ pub(crate) fn apply(p: &mut Pixmap, e: &Effects, scale: f32) {
     if !e.is_active() {
         return;
     }
-    let lut = e.lut.as_ref().and_then(|l| match cube(Path::new(&l.path)) {
+    let lut = e.lut.as_ref().and_then(|l| match lut(Path::new(&l.path)) {
         Ok(c) => Some((c, l.strength as f32)),
         Err(err) => {
             warn_once(&l.path, &err.to_string());
@@ -183,91 +183,75 @@ fn sharpen(p: &mut Pixmap, amount: f32, radius: f32) {
 // ---------------------------------------------------------------------------------------------
 // LUTs
 
-/// A parsed `.cube` 3D LUT: `size`³ entries, red fastest.
-#[derive(Debug)]
-pub struct Cube {
-    size: usize,
-    data: Vec<[f32; 3]>,
-    min: [f32; 3],
-    max: [f32; 3],
-}
+mod lut;
 
-impl Cube {
-    pub fn parse(text: &str) -> Result<Cube, String> {
-        let (mut size, mut min, mut max) = (0usize, [0.0f32; 3], [1.0f32; 3]);
-        let mut data = vec![];
-        let triple = |rest: &str| -> Option<[f32; 3]> {
-            let v: Vec<f32> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-            (v.len() == 3).then(|| [v[0], v[1], v[2]])
-        };
-        for (n, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let (word, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
-            match word {
-                "LUT_3D_SIZE" => size = rest.trim().parse().map_err(|_| format!("bad LUT_3D_SIZE on line {}", n + 1))?,
-                "LUT_1D_SIZE" => return Err("1D LUTs aren't supported; use a 3D .cube".into()),
-                "DOMAIN_MIN" => min = triple(rest).ok_or("bad DOMAIN_MIN")?,
-                "DOMAIN_MAX" => max = triple(rest).ok_or("bad DOMAIN_MAX")?,
-                "TITLE" | "LUT_3D_INPUT_RANGE" => {}
-                _ if word.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '.') => {
-                    data.push(triple(line).ok_or_else(|| format!("line {} isn't three numbers", n + 1))?);
-                }
-                _ => {}
-            }
-        }
-        if !(2..=256).contains(&size) {
-            return Err("not a 3D .cube LUT (no LUT_3D_SIZE)".into());
-        }
-        if data.len() != size * size * size {
-            return Err(format!("the LUT should have {} entries, it has {}", size * size * size, data.len()));
-        }
-        Ok(Cube { size, data, min, max })
-    }
+pub use lut::{ColorLut, Interpolation};
 
-    /// Trilinear lookup of a colour (0…1 per channel).
-    pub fn lookup(&self, rgb: [f32; 3]) -> [f32; 3] {
-        let n = self.size;
-        let mut i0 = [0usize; 3];
-        let mut f = [0f32; 3];
-        for c in 0..3 {
-            let v = ((rgb[c] - self.min[c]) / (self.max[c] - self.min[c]).max(1e-6)).clamp(0.0, 1.0) * (n - 1) as f32;
-            i0[c] = (v.floor() as usize).min(n - 2);
-            f[c] = v - i0[c] as f32;
-        }
-        let at = |r: usize, g: usize, b: usize| self.data[r + g * n + b * n * n];
-        let mut out = [0f32; 3];
-        for (corner, w) in (0..8).map(|k| {
-            let (dr, dg, db) = (k & 1, (k >> 1) & 1, (k >> 2) & 1);
-            let w = (if dr == 1 { f[0] } else { 1.0 - f[0] }) * (if dg == 1 { f[1] } else { 1.0 - f[1] }) * (if db == 1 { f[2] } else { 1.0 - f[2] });
-            (at(i0[0] + dr, i0[1] + dg, i0[2] + db), w)
-        }) {
-            for c in 0..3 {
-                out[c] += corner[c] * w;
-            }
-        }
-        out
-    }
-}
+/// LUTs by file, with the time the file was last changed.
+type Luts = Mutex<HashMap<PathBuf, (std::time::SystemTime, Arc<ColorLut>)>>;
 
-type Cubes = Mutex<HashMap<PathBuf, (std::time::SystemTime, Arc<Cube>)>>;
-
-/// The LUT at `path`, parsed once (again when the file changes).
-pub fn cube(path: &Path) -> MediaResult<Arc<Cube>> {
-    static CUBES: OnceLock<Cubes> = OnceLock::new();
-    let cubes = CUBES.get_or_init(Default::default);
+/// The LUT at `path` in any format kimchi reads (`.cube` 1D / 3D / shaper + 3D, `.3dl`, `.csp`,
+/// `.spi1d`, `.spi3d`, Hald CLUT `.png` / `.tif`), parsed once (again when the file changes).
+pub fn lut(path: &Path) -> MediaResult<Arc<ColorLut>> {
+    static LUTS: OnceLock<Luts> = OnceLock::new();
+    let luts = LUTS.get_or_init(Default::default);
     let modified = std::fs::metadata(path).and_then(|m| m.modified()).map_err(MediaError::Io)?;
-    if let Some((m, c)) = super::lock(cubes).get(path)
+    if let Some((m, c)) = super::lock(luts).get(path)
         && *m == modified
     {
         return Ok(c.clone());
     }
-    let text = std::fs::read_to_string(path)?;
-    let c = Arc::new(Cube::parse(&text).map_err(|e| MediaError::Unsupported(format!("{}: {e}", path.display())))?);
-    super::lock(cubes).insert(path.to_path_buf(), (modified, c.clone()));
+    let c = Arc::new(ColorLut::read(path).map_err(|e| MediaError::Unsupported(format!("{}: {e}", path.display())))?);
+    let mut map = super::lock(luts);
+    if map.len() > 64 {
+        map.clear();
+    }
+    map.insert(path.to_path_buf(), (modified, c.clone()));
     Ok(c)
+}
+
+/// The same as [`lut`] (the name from when only `.cube` files were read).
+pub fn cube(path: &Path) -> MediaResult<Arc<ColorLut>> {
+    lut(path)
+}
+
+/// A clip's colour corrections and LUT (at its strength) written as a `size`-point 3D `.cube`
+/// (2…256; 33 is what other apps expect), red fastest, values 0…1. The chroma key, vignette,
+/// sharpen and plugins work on the picture's shapes, not its colours, so they aren't in it.
+/// Starts with a comment line; add a `TITLE "…"` line in front to name it.
+pub fn bake_cube(effects: &Effects, size: usize) -> MediaResult<String> {
+    if !(2..=256).contains(&size) {
+        return Err(MediaError::Unsupported(format!("a .cube has 2 to 256 points a side, not {size}")));
+    }
+    let lut = match &effects.lut {
+        Some(l) => Some((lut(Path::new(&l.path))?, l.strength as f32)),
+        None => None,
+    };
+    let tone = Tone::of(effects);
+    let k = (size - 1) as f32;
+    let mut out = String::with_capacity(size * size * size * 28 + 64);
+    out.push_str("# Made with kimchi: the clip's colour corrections");
+    if lut.is_some() {
+        out.push_str(" and its LUT");
+    }
+    out.push_str(&format!("\nLUT_3D_SIZE {size}\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n"));
+    for b in 0..size {
+        for g in 0..size {
+            for r in 0..size {
+                let mut rgb = [r as f32 / k, g as f32 / k, b as f32 / k];
+                tone.apply(&mut rgb);
+                if let Some((l, strength)) = &lut {
+                    let graded = l.lookup(rgb);
+                    for c in 0..3 {
+                        rgb[c] += (graded[c] - rgb[c]) * strength;
+                    }
+                }
+                let [r, g, b] = rgb.map(|v| v.clamp(0.0, 1.0));
+                out.push_str(&format!("{r:.6} {g:.6} {b:.6}\n"));
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn warn_once(path: &str, err: &str) {
@@ -336,6 +320,7 @@ mod tests {
     #[test]
     fn cube_lut_maps_colours() {
         // An inverting 2³ LUT.
+        let dir = tempfile::tempdir().unwrap();
         let mut text = String::from("TITLE \"invert\"\nLUT_3D_SIZE 2\n");
         for b in 0..2 {
             for g in 0..2 {
@@ -344,9 +329,40 @@ mod tests {
                 }
             }
         }
-        let cube = Cube::parse(&text).unwrap();
-        let out = cube.lookup([0.25, 0.5, 1.0]);
+        let path = dir.path().join("invert.cube");
+        std::fs::write(&path, &text).unwrap();
+        let out = lut(&path).unwrap().lookup([0.25, 0.5, 1.0]);
         assert!((out[0] - 0.75).abs() < 1e-5 && (out[1] - 0.5).abs() < 1e-5 && out[2].abs() < 1e-5);
-        assert!(Cube::parse("LUT_3D_SIZE 3\n0 0 0\n").unwrap_err().contains("27"));
+        let mut p = filled(Color::from_rgba8(255, 0, 0, 255));
+        apply(&mut p, &Effects { lut: Some(kimchi_core::Lut { path: path.to_string_lossy().into(), strength: 1.0 }), ..Default::default() }, 1.0);
+        assert_eq!(px(&p, 2, 2), [0, 255, 255, 255]);
+    }
+
+    #[test]
+    fn baked_cube_reads_back_as_the_same_grade() {
+        let dir = tempfile::tempdir().unwrap();
+        let fx = Effects { contrast: 0.3, temperature: 0.4, saturation: -0.2, ..Default::default() };
+        let text = bake_cube(&fx, 33).unwrap();
+        let path = dir.path().join("look.cube");
+        std::fs::write(&path, &text).unwrap();
+        let baked = lut(&path).unwrap();
+        let tone = Tone::of(&fx);
+        for v in [[0.2f32, 0.4, 0.6], [0.9, 0.1, 0.5], [0.5, 0.5, 0.5]] {
+            let mut want = v;
+            tone.apply(&mut want);
+            let got = baked.lookup(v);
+            for c in 0..3 {
+                assert!((got[c] - want[c].clamp(0.0, 1.0)).abs() < 0.01, "{v:?}: {got:?} vs {want:?}");
+            }
+        }
+        // A LUT on the clip is baked in too: the inverting one above, at half strength.
+        let inv = dir.path().join("inv.cube");
+        std::fs::write(&inv, "LUT_3D_SIZE 2\n1 1 1\n0 1 1\n1 0 1\n0 0 1\n1 1 0\n0 1 0\n1 0 0\n0 0 0\n").unwrap();
+        let half = Effects { lut: Some(kimchi_core::Lut { path: inv.to_string_lossy().into(), strength: 0.5 }), ..Default::default() };
+        let half_path = dir.path().join("half.cube");
+        std::fs::write(&half_path, bake_cube(&half, 9).unwrap()).unwrap();
+        let got = lut(&half_path).unwrap().lookup([1.0, 0.0, 0.0]);
+        assert!(got.iter().all(|v| (v - 0.5).abs() < 1e-3), "{got:?}");
+        assert!(bake_cube(&fx, 1).is_err());
     }
 }
