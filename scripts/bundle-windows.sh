@@ -5,10 +5,11 @@
 # Writes to target/dist/:
 #   kimchi_x64-setup.exe (+ .sig)    per-user installer (lsuite.xyz/kimchi/download/windows-x86_64);
 #                                    kimchi 0.1.x's updater installs it
-#   kimchi_x64-portable.zip          the same files, to run from any folder
+#   kimchi_x64-portable.zip (+ .sig) the same files, to run from any folder (updated by hand: its
+#                                    update notice links to the next zip)
 #
 # Environment (all optional):
-#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD   update key: signs the installer
+#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD   update key: signs the installer and the zip
 #   KIMCHI_SKIP_BUILD=1
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -40,7 +41,7 @@ cp "$resources/kimchi.ico" "$stage/"
 cp LICENSE "$stage/LICENSE.txt"
 
 zip="$dist/kimchi_x64-portable.zip"
-rm -f "$zip"
+rm -f "$zip" "$zip.sig"
 (cd "$dist/$triple" && 7z a -tzip -mx=9 "../kimchi_x64-portable.zip" kimchi > /dev/null)
 
 makensis=$(command -v makensis || true)
@@ -53,9 +54,10 @@ win() { cygpath -w "$1" 2> /dev/null || printf '%s' "$1"; }
 
 if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
   cargo run --quiet --release -p kimchi-release -- sign "$setup" --version "$version"
+  cargo run --quiet --release -p kimchi-release -- sign "$zip" --version "$version"
 else
-  echo "No TAURI_SIGNING_PRIVATE_KEY: $setup is not signed, so updaters will refuse it." >&2
+  echo "No TAURI_SIGNING_PRIVATE_KEY: $setup and $zip are not signed, so updaters will refuse them." >&2
 fi
 
 echo "Built kimchi $version for $triple:"
-ls -lh "$setup" "$zip" "$setup.sig" 2> /dev/null || true
+ls -lh "$setup" "$zip" "$setup.sig" "$zip.sig" 2> /dev/null || true

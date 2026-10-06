@@ -36,7 +36,7 @@ How an update installs depends on how kimchi was installed:
 | macOS app | Replaced in place; the previous copy is kept until the new one has started. |
 | AppImage | The same. |
 | Windows installer | The verified installer runs when kimchi restarts or quits. |
-| `.deb` or the Windows portable `.zip` | kimchi says an update is out and links to the download (the AppImage on Linux, the installer on Windows). |
+| `.deb` or the Windows portable `.zip` | kimchi says an update is out and links to the same kind of file: the new `.deb`, or the new portable `.zip` (the release page when a release doesn't have one). |
 
 **What's new** (in the **…** menu, the command palette, or Help on macOS) shows this version's notes;
 **Earlier versions** shows the rest.

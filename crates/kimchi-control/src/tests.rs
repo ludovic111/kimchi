@@ -61,7 +61,7 @@ async fn generated_audio_lands_on_an_audio_track_with_measured_duration_and_prov
     wav.extend_from_slice(b"data"); wav.extend_from_slice(&data_size.to_le_bytes());
     wav.resize(44 + data_size as usize, 0);
     Mock::given(method("POST")).and(path("/v2beta/audio/stable-audio-2/text-to-audio"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(wav)).expect(1).mount(&server).await;
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(wav)).expect(2).mount(&server).await;
     s.harness.set_key("stability", Some("test-key")).unwrap();
     s.harness.set_settings("stability", kimchi_gen::ProviderSettings { enabled: true, base_url: Some(server.uri()), ..Default::default() });
     ok(&s, Source::Window, "project.create", json!({"name":"Generated sound"})).await;
@@ -81,6 +81,24 @@ async fn generated_audio_lands_on_an_audio_track_with_measured_duration_and_prov
     assert_eq!(origin.provider, "stability");
     assert_eq!(origin.prompt, "Quiet ambience");
     assert_eq!(origin.params["task"], "text_to_audio");
+    // Regenerate from the media item (the window's media menu): the same request, into the library.
+    let again = ok(&s, Source::Window, "generate.regenerate", json!({ "assetId": asset.id, "variation": true, "wait": true })).await;
+    assert_eq!(again["status"], "succeeded", "{again}");
+    // A library result has no placeholder for `wait` to watch: give it a moment to land.
+    let mut p = s.project().unwrap();
+    for _ in 0..100 {
+        if p.assets.len() > 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        p = s.project().unwrap();
+    }
+    assert_eq!(p.clips().count(), 1, "a media item's regeneration lands in the library only");
+    let new = p.assets.iter().find(|a| a.id != asset.id).expect("the regenerated media item");
+    let kimchi_core::AssetOrigin::Generated(again) = &new.origin else { panic!("generation provenance") };
+    assert_eq!((again.prompt.as_str(), &again.params["task"], &again.params["duration"]), ("Quiet ambience", &json!("text_to_audio"), &origin.params["duration"]));
+    let err = registry::call(&s, Source::Window, "generate.regenerate", json!({})).await.unwrap_err();
+    assert!(err.contains("clipId") && err.contains("assetId"), "{err}");
 }
 
 async fn ok(s: &Arc<Session>, source: Source, name: &str, params: Value) -> Value {

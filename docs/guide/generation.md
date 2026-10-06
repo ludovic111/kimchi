@@ -120,13 +120,14 @@ and is deleted with the project. It stays there for projects opened from a file 
 Select a generated clip or item: the inspector shows its prompt, provider, model, seed, the time
 it took, its cost, what it avoided, and the pictures it was made from.
 
-- **Regenerate** fills the Generate panel with the same prompt, model and seed, landing after the
-  clip; press Generate.
+- **Regenerate** runs the same request again right away: the same prompt, model, seed, input
+  pictures, resolution and model settings. The result lands after the clip (for a media item, in
+  the library).
 - **Variation** does the same with a random seed.
 
-Both are also in the clip's right-click menu. As of 0.9.0 they don't bring back the input pictures, the
-resolution or the model's settings; `generate.regenerate` repeats the request exactly. **Reuse
-prompt**, in the Recent list's menu, puts an earlier prompt back in the composer.
+Both are also in the clip's right-click menu and the media item's, and both are
+`generate.regenerate`. To change something first, **Reuse prompt**, in the Recent list's menu, puts
+an earlier prompt back in the composer.
 
 ## Your own ComfyUI workflows
 

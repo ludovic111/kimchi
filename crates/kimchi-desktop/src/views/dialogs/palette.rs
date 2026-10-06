@@ -197,7 +197,7 @@ impl Palette {
             Cmd::action("Report a problem", "bug", act::ReportProblem).keywords("bug issue crash feedback"),
             Cmd::action("Restart kimchi", "rotate-ccw", act::RestartApp).keywords("relaunch reload"),
             Cmd::new("Connect Claude Code or Codex (MCP)", "waypoints", |_, cx| settings("about", cx)).keywords("ai control mcp cli cursor claude desktop vs code").logo("claude-code"),
-            Cmd::action("Driving kimchi from AI and scripts", "info", act::OpenHelp).keywords("help docs cli mcp"),
+            Cmd::action("User guide", "info", act::OpenHelp).keywords("help docs manual documentation"),
             Cmd::action("Support kimchi", "heart", act::OpenSupport).keywords("help sponsor donate"),
             Cmd::action("About kimchi", "info", act::About).keywords("version"),
             Cmd::action("Quit kimchi", "x", act::Quit).keywords("exit"),

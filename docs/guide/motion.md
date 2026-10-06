@@ -263,8 +263,8 @@ plays.
 - When it finishes, the clip shows **Rendered**. This is an undo step: undoing goes back to live.
 - If the scene changes, or the project's size or frame rate, or a picture or model the scene uses,
   the clip shows **Out of date** and is drawn live again until you render it again.
-- If you lengthen a rendered clip past what was rendered, the new part is drawn live; render it
-  again.
+- If you change the clip's length or speed (its expressions and motion blur can depend on them),
+  or slip it so it shows another part of the scene, it shows **Out of date** too; render it again.
 - **Go live (forget the render)** returns to live drawing on purpose.
 
 The rendered file is lossless and keeps transparency; it is stored in the project's cache folder.

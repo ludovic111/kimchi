@@ -10,12 +10,13 @@
 //! Tests never touch the person's ryolune folder: ryolune's engine sends a test binary's data
 //! to a scratch folder (`host::scan::test_sandbox`), and `RYOLUNE_DATA_DIR` moves it anywhere.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ryolune_engine::host::scan;
+use ryolune_engine::host::scan::{self, CacheEntry};
 use ryolune_engine::plugin::{Descriptor, Format};
 use serde::Serialize;
 
@@ -216,27 +217,147 @@ pub fn scan_child() -> Option<i32> {
     Some(0)
 }
 
-/// Looks for plugins again (CLAP, VST3, Audio Units, native) in the standard folders, through
-/// ryolune's crash-isolated scanner, and returns how many effects are known afterwards.
-pub fn rescan() -> Result<usize> {
-    rescan_with(|_| {})
+/// Looks for plugins again (CLAP, VST3, Audio Units, native) in the standard folders and in
+/// `folders` (Settings › Audio › Plugins), through crash-isolated probes, and returns how many
+/// effects are known afterwards.
+pub fn rescan(folders: &[PathBuf]) -> Result<usize> {
+    rescan_with(folders, |_| {})
 }
 
 /// [`rescan`], telling `progress` the bundle being probed. Bundles are looked for in the
-/// standard folders and ryolune's extra folders (Settings › Plugins in ryolune); the shared
-/// cache is updated.
-pub fn rescan_with(mut progress: impl FnMut(&str)) -> Result<usize> {
+/// standard folders, ryolune's extra folders (Settings › Plugins in ryolune) and `folders`
+/// (kimchi's own, every format in each); the shared cache is updated.
+pub fn rescan_with(folders: &[PathBuf], mut progress: impl FnMut(&str)) -> Result<usize> {
     if !CAN_SCAN.load(Ordering::Relaxed) {
         return Err("This program can't scan plugins (scan from the kimchi window, kimchi-cli or ryolune).".into());
     }
-    let cache = scan::scan_all(|bundle| {
+    // ryolune's scan keeps only the bundles of its own folders: remember what kimchi's folders
+    // gave last time, so unchanged bundles aren't probed again.
+    let previous: HashMap<String, CacheEntry> = scan::load_cache().entries.into_iter().map(|e| (e.path.clone(), e)).collect();
+    let mut cache = scan::scan_all(|bundle| {
         tracing::info!(bundle, "scanning plugin");
         progress(bundle);
     });
+    let mut seen: HashSet<String> = cache.entries.iter().map(|e| e.path.clone()).collect();
+    let mut added = false;
+    for (format, path) in bundles_in(folders) {
+        let key = path.to_string_lossy().to_string();
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let stamp = modified(&path);
+        let entry = match previous.get(&key) {
+            Some(e) if e.modified == stamp && e.error.is_none() => e.clone(),
+            _ => {
+                tracing::info!(bundle = %key, "scanning plugin");
+                progress(&key);
+                let (descriptors, error) = match probe_in_child(format, &path) {
+                    Ok(d) => (d, None),
+                    Err(e) => (vec![], Some(e)),
+                };
+                CacheEntry { path: key, modified: stamp, format: Some(format), descriptors, error }
+            }
+        };
+        cache.entries.push(entry);
+        added = true;
+    }
+    if added {
+        scan::store_cache(&cache)?;
+    }
     for e in cache.entries.iter().filter(|e| e.error.is_some()) {
         tracing::warn!(bundle = %e.path, "plugin not loaded: {}", e.error.as_deref().unwrap_or_default());
     }
     Ok(effects(None).len())
+}
+
+/// The plugin bundles in `folders` and the folders inside them (two levels deep, like ryolune's
+/// scan), with their format, sorted and without repeats. Missing folders are skipped.
+fn bundles_in(folders: &[PathBuf]) -> Vec<(Format, PathBuf)> {
+    fn walk(dir: &Path, depth: usize, found: &mut Vec<(Format, PathBuf)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let format = match ext.as_str() {
+                "clap" => Some(Format::Clap),
+                "vst3" => Some(Format::Vst3),
+                "onplug" => Some(Format::Native),
+                e if e == ryolune_engine::host::native::library_extension() => Some(Format::Native),
+                _ => None,
+            };
+            if let Some(format) = format {
+                found.push((format, path));
+            } else if depth < 2 && path.is_dir() {
+                walk(&path, depth + 1, found);
+            }
+        }
+    }
+    let mut found = vec![];
+    for folder in folders.iter().filter(|f| !f.as_os_str().is_empty()) {
+        walk(folder, 0, &mut found);
+    }
+    found.sort_by(|a, b| a.1.cmp(&b.1));
+    found.dedup_by(|a, b| a.1 == b.1);
+    found
+}
+
+fn modified(path: &Path) -> u64 {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs())
+}
+
+/// How long one bundle may take to answer, as in ryolune's scan.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Probes one bundle in a child process (this program started with `--scan-plugin`, see
+/// [`scan_child`]), as ryolune's scan does, so a plugin that crashes or hangs can't take kimchi
+/// down.
+fn probe_in_child(format: Format, path: &Path) -> std::result::Result<Vec<Descriptor>, String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut child = Command::new(exe)
+        .arg("--scan-plugin")
+        .arg(format.prefix())
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let mut stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        if let Some(s) = stdout.as_mut() {
+            let _ = s.read_to_string(&mut out);
+        }
+        out
+    });
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let out = reader.join().unwrap_or_default();
+                if !status.success() {
+                    return Err(format!("Plugin crashed while scanning ({status})"));
+                }
+                // Plugins may print while loading; the report is the last JSON line.
+                return out
+                    .lines()
+                    .rev()
+                    .find_map(|line| serde_json::from_str::<std::result::Result<Vec<Descriptor>, String>>(line.trim()).ok())
+                    .unwrap_or_else(|| Err("Unreadable scan result".into()));
+            }
+            Ok(None) if started.elapsed() > PROBE_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Plugin did not respond while scanning".into());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
 }
 
 /// Bundles the last scan couldn't load, as (path, why).
@@ -288,6 +409,25 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         assert!(effect("fancy hall").is_err());
         // A test binary doesn't answer `--scan-plugin`: no scan, and the shared cache stays as it is.
-        assert!(rescan().is_err());
+        assert!(rescan(&[]).is_err());
+    }
+
+    #[test]
+    fn bundles_are_found_in_the_extra_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("Vendor/Fancy.vst3/Contents")).unwrap();
+        std::fs::write(root.join("Verb.CLAP"), b"").unwrap();
+        std::fs::write(root.join("Mine.onplug"), b"").unwrap();
+        std::fs::write(root.join("notes.txt"), b"").unwrap();
+        std::fs::create_dir_all(root.join("a/b/c")).unwrap();
+        std::fs::write(root.join("a/b/c/Deep.clap"), b"").unwrap();
+        let found = bundles_in(&[root.to_path_buf(), root.to_path_buf(), root.join("missing"), PathBuf::new()]);
+        let names: Vec<(Format, String)> = found.iter().map(|(f, p)| (*f, p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"))).collect();
+        assert_eq!(
+            names,
+            vec![(Format::Native, "Mine.onplug".to_string()), (Format::Vst3, "Vendor/Fancy.vst3".to_string()), (Format::Clap, "Verb.CLAP".to_string())],
+            "a bundle isn't looked inside, three levels down is too deep, repeats are dropped"
+        );
     }
 }

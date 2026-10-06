@@ -829,8 +829,9 @@ pub static SPECS: &[Spec] = &[
         SEED,
         WAIT,
     ]).perm(Perm::Generate),
-    edit("generate.regenerate", "Run a generated clip's request again (same prompt, model and settings); with variation, a new seed. The result lands after the clip.", &[
-        CLIP_ID,
+    edit("generate.regenerate", "Run a generated clip's or media item's request again (same prompt, model, input pictures and settings); with variation, a new seed. A clip's result lands after it, a media item's goes to the library.", &[
+        opt("clipId", String, "A generated clip (id or unique name, as listed by clip.list)."),
+        opt("assetId", String, "A generated media item instead (id or name, as listed by media.list)."),
         opt("variation", Boolean, "Use a new seed (default false: same seed)."),
         opt("prompt", String, "Change the prompt."),
         WAIT,

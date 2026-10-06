@@ -315,7 +315,7 @@ kimchi-cli generate.submit --prompt "the camera pushes in" --video \
 | `generate.extendClip` | continues a clip from its last frame; the new shot lands right after it on the same track |
 | `generate.bridge` | a transition from the last frame of `fromClipId` to the first frame of `toClipId`, filling the gap between them |
 | `generate.restyleFrame` | edits the frame a clip shows at `time` with an image model; the still lands at that time |
-| `generate.regenerate` | runs a generated clip's request again (same prompt, model and settings); `variation` uses a new seed, `prompt` changes the words; the result lands after the clip |
+| `generate.regenerate` | runs a generated clip's or media item's request again (same prompt, model, input pictures and settings); `variation` uses a new seed, `prompt` changes the words; a clip's result lands after it, a media item's goes to the library |
 
 ```sh
 kimchi-cli generate.animateFrame --clipId Harbour --time 2 --prompt "gulls take off" --wait

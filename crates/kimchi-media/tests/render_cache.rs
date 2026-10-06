@@ -71,3 +71,29 @@ async fn renders_ahead_and_plays_the_file() {
     }
     assert_eq!(cache::status(&p, p.clip(id).unwrap()), "outdated");
 }
+
+#[test]
+fn a_clip_that_shows_more_than_its_render_is_out_of_date() {
+    let (mut p, id) = project();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("render.mkv");
+    std::fs::write(&file, b"frames").unwrap();
+    let key = cache::key(&p, p.clip(id).unwrap()).unwrap();
+    // What `cache::render` stores for this 2 s clip: a frame either side.
+    let rendered = kimchi_core::Rendered { file: file.to_string_lossy().into_owned(), key, from: 0.0, fps: 30.0, frames: 62, width: 640, height: 360, engine: "standard".into() };
+    p.tracks[0].clips[0].rendered = Some(rendered);
+    assert_eq!(cache::status(&p, p.clip(id).unwrap()), "rendered");
+    // Lengthened past the render.
+    let mut longer = p.clone();
+    longer.tracks[0].clips[0].duration = 3.0;
+    assert_eq!(cache::status(&longer, longer.clip(id).unwrap()), "outdated");
+    // Slipped: the same length, but later in the scene than the file goes.
+    let mut slipped = p.clone();
+    slipped.tracks[0].clips[0].in_point = 1.0;
+    assert_eq!(cache::key(&slipped, slipped.clip(id).unwrap()), cache::key(&p, p.clip(id).unwrap()), "the scene's frames are still right");
+    assert!(cache::is_current(&slipped, slipped.clip(id).unwrap()), "so the part the file has still plays from it");
+    assert_eq!(cache::status(&slipped, slipped.clip(id).unwrap()), "outdated");
+    // Moved along the timeline: still all there.
+    p.tracks[0].clips[0].start = 5.0;
+    assert_eq!(cache::status(&p, p.clip(id).unwrap()), "rendered");
+}

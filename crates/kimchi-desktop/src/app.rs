@@ -20,7 +20,10 @@ use crate::ui::{GlassExt, icon};
 use crate::views;
 
 pub const SUPPORT_URL: &str = "https://lsuite.xyz/kimchi/support";
-pub const HELP_URL: &str = "https://github.com/ludovic111/kimchi/blob/main/docs/AI_CONTROL.md";
+/// The user guide (Help in the menus, the palette and the window's … menu).
+pub const HELP_URL: &str = "https://github.com/ludovic111/kimchi/blob/main/docs/guide/README.md";
+/// Driving kimchi from AI and scripts (Settings › About & AI control).
+pub const AI_CONTROL_URL: &str = "https://github.com/ludovic111/kimchi/blob/main/docs/AI_CONTROL.md";
 
 pub fn init(session: Arc<Session>, cx: &mut App) {
     let settings = session.settings();

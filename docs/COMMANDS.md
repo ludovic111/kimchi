@@ -1680,11 +1680,12 @@ Edit the frame a clip shows at a time with an image model; the still lands at th
 
 ### `generate.regenerate`
 
-Run a generated clip's request again (same prompt, model and settings); with variation, a new seed. The result lands after the clip. _(changes things · permission: generate)_
+Run a generated clip's or media item's request again (same prompt, model, input pictures and settings); with variation, a new seed. A clip's result lands after it, a media item's goes to the library. _(changes things · permission: generate)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `clipId` | string |  | A generated clip (id or unique name, as listed by clip.list). |
+| `assetId` | string |  | A generated media item instead (id or name, as listed by media.list). |
 | `variation` | boolean |  | Use a new seed (default false: same seed). |
 | `prompt` | string |  | Change the prompt. |
 | `wait` | boolean |  | Wait until the job finishes and return it (always true with --file). |

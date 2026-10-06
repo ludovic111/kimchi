@@ -179,7 +179,7 @@ The selected track is the selected mixer strip, or the track of the first select
 ## Actions without a key
 
 These are in the command palette (and, except Restart kimchi, in the macOS menus): About, Check for
-updates, What's new, the Generations list, Toggle light / dark, Driving kimchi from AI and scripts,
+updates, What's new, the Generations list, Toggle light / dark, User guide,
 Logs and crash reports, Report a problem, Restart kimchi and Support kimchi. Scripts and agents can
 run any of them by name with `ui.action` (see [Controlling kimchi from AI and
 scripts](../AI_CONTROL.md#the-windows-shortcuts-by-name)).

@@ -129,6 +129,7 @@ jobs:
             target/dist/kimchi_*-setup.exe
             target/dist/kimchi_*-setup.exe.sig
             target/dist/kimchi_*-portable.zip
+            target/dist/kimchi_*-portable.zip.sig
             target/dist/kimchi_*.AppImage
             target/dist/kimchi_*.AppImage.sig
             target/dist/kimchi_*.deb
