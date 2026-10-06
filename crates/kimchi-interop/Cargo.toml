@@ -1,0 +1,22 @@
+[package]
+name = "kimchi-interop"
+description = "kimchi's compatibility with other editors: their project and timeline files, looks and presets, and what kimchi knows about each app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kimchi-core.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+# XML for FCPXML, Final Cut 7 / Premiere XML, MLT (Kdenlive, Shotcut), Premiere projects, XMP looks.
+quick-xml = "0.38"
+
+[dev-dependencies]
+tempfile.workspace = true

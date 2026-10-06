@@ -30,6 +30,7 @@ pub(crate) mod noise;
 pub(crate) mod paint;
 pub(crate) mod par;
 pub(crate) mod particles2d;
+pub mod plugins;
 pub(crate) mod shapeops;
 pub(crate) mod source;
 pub mod space;
