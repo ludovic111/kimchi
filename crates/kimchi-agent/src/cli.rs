@@ -215,12 +215,14 @@ pub(crate) async fn run(run: &mut Run, prompt: String, mut conv: Conversation) -
     asked.messages.push(Message::user(prompt.clone()));
     run.set_conversation(&asked);
     let resume = conv.cli_session.as_ref().filter(|s| s.provider == kind).map(|s| s.id.clone());
+    // What the person is looking at goes to the CLI with the request; the thread keeps the request.
+    let framed = crate::context::glance(&run.session).frame(&prompt);
 
-    let mut out = turn(run, kind, &exe, &live, &workspace, resume.as_deref(), &prompt, &conv).await;
+    let mut out = turn(run, kind, &exe, &live, &workspace, resume.as_deref(), &framed, &conv).await;
     if resume.is_some() && out.1.is_err() && !out.0.started {
         // The CLI lost its session (cleared, or another machine): start afresh with the thread as context.
         run.status(format!("Starting a new {} session…", kind.label()));
-        out = turn(run, kind, &exe, &live, &workspace, None, &prompt, &conv).await;
+        out = turn(run, kind, &exe, &live, &workspace, None, &framed, &conv).await;
     }
     let (outcome, result) = out;
     run.drain_commands(Source::Mcp);
@@ -241,7 +243,7 @@ fn with_context(conv: &Conversation, prompt: &str) -> String {
         .rev()
         .filter(|m| !m.text().is_empty())
         .take(20)
-        .map(|m| format!("{}: {}", if m.role == Role::User { "Person" } else { "Assistant" }, bounded(&m.text(), 1500)))
+        .map(|m| format!("{}: {}", if m.role == Role::User { "Person" } else { "Assistant" }, bounded(crate::context::unframed(&m.text()), 1500)))
         .collect();
     if lines.is_empty() {
         return prompt.to_string();

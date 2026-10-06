@@ -341,7 +341,15 @@ impl Server {
                         {
                             text.push_str(&format!("\n(saved {})", path.display()));
                         }
-                        let mut reply = json!({ "content": [{ "type": "text", "text": text }], "isError": false });
+                        // A frame, a media look or a screenshot: the client's model gets the picture itself.
+                        let mut pictures = vec![];
+                        for path in kimchi_control::vision::pictures_in(spec.name, &result) {
+                            match kimchi_control::vision::picture(&path).await {
+                                Ok(p) => pictures.push(json!({ "type": "image", "data": p.data, "mimeType": p.media_type })),
+                                Err(e) => text.push_str(&format!("\n(The picture couldn't be attached: {e})")),
+                            }
+                        }
+                        let mut reply = json!({ "content": std::iter::once(json!({ "type": "text", "text": text })).chain(pictures).collect::<Vec<_>>(), "isError": false });
                         if result.is_object() {
                             reply["structuredContent"] = result;
                         }
@@ -404,7 +412,8 @@ impl Server {
              Start with project_overview (also the resource kimchi://project/overview): one bounded answer with the canvas, every track and its clips, media with how they were generated, markers, running jobs, undo history, what the window shows and problems. Drill down with clip_get, media_get, track_list or generate_jobs.\n\
              Conventions: times are seconds on the timeline; parameters are camelCase; ids and unique names both work wherever an id is expected (clipId \"Title\", trackId \"Video 1\"), and a near miss answers with \"did you mean\". Every edit is one undo step; project_batch runs several commands as one step and rolls back on failure.\n\
              Generation: generate_providers and generate_models show what is ready; generate_submit makes an image or video and puts a placeholder on the timeline that becomes the result; generate_animateFrame, generate_extendClip, generate_bridge, generate_restyleFrame and generate_regenerate work from clips already in the cut. Pass wait=true to get the finished job back; otherwise follow it with generate_wait.\n\
-             Motion graphics and 3D: clip_setKeyframes / clip_animate animate any clip (position, scale, rotation, opacity, blur, volume) with easings; motion_addTemplate adds a lower third, title card, counter, chart, 3D title…; motion_add takes a whole 2D (layers) or 3D (camera, lights, objects) scene as JSON; motion_setLayer and motion_setKeyframes edit one. Read motion_guide first; check results with project_renderFrame (it returns a PNG path; several times give one labelled sheet).\n\
+             Motion graphics and 3D: clip_setKeyframes / clip_animate animate any clip (position, scale, rotation, opacity, blur, volume) with easings; motion_addTemplate adds a lower third, title card, counter, chart, 3D title…; motion_add takes a whole 2D (layers) or 3D (camera, lights, objects) scene as JSON; motion_setLayer and motion_setKeyframes edit one. Read motion_guide first.\n\
+             Seeing: project_renderFrame (the cut at a time; several times give one labelled sheet), media_look (a media item; a video as a sheet of frames) and media_frame return the picture itself as image content along with its path. Look at what you made before calling it done.\n\
              export_start renders the cut. Agent permissions (Settings › Agent › Permissions) decide whether you may import, export, switch projects, generate, change settings or control the app; API keys and the permissions themselves stay with the person."
         )
     }

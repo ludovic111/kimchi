@@ -151,6 +151,16 @@ Save the frame a clip shows at a timeline time as a PNG and return its path (for
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `time` | number |  | Timeline time in seconds inside the clip. Defaults to the playhead, or the clip's first frame. |
 
+### `media.look`
+
+Look at a media item without putting it on the timeline: a picture as it is, a video as a labelled sheet of frames across its length. Returns a PNG path; agents that can see get the picture itself (to choose between takes, check a generation, describe footage). _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `assetId` | string | required | Media id or unique name, as listed by media.list. |
+| `frames` | integer |  | Video: how many frames, evenly spread over its length (1 to 16, default 6). |
+| `width` | integer |  | Width of each frame in pixels (default 480 in a sheet, 960 for one frame). |
+
 ## track
 
 ### `track.list`
