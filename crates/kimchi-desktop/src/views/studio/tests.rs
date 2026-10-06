@@ -1677,11 +1677,13 @@ fn timeline_drags_snap_to_project_frames_and_alt_allows_subframes(cx: &mut TestA
             cx.run_until_parked();
             cx.simulate_mouse_up(b,MouseButton::Left,mods);
             let expected=if free {1.09} else {16./15.};
-            let matches=|p:&Project| (model::keyframes(&scene_of(p,clip),"box").unwrap()["position.x"][0].time-expected).abs()<1e-5;
-            let after=f.settle(cx,matches);
-            assert!(matches(&after),"graph={graph}, free={free}");
-            let keys=model::keyframes(&scene_of(&after,clip),"box").unwrap()["position.x"].clone();
-            assert!((keys[1].time-keys[0].time-1.).abs()<1e-6,"selection spacing stays exact");
+            let keys=|p:&Project| model::keyframes(&scene_of(p,clip),"box").unwrap()["position.x"].clone();
+            let moved=|p:&Project| (keys(p)[0].time-expected).abs()<1e-5;
+            // Wait for both keys: the drag's last preview can land before its commit.
+            let spaced=|p:&Project| (keys(p)[1].time-keys(p)[0].time-1.).abs()<1e-6;
+            let after=f.settle(cx,|p| moved(p) && spaced(p));
+            assert!(moved(&after),"graph={graph}, free={free}");
+            assert!(spaced(&after),"selection spacing stays exact");
             f.call("history.undo",json!({}));
             store_settles(cx,|s| scene_of(s.project.as_ref().unwrap(),clip)==before);
         }

@@ -789,6 +789,8 @@ async fn an_openai_compatible_server_without_vision_gets_no_pictures() {
     let without: Value = serde_json::from_slice(&requests[2].body).unwrap();
     assert!(!without.to_string().contains("image_url"), "sent again without the picture");
     assert!(without.to_string().contains("earlier picture is not shown again"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn conversations_and_memory_survive_reinstall_and_stay_with_the_project() {
     let dir = tempfile::tempdir().unwrap();
