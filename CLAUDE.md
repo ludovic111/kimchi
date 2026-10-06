@@ -37,6 +37,9 @@ Rules that keep it working:
   the window directly. Regenerate `docs/COMMANDS.md` with `cargo run -p kimchi-cli -- docs` (a test
   fails otherwise). Commands only the window can do (`ui.*`, playback) are handled in
   `Workspace::ui_command` (app.rs).
+- **Docs follow the code** (index: `docs/README.md`). A change people see in the window updates its
+  chapter of the user guide (`docs/guide/`); a new setting, environment variable or file updates
+  `docs/CONFIGURATION.md`; a new project field updates `docs/PROJECT_FORMAT.md`. Same plain voice.
 - GPUI API: grep the pinned source in `~/.cargo/git/checkouts/zed-*/7733b99/crates/gpui`; the
   `build-gpui-apps` skill (installed in `.claude/skills/`) covers this revision. Views keep retained
   state (text fields, scrubs, subscriptions) in their entity; drags use `ui::drag::track`; icons
@@ -77,8 +80,8 @@ Rules that keep it working:
 kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
 
-- [x] **Command registry**: 164 `family.verb` commands (project, media, track, clip, transition,
-      captions, motion, timeline, history, generate, export, handoff, app, agent, ui), one undo history for every client,
+- [x] **Command registry**: 200 `family.verb` commands (project, media, track, clip, transition,
+      captions, audio, motion, timeline, history, generate, export, handoff, app, agent, ui), one undo history for every client,
       batches as one step, `project.overview`, names or ids everywhere. Everything the window does has a command:
       `agent.*` drives the Agent panel's conversation (`kimchi_agent::Host`), `ui.action` runs any shortcut or
       menu item by name, `ui.setTimeline` / `ui.setLayout` / `ui.reveal` cover the window's own options.
