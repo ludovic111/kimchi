@@ -1,0 +1,16 @@
+[package]
+name = "kimchi-plugin-examples"
+description = "Example kimchi video plugins, built with the kimchi-plugin SDK: Glow, Pixelate, RGB split, Film grain, Duotone, Gradient, Checker, Noise and Radial wipe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+# A cdylib to install into kimchi's plugin folder like any third-party plugin; an rlib so kimchi
+# links the same plugins in as its built-in ones (through the same ABI).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+kimchi-plugin = { path = "../../crates/kimchi-plugin" }

@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::anim::{KeyValue, Keyframes, number_at, value_at};
 use crate::audio::{Beats, ClipAudio, Mixer, SongRef, TrackMix};
-use crate::effects::{EFFECT_PROPS, Effects};
+use crate::effects::{EFFECT_PROPS, Effects, PluginValue};
 use crate::motion::{Scene, TemplateRef};
 use crate::transition::Transition;
 
@@ -387,7 +387,8 @@ impl Clip {
         self.source_time(t)
     }
 
-    /// The clip's effects at timeline time `t`, with their keyframes applied.
+    /// The clip's effects at timeline time `t`, with their keyframes applied: the effect fields,
+    /// and plugin parameters (`plugins.<slot>.<parameter>`, set in the slot's `params`).
     pub fn effects_at(&self, t: f64) -> Effects {
         let mut e = self.effects.clone();
         if self.keyframes.is_empty() {
@@ -397,6 +398,14 @@ impl Clip {
         for name in EFFECT_PROPS {
             if let Some(v) = number_at(&self.keyframes, name, local) {
                 e.set(name, v);
+            }
+        }
+        if !e.plugins.is_empty() {
+            for (name, keys) in self.keyframes.range::<str, _>("plugins."..).take_while(|(n, _)| n.starts_with("plugins.")) {
+                let Some((slot, param)) = crate::effects::plugin_key(name) else { continue };
+                if let (Some(p), Some(v)) = (e.plugins.iter_mut().find(|p| p.id == slot), value_at(keys, local)) {
+                    p.params.insert(param.to_string(), PluginValue::from_key(&v));
+                }
             }
         }
         e
@@ -474,7 +483,8 @@ impl Clip {
 /// Clip properties that take keyframes. Picture clips: x, y, position ([x, y]), scale, scaleX,
 /// scaleY, rotation, opacity, blur, and the effects brightness, contrast, saturation,
 /// temperature, tint, vignette, sharpen. Sound: volume, pan. Text clips also: fontSize, color,
-/// letterSpacing.
+/// letterSpacing. Besides these, a video plugin's numbers, points and colours on the clip are
+/// `plugins.<slot>.<parameter>` (`plugins.p1.Radius`): see [`check_clip_key_on`].
 pub const CLIP_PROPS: &[&str] = &[
     "x",
     "y",
@@ -499,9 +509,20 @@ pub const CLIP_PROPS: &[&str] = &[
     "sharpen",
 ];
 
-/// Checks that `name` can be keyframed on `content` and that `value` fits it.
+/// Checks that `name` can be keyframed on `content` and that `value` fits it. Plugin parameters
+/// (`plugins.<slot>.<parameter>`) are only checked for their form here; [`check_clip_key_on`]
+/// also checks the slot is on the clip.
 pub fn check_clip_key(content: &ClipContent, name: &str, value: &KeyValue) -> Result<(), String> {
     let text_only = ["fontSize", "color", "letterSpacing"];
+    if name.starts_with("plugins.") {
+        if crate::effects::plugin_key(name).is_none() {
+            return Err(format!("`{name}`: plugin parameters are animated as plugins.<slot>.<parameter>, e.g. plugins.p1.Radius."));
+        }
+        return match value {
+            KeyValue::Number(_) | KeyValue::Vector(_) => Ok(()),
+            KeyValue::Text(c) => crate::motion::check_color(c, name),
+        };
+    }
     if !CLIP_PROPS.contains(&name) {
         let hint = crate::closest(name, CLIP_PROPS).map(|c| format!(" Did you mean `{c}`?")).unwrap_or_default();
         return Err(format!("Clips can't animate `{name}`.{hint} Clip properties: {}.", CLIP_PROPS.join(", ")));
@@ -517,6 +538,19 @@ pub fn check_clip_key(content: &ClipContent, name: &str, value: &KeyValue) -> Re
         "position" => value.as_vec(2).map(|_| ()).ok_or_else(|| "position takes [x, y]".to_string()),
         _ => value.as_f64().map(|_| ()).ok_or_else(|| format!("{name} takes a number")),
     }
+}
+
+/// [`check_clip_key`] on a clip: a plugin parameter's slot must be one of the clip's plugins.
+pub fn check_clip_key_on(clip: &Clip, name: &str, value: &KeyValue) -> Result<(), String> {
+    check_clip_key(&clip.content, name, value)?;
+    if let Some((slot, _)) = crate::effects::plugin_key(name)
+        && !clip.effects.plugins.iter().any(|p| p.id == slot)
+    {
+        let i = clip.effects.plugin_index(slot)?;
+        let id = &clip.effects.plugins[i].id;
+        return Err(format!("Plugin keyframes name the slot id: `{}` (not `{slot}`).", name.replacen(slot, id, 1)));
+    }
+    Ok(())
 }
 
 /// A picture clip's transform at one instant (keyframes applied).

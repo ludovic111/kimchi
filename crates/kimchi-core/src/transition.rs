@@ -120,6 +120,10 @@ pub struct Transition {
     /// Shape of the progress; written like keyframe easings (default easeInOut, a sine).
     #[serde(default = "default_easing")]
     pub easing: Easing,
+    /// A transition plugin drawn instead of `kind` (`kind` is drawn when the plugin isn't on this
+    /// computer). Its parameters don't take keyframes; its slot id is `transition`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<crate::effects::PluginEffect>,
 }
 
 fn default_easing() -> Easing {
@@ -128,7 +132,7 @@ fn default_easing() -> Easing {
 
 impl Transition {
     pub fn new(kind: TransitionKind, duration: f64) -> Self {
-        Self { kind, duration, easing: default_easing() }
+        Self { kind, duration, easing: default_easing(), plugin: None }
     }
 }
 
