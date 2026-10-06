@@ -59,7 +59,8 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         }
         "audio.effectParams" => effect_params(s, &a),
         "audio.rescanPlugins" => {
-            let n = tokio::task::spawn_blocking(plugins::rescan).await.map_err(err)??;
+            let folders: Vec<PathBuf> = s.settings().audio.plugin_folders.iter().map(PathBuf::from).collect();
+            let n = tokio::task::spawn_blocking(move || plugins::rescan(&folders)).await.map_err(err)??;
             Ok(json!({ "effects": n }))
         }
         "audio.addEffect" => add_effect(s, cx, &a),
