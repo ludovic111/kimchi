@@ -748,7 +748,6 @@ impl Inspector {
                         .id(ElementId::from(id))
                         .px(px(7.))
                         .py(px(2.))
-                        .rounded_full()
                         .bg(t.hover)
                         .border_1()
                         .border_color(t.line_strong)
@@ -859,7 +858,7 @@ fn scroll(id: &'static str, body: Vec<AnyElement>) -> impl IntoElement {
 
 fn pill(text: &'static str, cx: &App) -> Div {
     let t = cx.theme();
-    div().flex_none().px(px(7.)).py(px(2.)).rounded_full().bg(t.hover).border_1().border_color(t.line).text_size(px(10.5)).text_color(t.text_2).child(text)
+    div().flex_none().px(px(7.)).py(px(2.)).bg(t.hover).border_1().border_color(t.line).text_size(px(10.5)).text_color(t.text_2).child(text)
 }
 
 fn header(title: impl Into<SharedString>, kind: Option<&'static str>, cx: &App) -> Div {

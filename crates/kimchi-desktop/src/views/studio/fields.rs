@@ -270,12 +270,11 @@ impl Properties {
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(4.))
             .cursor_pointer()
             .hover(|s| s.bg(t.hover))
             .text_color(if here { t.accent } else if animated { t.accent_text } else { t.text_3 })
             .child(if here { crate::ui::icon("diamond").size(px(12.)) } else { crate::ui::icon("diamond").size(px(10.)) })
-            .when(here, |d| d.child(div().absolute().size(px(6.)).rounded(px(1.)).bg(t.accent)))
+            .when(here, |d| d.child(div().absolute().size(px(6.)).bg(t.accent)))
             .relative()
             .tooltip(move |_, cx| {
                 crate::ui::tooltip(

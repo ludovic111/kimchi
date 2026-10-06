@@ -44,10 +44,20 @@ Rules that keep it working:
 - Shortcuts: one table, `actions::SHORTCUTS` (binds the keys, fills the `?` sheet and the palette);
   tooltips and menus name keys with `actions::tip` / `hint`, never a hard-coded ⌘ (Linux and Windows
   show Ctrl). Things that appear animate in with `ui::motion` (GPUI skips it under reduce motion).
-- Design system: `crates/kimchi-desktop/assets/tokens.json` is a copy of `../lsuite/design/tokens.json`
-  (re-copy when it changes). GPUI has no backdrop blur: tier 1 is translucent over the window's own
-  backdrop (native blur behind on macOS), tiers 2–3 are their tint over the raised surface.
-  `theme.rs` has the contrast test.
+- Look: black and white, square corners, grain (`theme.rs`, `ui/grain.rs`). The accent is white in the
+  dark mode and black in the light one (a selected choice is inverted, paper on ink); red only for
+  danger. Radii in `theme::size` are zero, floating surfaces cast a hard offset shadow
+  (`glass_shadow`, `chip_shadow` for the primary button), dialogs and the home composer sit in corner
+  brackets (`grain::brackets`). Every area is titled like the side panels (`ui::panel_title`: Viewer,
+  Timeline), and toolbars are boxed groups of what goes together (`ui::group` with `Button::flush`,
+  `ui::tool` for icon + label that drops its label when room runs short). Logos of other services keep
+  their own colours; kimchi's mark and app icon are one colour (`scripts/gen-mark.py` writes
+  `brand/mark.svg`, `brand/icon.svg` and the window's `mark.svg`; then `scripts/make-icons.sh`). The page is film grain and dithered light drawn at device pixels
+  (`grain::backdrop`, `grain::dither`; fixed sizes, each cached). Interface face: Chakra Petch
+  (`crates/kimchi-desktop/fonts/chakrapetch`), IBM Plex Mono for numbers and labels. Colours no
+  longer come from `assets/tokens.json` (still the lsuite copy). GPUI has no backdrop blur: tier 1
+  is translucent over the window's own backdrop (native blur behind on macOS), tiers 2–3 are their
+  tint over the raised surface. `theme.rs` has the contrast test.
 - **Releases have notes**: the version's section at the top of `CHANGELOG.md` (a test checks it matches the
   workspace version) is what "What's new" shows after an update and what the release workflow puts in
   `latest.json`. Write it for people, in the same plain voice.
@@ -82,9 +92,9 @@ kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is
 - [x] **Auto-update**: `app.checkUpdates` / `app.installUpdate`, `KIMCHI_NO_UPDATE=1`, setting
       `updates.checkOnStart`; signed with the Tauri-era minisign key, `latest.json` in the Tauri
       format so 0.1.x installs update to this app.
-- [x] **Design system**: tokens, chili coral, Manrope + IBM Plex Mono (bundled), glass tiers over the
-      backdrop, solid work surfaces, macOS window blur, dark and light, contrast test, icon redrawn
-      from the template.
+- [x] **Design system v2** (2026-10-06): black and white, square, grain, Chakra Petch + IBM Plex Mono
+      (bundled), tiers over the grain, solid work surfaces, macOS window blur, dark and light, contrast
+      test, one-ink mark and icon (`scripts/gen-mark.py`). See "Look" above and `../lsuite/design/DESIGN.md`.
 - [x] **Discovery and hand-offs**: `~/.lsuite/apps/kimchi.json` (format 1, defined here, see
       `kimchi-control/src/discovery.rs`), `handoff.toRyolune` / `handoff.fromRyolune` through
       ryolune's bridge.

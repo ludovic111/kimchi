@@ -86,7 +86,8 @@ pub fn rail(tab: LeftTab, shown: bool, badge: usize, on_pick: impl Fn(LeftTab, &
             .cursor_pointer()
             .role(gpui::Role::Tab)
             .aria_label(label)
-            .when(lit, |d| d.bg(t.accent_soft).text_color(t.accent_text))
+            // The open tab is inverted: paper on ink.
+            .when(lit, |d| d.bg(t.accent).text_color(t.text_on_accent))
             .when(!lit, |d| d.text_color(if current { t.text } else { t.text_2 }).hover(|s| s.bg(t.hover).text_color(t.text)))
             .tooltip(move |_, cx| crate::ui::tooltip(crate::actions::tip(if lit { "Hide the panel" } else { label }, &*action()), cx))
             .child(icon(ic).size(px(18.)))
@@ -103,9 +104,8 @@ pub fn rail(tab: LeftTab, shown: bool, badge: usize, on_pick: impl Fn(LeftTab, &
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded_full()
-                        .bg(t.accent)
-                        .text_color(t.text_on_accent)
+                        .bg(if lit { t.text_on_accent } else { t.accent })
+                        .text_color(if lit { t.accent } else { t.text_on_accent })
                         .text_size(px(9.5))
                         .font_weight(FontWeight::BOLD)
                         .child(count.to_string()),

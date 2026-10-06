@@ -238,7 +238,7 @@ impl Render for CaptionsPanel {
                         .flex_col()
                         .gap(px(6.))
                         .child(div().flex().items_center().gap(px(6.)).text_size(px(sz::SM)).text_color(t.accent_text).child(icon("loader-circle").text_color(t.accent_text)).child(label))
-                        .child(div().h(px(4.)).rounded_full().bg(t.line_strong).child(div().h_full().rounded_full().bg(t.accent).w(gpui::relative(p.clamp(0.02, 1.0) as f32))))
+                        .child(div().h(px(4.)).bg(t.line_strong).child(div().h_full().bg(t.accent).w(gpui::relative(p.clamp(0.02, 1.0) as f32))))
                         .child(Button::new("captions-cancel", "Cancel").small().on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("captions.cancel", json!({}), cx)))),
                 )
             }

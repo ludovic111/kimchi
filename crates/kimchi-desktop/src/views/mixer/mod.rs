@@ -726,7 +726,7 @@ impl MixerView {
                 .rounded(px(sz::R_XS))
                 .cursor_pointer()
                 .hover(|d| d.bg(t.hover))
-                .child(div().flex_none().w(px(3.)).h(px(12.)).rounded(px(2.)).bg(color))
+                .child(div().flex_none().w(px(3.)).h(px(12.)).bg(color))
                 .child(div().flex_1().min_w_0().truncate().text_size(px(sz::SM)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(strip.name.clone()))
                 .tooltip({
                     let name: SharedString = strip.name.clone().into();
@@ -968,7 +968,6 @@ impl MixerView {
                             .id(ElementId::Name(format!("fx-{mkey}-{i}-power").into()))
                             .flex_none()
                             .size(px(9.))
-                            .rounded_full()
                             .border_1()
                             .border_color(if bypassed { t.text_3 } else { t.accent })
                             .bg(if bypassed { gpui::transparent_black() } else { t.accent })
@@ -1146,7 +1145,7 @@ impl MixerView {
                 faders.borrow_mut().insert(key.clone(), b);
             }, |_, _, _, _| {}).absolute().inset_0())
             // The groove, with the unity line.
-            .child(div().absolute().top_0().bottom_0().left(relative(0.5)).ml(px(-2.)).w(px(4.)).rounded(px(2.)).bg(t.bg_sunken).border_1().border_color(t.line))
+            .child(div().absolute().top_0().bottom_0().left(relative(0.5)).ml(px(-2.)).w(px(4.)).bg(t.bg_sunken).border_1().border_color(t.line))
             .child(div().absolute().left(px(2.)).right(px(2.)).top(relative(1. - db_to_pos(0.0))).h(px(1.)).bg(t.line_strong))
             .child(
                 div()
@@ -1156,7 +1155,6 @@ impl MixerView {
                     .top(relative(1. - pos))
                     .mt(px(-cap_h / 2.))
                     .h(px(cap_h))
-                    .rounded(px(3.))
                     .bg(if active { t.accent } else { t.text_2 })
                     .border_1()
                     .border_color(if strip.gain_automated { t.accent } else { t.line_strong })
@@ -1181,7 +1179,6 @@ impl MixerView {
                     .id(ElementId::Name(format!("{id_base}-clip").into()))
                     .flex_none()
                     .h(px(4.))
-                    .rounded(px(1.))
                     .bg(widgets::clip_color(clipped, &t))
                     .cursor_pointer()
                     .tooltip(move |_, cx| tooltip(if clipped { "It went over 0 dB · click to clear" } else { "Clip light" }.into(), cx))
@@ -1459,8 +1456,8 @@ impl Render for MixerView {
 // ---- the timeline toolbar's audio controls ----------------------------------------------------
 
 /// The mixer toggle, its layout, the voice-over button and the master meter, for the timeline's
-/// toolbar. `compact` drops the meter's numbers.
-pub fn toolbar(compact: bool, cx: &mut App) -> AnyElement {
+/// toolbar, in one group. `compact` narrows the meter; `labelled` names the buttons.
+pub fn toolbar(compact: bool, labelled: bool, cx: &mut App) -> AnyElement {
     let t = cx.theme().clone();
     let store = cx.store();
     let (open, beside, recording) = {
@@ -1478,38 +1475,35 @@ pub fn toolbar(compact: bool, cx: &mut App) -> AnyElement {
         .flex_none()
         .w(px(if compact { 44. } else { 64. }))
         .h(px(12.))
+        .mx(px(8.))
         .flex()
         .gap(px(2.))
         .tooltip(|_, cx| tooltip("Master level".into(), cx))
         .child(div().flex_1().relative().child(widgets::meter(readings, false, &t).absolute().inset_0()))
-        .child(div().w(px(3.)).h_full().rounded(px(1.)).bg(widgets::clip_color(clipped, &t)));
+        .child(div().w(px(3.)).h_full().bg(widgets::clip_color(clipped, &t)));
     let rec_on = recording.is_some();
-    div()
-        .flex()
-        .items_center()
-        .gap(px(2.))
-        .child(meter)
-        .child(
-            Button::icon("voice-over", "mic", crate::actions::tip(if rec_on { "Stop recording" } else { "Record a voice-over at the playhead" }, &crate::actions::RecordVoiceOver))
+    let mut items = vec![
+        meter.into_any_element(),
+        crate::ui::tool("voice-over", "mic", "Record", labelled, crate::actions::tip(if rec_on { "Stop recording" } else { "Record a voice-over at the playhead" }, &crate::actions::RecordVoiceOver))
+            .selected(rec_on)
+            .color(if rec_on { t.danger } else { t.text_2 })
+            .on_click(|_, w, cx| w.dispatch_action(Box::new(crate::actions::RecordVoiceOver), cx))
+            .into_any_element(),
+        crate::ui::tool("mixer-toggle", "sliders-vertical", "Mixer", labelled, crate::actions::tip(if open { "Hide the mixer" } else { "Mixer" }, &crate::actions::ToggleMixer))
+            .selected(open)
+            .on_click(|_, w, cx| w.dispatch_action(Box::new(crate::actions::ToggleMixer), cx))
+            .into_any_element(),
+    ];
+    if open {
+        items.push(
+            Button::icon("mixer-layout", if beside { "columns-2" } else { "panel-bottom" }, if beside { "Mixer beside the timeline: put it in its place" } else { "Mixer in the timeline's place: show both side by side" })
                 .small()
-                .selected(rec_on)
-                .color(if rec_on { t.danger } else { t.text_2 })
-                .on_click(|_, w, cx| w.dispatch_action(Box::new(crate::actions::RecordVoiceOver), cx)),
-        )
-        .child(
-            Button::icon("mixer-toggle", "sliders-vertical", crate::actions::tip(if open { "Hide the mixer" } else { "Mixer" }, &crate::actions::ToggleMixer))
-                .small()
-                .selected(open)
-                .on_click(|_, w, cx| w.dispatch_action(Box::new(crate::actions::ToggleMixer), cx)),
-        )
-        .when(open, |d| {
-            d.child(
-                Button::icon("mixer-layout", if beside { "columns-2" } else { "panel-bottom" }, if beside { "Mixer beside the timeline: put it in its place" } else { "Mixer in the timeline's place: show both side by side" })
-                    .small()
-                    .on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.set_audio(|a| a.beside = !beside, cx))),
-            )
-        })
-        .into_any_element()
+                .flush()
+                .on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.set_audio(|a| a.beside = !beside, cx)))
+                .into_any_element(),
+        );
+    }
+    crate::ui::group(items, cx).into_any_element()
 }
 
 /// The timeline's area: the tracks, the mixer in their place, or both side by side.

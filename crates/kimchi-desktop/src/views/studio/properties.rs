@@ -604,7 +604,6 @@ impl Properties {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(4.))
                             .border_1()
                             .border_color(if enabled { t.accent } else { t.line_strong })
                             .bg(if enabled { t.accent_soft } else { gpui::transparent_black() })

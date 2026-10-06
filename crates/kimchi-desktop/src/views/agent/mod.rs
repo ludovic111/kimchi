@@ -80,7 +80,7 @@ pub fn source_badge(source: &str, cx: &App) -> Div {
     let ai = matches!(source, "agent" | "mcp");
     let (bg, fg): (Hsla, Hsla) = if ai { (t.accent_soft, t.accent_text) } else { (t.hover, t.text_2) };
     let label = if source == "window" { "you" } else { source };
-    div().flex_none().px(px(5.)).py(px(1.)).rounded(px(4.)).bg(bg).text_color(fg).font_family(MONO).text_size(px(9.5)).child(label.to_uppercase())
+    div().flex_none().px(px(5.)).py(px(1.)).bg(bg).text_color(fg).font_family(MONO).text_size(px(9.5)).child(label.to_uppercase())
 }
 
 /// `14:03:22` in local time.

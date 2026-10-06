@@ -1,24 +1,17 @@
-//! The lsuite design system, read from `assets/tokens.json` (a copy of
-//! `lsuite/design/tokens.json`; never hard-code a value that lives there).
+//! kimchi's look: black and white, hard edges, grain.
 //!
-//! kimchi's signature colour is chili coral (hue 32°): accent `#f7806a` in the
-//! dark mode, `#c3513d` in the light one. The chrome sits on three glass tiers
-//! over a backdrop tinted with that colour; the work (preview canvas, timeline)
-//! stays solid. GPUI has no per-element backdrop blur, so the tiers are the
-//! token translucencies over the window's own backdrop, on top of the native
-//! window blur on macOS; with transparency reduced every tier is opaque.
-
-use std::sync::OnceLock;
+//! Everything is a grey between black and white; the accent is white in the dark mode and black
+//! in the light one, and the only colour left is red for what destroys or records. Corners are
+//! square (the radii below are zero or close to it), floating surfaces cast a hard offset shadow
+//! instead of a soft one, and the page behind the chrome is film grain and dithered light
+//! (`ui::grain`). The chrome sits on three tiers over that page; the work (preview canvas,
+//! timeline) stays solid. GPUI has no per-element backdrop blur, so tier 1 is translucent over the
+//! window's own backdrop and tiers 2–3 are their tint over the raised surface; with transparency
+//! reduced every tier is opaque.
+//!
+//! `assets/tokens.json` is the lsuite copy; kimchi's palette no longer reads its colours.
 
 use gpui::{App, BoxShadow, Global, Hsla, Rgba, WindowAppearance, point, px};
-use serde_json::Value;
-
-const TOKENS: &str = include_str!("../assets/tokens.json");
-
-fn tokens() -> &'static Value {
-    static T: OnceLock<Value> = OnceLock::new();
-    T.get_or_init(|| serde_json::from_str(TOKENS).expect("tokens.json"))
-}
 
 /// `#rrggbb`, `#rrggbbaa` or `rgba(r,g,b,a)`.
 pub fn parse_color(s: &str) -> Hsla {
@@ -41,22 +34,9 @@ pub fn parse_color(s: &str) -> Hsla {
     Rgba { r: 1.0, g: 0.0, b: 1.0, a: 1.0 }.into()
 }
 
-fn tok(path: &str) -> &'static str {
-    let mut v = tokens();
-    for p in path.split('.') {
-        v = &v[p];
-    }
-    v.as_str().unwrap_or_else(|| panic!("token {path}"))
-}
-
-fn color(path: &str) -> Hsla {
-    parse_color(tok(path))
-}
-
-
-/// The kimchi scale (`--ls-kimchi-50 … -950`).
-pub fn kimchi(step: &str) -> Hsla {
-    color(&format!("apps.kimchi.scale.{step}"))
+/// A grey: 0 is black, 1 is white.
+pub fn grey(v: f32) -> Hsla {
+    Rgba { r: v, g: v, b: v, a: 1.0 }.into()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,7 +45,7 @@ pub enum Mode {
     Light,
 }
 
-/// One glass tier: fill, plus the edge, highlight and shadow every tier shares.
+/// One tier: fill, plus the edge and highlight every tier shares.
 #[derive(Clone, Copy, Debug)]
 pub struct Glass {
     pub bg: Hsla,
@@ -76,7 +56,7 @@ pub struct Glass {
 #[derive(Clone, Debug)]
 pub struct Theme {
     pub mode: Mode,
-    /// Glass tiers are drawn translucent (false: every tier opaque).
+    /// Tiers are drawn translucent (false: every tier opaque).
     pub transparent: bool,
 
     pub bg: Hsla,
@@ -97,20 +77,23 @@ pub struct Theme {
     pub accent_text: Hsla,
     pub accent_soft: Hsla,
     pub accent_ring: Hsla,
-    pub aurora_a: Hsla,
-    pub aurora_b: Hsla,
-    pub aurora_strength: f32,
+    /// The ink of the grain and the dithered light on the page (white or black), and how strong.
+    pub ink: Hsla,
+    pub grain: f32,
+    pub dither: f32,
 
     pub glass1: Glass,
     pub glass2: Glass,
     pub glass3: Glass,
     pub scrim: Hsla,
     pub opaque: Hsla,
+    /// The hard offset shadow under floating surfaces.
+    pub drop: Hsla,
 
     /// Hover and pressed fills for quiet controls.
     pub hover: Hsla,
     pub pressed: Hsla,
-    /// Timeline clip colours by content.
+    /// Timeline clip greys by content.
     pub clip_video: Hsla,
     pub clip_audio: Hsla,
     pub clip_text: Hsla,
@@ -122,7 +105,8 @@ pub struct Theme {
 impl Global for Theme {}
 
 pub mod size {
-    //! Type scale, radii and spacing (`--ls-*`), in pixels.
+    //! Type scale, radii and spacing, in pixels. Corners are square: the radii are kept as names
+    //! so every surface stays on the scale, but they are (almost) zero.
     pub const XS: f32 = 11.0;
     pub const SM: f32 = 12.0;
     pub const BASE: f32 = 13.0;
@@ -131,71 +115,100 @@ pub mod size {
     pub const XL: f32 = 22.0;
     pub const XXL: f32 = 28.0;
 
-    pub const R_XS: f32 = 4.0;
-    pub const R_SM: f32 = 6.0;
-    pub const R_MD: f32 = 10.0;
-    pub const R_LG: f32 = 14.0;
-    pub const R_XL: f32 = 20.0;
+    pub const R_XS: f32 = 0.0;
+    pub const R_SM: f32 = 0.0;
+    pub const R_MD: f32 = 0.0;
+    pub const R_LG: f32 = 0.0;
+    pub const R_XL: f32 = 0.0;
 }
 
-pub const SANS: &str = "Manrope";
+/// The interface face: Chakra Petch, cut corners on every letter (bundled, OFL).
+pub const SANS: &str = "Chakra Petch";
 pub const MONO: &str = "IBM Plex Mono";
 
 impl Theme {
     pub fn new(mode: Mode, transparent: bool) -> Self {
-        let m = match mode {
-            Mode::Dark => "dark",
-            Mode::Light => "light",
-        };
-        let n = |k: &str| color(&format!("neutral.{m}.{k}"));
-        let g = |k: &str| color(&format!("glass.{m}.{k}"));
-        let glass = |tier: &str| Glass { bg: color(&format!("glass.{m}.{tier}.bg")), edge: g("edge"), highlight: g("highlight") };
-        let (accent, hover, text, soft_a, ring_src, ring_a, aurora_b) = match mode {
-            Mode::Dark => (kimchi("400"), kimchi("300"), kimchi("300"), 0.18, kimchi("300"), 0.60, kimchi("700")),
-            Mode::Light => (kimchi("600"), kimchi("700"), kimchi("700"), 0.14, kimchi("600"), 0.50, kimchi("200")),
-        };
-        let opaque = g("opaque");
-        let (hover_fill, pressed_fill) = match mode {
-            Mode::Dark => (parse_color("rgba(255,255,255,0.06)"), parse_color("rgba(255,255,255,0.10)")),
-            Mode::Light => (parse_color("rgba(15,20,30,0.05)"), parse_color("rgba(15,20,30,0.09)")),
-        };
-        let mut t = Theme {
-            mode,
-            transparent,
-            bg: n("bg"),
-            bg_raised: n("bg-raised"),
-            bg_sunken: n("bg-sunken"),
-            text: n("text"),
-            text_2: n("text-2"),
-            text_3: n("text-3"),
-            text_on_accent: n("text-on-accent"),
-            line: n("line"),
-            line_strong: n("line-strong"),
-            danger: n("danger"),
-            warning: n("warning"),
-            success: n("success"),
-            accent,
-            accent_hover: hover,
-            accent_text: text,
-            accent_soft: accent.opacity(soft_a),
-            accent_ring: ring_src.opacity(ring_a),
-            aurora_a: kimchi("400"),
-            aurora_b,
-            aurora_strength: tok(&format!("glass.{m}.aurora")).parse().unwrap_or(0.16),
-            glass1: glass("1"),
-            glass2: glass("2"),
-            glass3: glass("3"),
-            scrim: g("scrim"),
-            opaque,
-            hover: hover_fill,
-            pressed: pressed_fill,
-            // Track content colours: neutrals derived from the lsuite ones, the
-            // accent only for what the person or the agent made (generated).
-            clip_video: parse_color(if mode == Mode::Dark { "#2b3140" } else { "#cdd5e4" }),
-            clip_audio: parse_color(if mode == Mode::Dark { "#23362f" } else { "#cfe6dc" }),
-            clip_text: parse_color(if mode == Mode::Dark { "#3a3045" } else { "#e2d8ee" }),
-            clip_generated: kimchi(if mode == Mode::Dark { "800" } else { "200" }),
-            clip_motion: parse_color(if mode == Mode::Dark { "#20393d" } else { "#cde5e6" }),
+        let c = parse_color;
+        let dark = mode == Mode::Dark;
+        let (ink, paper) = if dark { (gpui::white(), gpui::black()) } else { (gpui::black(), gpui::white()) };
+        let edge = ink.opacity(if dark { 0.16 } else { 0.22 });
+        let glass = |bg: &str| Glass { bg: c(bg), edge, highlight: gpui::transparent_black() };
+        let mut t = if dark {
+            Theme {
+                mode,
+                transparent,
+                bg: grey(0.02),
+                bg_raised: grey(0.055),
+                bg_sunken: grey(0.0),
+                text: grey(0.95),
+                text_2: grey(0.66),
+                text_3: grey(0.44),
+                text_on_accent: paper,
+                line: ink.opacity(0.10),
+                line_strong: ink.opacity(0.20),
+                danger: c("#ff5b4d"),
+                warning: grey(0.85),
+                success: grey(0.95),
+                accent: ink,
+                accent_hover: grey(0.82),
+                accent_text: ink,
+                accent_soft: ink.opacity(0.12),
+                accent_ring: ink.opacity(0.62),
+                ink,
+                grain: 0.07,
+                dither: 0.13,
+                glass1: glass("rgba(8,8,8,0.62)"),
+                glass2: glass("rgba(14,14,14,0.92)"),
+                glass3: glass("rgba(18,18,18,0.96)"),
+                scrim: c("rgba(0,0,0,0.62)"),
+                opaque: grey(0.06),
+                drop: ink.opacity(0.11),
+                hover: ink.opacity(0.07),
+                pressed: ink.opacity(0.12),
+                clip_video: grey(0.24),
+                clip_audio: grey(0.13),
+                clip_text: grey(0.32),
+                clip_generated: grey(0.40),
+                clip_motion: grey(0.19),
+            }
+        } else {
+            Theme {
+                mode,
+                transparent,
+                bg: grey(0.94),
+                bg_raised: grey(0.985),
+                bg_sunken: grey(0.89),
+                text: grey(0.04),
+                text_2: grey(0.30),
+                text_3: grey(0.50),
+                text_on_accent: paper,
+                line: ink.opacity(0.12),
+                line_strong: ink.opacity(0.26),
+                danger: c("#c8291c"),
+                warning: grey(0.20),
+                success: grey(0.04),
+                accent: ink,
+                accent_hover: grey(0.22),
+                accent_text: ink,
+                accent_soft: ink.opacity(0.09),
+                accent_ring: ink.opacity(0.62),
+                ink,
+                grain: 0.09,
+                dither: 0.11,
+                glass1: glass("rgba(250,250,250,0.62)"),
+                glass2: glass("rgba(252,252,252,0.94)"),
+                glass3: glass("rgba(255,255,255,0.97)"),
+                scrim: c("rgba(235,235,235,0.62)"),
+                opaque: grey(0.97),
+                drop: ink.opacity(0.85),
+                hover: ink.opacity(0.05),
+                pressed: ink.opacity(0.10),
+                clip_video: grey(0.74),
+                clip_audio: grey(0.84),
+                clip_text: grey(0.66),
+                clip_generated: grey(0.58),
+                clip_motion: grey(0.79),
+            }
         };
         if transparent {
             // GPUI can't blur what is behind an element, so floating tiers (menus, popovers,
@@ -217,22 +230,21 @@ impl Theme {
         self.mode == Mode::Dark
     }
 
-    /// `--ls-glass-shadow`.
+    /// Under floating surfaces: a hard shadow, offset down and right, no blur (and a soft dark one
+    /// in the dark mode, where the hard one is light and would not separate the surface alone).
     pub fn glass_shadow(&self) -> Vec<BoxShadow> {
-        let (a, b) = match self.mode {
-            Mode::Dark => (parse_color("rgba(0,0,0,0.45)"), parse_color("rgba(0,0,0,0.4)")),
-            Mode::Light => (parse_color("rgba(20,30,50,0.14)"), parse_color("rgba(20,30,50,0.10)")),
-        };
-        vec![
-            self.glass_highlight(),
-            BoxShadow { color: a, offset: point(px(0.), px(12.)), blur_radius: px(40.), spread_radius: px(0.), inset: false },
-            BoxShadow { color: b, offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false },
-        ]
+        let hard = BoxShadow { color: self.drop, offset: point(px(4.), px(4.)), blur_radius: px(0.), spread_radius: px(0.), inset: false };
+        if self.is_dark() {
+            vec![BoxShadow { color: gpui::black().opacity(0.7), offset: point(px(0.), px(10.)), blur_radius: px(30.), spread_radius: px(0.), inset: false }, hard]
+        } else {
+            vec![hard]
+        }
     }
 
-    /// `--ls-glass-highlight`: the 1 px light along a glass surface's top edge.
-    pub fn glass_highlight(&self) -> BoxShadow {
-        BoxShadow { color: self.glass1.highlight, offset: point(px(0.), px(1.)), blur_radius: px(0.), spread_radius: px(0.), inset: true }
+    /// The smaller hard shadow under buttons and chips that stand out (the primary action).
+    pub fn chip_shadow(&self) -> Vec<BoxShadow> {
+        let color = if self.is_dark() { self.ink.opacity(0.22) } else { self.ink.opacity(0.9) };
+        vec![BoxShadow { color, offset: point(px(2.), px(2.)), blur_radius: px(0.), spread_radius: px(0.), inset: false }]
     }
 
     /// Mode from the setting (`system`, `dark`, `light`) and the OS appearance.
@@ -331,8 +343,8 @@ mod tests {
         for mode in [Mode::Dark, Mode::Light] {
             for transparent in [true, false] {
                 let t = Theme::new(mode, transparent);
-                // The backdrop: the page colour, and the page under the strongest aurora glow.
-                let glow = over(t.aurora_a.opacity(t.aurora_strength), t.bg);
+                // The backdrop: the page colour, and the page under the densest dither and grain.
+                let glow = over(t.ink.opacity(t.dither + t.grain), t.bg);
                 let backdrops = [t.bg, glow, t.bg_raised, t.bg_sunken];
                 let mut surfaces = vec![t.bg, t.bg_raised, t.bg_sunken];
                 for b in backdrops {

@@ -289,7 +289,7 @@ impl Render for Outliner {
                     el = el.child(div().flex_none().text_size(px(10.)).text_color(t.text_3).child(row.what.clone()));
                 }
                 if let RowKind::Camera { active: true } = row.kind {
-                    el = el.child(div().flex_none().px(px(5.)).rounded_full().bg(t.accent_soft).text_size(px(9.5)).text_color(t.accent_text).child("active"));
+                    el = el.child(div().flex_none().px(px(5.)).bg(t.accent_soft).text_size(px(9.5)).text_color(t.accent_text).child("active"));
                 }
                 if row.kind == RowKind::Composition {
                     let open = composition.as_deref() == row.key.strip_prefix(model::COMPOSITION);
@@ -315,7 +315,6 @@ impl Render for Outliner {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(4.))
                             .text_color(if hidden { t.text_3 } else { t.text_2 })
                             .hover(|s| s.bg(t.pressed))
                             .child(icon(if hidden { "eye-off" } else { "eye" }).size(px(12.)))
@@ -341,7 +340,7 @@ impl Render for Outliner {
             // Where a drag would land.
             if let Some(d) = drop.as_ref().filter(|d| d.target == i) {
                 el = match d.place {
-                    0 => el.child(div().absolute().inset_0().border_1().border_color(t.accent).rounded(px(4.))),
+                    0 => el.child(div().absolute().inset_0().border_1().border_color(t.accent)),
                     -1 => el.child(div().absolute().top_0().left(px(8. + row.depth as f32 * 14.)).right_0().h(px(2.)).bg(t.accent)),
                     _ => el.child(div().absolute().bottom_0().left(px(8. + row.depth as f32 * 14.)).right_0().h(px(2.)).bg(t.accent)),
                 };

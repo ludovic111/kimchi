@@ -17,7 +17,7 @@ use super::waveform::Peaks;
 use crate::theme::{ActiveTheme, MONO, parse_color};
 use crate::ui::icon;
 
-const RADIUS: f32 = 7.;
+const RADIUS: f32 = 0.;
 /// Pixels drawn past each side of the viewport.
 const OVERDRAW: f64 = 64.;
 
@@ -332,11 +332,10 @@ impl ClipView<'_> {
                             .items_center()
                             .gap(px(4.))
                             .px(px(5.))
-                            .rounded(px(4.))
                             .bg(gpui::black().opacity(0.55))
                             .text_size(px(9.5))
                             .text_color(gpui::white().opacity(0.9))
-                            .child(div().size(px(6.)).rounded_full().bg(dot))
+                            .child(div().size(px(6.)).bg(dot))
                             .child(label),
                     ),
             );
@@ -366,8 +365,8 @@ impl ClipView<'_> {
                 _ => None,
             };
             let fg = gpui::white();
-            // The pill is dark in both themes: the bright kimchi tone reads on it.
-            let hot = crate::theme::kimchi("300");
+            // The pill is dark in both themes: white reads on it.
+            let hot = gpui::white();
             let seen = ((self.scroll_x - x).max(0.) as f32).min(wf);
             el = el.child(
                 div()
@@ -380,7 +379,6 @@ impl ClipView<'_> {
                     .gap(px(5.))
                     .px(px(6.))
                     .py(px(1.))
-                    .rounded(px(5.))
                     .bg(gpui::black().opacity(0.55))
                     .text_size(px(11.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -448,7 +446,6 @@ impl ClipView<'_> {
                 .top(px(h * 0.3))
                 .h(px(h * 0.4))
                 .w(px(2.))
-                .rounded(px(2.))
                 .bg(t.text)
                 .when(left, |d| d.left(px(2.)))
                 .when(!left, |d| d.right(px(2.)))
@@ -492,7 +489,6 @@ impl ClipView<'_> {
                     .top(px(1.))
                     .left(px(x - 5.))
                     .size(px(10.))
-                    .rounded_full()
                     .bg(gpui::white())
                     .border_1()
                     .border_color(t.accent)

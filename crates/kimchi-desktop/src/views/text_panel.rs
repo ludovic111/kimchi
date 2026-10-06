@@ -6,7 +6,7 @@ use kimchi_core::ClipContent;
 use serde_json::{Value, json};
 
 use crate::store::{Store, StoreExt};
-use crate::theme::{ActiveTheme, kimchi, parse_color, size as sz};
+use crate::theme::{ActiveTheme, grey, parse_color, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::{Button, caps};
 use crate::views::inspector::fonts;
@@ -197,9 +197,9 @@ impl Render for TextPanel {
         let titles = selected_titles(cx);
         let current: Option<String> = titles.first().map(|(_, f)| f.clone());
 
-        // A stand-in for the picture: the darkest step of kimchi's scale, in both modes, since
-        // titles are mostly light over footage.
-        let canvas_bg = kimchi("950");
+        // A stand-in for the picture: near black in both modes, since titles are mostly light
+        // over footage.
+        let canvas_bg = grey(0.05);
         let tiles = PRESETS.iter().enumerate().map(|(i, p)| {
             let first = p.content.lines().next().unwrap_or("").to_string();
             let sample = div()

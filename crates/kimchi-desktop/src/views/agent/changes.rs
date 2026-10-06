@@ -33,7 +33,7 @@ impl AgentPanel {
                         .py(px(4.))
                         .text_size(px(sz::XS))
                         .text_color(t.text_2)
-                        .child(div().w(px(12.)).flex().justify_center().child(div().size(px(4.)).rounded_full().bg(t.line_strong)))
+                        .child(div().w(px(12.)).flex().justify_center().child(div().size(px(4.)).bg(t.line_strong)))
                         .child(if *mine == 1 { "1 edit of yours".to_string() } else { format!("{} edits of yours", *mine) })
                         .into_any_element(),
                 );

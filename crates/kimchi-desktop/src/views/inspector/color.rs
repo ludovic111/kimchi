@@ -119,7 +119,6 @@ impl gpui::Render for ColorField {
                 div()
                     .id(("swatch", i))
                     .size(px(18.))
-                    .rounded_full()
                     .bg(parse_color(s))
                     .border_1()
                     .border_color(t.line_strong)

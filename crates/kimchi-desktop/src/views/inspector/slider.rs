@@ -137,9 +137,8 @@ impl gpui::Render for Slider {
                     .relative()
                     .w_full()
                     .h(px(4.))
-                    .rounded_full()
                     .bg(t.line_strong)
-                    .child(div().absolute().left(relative(fill0)).top_0().h_full().w(relative(fill1 - fill0)).rounded_full().bg(t.accent))
+                    .child(div().absolute().left(relative(fill0)).top_0().h_full().w(relative(fill1 - fill0)).bg(t.accent))
                     .child(
                         canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {}).absolute().inset_0(),
                     )
@@ -150,7 +149,6 @@ impl gpui::Render for Slider {
                             .left(relative(f))
                             .ml(px(-7.))
                             .size(px(14.))
-                            .rounded_full()
                             .bg(gpui::white())
                             .border_1()
                             .border_color(if focused || self.dragging { t.accent } else { t.line_strong })

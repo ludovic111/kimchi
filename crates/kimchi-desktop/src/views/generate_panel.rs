@@ -492,7 +492,6 @@ impl GeneratePanel {
                         .flex()
                         .items_center()
                         .gap(px(6.))
-                        .rounded_full()
                         .text_size(px(11.5))
                         .font_weight(FontWeight::MEDIUM)
                         .bg(t.bg_sunken.opacity(0.5))
@@ -574,7 +573,6 @@ impl GeneratePanel {
                             .top(px(3.))
                             .right(px(3.))
                             .size(px(16.))
-                            .rounded_full()
                             .flex()
                             .items_center()
                             .justify_center()
@@ -621,7 +619,6 @@ impl GeneratePanel {
                         .pl(px(8.))
                         .pr(px(4.))
                         .py(px(3.))
-                        .rounded_full()
                         .max_w_full()
                         .text_size(px(11.5))
                         .text_color(t.accent_text)
@@ -635,7 +632,6 @@ impl GeneratePanel {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded_full()
                                 .cursor_pointer()
                                 .hover(|s| s.bg(t.hover))
                                 .tooltip(|_, cx| crate::ui::tooltip("Land at the playhead instead".into(), cx))
@@ -664,7 +660,6 @@ impl GeneratePanel {
                             .id("generate-go")
                             .flex_none()
                             .size(px(36.))
-                            .rounded(px(11.))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -697,7 +692,7 @@ impl GeneratePanel {
             let color = if on { t.accent_text } else { t.text_2 };
             let value = if *r == project_ratio { None } else { Some(r.clone()) };
             chip_base(("aspect", i), on, cx)
-                .child(div().w(px(glyph_w)).h(px(glyph_h.min(glyph_w * h / w).max(5.))).rounded(px(2.)).border(px(1.5)).border_color(color))
+                .child(div().w(px(glyph_w)).h(px(glyph_h.min(glyph_w * h / w).max(5.))).border(px(1.5)).border_color(color))
                 .child(r.clone())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.draft.aspect = value.clone();

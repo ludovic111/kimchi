@@ -157,8 +157,9 @@ crates/
   the result; every frame is put together in Rust (tiny-skia for pictures, text and 2D motion; wgpu, a CPU
   rasteriser or a CPU path tracer for 3D), so what you see is what renders.
 - Providers implement one trait (`info`, `models`, `check`, `generate`). The harness handles keys, concurrency (one job at a time on local GPUs), cancellation, downloads and progress events.
-- The interface follows the [lsuite design system](https://lsuite.xyz/design): chili coral, glass chrome over a
-  tinted backdrop, solid work surfaces, Manrope and IBM Plex Mono, dark and light, tested contrast.
+- The interface follows the [lsuite design system](https://lsuite.xyz/design) v2: black and white, square
+  corners and hard shadows, film grain and dithered light behind the chrome, solid work surfaces, Chakra Petch
+  and IBM Plex Mono, every area titled and its tools grouped, dark and light, tested contrast.
 
 ## Install
 

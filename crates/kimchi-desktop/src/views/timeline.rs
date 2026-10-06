@@ -1,4 +1,4 @@
-//! The timeline: a toolbar (transport, clock, edit tools, zoom), the tracks
+//! The timeline: a toolbar (title and clock, the tools in groups, zoom), the tracks
 //! ([`body::TimelineBody`], a cached view) and the playhead drawn over them.
 //!
 //! Only this shell observes the playback clock, so playing re-renders the
@@ -11,13 +11,12 @@ use gpui::{
     Bounds, BoxShadow, Context, Entity, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render, StyleRefinement, Subscription, Window,
     canvas, div, point, prelude::*, px,
 };
-use serde_json::json;
 
 use crate::actions::{AddMarker, AddText, Delete, Duplicate, Split, ToggleSnap, ZoomFit, ZoomIn, ZoomOut, tip};
 use crate::playback::Playback;
 use crate::store::{ComposeRequest, ComposeTarget, MAX_PPS, MIN_PPS, Store, StoreExt};
 use crate::theme::{ActiveTheme, MONO, size as sz};
-use crate::ui::{Button, GlassExt, drag, smpte};
+use crate::ui::{Button, GlassExt, drag, group, panel_title, smpte, tool};
 
 mod body;
 mod clip;
@@ -112,96 +111,109 @@ impl Timeline {
         let (playing, looping, playhead) = (pb.playing, pb.looping, pb.playhead);
         let (fps, duration, pps) = (s.fps(), s.duration(), s.pps);
         let (has_sel, snapping, ripple) = (!s.selection.is_empty(), s.snapping, s.ripple);
-        let sep = || div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.line_strong);
-        // Narrow timelines (agent panel open, small window) drop the least needed parts first.
+        // Narrow timelines (agent panel open, small window) first lose labels, then the least
+        // needed tools.
         let width = self.width;
-        let (compact, narrow, tiny) = (width < 1100., width < 960., width < 820.);
+        let (wide, roomy, compact, narrow, tiny) = (width >= 1560., width >= 1280., width < 1100., width < 960., width < 820.);
         // The transport lives under the preview; the timeline keeps the time, where the eye is.
         let shuttle = self.playback.read(cx).shuttle;
-        let clock = div()
+        let title = div()
             .flex()
+            .flex_none()
             .items_baseline()
-            .gap(px(6.))
-            .font_family(MONO)
-            .child(div().text_size(px(sz::BASE)).text_color(if playing || shuttle != 0. { t.accent_text } else { t.text }).child(smpte(playhead, fps)))
-            .when(!narrow, |d| d.child(div().text_size(px(sz::XS)).text_color(t.text_3).child(format!("/ {}", smpte(duration, fps)))))
-            .when(shuttle != 0., |d| d.child(div().text_size(px(sz::XS)).text_color(t.accent_text).child(rate_label(shuttle))))
-            .when(looping, |d| d.child(crate::ui::icon("repeat").size(px(11.)).text_color(t.text_3)));
+            .gap(px(10.))
+            .child(panel_title("Timeline"))
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap(px(6.))
+                    .font_family(MONO)
+                    .child(div().text_size(px(sz::BASE)).text_color(if playing || shuttle != 0. { t.accent_text } else { t.text }).child(smpte(playhead, fps)))
+                    .when(!narrow, |d| d.child(div().text_size(px(sz::XS)).text_color(t.text_3).child(format!("/ {}", smpte(duration, fps)))))
+                    .when(shuttle != 0., |d| d.child(div().text_size(px(sz::XS)).text_color(t.accent_text).child(rate_label(shuttle))))
+                    .when(looping, |d| d.child(crate::ui::icon("repeat").size(px(11.)).text_color(t.text_3))),
+            );
+        let edit = group(
+            [
+                tool("split", "scissors", "Split", roomy, tip("Split at the playhead", &Split)).on_click(|_, w, cx| w.dispatch_action(Box::new(Split), cx)).into_any_element(),
+                tool("delete", "trash", "Delete", roomy, tip("Delete", &Delete)).disabled(!has_sel).on_click(|_, w, cx| w.dispatch_action(Box::new(Delete), cx)).into_any_element(),
+                tool("duplicate", "copy", "Duplicate", wide, tip("Duplicate", &Duplicate)).disabled(!has_sel).on_click(|_, w, cx| w.dispatch_action(Box::new(Duplicate), cx)).into_any_element(),
+            ],
+            cx,
+        );
+        let modes = group(
+            [
+                tool("snap", "magnet", "Snap", roomy, tip(if snapping { "Snapping: on" } else { "Snapping: off" }, &ToggleSnap))
+                    .selected(snapping)
+                    .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_snapping(!s.snapping, cx)))
+                    .into_any_element(),
+                tool("ripple", "wrap-text", "Ripple", roomy, if ripple { "Ripple delete: on (deleting closes the gap)" } else { "Ripple delete: off" })
+                    .selected(ripple)
+                    .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_ripple(!s.ripple, cx)))
+                    .into_any_element(),
+            ],
+            cx,
+        );
+        // New tracks are in the "+" above the track headers.
+        let add = group(
+            [
+                tool("text", "type", "Title", wide, tip("Add a title", &AddText)).on_click(|_, w, cx| w.dispatch_action(Box::new(AddText), cx)).into_any_element(),
+                tool("marker", "map-pin", "Marker", wide, tip("Add a marker", &AddMarker)).on_click(|_, w, cx| w.dispatch_action(Box::new(AddMarker), cx)).into_any_element(),
+            ],
+            cx,
+        );
         let tools = div()
             .flex()
+            .min_w_0()
             .items_center()
-            .gap(px(2.))
-            .child(Button::icon("split", "scissors", tip("Split at the playhead", &Split)).small().on_click(|_, w, cx| w.dispatch_action(Box::new(Split), cx)))
-            .child(Button::icon("delete", "trash", tip("Delete", &Delete)).small().disabled(!has_sel).on_click(|_, w, cx| w.dispatch_action(Box::new(Delete), cx)))
-            .child(Button::icon("duplicate", "copy", tip("Duplicate", &Duplicate)).small().disabled(!has_sel).on_click(|_, w, cx| w.dispatch_action(Box::new(Duplicate), cx)))
-            .child(sep())
-            .child(Button::icon("snap", "magnet", tip(if snapping { "Snapping: on" } else { "Snapping: off" }, &ToggleSnap)).small().selected(snapping).on_click(|_, _, cx| {
-                cx.store().update(cx, |s, cx| s.set_snapping(!s.snapping, cx))
-            }))
-            .child(Button::icon("ripple", "wrap-text", if ripple { "Ripple delete: on (deleting closes the gap)" } else { "Ripple delete: off" }).small().selected(ripple).on_click(|_, _, cx| {
-                cx.store().update(cx, |s, cx| s.set_ripple(!s.ripple, cx))
-            }))
-            .child(sep())
-            .child(crate::views::mixer::toolbar(narrow, cx))
-            .child(sep())
-            .child(Button::icon("marker", "map-pin", tip("Add a marker", &AddMarker)).small().on_click(|_, w, cx| w.dispatch_action(Box::new(AddMarker), cx)))
-            .child(Button::icon("text", "type", tip("Add a title", &AddText)).small().on_click(|_, w, cx| w.dispatch_action(Box::new(AddText), cx)))
-            // Also in the "+" menu above the track headers.
-            .when(!tiny, |d| {
-                d.child(Button::icon("video-track", "film", "Add video track").small().on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("track.add", json!({ "kind": "video" }), cx))))
-                    .child(
-                        Button::icon("audio-track", "audio-lines", "Add audio track")
-                            .small()
-                            .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.run("track.add", json!({ "kind": "audio" }), cx))),
-                    )
-            });
+            .gap(px(8.))
+            .child(edit)
+            .child(modes)
+            .when(!tiny, |d| d.child(add))
+            .child(crate::views::mixer::toolbar(narrow, wide, cx));
 
         let frac = ((pps.ln() - MIN_PPS.ln()) / (MAX_PPS.ln() - MIN_PPS.ln())).clamp(0., 1.) as f32;
         let slider = {
             let cell = self.slider.clone();
             div()
                 .id("zoom-slider")
-                .w(px(100.))
-                .h(px(20.))
+                .w(px(96.))
+                .h_full()
+                .mx(px(6.))
                 .flex_none()
                 .relative()
                 .cursor_pointer()
                 .tooltip(|_, cx| crate::ui::tooltip(if cfg!(target_os = "macos") { "Zoom (pinch, or ⌘ + scroll)" } else { "Zoom (pinch, or Ctrl + scroll)" }.into(), cx))
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::slide_down))
                 .child(canvas(move |b, _, _| cell.set(b), |_, _, _, _| {}).absolute().inset_0())
-                .child(div().absolute().left_0().right_0().top(px(8.5)).h(px(3.)).rounded_full().bg(t.line_strong))
-                .child(div().absolute().left_0().top(px(8.5)).h(px(3.)).w(px(frac * 100.)).rounded_full().bg(t.text_3))
-                .child(div().absolute().top(px(4.)).left(px(frac * 88.)).size(px(12.)).rounded_full().bg(t.text_2).border_2().border_color(t.bg_raised))
+                .child(div().absolute().left_0().right_0().top(px(13.)).h(px(2.)).bg(t.line_strong))
+                .child(div().absolute().left_0().top(px(13.)).h(px(2.)).w(px(frac * 96.)).bg(t.text_2))
+                .child(div().absolute().top(px(7.)).left(px(frac * 88.)).w(px(8.)).h(px(14.)).bg(t.text))
         };
         let this = cx.entity();
         let (z1, z2) = (this.clone(), this);
         let body = self.body.clone();
-        let zoom = div()
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .child(
-                if compact { Button::icon("gen-here", "sparkles", "Generate at playhead") } else { Button::new("gen-here", "Generate at playhead").with_icon("sparkles") }
-                    .small()
-                    .color(t.accent_text)
-                    .tooltip("Make a shot that lands at the playhead")
-                    .on_click(|_, _, cx| {
-                        let t = cx.store().read(cx).playback.read(cx).playhead;
-                        let target = ComposeTarget { track_id: None, start: t, duration: 5., label: "at the playhead".into() };
-                        cx.store().update(cx, |s, cx| s.compose(ComposeRequest { video: true, target: Some(target), ..Default::default() }, cx));
-                    }),
-            )
-            .child(sep())
-            .child(Button::icon("zoom-out", "zoom-out", tip("Zoom out", &ZoomOut)).small().on_click(move |_, _, cx| z1.update(cx, |this, cx| this.zoom_by(1. / 1.3, cx))))
-            .when(!narrow, |d| d.child(slider))
-            .child(Button::icon("zoom-in", "zoom-in", tip("Zoom in", &ZoomIn)).small().on_click(move |_, _, cx| z2.update(cx, |this, cx| this.zoom_by(1.3, cx))))
-            .child(
-                Button::new("fit", "Fit")
-                    .small()
-                    .ghost()
-                    .tooltip(tip("Zoom to fit", &ZoomFit))
-                    .on_click(move |_, _, cx| body.update(cx, |b, cx| b.fit(cx))),
-            );
+        let generate = if compact { Button::icon("gen-here", "sparkles", "Generate at playhead") } else { Button::new("gen-here", "Generate here").with_icon("sparkles") }
+            .small()
+            .tooltip("Make a shot that lands at the playhead")
+            .on_click(|_, _, cx| {
+                let t = cx.store().read(cx).playback.read(cx).playhead;
+                let target = ComposeTarget { track_id: None, start: t, duration: 5., label: "at the playhead".into() };
+                cx.store().update(cx, |s, cx| s.compose(ComposeRequest { video: true, target: Some(target), ..Default::default() }, cx));
+            });
+        let zoom = group(
+            [
+                Button::icon("zoom-out", "zoom-out", tip("Zoom out", &ZoomOut)).small().flush().on_click(move |_, _, cx| z1.update(cx, |this, cx| this.zoom_by(1. / 1.3, cx))).into_any_element(),
+            ]
+            .into_iter()
+            .chain((!narrow).then(|| slider.into_any_element()))
+            .chain([
+                Button::icon("zoom-in", "zoom-in", tip("Zoom in", &ZoomIn)).small().flush().on_click(move |_, _, cx| z2.update(cx, |this, cx| this.zoom_by(1.3, cx))).into_any_element(),
+                Button::new("fit", "Fit").small().flush().tooltip(tip("Zoom to fit", &ZoomFit)).on_click(move |_, _, cx| body.update(cx, |b, cx| b.fit(cx))).into_any_element(),
+            ]),
+            cx,
+        );
         div()
             .id("timeline-toolbar")
             .h(px(TOOLBAR_H))
@@ -209,16 +221,16 @@ impl Timeline {
             .flex()
             .items_center()
             .justify_between()
-            .gap(px(8.))
-            .px(px(10.))
+            .gap(px(12.))
+            .px(px(14.))
             .glass(t.glass1)
             .border_0()
             .border_b_1()
             .border_color(t.line)
             .overflow_hidden()
-            .child(clock)
+            .child(title)
             .child(tools)
-            .child(zoom)
+            .child(div().flex().flex_none().items_center().gap(px(8.)).child(generate).child(zoom))
             .into_any_element()
     }
 

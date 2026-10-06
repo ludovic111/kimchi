@@ -381,7 +381,6 @@ impl Inspector {
                         div()
                             .id(SharedString::from(format!("chain-power-{i}")))
                             .size(px(10.))
-                            .rounded_full()
                             .border_1()
                             .border_color(if bypassed { t.text_3 } else { t.accent })
                             .bg(if bypassed { gpui::transparent_black() } else { t.accent })
