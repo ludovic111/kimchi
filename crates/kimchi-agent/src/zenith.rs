@@ -77,7 +77,7 @@ async fn run_at(run: &mut Run, prompt: String, mut conv: Conversation, exe: Path
     let workspace = run.session.data_dir.join("agent-workspaces").join(project.id.to_string());
     std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
     let resume = conv.cli_session.as_ref().filter(|s| s.provider == ProviderKind::Zenith).map(|s| s.id.clone());
-    let prompt = context_prompt(&project.name, project.id, &prompt);
+    let prompt = context_prompt(&project.name, project.id, &crate::context::glance(&run.session).frame(&prompt));
     run.ensure_checkpoint().await;
     conv.prepare_turn();
     conv.messages.push(Message::user(prompt.clone()));
@@ -267,7 +267,7 @@ esac
             {"kind":"message","role":"assistant","text":"stale answer"}
         ]}));
         let turn = |prompt: &str, answer: &str| json!({"status":"ready","timeline":[
-            {"kind":"message","role":"user","text":context_prompt(&project.name, project.id, prompt)},
+            {"kind":"message","role":"user","text":context_prompt(&project.name, project.id, &crate::context::glance(&session).frame(prompt))},
             {"kind":"message","role":"assistant","text":answer}
         ]});
         response(dir.path(), "turn", turn("Add a cube", "Cube added."));
