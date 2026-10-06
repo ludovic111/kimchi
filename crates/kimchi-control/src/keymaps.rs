@@ -124,6 +124,10 @@ pub static ACTIONS: &[Action] = &[
     // The Studio: Blender's keys in 3D, After Effects' in 2D.
     a("Studio", "Back to the edit", &["escape"], Studio, "StudioEscape"),
     a("Studio", "Play / pause the clip", &["space"], Studio, "StudioPlay"),
+    a("Studio", "Previous keyframe", &["alt-left"], Studio, "StudioPreviousKey"),
+    a("Studio", "Next keyframe", &["alt-right"], Studio, "StudioNextKey"),
+    a("Studio", "Extend Outliner selection up", &["shift-up"], Studio, "StudioExtendPreviousItem"),
+    a("Studio", "Extend Outliner selection down", &["shift-down"], Studio, "StudioExtendNextItem"),
     a("Studio", "Add", &["shift-a"], Studio, "StudioAdd"),
     a("Studio", "Move (2D: pen)", &["g"], Studio, "StudioGrab"),
     a("Studio", "Rotate", &["r"], Studio, "StudioRotate"),

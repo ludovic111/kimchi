@@ -344,6 +344,9 @@ fn imported_looks_show_in_the_inspector_and_apply(cx: &mut TestAppContext) {
     std::fs::write(&cube, "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n").unwrap();
     let added = f.call("looks.import", json!({ "paths": [cube], "folder": "Resolve" }));
     let look = added["added"][0]["id"].as_str().unwrap().to_string();
+    // The inspector lives in the left sidebar: show it so its Colour section draws.
+    remote(&f, cx, "ui.setLayout", json!({ "inspectorOpen": true }));
+    resize(cx, 1600., 1000.);
     let inspector = cx.update(|_, cx| view.read(cx).editor().read(cx).inspector.clone());
     let start = Instant::now();
     while !cx.update(|_, cx| inspector.read(cx).library_look_names()).contains(&"Night Film".to_string()) && start.elapsed() < Duration::from_secs(3) {
@@ -616,7 +619,7 @@ fn side_panels_close_and_open(cx: &mut TestAppContext) {
 fn interop_menu_targets() {
     let targets = crate::views::dialogs::interop::export_targets();
     let names: Vec<&str> = targets.iter().map(|t| t.1).collect();
-    for app in ["Premiere Pro", "Final Cut Pro", "DaVinci Resolve", "Avid Media Composer"] {
+    for app in ["Premiere Pro", "Final Cut Pro", "DaVinci Resolve", "Media Composer"] {
         assert!(names.iter().any(|n| n.contains(app.split(' ').next().unwrap())), "{app} in {names:?}");
     }
     assert_eq!(crate::views::dialogs::interop::extension("xmeml"), "xml");
