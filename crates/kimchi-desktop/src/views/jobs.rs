@@ -111,7 +111,7 @@ impl JobsPopover {
         }
 
         let progress = active.then(|| {
-            let bar = div().absolute().top_0().bottom_0().rounded_full().bg(t.accent);
+            let bar = div().absolute().top_0().bottom_0().bg(t.accent);
             let fill = match j.progress.fraction {
                 Some(f) => bar.left_0().w(relative(f as f32)).into_any_element(),
                 None => bar
@@ -126,7 +126,7 @@ impl JobsPopover {
                 .flex_col()
                 .gap(px(4.))
                 .mt(px(7.))
-                .child(div().relative().h(px(3.)).rounded_full().overflow_hidden().bg(t.line).child(fill))
+                .child(div().relative().h(px(3.)).overflow_hidden().bg(t.line).child(fill))
                 .child(div().text_size(px(sz::XS)).text_color(t.text_2).child(j.progress.message.clone().unwrap_or_else(|| {
                     if j.status == JobStatus::Queued { "Queued".into() } else { "Working".into() }
                 })))
@@ -166,7 +166,6 @@ impl JobsPopover {
                         .id(gpui::ElementId::Name(format!("job-cancel-{}", j.id).into()))
                         .flex_none()
                         .size(px(24.))
-                        .rounded_full()
                         .flex()
                         .items_center()
                         .justify_center()
@@ -190,7 +189,6 @@ impl JobsPopover {
                                 div()
                                     .id(gpui::ElementId::Name(format!("job-reveal-{}", j.id).into()))
                                     .size(px(24.))
-                                    .rounded_full()
                                     .flex()
                                     .items_center()
                                     .justify_center()

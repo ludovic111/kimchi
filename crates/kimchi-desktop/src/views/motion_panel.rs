@@ -14,7 +14,7 @@ use kimchi_core::{Clip, ClipContent, Project, ProjectSettings, Track, TrackKind}
 use serde_json::json;
 
 use crate::store::{Store, StoreExt};
-use crate::theme::{ActiveTheme, kimchi, size as sz};
+use crate::theme::{ActiveTheme, grey, size as sz};
 use crate::ui::{Button, caps, icon};
 
 /// Bumped when the templates' look changes, so their pictures are drawn again.
@@ -149,7 +149,7 @@ impl Render for MotionPanel {
                     div()
                         .h(px(78.))
                         .rounded(px(sz::R_MD))
-                        .bg(kimchi("950"))
+                        .bg(grey(0.05))
                         .border_1()
                         .border_color(t.line)
                         .group_hover("motion-card", |s| s.border_color(t.accent_ring))
@@ -162,7 +162,6 @@ impl Render for MotionPanel {
                                 .top(px(5.))
                                 .right(px(5.))
                                 .px(px(5.))
-                                .rounded(px(4.))
                                 .bg(gpui::black().opacity(0.55))
                                 .text_size(px(10.))
                                 .font_weight(FontWeight::SEMIBOLD)

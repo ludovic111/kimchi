@@ -321,7 +321,7 @@ impl AgentPanel {
                     .hover(|s| s.bg(t.hover).text_color(t.text))
                     .tooltip(|_, cx| crate::ui::tooltip("Which model runs the agent".into(), cx))
                     .on_click(cx.listener(|this, e: &gpui::ClickEvent, _, cx| this.provider_menu(e.position(), cx)))
-                    .child(div().flex_none().size(px(7.)).rounded_full().bg(dot))
+                    .child(div().flex_none().size(px(7.)).bg(dot))
                     .child(crate::ui::logo(kind.id(), px(14.)))
                     .child(div().truncate().child(kind.label()))
                     .child(icon("chevron-down").size(px(12.))),

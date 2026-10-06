@@ -201,7 +201,7 @@ impl SettingsDialog {
             let s = serde_json::to_value(task).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default().replace('_', " ");
             let mut c = s.chars();
             let label = c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default();
-            div().px(px(8.)).py(px(2.)).rounded_full().bg(t.hover).border_1().border_color(t.line).text_size(px(sz::XS)).text_color(t.text_2).child(label)
+            div().px(px(8.)).py(px(2.)).bg(t.hover).border_1().border_color(t.line).text_size(px(sz::XS)).text_color(t.text_2).child(label)
         });
         let needs_key = p.info.needs_key || p.info.key_hint.is_some();
         let key_empty = self.key.read(cx).text().trim().is_empty();

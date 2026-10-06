@@ -1,50 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- kimchi app icon, from the lsuite template (lsuite/design/DESIGN.md, "App icons"): macOS
-       icon grid (824 px continuous-corner tile on 1024), kimchi 300 → 600 → 800 gradient from top
-       left to bottom right, white glyph (the stalk and two leaves of brand/mark.svg) at ~58 % of
-       the tile with a soft 1 px shadow, and a glass sheen (white 28 % → 0 over the top half).
-       scripts/make-icons.sh renders every size from this file. -->
+  <!-- kimchi app icon: the macOS icon grid (824 px continuous-corner tile on 1024) in near black,
+       a corner of dithered light like the app's page, and the mark (brand/mark.svg) in white at
+       about 58 % of the tile. scripts/gen-mark.py writes this file; scripts/make-icons.sh renders
+       every size from it. -->
   <defs>
     <path id="tile" d="M383.41 100 L640.59 100 C722.19 100 763 100 799.79 112.14 L806.92 113.89 C854.88 131.34 892.66 169.12 910.11 217.08 C924 261 924 301.81 924 383.41 L924 640.59 C924 722.19 924 763 911.86 799.79 L910.11 806.92 C892.66 854.88 854.88 892.66 806.92 910.11 C763 924 722.19 924 640.59 924 L383.41 924 C301.81 924 261 924 224.21 911.86 L217.08 910.11 C169.12 892.66 131.34 854.88 113.89 806.92 C100 763 100 722.19 100 640.59 L100 383.41 C100 301.81 100 261 112.14 224.21 L113.89 217.08 C131.34 169.12 169.12 131.34 217.08 113.89 C261 100 301.81 100 383.41 100 Z"/>
     <clipPath id="tile-clip"><use href="#tile"/></clipPath>
-    <linearGradient id="fill" x1="100" y1="100" x2="924" y2="924" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ff9d88"/>
-      <stop offset="0.5" stop-color="#c3513d"/>
-      <stop offset="1" stop-color="#742f23"/>
-    </linearGradient>
-    <linearGradient id="sheen" x1="0" y1="100" x2="0" y2="512" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#fff" stop-opacity="0.28"/>
-      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
-    </linearGradient>
-    <filter id="tile-shadow" x="-10%" y="-10%" width="120%" height="125%">
-      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#31130d" flood-opacity="0.32"/>
-    </filter>
-    <filter id="glyph-shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#4e2119" flood-opacity="0.35"/>
-    </filter>
-    <!-- Leaf veins are cut out of the glyph so the tile shows through. -->
-    <mask id="veins" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
-      <rect width="1024" height="1024" fill="#fff"/>
-      <g transform="translate(512 512) scale(10.86) translate(-29 -32)" fill="none" stroke="#000" stroke-width="1.05" stroke-linecap="round">
-        <path d="M26.2 31.2 C31.2 27.4 35.6 22.6 40.2 17.4"/>
-        <path d="M26.2 36.8 C31.4 38.6 36 41.6 40.4 46.2"/>
-      </g>
-    </mask>
   </defs>
-
-  <use href="#tile" fill="url(#fill)" filter="url(#tile-shadow)"/>
-  <g clip-path="url(#tile-clip)">
-    <rect x="100" y="100" width="824" height="412" fill="url(#sheen)"/>
-  </g>
-  <use href="#tile" fill="none" stroke="#fff" stroke-opacity="0.14" stroke-width="2"/>
-
-  <g filter="url(#glyph-shadow)">
-    <g mask="url(#veins)">
-      <g fill="#fff" transform="translate(512 512) scale(10.86) translate(-29 -32)">
-        <rect x="14" y="10" width="8" height="44" rx="4"/>
-        <path d="M23.5 32.5c1.6-10 9.4-17 21.5-19.3-1.2 11.9-9 18.6-21.5 19.3z"/>
-        <path d="M23.5 35.5c12.8.6 19.8 5.7 22.1 14.2-10-.3-18.6-4.9-22.1-14.2z"/>
-      </g>
-    </g>
-  </g>
+  <use href="#tile" fill="#0b0b0b"/>
+  <g clip-path="url(#tile-clip)" fill="#fff" fill-opacity="0.16"><rect x="100" y="100" width="11" height="11"/><rect x="116" y="100" width="11" height="11"/><rect x="132" y="100" width="11" height="11"/><rect x="148" y="100" width="11" height="11"/><rect x="164" y="100" width="11" height="11"/><rect x="180" y="100" width="11" height="11"/><rect x="196" y="100" width="11" height="11"/><rect x="228" y="100" width="11" height="11"/><rect x="260" y="100" width="11" height="11"/><rect x="292" y="100" width="11" height="11"/><rect x="324" y="100" width="11" height="11"/><rect x="356" y="100" width="11" height="11"/><rect x="100" y="116" width="11" height="11"/><rect x="116" y="116" width="11" height="11"/><rect x="148" y="116" width="11" height="11"/><rect x="180" y="116" width="11" height="11"/><rect x="212" y="116" width="11" height="11"/><rect x="244" y="116" width="11" height="11"/><rect x="100" y="132" width="11" height="11"/><rect x="116" y="132" width="11" height="11"/><rect x="132" y="132" width="11" height="11"/><rect x="148" y="132" width="11" height="11"/><rect x="164" y="132" width="11" height="11"/><rect x="196" y="132" width="11" height="11"/><rect x="228" y="132" width="11" height="11"/><rect x="260" y="132" width="11" height="11"/><rect x="292" y="132" width="11" height="11"/><rect x="324" y="132" width="11" height="11"/><rect x="116" y="148" width="11" height="11"/><rect x="148" y="148" width="11" height="11"/><rect x="180" y="148" width="11" height="11"/><rect x="212" y="148" width="11" height="11"/><rect x="100" y="164" width="11" height="11"/><rect x="116" y="164" width="11" height="11"/><rect x="132" y="164" width="11" height="11"/><rect x="148" y="164" width="11" height="11"/><rect x="164" y="164" width="11" height="11"/><rect x="180" y="164" width="11" height="11"/><rect x="196" y="164" width="11" height="11"/><rect x="228" y="164" width="11" height="11"/><rect x="260" y="164" width="11" height="11"/><rect x="292" y="164" width="11" height="11"/><rect x="324" y="164" width="11" height="11"/><rect x="356" y="164" width="11" height="11"/><rect x="116" y="180" width="11" height="11"/><rect x="148" y="180" width="11" height="11"/><rect x="180" y="180" width="11" height="11"/><rect x="212" y="180" width="11" height="11"/><rect x="244" y="180" width="11" height="11"/><rect x="100" y="196" width="11" height="11"/><rect x="132" y="196" width="11" height="11"/><rect x="164" y="196" width="11" height="11"/><rect x="196" y="196" width="11" height="11"/><rect x="228" y="196" width="11" height="11"/><rect x="260" y="196" width="11" height="11"/><rect x="292" y="196" width="11" height="11"/><rect x="324" y="196" width="11" height="11"/><rect x="116" y="212" width="11" height="11"/><rect x="148" y="212" width="11" height="11"/><rect x="180" y="212" width="11" height="11"/><rect x="212" y="212" width="11" height="11"/><rect x="100" y="228" width="11" height="11"/><rect x="132" y="228" width="11" height="11"/><rect x="164" y="228" width="11" height="11"/><rect x="196" y="228" width="11" height="11"/><rect x="228" y="228" width="11" height="11"/><rect x="260" y="228" width="11" height="11"/><rect x="292" y="228" width="11" height="11"/><rect x="356" y="228" width="11" height="11"/><rect x="116" y="244" width="11" height="11"/><rect x="148" y="244" width="11" height="11"/><rect x="180" y="244" width="11" height="11"/><rect x="100" y="260" width="11" height="11"/><rect x="132" y="260" width="11" height="11"/><rect x="164" y="260" width="11" height="11"/><rect x="196" y="260" width="11" height="11"/><rect x="228" y="260" width="11" height="11"/><rect x="260" y="260" width="11" height="11"/><rect x="100" y="292" width="11" height="11"/><rect x="132" y="292" width="11" height="11"/><rect x="164" y="292" width="11" height="11"/><rect x="196" y="292" width="11" height="11"/><rect x="228" y="292" width="11" height="11"/><rect x="292" y="292" width="11" height="11"/><rect x="132" y="324" width="11" height="11"/><rect x="196" y="324" width="11" height="11"/><rect x="100" y="356" width="11" height="11"/><rect x="164" y="356" width="11" height="11"/><rect x="228" y="356" width="11" height="11"/></g>
+  <use href="#tile" fill="none" stroke="#fff" stroke-opacity="0.16" stroke-width="3"/>
+  <g transform="translate(512 512) scale(10.86) translate(-30.5 -32)"><g fill="#fff"><polygon points="14,14 18,10 22,10 22,54 14,54"/><polygon points="24.5,31.5 28.5,19.5 47,11.5 41,26.5"/><rect x="25.20" y="36.20" width="1.75" height="1.75"/><rect x="27.40" y="36.20" width="1.75" height="1.75"/><rect x="25.20" y="38.40" width="1.75" height="1.75"/><rect x="27.40" y="38.40" width="1.75" height="1.75"/><rect x="29.60" y="38.40" width="1.75" height="1.75"/><rect x="31.80" y="38.40" width="1.75" height="1.75"/><rect x="34.00" y="38.40" width="1.75" height="1.75"/><rect x="36.20" y="38.40" width="1.75" height="1.75"/><rect x="27.40" y="40.60" width="1.75" height="1.75"/><rect x="29.60" y="40.60" width="1.75" height="1.75"/><rect x="34.00" y="40.60" width="1.75" height="1.75"/><rect x="38.40" y="40.60" width="1.75" height="1.75"/><rect x="27.40" y="42.80" width="1.75" height="1.75"/><rect x="29.60" y="42.80" width="1.75" height="1.75"/><rect x="31.80" y="42.80" width="1.75" height="1.75"/><rect x="34.00" y="42.80" width="1.75" height="1.75"/><rect x="36.20" y="42.80" width="1.75" height="1.75"/><rect x="38.40" y="42.80" width="1.75" height="1.75"/><rect x="40.60" y="42.80" width="1.75" height="1.75"/><rect x="29.60" y="45.00" width="1.75" height="1.75"/><rect x="34.00" y="45.00" width="1.75" height="1.75"/><rect x="38.40" y="45.00" width="1.75" height="1.75"/><rect x="31.80" y="47.20" width="1.75" height="1.75"/><rect x="36.20" y="47.20" width="1.75" height="1.75"/><rect x="38.40" y="47.20" width="1.75" height="1.75"/><rect x="40.60" y="47.20" width="1.75" height="1.75"/><rect x="38.40" y="49.40" width="1.75" height="1.75"/><rect x="42.80" y="49.40" width="1.75" height="1.75"/><rect x="45.00" y="51.60" width="1.75" height="1.75"/></g></g>
 </svg>

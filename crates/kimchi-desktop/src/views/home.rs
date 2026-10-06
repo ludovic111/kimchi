@@ -15,25 +15,16 @@ use serde_json::json;
 
 use crate::assets::icon_path;
 use crate::store::{ComposeRequest, ComposeTarget, Dialog, MenuItem, Store, StoreExt};
-use crate::theme::{ActiveTheme, MONO, parse_color, size as sz};
+use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::{Button, GlassExt, icon};
 
 actions!(home, [ConfirmDelete, CancelDelete]);
 
-/// The kimchi mark: a napa stem with a chili leaf and a green-onion leaf.
+/// The kimchi mark (`brand/mark.svg`, written by `scripts/gen-mark.py`): a napa stalk cut square,
+/// a sharp leaf and a dithered one, in the text colour.
 pub fn mark(size: f32, cx: &App) -> AnyElement {
-    let t = cx.theme();
-    let stem = if t.is_dark() { parse_color("#FFF4E6") } else { parse_color("#e9dccb") };
-    let layer = |name: &str, c| svg().path(icon_path(name)).absolute().inset_0().size(px(size)).text_color(c);
-    div()
-        .relative()
-        .flex_none()
-        .size(px(size))
-        .child(layer("mark-stem", stem))
-        .child(layer("mark-chili", t.accent))
-        .child(layer("mark-leaf", parse_color("#A6CF5E")))
-        .into_any_element()
+    svg().path(icon_path("mark")).flex_none().size(px(size)).text_color(cx.theme().text).into_any_element()
 }
 
 /// Canvas formats a new project can start with: (aspect, name, width, height).
@@ -277,7 +268,6 @@ impl Home {
                             .gap(px(7.))
                             .h(px(28.))
                             .px(px(11.))
-                            .rounded_full()
                             .glass(t.glass1)
                             .text_size(px(sz::SM))
                             .text_color(t.text_2)
@@ -314,12 +304,11 @@ impl Home {
             .gap(px(6.))
             .h(px(26.))
             .px(px(9.))
-            .rounded_full()
             .text_size(px(sz::SM))
             .font_weight(FontWeight::SEMIBOLD)
             .cursor_pointer()
             .role(gpui::Role::RadioButton)
-            .when(selected, |d| d.bg(t.accent_soft).text_color(t.accent_text).border_1().border_color(t.accent_ring))
+            .when(selected, |d| d.bg(t.accent).text_color(t.text_on_accent).border_1().border_color(t.accent))
             .when(!selected, |d| d.text_color(t.text_2).border_1().border_color(gpui::transparent_black()).hover(|s| s.bg(t.hover).text_color(t.text)))
     }
 
@@ -329,7 +318,7 @@ impl Home {
         let mode_chip = |this: &Self, video: bool, cx: &mut Context<Self>| {
             this.chip(if video { "mode-video" } else { "mode-image" }, this.video == video, cx)
                 .aria_label(if video { "Video" } else { "Image" })
-                .child(icon(if video { "film" } else { "image" }).text_color(if this.video == video { cx.theme().accent_text } else { cx.theme().text_2 }))
+                .child(icon(if video { "film" } else { "image" }).text_color(if this.video == video { cx.theme().text_on_accent } else { cx.theme().text_2 }))
                 .child(if video { "Video" } else { "Image" })
                 .on_click(cx.listener(move |h, _, _, cx| {
                     h.video = video;
@@ -348,18 +337,17 @@ impl Home {
                 .text_size(px(sz::XS))
                 .aria_label(tip.clone())
                 .tooltip(move |_, cx| crate::ui::tooltip(tip.clone(), cx))
-                .child(div().w(px(rw)).h(px(10.)).rounded(px(2.)).border_1().border_color(if self.format == i { t.accent_text } else { t.text_2 }))
+                .child(div().w(px(rw)).h(px(10.)).border_1().border_color(if self.format == i { t.text_on_accent } else { t.text_2 }))
                 .child(*aspect)
                 .on_click(on_click)
         });
         let formats: Vec<_> = formats.collect();
-        div()
+        let panel = div()
             .w_full()
             .p(px(12.))
             .flex()
             .flex_col()
             .gap(px(10.))
-            .rounded(px(sz::R_XL))
             .glass(t.glass2)
             .shadow(t.glass_shadow())
             .text_size(px(sz::MD))
@@ -392,7 +380,6 @@ impl Home {
                                 div()
                                     .id("create-generate")
                                     .size(px(34.))
-                                    .rounded_full()
                                     .flex()
                                     .items_center()
                                     .justify_center()
@@ -406,17 +393,18 @@ impl Home {
                                     .child(icon("arrow-up").size(px(16.)).text_color(t.text_on_accent)),
                             ),
                     ),
-            )
-            .into_any_element()
+            );
+        // Framed like a viewfinder.
+        div().relative().w_full().child(crate::ui::grain::brackets(14., -9., t.text_3)).child(panel).into_any_element()
     }
 
-    fn card(&self, i: usize, p: &ProjectSummary, width: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn card(&self, i: usize, p: &ProjectSummary, width: f32, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let id = p.id;
         let cover_h = width * 10. / 16.;
         let menu_p = p.clone();
         let menu_p2 = p.clone();
-        let pill = |c| div().absolute().bottom(px(8.)).px(px(7.)).py(px(2.)).rounded_full().text_size(px(10.5)).bg(parse_color("rgba(10,8,7,0.72)")).text_color(c);
+        let pill = |c| div().absolute().bottom(px(8.)).px(px(7.)).py(px(2.)).text_size(px(10.5)).bg(gpui::black().opacity(0.72)).text_color(c);
         div()
             .id(gpui::ElementId::from(SharedString::from(format!("project-{id}"))))
             .group("project-card")
@@ -445,20 +433,29 @@ impl Home {
                     .group_hover("project-card", |s| s.border_color(t.accent_ring))
                     .child(match &p.cover {
                         Some(path) => img(PathBuf::from(path)).size_full().object_fit(ObjectFit::Cover).into_any_element(),
-                        None => div().size_full().flex().items_center().justify_center().opacity(0.3).child(mark(28., cx)).into_any_element(),
+                        // No picture yet: a dithered fade and the mark.
+                        None => div()
+                            .relative()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(div().absolute().top_0().left_0().child(crate::ui::grain::dither(480., 300., 0.22, window, cx)))
+                            .child(div().opacity(0.4).child(mark(28., cx)))
+                            .into_any_element(),
                     })
                     .when(p.generated_count > 0, |d| {
                         d.child(
-                            pill(t.accent_text)
+                            pill(gpui::white())
                                 .left(px(8.))
                                 .flex()
                                 .items_center()
                                 .gap(px(4.))
-                                .child(icon("sparkles").size(px(11.)).text_color(t.accent_text))
+                                .child(icon("sparkles").size(px(11.)).text_color(gpui::white()))
                                 .child(p.generated_count.to_string()),
                         )
                     })
-                    .when(p.duration > 0.0, |d| d.child(pill(parse_color("#d8d2cc")).right(px(8.)).font_family(MONO).child(short(p.duration))))
+                    .when(p.duration > 0.0, |d| d.child(pill(crate::theme::grey(0.85)).right(px(8.)).font_family(MONO).child(short(p.duration))))
                     .child(
                         div()
                             .id(("card-menu", i))
@@ -466,12 +463,11 @@ impl Home {
                             .top(px(8.))
                             .right(px(8.))
                             .size(px(26.))
-                            .rounded_full()
                             .flex()
                             .items_center()
                             .justify_center()
-                            .bg(parse_color("rgba(10,8,7,0.72)"))
-                            .text_color(parse_color("#f2ede8"))
+                            .bg(gpui::black().opacity(0.72))
+                            .text_color(gpui::white())
                             .opacity(0.)
                             .group_hover("project-card", |s| s.opacity(1.))
                             .role(gpui::Role::Button)
@@ -482,7 +478,7 @@ impl Home {
                                 cx.stop_propagation();
                                 h.project_menu(&menu_p2, e.position(), cx)
                             }))
-                            .child(icon("ellipsis").text_color(parse_color("#f2ede8"))),
+                            .child(icon("ellipsis").text_color(gpui::white())),
                     ),
             )
             .child(
@@ -497,14 +493,14 @@ impl Home {
             .into_any_element()
     }
 
-    fn projects(&self, main_w: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn projects(&self, main_w: f32, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let list = self.store.read(cx).library.clone();
         let cols = (((main_w + GAP_X) / (CARD_MIN + GAP_X)).floor() as usize).max(1);
         let card_w = ((main_w - GAP_X * (cols as f32 - 1.)) / cols as f32).floor();
         let mut cards = Vec::with_capacity(list.len());
         for (i, p) in list.iter().enumerate() {
-            cards.push(self.card(i, p, card_w, cx));
+            cards.push(self.card(i, p, card_w, window, cx));
         }
         div()
             .w_full()
@@ -522,16 +518,18 @@ impl Home {
             .when(list.is_empty(), |d| {
                 d.child(
                     div()
+                        .relative()
+                        .overflow_hidden()
                         .py(px(28.))
                         .flex()
                         .flex_col()
                         .items_center()
                         .gap(px(8.))
-                        .rounded(px(sz::R_LG))
                         .border_1()
                         .border_dashed()
                         .border_color(t.line_strong)
                         .text_color(t.text_2)
+                        .child(div().absolute().top_0().left_0().child(crate::ui::grain::dither(MAIN_MAX, 120., 0.16, window, cx)))
                         .child(icon("clapperboard").size(px(20.)).text_color(t.text_2))
                         .child("Nothing here yet. Your projects will show up here."),
                 )
@@ -623,7 +621,7 @@ impl Render for Home {
         };
         let header = self.header(window, cx);
         let composer = self.composer(cx);
-        let projects = self.projects(main_w, cx);
+        let projects = self.projects(main_w, window, cx);
         div()
             .relative()
             .size_full()
@@ -648,7 +646,19 @@ impl Render for Home {
                                 .flex()
                                 .flex_col()
                                 .items_center()
-                                .child(div().font_family(MONO).text_size(px(sz::XS)).text_color(t.text_2).child(greeting.to_uppercase()))
+                                // A pixel, the greeting and the hour, like a slate.
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .font_family(MONO)
+                                        .text_size(px(sz::XS))
+                                        .text_color(t.text_2)
+                                        .child(div().size(px(6.)).bg(t.text))
+                                        .child(greeting.to_uppercase())
+                                        .child(div().text_color(t.text_3).child(Local::now().format("// %H:%M").to_string())),
+                                )
                                 .child(
                                     div()
                                         .mt(px(10.))
@@ -661,7 +671,8 @@ impl Render for Home {
                                         .line_height(gpui::relative(1.05))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .child("What are we")
-                                        .child(div().italic().text_color(t.accent_text).child("making"))
+                                        // The word in negative: a block of ink.
+                                        .child(div().px(px(10.)).bg(t.accent).text_color(t.text_on_accent).child("making"))
                                         .child("today?"),
                                 )
                                 .child(composer)
@@ -699,7 +710,6 @@ impl Render for Home {
                             .gap(px(8.))
                             .px(px(14.))
                             .py(px(8.))
-                            .rounded_full()
                             .glass(t.glass2)
                             .text_size(px(sz::SM))
                             .text_color(t.warning)

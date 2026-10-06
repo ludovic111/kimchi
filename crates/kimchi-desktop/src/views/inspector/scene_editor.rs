@@ -164,7 +164,6 @@ impl Inspector {
                 .id(SharedString::from(format!("item-{item}")))
                 .px(px(7.))
                 .py(px(2.))
-                .rounded(px(4.))
                 .cursor_pointer()
                 .border_1()
                 .text_size(px(sz::XS))

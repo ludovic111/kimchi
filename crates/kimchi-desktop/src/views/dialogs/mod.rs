@@ -40,7 +40,7 @@ impl Dialogs {
     }
 }
 
-/// The frame every dialog sits in: scrim, centred tier-3 glass panel. Clicking the scrim closes it.
+/// The frame every dialog sits in: scrim, centred tier-3 panel inside corner brackets. Clicking the scrim closes it.
 /// The scrim fades in and the panel rises into place. The panel is never larger than the window
 /// (`layout::dialog_size`): a dialog lays itself out as a column whose middle part scrolls
 /// (`flex_1().min_h_0()` and a scroll), so its header and buttons stay in view at any size.
@@ -64,6 +64,8 @@ pub fn modal(name: &'static str, width: f32, content: impl IntoElement, top: boo
         .overflow_hidden()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(div().flex_1().min_h_0().flex().flex_col().child(content));
+    // Framed like a viewfinder, the marks just outside the panel.
+    let framed = div().relative().child(panel).child(crate::ui::grain::brackets(14., -9., t.text_3));
     let scrim = div()
         .id("modal-scrim")
         .occlude()
@@ -75,7 +77,7 @@ pub fn modal(name: &'static str, width: f32, content: impl IntoElement, top: boo
         .when(top, |d| d.items_start().pt(px(top_gap)))
         .when(!top, |d| d.items_center())
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.store().update(cx, |s, cx| s.close_dialog(cx)))
-        .child(motion::enter(panel, (name, 1usize), motion::BASE, (0., if top { -6. } else { 10. })));
+        .child(motion::enter(framed, (name, 1usize), motion::BASE, (0., if top { -6. } else { 10. })));
     deferred(motion::fade(scrim, (name, 0usize), motion::FAST)).with_priority(1).into_any_element()
 }
 

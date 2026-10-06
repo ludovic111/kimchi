@@ -222,13 +222,12 @@ impl SettingsDialog {
                             .mt(px(2.))
                             .size(px(14.))
                             .flex_none()
-                            .rounded_full()
                             .border_1()
                             .border_color(if on { t.accent } else { t.line_strong })
                             .flex()
                             .items_center()
                             .justify_center()
-                            .when(on, |d| d.child(div().size(px(7.)).rounded_full().bg(t.accent))),
+                            .when(on, |d| d.child(div().size(px(7.)).bg(t.accent))),
                     )
                     .child(
                         div()
@@ -251,7 +250,7 @@ impl SettingsDialog {
                                             .child(crate::ui::logo(kind.id(), px(16.)))
                                             .child(div().font_weight(FontWeight::SEMIBOLD).when(on, |d| d.text_color(t.accent_text)).child(kind.label())),
                                     )
-                                    .child(div().flex().items_center().gap(px(5.)).text_size(px(sz::XS)).text_color(state_color).when(!state.is_empty(), |d| d.child(div().size(px(6.)).rounded_full().bg(state_color))).child(state)),
+                                    .child(div().flex().items_center().gap(px(5.)).text_size(px(sz::XS)).text_color(state_color).when(!state.is_empty(), |d| d.child(div().size(px(6.)).bg(state_color))).child(state)),
                             )
                             .when_some(status.map(|s| s.message.clone()), |d, m| d.child(div().text_size(px(sz::SM)).text_color(t.text_2).child(m))),
                     )
@@ -283,7 +282,6 @@ impl SettingsDialog {
                     .id(("ollama-model", i))
                     .px(px(8.))
                     .py(px(2.))
-                    .rounded_full()
                     .border_1()
                     .font_family(MONO)
                     .text_size(px(sz::XS))

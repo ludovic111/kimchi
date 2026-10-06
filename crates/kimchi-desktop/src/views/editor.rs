@@ -11,10 +11,10 @@ use serde_json::json;
 
 use crate::actions::{self as act, tip};
 use crate::store::{Dialog, LeftTab, MenuItem, Store, StoreExt};
-use crate::theme::{ActiveTheme, MONO, size as sz};
+use crate::theme::{ActiveTheme, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::layout::{self, Breakpoint, Dock, Open, Prefs, Solved};
-use crate::ui::{Button, GlassExt, drag, icon, motion};
+use crate::ui::{Button, GlassExt, drag, group, icon, motion, tool};
 use crate::views::{agent_panel::AgentPanel, inspector::Inspector, jobs::JobsPopover, left_panel::LeftPanel, preview::PreviewView, studio::Studio, timeline::Timeline};
 
 pub const TOPBAR_H: f32 = layout::TOPBAR_H;
@@ -420,12 +420,10 @@ impl Editor {
         let update = s.update.clone();
         let studio_open = self.studio.read(cx).is_open();
         let name: gpui::SharedString = p.as_ref().map(|p| p.name.clone()).unwrap_or_default().into();
-        let spec = p.as_ref().map(|p| format!("{}×{} · {}fps", p.settings.width, p.settings.height, p.settings.fps)).unwrap_or_default();
         let fullscreen = window.is_fullscreen();
         let controls = crate::ui::window_controls(window, cx);
         let (left_on, insp_on) = (self.left_shown(), self.solved.inspector != Dock::Hidden);
         let this = cx.entity();
-        let sep = || div().flex_none().w(px(1.)).h(px(18.)).mx(px(4.)).bg(t.line);
         let name_tip = name.clone();
         div()
             .id("top-bar")
@@ -497,14 +495,14 @@ impl Editor {
                             .child(name)
                             .into_any_element(),
                     })
-                    .when(bp >= Breakpoint::Wide, |d| d.child(div().flex_none().font_family(MONO).text_size(px(sz::XS)).text_color(t.text_3).child(spec))),
+
             )
             .child(
                 div()
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(2.))
+                    .gap(px(8.))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .when_some(update.available.clone().filter(|_| bp > Breakpoint::Compact), |d, v| {
                         let button = if update.ready {
@@ -520,62 +518,91 @@ impl Editor {
                             let url = update.download_url.clone().unwrap_or_else(|| kimchi_control::update::RELEASES_URL.into());
                             Button::new("update", format!("kimchi {v} is out")).small().with_icon("external-link").on_click(move |_, _, cx| cx.open_url(&url))
                         };
-                        d.child(div().mr(px(6.)).child(button))
+                        d.child(button)
                     })
-                    .child(Button::icon("undo", "undo-2", tip("Undo", &act::Undo)).disabled(!can_undo).on_click(|_, _, cx| cx.store().update(cx, |s, cx| crate::app::undo_redo(s, true, cx))))
-                    .child(Button::icon("redo", "redo-2", tip("Redo", &act::Redo)).disabled(!can_redo).on_click(|_, _, cx| cx.store().update(cx, |s, cx| crate::app::undo_redo(s, false, cx))))
-                    .child(sep())
+                    // What goes together is boxed together: history, the AI, the panels, the app.
+                    .child(group(
+                        [
+                            Button::icon("undo", "undo-2", tip("Undo", &act::Undo)).small().flush().disabled(!can_undo).on_click(|_, _, cx| cx.store().update(cx, |s, cx| crate::app::undo_redo(s, true, cx))).into_any_element(),
+                            Button::icon("redo", "redo-2", tip("Redo", &act::Redo)).small().flush().disabled(!can_redo).on_click(|_, _, cx| cx.store().update(cx, |s, cx| crate::app::undo_redo(s, false, cx))).into_any_element(),
+                        ],
+                        cx,
+                    ))
                     .child(
                         div()
                             .relative()
-                            .child({
-                                let label = if active > 0 { format!("{active} generating") } else { "Generations".into() };
-                                let b = if bp >= Breakpoint::Wide || active > 0 && bp > Breakpoint::Compact {
-                                    Button::new("jobs", label).small().ghost().with_icon(if active > 0 { "loader-circle" } else { "sparkles" })
-                                } else {
-                                    Button::icon("jobs", if active > 0 { "loader-circle" } else { "sparkles" }, label)
-                                };
-                                b.selected(jobs_open).color(if active > 0 { t.accent_text } else { t.text_2 }).tooltip(tip("Generations", &act::ToggleJobs)).on_click(|_, _, cx| {
-                                    cx.store().update(cx, |s, cx| s.set_jobs_open(!s.jobs_open, cx))
-                                })
-                            })
+                            .child(group(
+                                [
+                                    {
+                                        let label = if active > 0 { format!("{active} generating") } else { "Generations".into() };
+                                        let labelled = bp >= Breakpoint::Wide || active > 0 && bp > Breakpoint::Compact;
+                                        let b = if labelled { Button::new("jobs", label).with_icon(if active > 0 { "loader-circle" } else { "sparkles" }) } else { Button::icon("jobs", if active > 0 { "loader-circle" } else { "sparkles" }, label) };
+                                        b.small().flush().selected(jobs_open).tooltip(tip("Generations", &act::ToggleJobs)).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_jobs_open(!s.jobs_open, cx))).into_any_element()
+                                    },
+                                    tool("agent", "bot", "Agent", bp > Breakpoint::Compact, tip("Agent", &act::ToggleAgent))
+                                        .selected(agent_open)
+                                        .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_agent_open(!s.agent_open, cx)))
+                                        .into_any_element(),
+                                ],
+                                cx,
+                            ))
                             .when(jobs_open, |d| d.child(self.jobs.clone())),
                     )
-                    .child(
-                        Button::icon("agent", "bot", tip("Agent", &act::ToggleAgent))
-                            .selected(agent_open)
-                            .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_agent_open(!s.agent_open, cx))),
-                    )
+                    // The layout switches say what is shown by their brightness, not by lighting up:
+                    // they are almost always on.
                     .when(!studio_open, |d| {
                         let (e1, e2) = (this.clone(), this.clone());
-                        d.child(sep())
-                            .child(Button::icon("toggle-left", "panel-left", tip(if left_on { "Hide the left panel" } else { "Show the left panel" }, &act::ToggleLeftPanel)).selected(left_on).on_click(move |_, _, cx| {
-                                e1.update(cx, |e, cx| e.toggle_left(cx))
-                            }))
-                            .child(Button::icon("toggle-inspector", "panel-right", tip(if insp_on { "Hide the inspector" } else { "Show the inspector" }, &act::ToggleInspector)).selected(insp_on).on_click(move |_, _, cx| {
-                                e2.update(cx, |e, cx| e.toggle_inspector(cx))
-                            }))
+                        d.child(group(
+                            [
+                                Button::icon("toggle-left", "panel-left", tip(if left_on { "Hide the left panel" } else { "Show the left panel" }, &act::ToggleLeftPanel))
+                                    .small()
+                                    .flush()
+                                    .color(if left_on { t.text } else { t.text_3 })
+                                    .on_click(move |_, _, cx| e1.update(cx, |e, cx| e.toggle_left(cx)))
+                                    .into_any_element(),
+                                Button::icon("toggle-inspector", "panel-right", tip(if insp_on { "Hide the inspector" } else { "Show the inspector" }, &act::ToggleInspector))
+                                    .small()
+                                    .flush()
+                                    .color(if insp_on { t.text } else { t.text_3 })
+                                    .on_click(move |_, _, cx| e2.update(cx, |e, cx| e.toggle_inspector(cx)))
+                                    .into_any_element(),
+                            ],
+                            cx,
+                        ))
                     })
-                    .child(sep())
-                    .when(bp > Breakpoint::Compact, |d| {
-                        d.child(
+                    .child(group(
+                        [
                             // Until a provider is set up, models and keys are what settings are for.
-                            Button::icon("settings", "settings", tip("Settings", &act::OpenSettings)).on_click(|_, _, cx| {
-                                cx.store().update(cx, |s, cx| {
-                                    let section = (!s.providers.iter().any(|p| p.ready)).then(|| "models".to_string());
-                                    s.open_dialog(Dialog::Settings { section }, cx)
-                                })
+                            (bp > Breakpoint::Compact).then(|| {
+                                Button::icon("settings", "settings", tip("Settings", &act::OpenSettings))
+                                    .small()
+                                    .flush()
+                                    .on_click(|_, _, cx| {
+                                        cx.store().update(cx, |s, cx| {
+                                            let section = (!s.providers.iter().any(|p| p.ready)).then(|| "models".to_string());
+                                            s.open_dialog(Dialog::Settings { section }, cx)
+                                        })
+                                    })
+                                    .into_any_element()
                             }),
-                        )
-                    })
-                    .child(Button::icon("more", "ellipsis", "More: palette, shortcuts, help…").on_click(move |e, _, cx| {
-                        let at = e.position();
-                        this.update(cx, |ed, cx| ed.more_menu(gpui::point(at.x - px(200.), at.y + px(18.)), bp, cx))
-                    }))
+                            Some(
+                                Button::icon("more", "ellipsis", "More: palette, shortcuts, help…")
+                                    .small()
+                                    .flush()
+                                    .on_click(move |e, _, cx| {
+                                        let at = e.position();
+                                        this.update(cx, |ed, cx| ed.more_menu(gpui::point(at.x - px(200.), at.y + px(18.)), bp, cx))
+                                    })
+                                    .into_any_element(),
+                            ),
+                        ]
+                        .into_iter()
+                        .flatten(),
+                        cx,
+                    ))
                     .child(
-                        div().ml(px(6.)).child(
+                        div().ml(px(4.)).child(
                             Button::new("export", "Export")
-                                .small()
                                 .primary()
                                 .with_icon("share")
                                 .tooltip(tip("Export", &act::Export))

@@ -1,5 +1,5 @@
 //! A titled group of controls that folds away: the inspector's sections. The header (a
-//! chevron, the title in caps, and optional controls on the right) toggles it; while it is
+//! chevron, the title in caps running into a hairline, and optional controls on the right) toggles it; while it is
 //! folded, children added to it are dropped, so callers build it the same way either way.
 
 use std::rc::Rc;
@@ -64,7 +64,9 @@ impl RenderOnce for Fold {
             .role(gpui::Role::Button)
             .aria_label(self.title.clone())
             .child(icon(if open { "chevron-down" } else { "chevron-right" }).size(px(12.)))
-            .child(div().flex_1().min_w_0().truncate().font_family(MONO).text_size(px(10.5)).child(self.title.to_uppercase()))
+            .child(div().flex_shrink(1.).min_w_0().truncate().font_family(MONO).text_size(px(10.5)).child(self.title.to_uppercase()))
+            // The title runs into a hairline, as on a drawing.
+            .child(div().flex_1().min_w(px(8.)).h(px(1.)).mx(px(4.)).bg(t.line))
             .child(div().flex().flex_none().items_center().gap(px(2.)).on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()).children(self.trailing))
             .when_some(toggle, |d, f| d.on_click(move |_, w, cx| f(w, cx)));
         div()

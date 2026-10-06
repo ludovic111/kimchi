@@ -310,7 +310,7 @@ impl SettingsDialog {
         match &self.section {
             Section::Provider(_) => ("Models & keys".into(), format!("Keys are stored in your {} and only sent to the provider they belong to.", crate::ui::keychain_name())),
             Section::Agent => ("Agent".into(), "The built-in agent, and what any agent or MCP client may do in kimchi.".into()),
-            Section::Appearance => ("Appearance".into(), "Light or dark, and the glass of the chrome.".into()),
+            Section::Appearance => ("Appearance".into(), "Light or dark, and how see-through the chrome is.".into()),
             Section::Audio => ("Audio".into(), "Speakers and microphone, loudness, plugins, and ryolune.".into()),
             Section::Updates => ("Updates".into(), format!("kimchi {} · signed updates from GitHub Releases", kimchi_control::update::CURRENT)),
             Section::Diagnostics => ("Diagnostics".into(), "Logs and crash reports, to understand what went wrong.".into()),
@@ -348,7 +348,7 @@ impl SettingsDialog {
             .child(toggle_row(
                 "appearance-transparency",
                 "Transparency",
-                "Panels, menus and dialogs are glass over a tinted backdrop. Off: every surface is opaque.",
+                "Panels, menus and dialogs let the grain behind them show through. Off: every surface is opaque.",
                 a.transparency,
                 true,
                 move |on, _, cx| {
@@ -440,7 +440,7 @@ impl SettingsDialog {
                             .flex()
                             .items_center()
                             .gap(px(10.))
-                            .child(div().flex_1().h(px(6.)).rounded_full().bg(t.line).overflow_hidden().child(div().h_full().w(relative(p.clamp(0.0, 1.0) as f32)).bg(t.accent)))
+                            .child(div().flex_1().h(px(6.)).bg(t.line).overflow_hidden().child(div().h_full().w(relative(p.clamp(0.0, 1.0) as f32)).bg(t.accent)))
                             .child(div().font_family(MONO).text_size(px(sz::XS)).child(format!("{}%", (p * 100.0).round()))),
                     )
                 })
@@ -774,10 +774,9 @@ fn toggle_row(id: &'static str, title: &str, desc: &str, on: bool, enabled: bool
                 .flex_none()
                 .w(px(30.))
                 .h(px(18.))
-                .rounded_full()
                 .p(px(2.))
                 .bg(if on { t.accent } else { t.line_strong })
-                .child(div().size(px(14.)).rounded_full().bg(gpui::white()).when(on, |d| d.ml(px(12.)))),
+                .child(div().size(px(14.)).bg(if on { t.text_on_accent } else { t.text }).when(on, |d| d.ml(px(12.)))),
         )
         .into_any_element()
 }
@@ -800,7 +799,7 @@ fn note(ic: &'static str, text: &str, color: gpui::Hsla, cx: &App) -> AnyElement
 /// grey), off (empty ring).
 fn status_dot(p: &kimchi_gen::ProviderStatus, cx: &App) -> AnyElement {
     let t = cx.theme();
-    let d = div().size(px(8.)).flex_none().rounded_full();
+    let d = div().size(px(8.)).flex_none();
     if !p.settings.enabled {
         d.border_1().border_color(t.line_strong).into_any_element()
     } else if p.ready {

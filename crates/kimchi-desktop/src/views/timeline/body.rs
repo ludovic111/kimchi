@@ -37,7 +37,7 @@ use crate::playback::Playback;
 use crate::store::{MAX_PPS, MIN_PPS, Store, StoreExt};
 use crate::theme::{ActiveTheme, MONO, parse_color, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
-use crate::ui::{Button, drag, icon};
+use crate::ui::{Button, drag};
 
 /// How long the agent's (or MCP / CLI) new clips keep the accent.
 const AGENT_MARK: Duration = Duration::from_secs(60);
@@ -798,13 +798,13 @@ impl TimelineBody {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .pl(px(12.))
-                    .pr(px(6.))
+                    .pl(px(10.))
+                    .pr(px(4.))
                     .border_r_1()
                     .border_color(t.line)
                     .child(crate::ui::caps("Tracks", cx))
                     .child(crate::ui::stop(
-                        Button::icon("add-track", "plus", "Add a track").small().on_click(|e, _, cx| menus::add_track_menu(e.position(), cx)),
+                        Button::new("add-track", "Add track").with_icon("plus").small().ghost().tooltip("Add a video or audio track").on_click(|e, _, cx| menus::add_track_menu(e.position(), cx)),
                     )),
             )
             .child(
@@ -894,10 +894,10 @@ impl TimelineBody {
                     return None;
                 }
                 let id = track.id;
-                let group: gpui::SharedString = format!("track-{id}").into();
                 let toggle = |name: &'static str, on: bool, icon_on: &'static str, icon_off: &'static str, tip_on: &'static str, tip_off: &'static str, key: &'static str| {
                     Button::icon(name, if on { icon_on } else { icon_off }, if on { tip_on } else { tip_off })
                         .small()
+                        .variant(crate::ui::Variant::Secondary)
                         .selected(on)
                         .on_click(move |_, _, cx| cx.store().update(cx, |s, cx| s.run("track.update", json!({ "trackId": id, key: !on }), cx)))
                 };
@@ -912,38 +912,59 @@ impl TimelineBody {
                             .truncate()
                             .text_size(px(sz::SM))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(t.text_2)
+                            .text_color(t.text)
                             // The whole name when the header cuts it short.
                             .tooltip(move |_, cx| crate::ui::tooltip(full.clone(), cx))
                             .child(track.name.clone())
                             .into_any_element()
                     }
                 };
-                let any_on = track.muted || track.hidden || track.locked || track.mix.solo || track.mix.armed;
+                // V1 is the bottom picture track, A1 the top sound track (as editors count them).
+                let code = if track.captions {
+                    "CC".to_string()
+                } else if track.kind == TrackKind::Video {
+                    format!("V{}", p.tracks[i..].iter().filter(|o| o.kind == TrackKind::Video).count())
+                } else {
+                    format!("A{}", p.tracks[..=i].iter().filter(|o| o.kind == TrackKind::Audio).count())
+                };
+                let chip = div()
+                    .flex_none()
+                    .min_w(px(24.))
+                    .h(px(18.))
+                    .px(px(4.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(t.text)
+                    .text_color(t.bg)
+                    .font_family(crate::theme::MONO)
+                    .text_size(px(10.))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child(code);
                 Some(
                     div()
                         .id(ElementId::Uuid(id))
-                        .group(group.clone())
                         .absolute()
                         .left_0()
                         .right_0()
                         .top(px(top + 2.))
                         .h(px(h))
+                        // Two lines: what the track is, then its switches, always in view.
                         .flex()
-                        .items_center()
-                        .gap(px(7.))
-                        .pl(px(12.))
-                        .pr(px(6.))
-                        .rounded_r(px(sz::R_SM))
+                        .flex_col()
+                        .justify_center()
+                        .gap(px(5.))
+                        .pl(px(10.))
+                        .pr(px(14.))
+                        .border_l_2()
+                        .border_color(gpui::transparent_black())
                         .cursor_grab()
-                        .hover(|s| s.bg(t.hover))
-                        .child(icon(if track.captions { "captions" } else if track.kind == TrackKind::Video { "film" } else { "audio-lines" }).text_color(if track.captions { t.accent_text } else { t.text_3 }))
-                        .child(name_el)
+                        .hover(|s| s.bg(t.hover).border_color(t.line_strong))
+                        .child(div().flex().items_center().gap(px(7.)).min_w_0().child(chip).child(name_el))
                         .child(crate::ui::stop(
                             div()
                                 .flex()
-                                .opacity(if any_on { 1. } else { 0.55 })
-                                .group_hover(group, |s| s.opacity(1.))
+                                .gap(px(3.))
                                 .when(track.kind == TrackKind::Video, |d| d.child(toggle("hide", track.hidden, "eye-off", "eye", "Show", "Hide", "hidden")))
                                 .child(toggle("mute", track.muted, "volume-x", "volume-2", "Unmute", "Mute", "muted"))
                                 .children(sound::header_toggles(track, cx))
@@ -972,6 +993,8 @@ impl TimelineBody {
         let (scroll_x, scroll_y) = (self.scroll_x, self.scroll_y);
         let visible_row = |top: f32, h: f32| top - scroll_y + h >= 0. && top - scroll_y <= view_h + 4.;
 
+        // Where the project ends: past it, the lanes are hatched.
+        let end_x = (p.duration() * pps - scroll_x) as f32;
         // Lane backgrounds: click to move the playhead (and clear the selection), right-click for the gap menu.
         let lane_els: Vec<_> = p
             .tracks
@@ -989,6 +1012,9 @@ impl TimelineBody {
                     .rounded(px(sz::R_SM + 2.))
                     .bg(t.bg_sunken)
                     .when(tr.locked, |d| d.bg(pattern_slash(t.line, 1., 8.)))
+                    .when(!tr.locked && end_x < view_w as f32, |d| {
+                        d.child(div().absolute().top_0().bottom_0().right_0().left(px(end_x.max(0.))).border_l_1().border_color(t.line_strong).bg(pattern_slash(t.line_strong, 1., 6.)))
+                    })
                     .on_mouse_down(MouseButton::Right, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
                         let time = this.time_at(e.position.x, cx);
                         menus::lane_menu(this, i, time, e.position, cx);
@@ -1112,7 +1138,7 @@ impl TimelineBody {
             Some(Drag::Marquee { from, to, started: true, .. }) => {
                 let (x0, x1) = ((from.0.min(to.0) * pps - scroll_x) as f32, (from.0.max(to.0) * pps - scroll_x) as f32);
                 let (y0, y1) = (from.1.min(to.1) - scroll_y, from.1.max(to.1) - scroll_y);
-                Some(div().absolute().left(px(x0)).top(px(y0)).w(px(x1 - x0)).h(px(y1 - y0)).rounded(px(3.)).border_1().border_color(t.accent).bg(t.accent_soft.opacity(0.5)))
+                Some(div().absolute().left(px(x0)).top(px(y0)).w(px(x1 - x0)).h(px(y1 - y0)).border_1().border_color(t.accent).bg(t.accent_soft.opacity(0.5)))
             }
             _ => None,
         };

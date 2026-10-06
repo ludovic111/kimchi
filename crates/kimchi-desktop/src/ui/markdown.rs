@@ -170,7 +170,7 @@ pub fn render(md: &str, cx: &App) -> AnyElement {
                 .flex()
                 .gap(px(8.))
                 .pl(px(2.))
-                .child(div().flex_none().mt(px(7.)).size(px(4.)).rounded_full().bg(t.text_3))
+                .child(div().flex_none().mt(px(7.)).size(px(4.)).bg(t.text_3))
                 .child(div().flex_1().min_w_0().child(styled(text, cx)))
                 .into_any_element(),
             Block::Numbered(n, text) => div()

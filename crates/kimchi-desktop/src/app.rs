@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, BoxShadow, Context, Entity, ExternalPaths, FocusHandle, Focusable, Hsla, MouseButton, PathPromptOptions, Render,
-    Subscription, Window, div, point, prelude::*, px,
+    AnyElement, App, AppContext as _, Context, Entity, ExternalPaths, FocusHandle, Focusable, MouseButton, PathPromptOptions, Render,
+    Subscription, Window, div, prelude::*, px,
 };
 use kimchi_control::{CmdResult, Session, ToastKind, UiCall};
 use serde_json::{Value, json};
@@ -833,28 +833,12 @@ impl Workspace {
         });
     }
 
-    fn backdrop(&self, cx: &App) -> AnyElement {
+    fn backdrop(&self, window: &Window, cx: &App) -> AnyElement {
         let t = cx.theme();
-        let glow = |c: Hsla, x: f32, y: f32, r: f32| {
-            div().absolute().left(px(x)).top(px(y)).size(px(r)).rounded_full().shadow(vec![BoxShadow {
-                color: c.opacity(t.aurora_strength),
-                offset: point(px(0.), px(0.)),
-                blur_radius: px(r * 0.9),
-                spread_radius: px(r * 0.25),
-                inset: false,
-            }])
-        };
-        // `.ls-backdrop`: the page colour with two soft glows of kimchi's colour. With the native
-        // window blur behind it, the page colour stays slightly translucent.
+        // The page colour under grain and two corners of dithered light. With the native window
+        // blur behind it, the page colour stays slightly translucent.
         let bg = if t.transparent { t.bg.opacity(if t.is_dark() { 0.95 } else { 0.93 }) } else { t.bg };
-        div()
-            .absolute()
-            .inset_0()
-            .overflow_hidden()
-            .bg(bg)
-            .child(glow(t.aurora_a, -180., -220., 520.))
-            .child(glow(t.aurora_b, 1100., 520., 460.))
-            .into_any_element()
+        crate::ui::grain::backdrop(bg, window, cx)
     }
 }
 
@@ -1066,7 +1050,7 @@ impl Render for Workspace {
             .font_family(crate::theme::SANS)
             .text_size(px(sz::BASE))
             .text_color(t.text)
-            .child(self.backdrop(cx))
+            .child(self.backdrop(window, cx))
             .child(if has_project { self.editor.clone().into_any_element() } else { self.home.clone().into_any_element() })
             .child(self.dialogs.clone())
             .when_some(menu, |d, m| d.child(views::overlays::context_menu(m, cx)))
@@ -1089,7 +1073,6 @@ impl Render for Workspace {
                                 .h(px(36.))
                                 .glass(t.glass2)
                                 .shadow(t.glass_shadow())
-                                .rounded_full()
                                 .px(px(16.))
                                 .flex()
                                 .items_center()

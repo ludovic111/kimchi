@@ -98,7 +98,6 @@ pub fn controls(id_prefix: &str, clip: Id, st: &RenderState, cx: &App) -> AnyEle
             .flex_none()
             .px(px(7.))
             .py(px(2.))
-            .rounded_full()
             .border_1()
             .border_color(color.opacity(0.5))
             .text_size(px(sz::XS))
@@ -109,7 +108,7 @@ pub fn controls(id_prefix: &str, clip: Id, st: &RenderState, cx: &App) -> AnyEle
         RenderState::Rendering(p, render) => {
             let render = render.clone();
             row = row
-                .child(div().w(px(60.)).h(px(4.)).rounded_full().bg(t.line_strong).child(div().h_full().rounded_full().bg(t.accent).w(px(60. * *p as f32))))
+                .child(div().w(px(60.)).h(px(4.)).bg(t.line_strong).child(div().h_full().bg(t.accent).w(px(60. * *p as f32))))
                 .child(Button::new(id("cancel"), "Cancel render").small().with_icon("x").on_click(move |_, _, cx| {
                     let render = render.clone();
                     cx.store().update(cx, |s, cx| s.run("motion.cancelRender", json!({ "renderId": render }), cx))

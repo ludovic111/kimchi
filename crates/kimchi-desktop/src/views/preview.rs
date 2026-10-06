@@ -26,7 +26,9 @@ use crate::ui::{Button, drag, icon, smpte};
 
 /// Largest frame the preview asks for (pixels, longest side).
 const MAX_RENDER: f32 = 1280.;
-const TRANSPORT_H: f32 = 44.;
+const TRANSPORT_H: f32 = 48.;
+/// The viewer's title bar, as tall as the timeline's.
+const HEADER_H: f32 = crate::views::timeline::geom::TOOLBAR_H;
 
 /// Where a layer sits on the canvas, in project pixels (mirrors the export graph).
 #[derive(Clone, Copy, Debug)]
@@ -474,7 +476,6 @@ impl PreviewView {
         let s = self.store.read(cx);
         let fps = s.fps();
         let (now, total, playing, looping, shuttle) = (pb.playhead, s.duration(), pb.moving(), pb.looping, pb.shuttle);
-        let scale_pct = s.project.as_ref().map(|p| (self.stage(p).1 * 100.0).round() as i32).unwrap_or(100);
         let pb_entity = self.playback.clone();
         let seek = move |time: f64| {
             let pb = pb_entity.clone();
@@ -491,6 +492,31 @@ impl PreviewView {
         let width = f32::from(self.viewport.get().size.width);
         let (narrow, tiny) = (width < 560., width < 420.);
         let side = || div().flex_1().min_w_0().flex().items_center().overflow_hidden();
+        let play = div()
+            .id("tp-play")
+            .h_full()
+            .w(px(52.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(t.accent)
+            .text_color(t.text_on_accent)
+            .cursor_pointer()
+            .hover(|s| s.bg(t.accent_hover))
+            .active(|s| s.opacity(0.85))
+            .tooltip(move |_, cx| crate::ui::tooltip(tip(if playing { "Pause" } else { "Play" }, &act::PlayPause), cx))
+            .on_click(move |_, _, cx| pb_toggle.update(cx, |p, cx| p.toggle(cx)))
+            .child(icon(if playing { "pause" } else { "play" }).size(px(16.)).text_color(t.text_on_accent));
+        let mut buttons = vec![];
+        if !tiny {
+            buttons.push(Button::icon("tp-start", "skip-back", tip("Go to start", &act::GoToStart)).flush().on_click(seek(0.0)).into_any_element());
+        }
+        buttons.push(Button::icon("tp-prev", "step-back", tip("Previous frame", &act::StepBack)).flush().on_click(step(-1.0)).into_any_element());
+        buttons.push(play.into_any_element());
+        buttons.push(Button::icon("tp-next", "step-forward", tip("Next frame", &act::StepForward)).flush().on_click(step(1.0)).into_any_element());
+        if !tiny {
+            buttons.push(Button::icon("tp-end", "skip-forward", tip("Go to end", &act::GoToEnd)).flush().on_click(seek(total)).into_any_element());
+        }
         div()
             .id("transport")
             .debug_selector(|| "transport".into())
@@ -499,57 +525,65 @@ impl PreviewView {
             .flex()
             .items_center()
             .gap(px(8.))
-            .px(px(12.))
+            .px(px(14.))
             .border_t_1()
             .border_color(t.line)
             .child(
                 side()
-                    .gap(px(6.))
-                    .font_family(MONO)
-                    .text_size(px(sz::SM))
-                    .whitespace_nowrap()
-                    .child(div().flex_none().text_color(if playing || shuttle != 0. { t.accent_text } else { t.text }).child(smpte(now, fps)))
-                    .when(!narrow, |d| d.child(div().text_color(t.text_3).child(format!("/ {}", smpte(total, fps)))))
-                    .when(shuttle != 0., |d| d.child(div().flex_none().text_color(t.accent_text).child(crate::views::timeline::rate_label(shuttle)))),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(2.))
-                    .when(!tiny, |d| d.child(Button::icon("tp-start", "skip-back", tip("Go to start", &act::GoToStart)).on_click(seek(0.0))))
-                    .child(Button::icon("tp-prev", "step-back", tip("Previous frame", &act::StepBack)).on_click(step(-1.0)))
-                    .child(
-                        div()
-                            .id("tp-play")
-                            .size(px(34.))
-                            .mx(px(4.))
-                            .rounded_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(t.accent)
-                            .text_color(t.text_on_accent)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(t.accent_hover))
-                            .active(|s| s.opacity(0.85))
-                            .tooltip(move |_, cx| crate::ui::tooltip(tip(if playing { "Pause" } else { "Play" }, &act::PlayPause), cx))
-                            .on_click(move |_, _, cx| pb_toggle.update(cx, |p, cx| p.toggle(cx)))
-                            .child(icon(if playing { "pause" } else { "play" }).size(px(16.)).text_color(t.text_on_accent)),
-                    )
-                    .child(Button::icon("tp-next", "step-forward", tip("Next frame", &act::StepForward)).on_click(step(1.0)))
-                    .when(!tiny, |d| d.child(Button::icon("tp-end", "skip-forward", tip("Go to end", &act::GoToEnd)).on_click(seek(total)))),
-            )
-            .child(
-                side()
-                    .justify_end()
+                    .items_baseline()
                     .gap(px(8.))
-                    .child(Button::icon("tp-loop", "repeat", tip(if looping { "Loop: on" } else { "Loop: off" }, &act::ToggleLoop)).selected(looping).on_click(move |_, _, cx| {
-                        pb_loop.update(cx, |p, cx| p.set_looping(!p.looping, cx))
-                    }))
-                    .when(!narrow, |d| d.child(div().flex_none().font_family(MONO).text_size(px(sz::XS)).text_color(t.text_3).child(format!("{scale_pct}%")))),
+                    .font_family(MONO)
+                    .whitespace_nowrap()
+                    .child(div().flex_none().text_size(px(sz::MD)).text_color(if playing || shuttle != 0. { t.accent_text } else { t.text }).child(smpte(now, fps)))
+                    .when(!narrow, |d| d.child(div().text_size(px(sz::XS)).text_color(t.text_3).child(format!("/ {}", smpte(total, fps)))))
+                    .when(shuttle != 0., |d| d.child(div().flex_none().text_size(px(sz::XS)).text_color(t.accent_text).child(crate::views::timeline::rate_label(shuttle)))),
             )
+            .child(crate::ui::group(buttons, cx))
+            .child(
+                side().justify_end().child(
+                    crate::ui::group(
+                        [crate::ui::tool("tp-loop", "repeat", "Loop", !narrow, tip(if looping { "Loop: on" } else { "Loop: off" }, &act::ToggleLoop))
+                            .selected(looping)
+                            .on_click(move |_, _, cx| pb_loop.update(cx, |p, cx| p.set_looping(!p.looping, cx)))
+                            .into_any_element()],
+                        cx,
+                    ),
+                ),
+            )
+    }
+
+    /// The viewer's title bar, as the side panels have theirs: what is shown and at what size.
+    fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let s = self.store.read(cx);
+        let spec = s.project.as_ref().map(|p| format!("{}×{} · {} fps", p.settings.width, p.settings.height, p.settings.fps));
+        let scale_pct = s.project.as_ref().map(|p| (self.stage(p).1 * 100.0).round() as i32);
+        let width = f32::from(self.viewport.get().size.width);
+        div()
+            .id("viewer-header")
+            .h(px(HEADER_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .px(px(14.))
+            .border_b_1()
+            .border_color(t.line)
+            .child(crate::ui::panel_title("Viewer"))
+            .when(width >= 360., |d| d.children(spec.map(|spec| div().min_w_0().truncate().font_family(MONO).text_size(px(sz::XS)).text_color(t.text_3).child(spec))))
+            .child(div().flex_1())
+            .children(scale_pct.map(|pct| {
+                div()
+                    .flex_none()
+                    .px(px(6.))
+                    .py(px(1.))
+                    .border_1()
+                    .border_color(t.line_strong)
+                    .font_family(MONO)
+                    .text_size(px(sz::XS))
+                    .text_color(t.text_2)
+                    .child(format!("{pct}%"))
+            }))
     }
 }
 
@@ -578,7 +612,7 @@ impl Render for PreviewView {
             let (left, top) = (b.origin.x - vp.origin.x, b.origin.y - vp.origin.y);
             let layers = self.layers(p, playhead);
             let bg = crate::theme::parse_color(&p.settings.background);
-            let mut el = div().absolute().left(left).top(top).w(b.size.width).h(b.size.height).bg(bg).rounded(px(4.)).overflow_hidden().border_1().border_color(t.line_strong).shadow(t.glass_shadow());
+            let mut el = div().absolute().left(left).top(top).w(b.size.width).h(b.size.height).bg(bg).overflow_hidden().border_1().border_color(t.line_strong).shadow(t.glass_shadow());
             if let Some(image) = self.image.clone() {
                 el = el.child(img(image).absolute().inset_0().size_full().object_fit(ObjectFit::Fill));
             }
@@ -605,7 +639,7 @@ impl Render for PreviewView {
                         .child(icon("sparkles").size(px(22.)).text_color(t.accent_text))
                         .child(div().text_size(px(sz::MD)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).text_center().child(prompt.clone()))
                         .child(div().text_size(px(sz::SM)).text_color(t.text_2).child(format!("{model_name} · {msg}")))
-                        .child(div().w(px(180.)).h(px(4.)).rounded_full().bg(t.line_strong).child(div().h_full().rounded_full().bg(t.accent).w(px(180. * frac.clamp(0.02, 1.0))))),
+                        .child(div().w(px(180.)).h(px(4.)).bg(t.line_strong).child(div().h_full().bg(t.accent).w(px(180. * frac.clamp(0.02, 1.0))))),
                 );
             }
             // The selected clip's box with its scale handles.
@@ -625,7 +659,6 @@ impl Render for PreviewView {
                             .left(px(w * hx - 5.))
                             .top(px(h * hy - 5.))
                             .size(px(10.))
-                            .rounded(px(2.))
                             .bg(gpui::white())
                             .border_1()
                             .border_color(t.accent)
@@ -647,6 +680,7 @@ impl Render for PreviewView {
             .size_full()
             .flex()
             .flex_col()
+            .child(self.header(cx))
             .child(
                 div()
                     .id("preview-viewport")

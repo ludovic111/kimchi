@@ -6,7 +6,7 @@ use kimchi_core::{Asset, Clip, Id, MIN_CLIP, Project, Track, TrackKind};
 
 pub const HEADER_W: f32 = 172.;
 pub const RULER_H: f32 = 30.;
-pub const TOOLBAR_H: f32 = 42.;
+pub const TOOLBAR_H: f32 = 44.;
 /// Space between two lanes (each lane sits 2 px into its row).
 pub const TRACK_GAP: f32 = 4.;
 /// Snap distance, in screen pixels.

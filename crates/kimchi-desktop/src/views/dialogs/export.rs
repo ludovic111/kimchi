@@ -490,7 +490,6 @@ impl ExportDialog {
                 .child(
                     div()
                         .size(px(44.))
-                        .rounded_full()
                         .flex()
                         .items_center()
                         .justify_center()
@@ -519,7 +518,7 @@ impl ExportDialog {
         }
         if e.done {
             return base
-                .child(div().size(px(44.)).rounded_full().flex().items_center().justify_center().bg(t.success.opacity(0.16)).child(icon("check").size(px(20.)).text_color(t.success)))
+                .child(div().size(px(44.)).flex().items_center().justify_center().bg(t.success.opacity(0.16)).child(icon("check").size(px(20.)).text_color(t.success)))
                 .child(div().font_weight(FontWeight::SEMIBOLD).child("Exported"))
                 .child(path)
                 .into_any_element();
@@ -541,12 +540,11 @@ impl ExportDialog {
                 .id("export-progress")
                 .w_full()
                 .h(px(6.))
-                .rounded_full()
                 .bg(t.line)
                 .overflow_hidden()
                 .role(gpui::Role::ProgressIndicator)
                 .aria_label(SharedString::from(format!("Exporting, {pct}%")))
-                .child(div().h_full().w(relative(e.progress.clamp(0.0, 1.0) as f32)).rounded_full().bg(t.accent)),
+                .child(div().h_full().w(relative(e.progress.clamp(0.0, 1.0) as f32)).bg(t.accent)),
         )
         .child(path)
         .children(encoder)

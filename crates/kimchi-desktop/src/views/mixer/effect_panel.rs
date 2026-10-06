@@ -362,7 +362,6 @@ impl Render for EffectPanel {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded_full()
                     .bg(if bypassed { t.bg_sunken } else { t.accent_soft })
                     .text_color(if bypassed { t.text_3 } else { t.accent_text })
                     .cursor_pointer()

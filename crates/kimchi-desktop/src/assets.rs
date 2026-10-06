@@ -22,9 +22,18 @@ impl AssetSource for Assets {
     }
 }
 
-/// Registers Manrope and IBM Plex Mono (shared with the text renderer in kimchi-media).
+/// The interface face (`theme::SANS`), Chakra Petch (OFL, `fonts/chakrapetch/OFL.txt`).
+const INTERFACE_FONTS: [&[u8]; 4] = [
+    include_bytes!("../fonts/chakrapetch/ChakraPetch-Regular.ttf"),
+    include_bytes!("../fonts/chakrapetch/ChakraPetch-Medium.ttf"),
+    include_bytes!("../fonts/chakrapetch/ChakraPetch-SemiBold.ttf"),
+    include_bytes!("../fonts/chakrapetch/ChakraPetch-Bold.ttf"),
+];
+
+/// Registers the interface face and the fonts shared with the text renderer in kimchi-media
+/// (Manrope, IBM Plex Mono…).
 pub fn load_fonts(cx: &mut App) {
-    let fonts: Vec<Cow<'static, [u8]>> = kimchi_media::text::bundled_fonts().into_iter().map(Cow::Borrowed).collect();
+    let fonts: Vec<Cow<'static, [u8]>> = INTERFACE_FONTS.into_iter().chain(kimchi_media::text::bundled_fonts()).map(Cow::Borrowed).collect();
     if let Err(e) = cx.text_system().add_fonts(fonts) {
         tracing::warn!("couldn't load the bundled fonts: {e}");
     }

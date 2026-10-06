@@ -83,7 +83,6 @@ impl GeneratePanel {
                     div()
                         .flex_none()
                         .size(px(24.))
-                        .rounded(px(7.))
                         .flex()
                         .items_center()
                         .justify_center()

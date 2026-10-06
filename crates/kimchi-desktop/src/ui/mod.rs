@@ -3,6 +3,7 @@
 
 pub mod drag;
 pub mod fold;
+pub mod grain;
 pub mod input;
 pub mod layout;
 pub mod logos;
@@ -100,6 +101,35 @@ pub trait GlassExt: Styled + Sized {
 }
 impl<T: Styled> GlassExt for T {}
 
+/// Height of a [`group`] of tools.
+pub const GROUP_H: f32 = 30.;
+
+/// Tools that belong together in one box, a hairline between each (`Button::flush` inside).
+/// Toolbars are made of these: what goes together is boxed together.
+pub fn group(items: impl IntoIterator<Item = AnyElement>, cx: &App) -> Div {
+    let t = cx.theme();
+    let mut d = div().flex().flex_none().items_center().h(px(GROUP_H)).border_1().border_color(t.line_strong).bg(t.bg_sunken.opacity(0.35));
+    for (i, el) in items.into_iter().enumerate() {
+        if i > 0 {
+            d = d.child(div().flex_none().w(px(1.)).h_full().bg(t.line));
+        }
+        d = d.child(el);
+    }
+    d
+}
+
+/// A tool in a [`group`]: icon and label, or the icon alone where room is short (the tooltip
+/// still names it).
+pub fn tool(id: impl Into<ElementId>, icon: &'static str, label: &'static str, labelled: bool, tip: impl Into<SharedString>) -> Button {
+    let b = if labelled { Button::new(id, label).with_icon(icon) } else { Button::icon(id, icon, label) };
+    b.small().flush().tooltip(tip)
+}
+
+/// A toolbar's region title, as the side panels title theirs ("Media", "Viewer", "Timeline").
+pub fn panel_title(text: impl Into<SharedString>) -> Div {
+    div().flex_none().text_size(px(sz::BASE)).font_weight(FontWeight::SEMIBOLD).child(text.into())
+}
+
 /// Section heading in caps (IBM Plex Mono, as the design system asks for labels in caps).
 pub fn caps(text: impl Into<SharedString>, cx: &App) -> Div {
     div().font_family(MONO).text_size(px(10.5)).text_color(cx.theme().text_2).child(text.into().to_uppercase())
@@ -142,6 +172,8 @@ pub struct Button {
     disabled: bool,
     selected: bool,
     full: bool,
+    /// Inside a [`group`]: as tall as the group, no border of its own.
+    flush: bool,
     tooltip: Option<SharedString>,
     on_click: Option<ClickHandler>,
     color: Option<Hsla>,
@@ -159,6 +191,7 @@ impl Button {
             disabled: false,
             selected: false,
             full: false,
+            flush: false,
             tooltip: None,
             on_click: None,
             color: None,
@@ -208,6 +241,14 @@ impl Button {
         self.selected = s;
         self
     }
+    /// Sits in a [`group`] (quiet, as tall as the group, the group draws the box).
+    pub fn flush(mut self) -> Self {
+        self.flush = true;
+        if self.variant == Variant::Secondary {
+            self.variant = Variant::Ghost;
+        }
+        self
+    }
     pub fn full_width(mut self) -> Self {
         self.full = true;
         self
@@ -231,15 +272,18 @@ impl RenderOnce for Button {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let t = cx.theme().clone();
         let icon_only = self.label.is_none();
-        let h = if self.small { 24. } else { 30. };
+        let h = if self.flush { GROUP_H - 2. } else if self.small { 24. } else { 30. };
         let (bg, fg, border, hover) = match self.variant {
             Variant::Primary => (t.accent, t.text_on_accent, t.accent, t.accent_hover),
             Variant::Secondary => (t.hover, t.text, t.line_strong, t.pressed),
             Variant::Ghost => (gpui::transparent_black(), t.text_2, gpui::transparent_black(), t.hover),
             Variant::Danger => (t.danger.opacity(0.14), t.danger, t.danger.opacity(0.35), t.danger.opacity(0.22)),
         };
-        let fg = if self.selected && self.variant == Variant::Ghost { t.accent_text } else { self.color.unwrap_or(fg) };
-        let bg = if self.selected { t.accent_soft } else { bg };
+        // A selected button is lit: inverted, paper on ink, like a chosen segment.
+        let lit = self.selected && self.variant != Variant::Primary;
+        let fg = if lit { t.text_on_accent } else { self.color.unwrap_or(fg) };
+        let (bg, hover) = if lit { (t.accent, t.accent_hover) } else { (bg, hover) };
+        let border = if lit { t.accent } else { border };
         let mut b = div()
             .id(self.id)
             .flex()
@@ -261,7 +305,9 @@ impl RenderOnce for Button {
             .font_weight(if self.variant == Variant::Primary { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
             .when_some(self.icon, |d, i| d.child(icon(i).text_color(fg)))
             .when_some(self.label, |d, l| d.child(div().min_w_0().truncate().child(l)))
-            .when_some(self.icon_after, |d, i| d.child(icon(i).text_color(fg)));
+            .when_some(self.icon_after, |d, i| d.child(icon(i).text_color(fg)))
+            // The primary action stands on a hard shadow.
+            .when(self.variant == Variant::Primary && !self.disabled, |d| d.shadow(t.chip_shadow()));
         if self.disabled {
             b = b.opacity(0.45).cursor_not_allowed();
         } else {
@@ -338,7 +384,8 @@ pub fn segmented<T: Clone + PartialEq + 'static>(
                 .rounded(px(sz::R_SM))
                 .text_size(px(sz::SM))
                 .cursor_pointer()
-                .when(selected, |d| d.bg(t.accent_soft).text_color(t.accent_text).font_weight(FontWeight::SEMIBOLD))
+                // The choice is inverted: ink on paper becomes paper on ink.
+                .when(selected, |d| d.bg(t.accent).text_color(t.text_on_accent).font_weight(FontWeight::SEMIBOLD))
                 .when(!selected, |d| d.text_color(t.text_2).hover(|s| s.bg(t.hover)))
                 .child(div().min_w_0().truncate().child(label))
                 .on_click(move |_, w, cx| on_change(&v, w, cx))
@@ -363,11 +410,10 @@ pub fn switch(id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool
                 .flex_none()
                 .w(px(30.))
                 .h(px(18.))
-                .rounded_full()
                 .p(px(2.))
                 .bg(if on { t.accent } else { t.line_strong })
                 // A new id per state, so the knob slides each time it flips.
-                .child(div().size(px(14.)).rounded_full().bg(gpui::white()).with_animation(
+                .child(div().size(px(14.)).bg(if on { t.text_on_accent } else { t.text }).with_animation(
                     ElementId::Name(if on { "knob-on" } else { "knob-off" }.into()),
                     motion::ease(motion::FAST),
                     move |d, k| d.ml(px(if on { 12. * k } else { 12. * (1. - k) })),

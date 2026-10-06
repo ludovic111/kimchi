@@ -97,7 +97,6 @@ impl GeneratePanel {
                         .top(px(5.))
                         .right(px(5.))
                         .size(px(20.))
-                        .rounded_full()
                         .flex()
                         .items_center()
                         .justify_center()
