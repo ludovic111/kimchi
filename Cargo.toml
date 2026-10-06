@@ -18,6 +18,7 @@ kimchi-control = { path = "crates/kimchi-control" }
 kimchi-agent = { path = "crates/kimchi-agent" }
 kimchi-cli = { path = "crates/kimchi-cli" }
 kimchi-captions = { path = "crates/kimchi-captions" }
+kimchi-interop = { path = "crates/kimchi-interop" }
 
 anyhow = "1"
 async-trait = "0.1"
