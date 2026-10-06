@@ -40,6 +40,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - name: Read access to the private ryolune engine
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.RYOLUNE_DEPLOY_KEY }}
+      - name: Fetch ryolune over SSH
+        shell: bash
+        run: |
+          git config --global url."ssh://git@github.com/ludovic111/ryolune".insteadOf "https://github.com/ludovic111/ryolune"
+          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
       - name: Scripts parse
         run: for f in scripts/*.sh; do bash -n "$f"; done
