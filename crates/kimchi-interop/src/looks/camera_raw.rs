@@ -60,7 +60,6 @@ pub struct Profile {
     pub name: String,
     /// It keeps its colours in a table (`LookTable`, `RGBTable`, `Table_…`).
     pub table: bool,
-    pub amount: Option<f64>,
 }
 
 /// `+0.35` / `-12` with a sign, two decimals at most.
@@ -235,7 +234,7 @@ pub fn read_xmp(path: &Path, text: &str) -> Result<Vec<LookFile>> {
             let table = std::iter::once(desc).chain(desc.descendants()).any(|e| {
                 e.attrs.iter().any(|(k, _)| is_table_key(k)) || is_table_key(&e.name)
             });
-            Profile { name, table, amount: desc.attr("crs:Amount").and_then(|a| a.parse().ok()) }
+            Profile { name, table }
         });
         // A profile preset (no settings of its own, only crs:Look and its table).
         let mut report = Report::new("xmp");
@@ -330,8 +329,8 @@ pub fn read_lrtemplate(path: &Path, text: &str) -> Result<Vec<LookFile>> {
     };
     let name = text_of(t.get("title")).or_else(|| text_of(t.get("internalName"))).unwrap_or_else(|| stem(path));
     let profile = match (settings.get("CameraProfile"), settings.get("LookName")) {
-        (_, Some(l)) => Some(Profile { name: lua::zstr(&l.text()), table: true, amount: None }),
-        (Some(p), None) => Some(Profile { name: p.text(), table: false, amount: None }),
+        (_, Some(l)) => Some(Profile { name: lua::zstr(&l.text()), table: true }),
+        (Some(p), None) => Some(Profile { name: p.text(), table: false }),
         _ => None,
     };
     if t.get("type").is_some_and(|ty| !matches!(ty, lua::Value::Str(s) if s == "Develop")) {

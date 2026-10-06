@@ -43,6 +43,8 @@ enum Range {
 
 pub struct ExportDialog {
     store: Entity<Store>,
+    /// The export preset picked (`export.presets`); the choices below go on top of it.
+    preset: Option<&'static str>,
     format: usize,
     quality: &'static str,
     /// auto, hardware or software.
@@ -91,6 +93,7 @@ impl ExportDialog {
         cx.bind_keys([KeyBinding::new("enter", Confirm, Some("ExportDialog"))]);
         Self {
             store,
+            preset: None,
             format: 0,
             quality: "standard",
             encoder: "auto",
@@ -174,7 +177,10 @@ impl ExportDialog {
         let Some(p) = self.store.read(cx).project.clone() else { return (1920, 1080) };
         let (w, h) = (p.settings.width as f64, p.settings.height as f64);
         let short = match self.size {
-            Size::Project => return (p.settings.width, p.settings.height),
+            Size::Project => {
+                let fitted = self.preset.and_then(|id| kimchi_control::commands::export::preset(id).ok()).and_then(|pr| kimchi_control::commands::export::preset_size(pr, &p.settings));
+                return fitted.unwrap_or((p.settings.width, p.settings.height));
+            }
             Size::P720 => 720.0,
             Size::P1080 => 1080.0,
             Size::P2160 => 2160.0,
@@ -208,6 +214,9 @@ impl ExportDialog {
         let (id, _, ext, _) = FORMATS[self.format];
         let (w, h) = self.dims(cx);
         let mut params = json!({ "format": id, "quality": self.quality });
+        if let Some(p) = self.preset {
+            params["preset"] = json!(p);
+        }
         // Sound only: its file type (and stems go into a folder, without an extension).
         let ext = if id == "audio" { self.sound.extension().unwrap_or("") } else { ext };
         if id == "audio"
@@ -330,7 +339,13 @@ impl ExportDialog {
                 .aria_label(SharedString::from(format!("{name}: {desc}")))
                 .when(on, |d| d.bg(t.accent_soft).border_color(t.accent))
                 .when(!on, |d| d.bg(t.hover).border_color(t.line).hover(|s| s.bg(t.pressed)))
-                .on_click(set(|this, v| this.format = v.as_u64().unwrap_or(0) as usize, json!(i)))
+                .on_click(set(
+                    |this, v| {
+                        this.format = v.as_u64().unwrap_or(0) as usize;
+                        this.preset = None;
+                    },
+                    json!(i),
+                ))
                 .child(div().font_weight(FontWeight::BOLD).when(on, |d| d.text_color(t.accent_text)).child(*name))
                 .child(div().text_size(px(sz::XS)).text_color(t.text_2).child(*desc))
         });
@@ -441,10 +456,12 @@ impl ExportDialog {
             }
         };
         let bad_range = self.range == Range::Custom && self.to.read(cx).value() <= self.from.read(cx).value() + 0.01;
+        let presets = self.presets(cx);
         div()
             .flex()
             .flex_col()
             .gap(px(14.))
+            .child(presets)
             .child(div().grid().grid_cols(3).gap(px(8.)).children(cards))
             .when(!audio, |d| d.child(row("Resolution", size.into_any_element())).child(row("Frame rate", fps.into_any_element())))
             .child(row("Range", range.into_any_element()))
@@ -477,6 +494,76 @@ impl ExportDialog {
             .when(has_captions && !audio, |d| d.child(row("Captions", captions.into_any_element())))
             .children(sound_rows.into_iter().map(|(label, el)| row(label, el)))
             .child(row("Loudness", crate::views::mixer::export_loudness(cx)))
+            .into_any_element()
+    }
+
+    /// Picks an export preset: its format, quality and sound file type fill the choices below.
+    fn pick_preset(&mut self, id: Option<&'static str>) {
+        self.preset = id;
+        let Some(p) = id.and_then(|id| kimchi_control::commands::export::preset(id).ok()) else { return };
+        let format = if p.format == "wav" { "audio" } else { p.format };
+        if let Some(i) = FORMATS.iter().position(|f| f.0 == format) {
+            self.format = i;
+        }
+        self.quality = match p.quality {
+            "draft" => "draft",
+            "high" => "high",
+            _ => "standard",
+        };
+        self.size = Size::Project;
+        self.fps = None;
+        if format == "audio" {
+            self.sound.format = match (p.format, p.audio_format) {
+                ("wav", _) => "wav",
+                (_, Some("mp3")) => "mp3",
+                (_, Some("flac")) => "flac",
+                _ => "aac",
+            };
+        }
+    }
+
+    /// The preset chips by group, with what the picked one does.
+    fn presets(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.theme().clone();
+        let weak = cx.entity().downgrade();
+        let chip = |id: Option<&'static str>, label: &'static str, tip: &'static str, on: bool| {
+            let weak = weak.clone();
+            Button::new(SharedString::from(format!("export-preset-{}", id.unwrap_or("none"))), label).small().selected(on).tooltip(tip).on_click(move |_, _, cx| {
+                weak.update(cx, |this, cx| {
+                    this.pick_preset(id);
+                    cx.notify();
+                })
+                .ok();
+            })
+        };
+        let mut groups: Vec<(&'static str, Vec<&'static kimchi_control::commands::export::Preset>)> = vec![];
+        for p in kimchi_control::commands::export::PRESETS {
+            match groups.iter_mut().find(|(g, _)| *g == p.group) {
+                Some((_, v)) => v.push(p),
+                None => groups.push((p.group, vec![p])),
+            }
+        }
+        let picked = self.preset.and_then(|id| kimchi_control::commands::export::preset(id).ok());
+        let project = self.store.read(cx).project.clone();
+        let warning = match (picked, project) {
+            (Some(p), Some(project)) => match (p.size, kimchi_control::commands::export::preset_size(p, &project.settings)) {
+                (kimchi_control::commands::export::PresetSize::Fit(bw, bh), Some((w, h))) if (w, h) != (bw, bh) => {
+                    Some(format!("This project is {}×{}, so it comes out {w}×{h}. A {bw}×{bh} project fills the frame.", project.settings.width, project.settings.height))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(caps("Preset".to_string(), cx))
+            .child(div().flex().flex_wrap().gap(px(4.)).child(chip(None, "Custom", "Choose everything below yourself", picked.is_none())).children(groups.into_iter().flat_map(|(_, ps)| {
+                ps.into_iter().map(|p| chip(Some(p.id), p.label, p.note, self.preset == Some(p.id))).collect::<Vec<_>>()
+            })))
+            .children(picked.map(|p| div().text_size(px(sz::XS)).text_color(t.text_2).child(p.note)))
+            .children(warning.map(|w| div().text_size(px(sz::XS)).text_color(t.warning).child(w)))
             .into_any_element()
     }
 

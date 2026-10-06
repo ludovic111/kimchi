@@ -793,7 +793,7 @@ pub static SPECS: &[Spec] = &[
     // ---- export -----------------------------------------------------------
     query("export.formats", "Export formats, qualities and encoder choices.", &[]),
     query("export.encoders", "The video encoders this computer uses per format: hardware ones (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API, Media Foundation) that passed a test encode, and the CPU ones.", &[]),
-    query("export.presets", "Ready-made export settings: for YouTube, TikTok, Instagram, X, Vimeo, LinkedIn, and for other editors and finishing (ProRes, DNxHR, image sequences), with the format, size, frame rate and quality each sets.", &[]),
+    query("export.presets", "Ready-made export settings: for YouTube, Shorts / TikTok / Reels, Instagram, X, Vimeo, LinkedIn, GIF, for other editors and broadcast (ProRes), and podcast or broadcast sound, with the format, size (fitted to the open project), frame rate, quality and loudness each sets. export.start takes one as preset.", &[]),
     edit("export.start", "Render the open project to a file: every frame drawn as in the preview (titles, animation, motion graphics, 3D), encoded on the GPU or CPU with the mixed sound. Returns an export id; follow it with export.status, or pass wait.", &[
         req("path", String, "Destination file (a folder for image sequences). The extension should match the format."),
         opt("preset", String, "Start from an export preset (export.presets); the other parameters given go on top."),

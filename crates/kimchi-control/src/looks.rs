@@ -37,6 +37,16 @@ pub struct LibraryLook {
     pub created_at: DateTime<Utc>,
 }
 
+impl LibraryLook {
+    /// "From a Lightroom / Camera Raw preset", "Saved from a clip".
+    pub fn source_label(&self) -> String {
+        match kimchi_interop::looks::LOOK_FORMATS.iter().find(|f| f.id == self.format) {
+            Some(f) => format!("From a {}", f.label),
+            None => "Saved from a clip".to_string(),
+        }
+    }
+}
+
 /// A look by id or name: built-in or from the library.
 #[derive(Debug, Clone)]
 pub enum Found {

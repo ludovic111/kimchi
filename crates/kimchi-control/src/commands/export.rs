@@ -11,6 +11,10 @@ use crate::session::{CmdResult, ExportStatus, Session, err};
 
 pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
     match cx.spec.name {
+        "export.presets" => {
+            let project = s.project().ok();
+            Ok(json!(PRESETS.iter().map(|p| describe(p, project.as_ref().map(|p| &p.settings))).collect::<Vec<_>>()))
+        }
         "export.formats" => Ok(json!({
             "formats": [
                 { "id": "mp4", "label": "MP4 (H.264 + AAC)", "extension": "mp4", "note": "Plays everywhere." },
@@ -46,6 +50,16 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             }))
         }
         "export.start" => {
+            // A preset's settings first, the parameters given on top.
+            let a = match a.opt_str("preset") {
+                Some(id) => {
+                    let p = preset(id)?;
+                    let mut merged = preset_params(p, &s.project()?.settings);
+                    merged.extend(a.0.clone());
+                    Args(merged)
+                }
+                None => a,
+            };
             let settings = ExportSettings {
                 path: crate::commands::media::path_str(&crate::commands::media::absolute(a.str("path")?)?),
                 format: format(a.opt_str("format").unwrap_or("mp4"))?,
@@ -97,6 +111,143 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             Ok(json!({ "cancelled": id }))
         }
         _ => Err(crate::commands::unhandled(cx)),
+    }
+}
+
+/// How a preset sizes the picture.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PresetSize {
+    /// The project's size.
+    Project,
+    /// The short side at this many pixels, the project's aspect kept.
+    Short(u32),
+    /// As large as fits in this box, the project's aspect kept (a 9:16 box for a 9:16 project
+    /// is filled exactly).
+    Fit(u32, u32),
+}
+
+/// A ready-made export setting.
+#[derive(Debug, Clone, Copy)]
+pub struct Preset {
+    pub id: &'static str,
+    pub label: &'static str,
+    /// Web and social, Editing and finishing, Sound.
+    pub group: &'static str,
+    pub format: &'static str,
+    pub quality: &'static str,
+    pub size: PresetSize,
+    pub fps: Option<f64>,
+    /// LUFS.
+    pub loudness: Option<f64>,
+    /// Sound-only exports' file type.
+    pub audio_format: Option<&'static str>,
+    pub note: &'static str,
+}
+
+#[allow(clippy::too_many_arguments)]
+const fn entry(id: &'static str, label: &'static str, group: &'static str, format: &'static str, quality: &'static str, size: PresetSize, fps: Option<f64>, loudness: Option<f64>, audio_format: Option<&'static str>, note: &'static str) -> Preset {
+    Preset { id, label, group, format, quality, size, fps, loudness, audio_format, note }
+}
+
+const WEB: &str = "Web and social";
+const EDIT: &str = "Editing and finishing";
+const SOUND: &str = "Sound";
+
+/// Every export preset, in the order the dialog shows them.
+pub const PRESETS: &[Preset] = &[
+    entry("youtube-1080p", "YouTube 1080p", WEB, "mp4", "high", PresetSize::Short(1080), None, Some(-14.0), None, "H.264 at 1080p, sound at YouTube's -14 LUFS."),
+    entry("youtube-4k", "YouTube 4K", WEB, "mp4", "high", PresetSize::Short(2160), None, Some(-14.0), None, "H.264 at 2160p: YouTube keeps more detail for 4K uploads."),
+    entry("shorts", "Shorts, TikTok, Reels", WEB, "mp4", "high", PresetSize::Fit(1080, 1920), Some(30.0), Some(-14.0), None, "1080×1920 at 30 fps for a vertical (9:16) project."),
+    entry("instagram-portrait", "Instagram feed 4:5", WEB, "mp4", "high", PresetSize::Fit(1080, 1350), Some(30.0), Some(-14.0), None, "1080×1350 at 30 fps for a 4:5 project."),
+    entry("instagram-square", "Instagram feed square", WEB, "mp4", "high", PresetSize::Fit(1080, 1080), Some(30.0), Some(-14.0), None, "1080×1080 at 30 fps for a square project."),
+    entry("x", "X (Twitter)", WEB, "mp4", "standard", PresetSize::Fit(1920, 1200), Some(30.0), Some(-14.0), None, "H.264 up to 1920 wide at 30 fps: what X plays without re-encoding badly."),
+    entry("vimeo", "Vimeo", WEB, "mp4", "high", PresetSize::Short(1080), None, Some(-16.0), None, "H.264 at 1080p, high quality."),
+    entry("linkedin", "LinkedIn", WEB, "mp4", "standard", PresetSize::Short(1080), Some(30.0), Some(-14.0), None, "H.264 at 1080p, 30 fps."),
+    entry("gif", "GIF", WEB, "gif", "standard", PresetSize::Fit(720, 720), Some(15.0), None, None, "A looping GIF up to 720 px at 15 fps, no sound."),
+    entry("editor", "For Premiere, Resolve or Final Cut", EDIT, "prores", "high", PresetSize::Project, None, None, None, "ProRes 422 HQ at the project's size: every editor opens it."),
+    entry("broadcast", "Broadcast", EDIT, "prores", "high", PresetSize::Project, None, Some(-23.0), None, "ProRes 422 HQ with the sound at -23 LUFS (EBU R 128)."),
+    entry("archive", "Archive", EDIT, "prores", "high", PresetSize::Project, None, None, None, "ProRes 422 HQ at full size and quality, to keep."),
+    entry("podcast", "Podcast audio", SOUND, "audio", "high", PresetSize::Project, None, Some(-16.0), Some("mp3"), "MP3 at -16 LUFS, what podcast apps expect."),
+    entry("podcast-aac", "Podcast audio (AAC)", SOUND, "audio", "high", PresetSize::Project, None, Some(-16.0), Some("aac"), "AAC (M4A) at -16 LUFS."),
+    entry("broadcast-audio", "Broadcast audio", SOUND, "wav", "high", PresetSize::Project, None, Some(-23.0), None, "24-bit WAV at -23 LUFS (EBU R 128)."),
+];
+
+/// The preset with this id or label (case-insensitive).
+pub fn preset(id: &str) -> CmdResult<&'static Preset> {
+    let k = id.trim();
+    PRESETS.iter().find(|p| p.id.eq_ignore_ascii_case(k) || p.label.eq_ignore_ascii_case(k)).ok_or_else(|| {
+        let ids: Vec<&str> = PRESETS.iter().map(|p| p.id).collect();
+        let hint = kimchi_core::closest(k, &ids).map(|c| format!(" Did you mean `{c}`?")).unwrap_or_default();
+        format!("Unknown export preset `{k}`.{hint} Presets: {}.", ids.join(", "))
+    })
+}
+
+/// Even output size for a preset on a canvas of `ps`'s size, `None` for the project's own.
+pub fn preset_size(p: &Preset, ps: &kimchi_core::ProjectSettings) -> Option<(u32, u32)> {
+    let (w, h) = (ps.width.max(1) as f64, ps.height.max(1) as f64);
+    let k = match p.size {
+        PresetSize::Project => return None,
+        PresetSize::Short(short) => short as f64 / w.min(h),
+        PresetSize::Fit(bw, bh) => (bw as f64 / w).min(bh as f64 / h),
+    };
+    let even = |v: f64| (((v * k) / 2.0).round() as u32).max(1) * 2;
+    Some((even(w), even(h)))
+}
+
+/// The `export.start` parameters a preset sets for this project.
+pub fn preset_params(p: &Preset, ps: &kimchi_core::ProjectSettings) -> serde_json::Map<String, serde_json::Value> {
+    let mut m = serde_json::Map::new();
+    m.insert("format".into(), json!(p.format));
+    m.insert("quality".into(), json!(p.quality));
+    if let Some((w, h)) = preset_size(p, ps) {
+        m.insert("width".into(), json!(w));
+        m.insert("height".into(), json!(h));
+    }
+    if let Some(f) = p.fps {
+        m.insert("fps".into(), json!(f));
+    }
+    if let Some(l) = p.loudness {
+        m.insert("loudness".into(), json!(l));
+    }
+    if let Some(f) = p.audio_format {
+        m.insert("audioFormat".into(), json!(f));
+    }
+    m
+}
+
+/// How `export.presets` shows a preset (with the size it gives the open project).
+fn describe(p: &Preset, ps: Option<&kimchi_core::ProjectSettings>) -> serde_json::Value {
+    let mut v = json!({
+        "id": p.id,
+        "label": p.label,
+        "group": p.group,
+        "note": p.note,
+        "extension": extension(p.format, p.audio_format),
+    });
+    if let Some(ps) = ps {
+        let params = preset_params(p, ps);
+        v["params"] = json!(params);
+        if let PresetSize::Fit(bw, bh) = p.size
+            && let Some((w, h)) = preset_size(p, ps)
+            && (w, h) != (bw, bh)
+        {
+            v["warning"] = json!(format!("This project is {}×{}: it comes out {w}×{h}. Make a {bw}×{bh} project (project.setSettings) to fill the frame.", ps.width, ps.height));
+        }
+    } else {
+        v["format"] = json!(p.format);
+    }
+    v
+}
+
+/// The file extension a format (and sound-only file type) is written with.
+pub fn extension(format: &str, audio_format: Option<&str>) -> &'static str {
+    match format {
+        "mp4" | "hevc" => "mp4",
+        "prores" => "mov",
+        "webm" => "webm",
+        "gif" => "gif",
+        "wav" => "wav",
+        _ => audio_format.and_then(|f| AudioFormat::parse(f).ok()).map_or("m4a", |f| f.extension()),
     }
 }
 

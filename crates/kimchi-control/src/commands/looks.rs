@@ -9,7 +9,7 @@ use kimchi_core::effects::LOOKS;
 use kimchi_core::{ClipPatch, Edit};
 use serde_json::{Value, json};
 
-use crate::looks::{Found, Library};
+use crate::looks::Library;
 use crate::registry::{Args, Ctx};
 use crate::resolve;
 use crate::session::{CmdResult, Session};

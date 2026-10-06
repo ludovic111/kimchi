@@ -22,9 +22,7 @@ use tokio_util::sync::CancellationToken;
 use crate::accel::{self, Codec, EncoderChoice, Hardware, Verified};
 use crate::{Caps, MediaError, MediaResult, Tools, process};
 
-/// What an export writes. Every format and what it is for: [`ExportFormat::ALL`] and
-/// [`ExportFormat::info`] (`export/formats.rs`).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportFormat {
     /// H.264 + AAC in MP4. Plays everywhere.
@@ -41,47 +39,13 @@ pub enum ExportFormat {
     Audio,
     /// Audio only, uncompressed (24-bit PCM WAV), e.g. to score the cut in ryolune.
     Wav,
-    /// ProRes 4444 (with the alpha channel when the background is transparent) + PCM in MOV.
-    #[serde(rename = "prores4444", alias = "prores_4444")]
-    Prores4444,
-    /// ProRes 422 LT + PCM in MOV.
-    ProresLt,
-    /// ProRes 422 Proxy + PCM in MOV.
-    ProresProxy,
-    /// Avid DNxHR LB (8-bit 4:2:2, offline quality) in MOV or MXF.
-    DnxhrLb,
-    /// DNxHR SQ (8-bit 4:2:2).
-    DnxhrSq,
-    /// DNxHR HQ (8-bit 4:2:2).
-    DnxhrHq,
-    /// DNxHR HQX (10-bit 4:2:2).
-    DnxhrHqx,
-    /// DNxHR 444 (10-bit 4:4:4).
-    #[serde(rename = "dnxhr_444", alias = "dnxhr444")]
-    Dnxhr444,
-    /// AV1 + AAC in MP4 (or + Opus in WebM, by the file's extension).
-    Av1,
-    /// H.264 + AAC in MOV (QuickTime).
-    #[serde(rename = "mov", alias = "h264_mov")]
-    H264Mov,
-    /// FFV1 (lossless) + FLAC in Matroska: archiving.
-    Ffv1,
-    /// A folder of 8-bit PNG frames (with alpha when the background is transparent) and the
-    /// sound as a WAV beside them.
-    #[serde(rename = "png", alias = "png_sequence")]
-    PngSequence,
-    /// A folder of 16-bit PNG frames.
-    #[serde(rename = "png16", alias = "png16_sequence")]
-    Png16Sequence,
-    /// A folder of TIFF frames.
-    #[serde(rename = "tiff", alias = "tiff_sequence")]
-    TiffSequence,
-    /// A folder of JPEG frames.
-    #[serde(rename = "jpeg", alias = "jpeg_sequence")]
-    JpegSequence,
-    /// A folder of OpenEXR frames (linear light, half float).
-    #[serde(rename = "exr", alias = "exr_sequence")]
-    ExrSequence,
+}
+
+impl ExportFormat {
+    /// Formats with no picture.
+    pub fn is_audio_only(self) -> bool {
+        matches!(self, ExportFormat::Audio | ExportFormat::Wav)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -497,8 +461,6 @@ pub struct Plan {
     pub video: Option<VideoFeed>,
     /// The mix ffmpeg reads (made by [`export`] before it runs the plan), for formats with sound.
     pub mix: Option<MixInput>,
-    /// Image sequences: the output path is a folder holding these.
-    pub sequence: Option<SequenceOutput>,
 }
 
 /// The sound of an export: the mixer's output for `from..to`, raw f32le stereo at `rate`,
@@ -520,16 +482,7 @@ impl Plan {
             args.insert(1, s("-nostdin"));
         }
         args.extend(self.body(script, caps));
-        match &self.sequence {
-            Some(seq) => {
-                args.push(path(&out.join(&seq.frames)));
-                if let Some((sound, file)) = &seq.sound {
-                    args.extend(sound.iter().cloned());
-                    args.push(path(&out.join(file)));
-                }
-            }
-            None => args.push(path(out)),
-        }
+        args.push(path(out));
         args
     }
 
@@ -568,15 +521,9 @@ pub fn build_with_hardware(project: &Project, settings: &ExportSettings, caps: &
         return Err(MediaError::Unsupported("the export range is empty".into()));
     }
     let format = settings.format;
-    format.check(caps).map_err(MediaError::Unsupported)?;
     let (width, height) = output_size(ps, settings);
     let fps = output_fps(ps, settings);
-    // Transparency carries through to formats with an alpha channel when the background is
-    // see-through (`#rrggbbaa` or `transparent`).
-    let alpha = format.info().alpha && transparent(ps);
-    let container = Container::of(format, &settings.path);
     let mut codecs = Codecs::pick(format, settings.quality, caps, hw, settings.encoder, width, height, fps)?;
-    codecs.finish(format, container, alpha);
     let total = to - from;
     let picture = !format.is_audio_only();
     let mut g = Graph { inputs: codecs.device.clone(), count: 0, sources: vec![], chains: vec![] };
@@ -591,50 +538,18 @@ pub fn build_with_hardware(project: &Project, settings: &ExportSettings, caps: &
         g.count = 1;
         g.chains.push(match format {
             ExportFormat::Gif => s("[0:v]split[g0][g1];[g0]palettegen[pal];[g1][pal]paletteuse[vout]"),
-            // RGB formats take the compositor's colours as they are.
-            _ if codecs.rgb => format!("[0:v]{}[vout]", rgb_chain(format, codecs.pix_fmt)),
-            ExportFormat::JpegSequence => format!("[0:v]scale=out_color_matrix=bt709:out_range=pc,format={}[vout]", codecs.pix_fmt),
             _ => format!("[0:v]scale=out_color_matrix=bt709:out_range=tv,format={}", codecs.pix_fmt) + if codecs.upload { ",hwupload[vout]" } else { "[vout]" },
         });
         output.extend([s("-map"), s("[vout]")]);
-        output.extend(codecs.video.iter().cloned());
-        if format != ExportFormat::Gif && !codecs.rgb && !format.is_sequence() {
+        output.extend(codecs.video);
+        if format != ExportFormat::Gif {
             output.extend(["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"].map(s));
         }
     }
     let mut mix = None;
-    let mut sequence = None;
-    if format.is_sequence() {
-        // The frames, then the sound as a WAV in the same folder (when anything is heard).
-        output.extend(codecs.muxer.iter().cloned());
-        output.extend([s("-t"), num(total)]);
-        let name = sequence_name(&settings.path);
-        let frames = format!("{}_%06d.{}", name.replace('%', "%%"), format.info().extension);
-        g.sources = sound_files(project, from, to);
-        let sound = if g.sources.is_empty() {
-            None
-        } else {
-            let rate = Sound::rate(&settings.audio, ps)?;
-            let file = mix_path()?;
-            g.inputs.extend(["-f", "f32le", "-ar"].map(s));
-            g.inputs.extend([rate.to_string(), s("-ac"), s("2"), s("-i"), path(&file)]);
-            let depth = settings.audio.bit_depth.unwrap_or(24);
-            let codec = match depth {
-                16 => "pcm_s16le",
-                32 => "pcm_f32le",
-                _ => "pcm_s24le",
-            };
-            let args = vec![s("-map"), format!("{}:a", g.count), s("-c:a"), s(codec), s("-ar"), rate.to_string(), s("-rf64"), s("auto"), s("-f"), s("wav"), s("-t"), num(total)];
-            g.count += 1;
-            mix = Some(MixInput { path: file, rate, from, to });
-            Some((args, format!("{name}.wav")))
-        };
-        sequence = Some(SequenceOutput { frames, sound });
-        return Ok(Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources, encoder: codecs.encoder, hardware: false, video, mix, sequence });
-    }
     if format != ExportFormat::Gif {
         // The sound: the mixer's output, the last input, encoded as the format wants.
-        let sound = Sound::pick(format, container, settings, ps, caps)?;
+        let sound = Sound::pick(format, settings, ps, caps)?;
         if format.is_audio_only() {
             codecs.muxer = sound.muxer.clone();
         }
@@ -650,67 +565,7 @@ pub fn build_with_hardware(project: &Project, settings: &ExportSettings, caps: &
     }
     output.extend(codecs.muxer);
     output.extend([s("-t"), num(total)]);
-    Ok(Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources, encoder: codecs.encoder, hardware: codecs.hardware && picture, video, mix, sequence })
-}
-
-/// Whether the project's background lets what is behind show through.
-fn transparent(ps: &ProjectSettings) -> bool {
-    crate::render::paint::color(&ps.background).alpha() < 0.999
-}
-
-/// The name a sequence's files share: the folder's.
-fn sequence_name(path: &str) -> String {
-    let name = Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let clean: String = name.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c }).collect();
-    if clean.trim().is_empty() { "frame".into() } else { clean.trim().to_string() }
-}
-
-/// The filters that turn the compositor's 8-bit RGBA into an RGB format's pixels. OpenEXR is
-/// linear light by convention: the sRGB curve comes off first (at 16 bits, then to float).
-fn rgb_chain(format: ExportFormat, pix_fmt: &str) -> String {
-    match format {
-        ExportFormat::ExrSequence => {
-            let lin = "65535*if(lte(val/65535,0.04045),val/65535/12.92,pow((val/65535+0.055)/1.055,2.4))";
-            format!("format=rgba64le,lutrgb=r='{lin}':g='{lin}':b='{lin}',format={pix_fmt}")
-        }
-        _ => format!("format={pix_fmt}"),
-    }
-}
-
-/// Where a format's picture and sound go.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Container {
-    Mp4,
-    Mov,
-    Mxf,
-    Webm,
-    Mkv,
-    Other,
-}
-
-impl Container {
-    fn of(format: ExportFormat, path: &str) -> Container {
-        let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-        match format {
-            ExportFormat::Mp4 | ExportFormat::Hevc => Container::Mp4,
-            ExportFormat::Av1 if ext == "webm" => Container::Webm,
-            ExportFormat::Av1 => Container::Mp4,
-            ExportFormat::Webm => Container::Webm,
-            f if f.is_dnxhr() && ext == "mxf" => Container::Mxf,
-            f if f.is_prores() || f.is_dnxhr() || f == ExportFormat::H264Mov => Container::Mov,
-            ExportFormat::Ffv1 => Container::Mkv,
-            _ => Container::Other,
-        }
-    }
-}
-
-/// A sequence's outputs: the frames' file names, and the sound's options and file name.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SequenceOutput {
-    /// `name_%06d.png`, inside the export's folder.
-    pub frames: String,
-    /// Options and file name of the WAV beside the frames.
-    pub sound: Option<(Vec<String>, String)>,
+    Ok(Plan { inputs: g.inputs, graph: g.chains.join(";\n"), output, duration: total, sources: g.sources, encoder: codecs.encoder, hardware: codecs.hardware && picture, video, mix })
 }
 
 /// A temporary file for an export's mix (raw f32le), in a folder whose path is valid UTF-8.
@@ -750,21 +605,16 @@ struct Sound {
 }
 
 impl Sound {
-    /// The sample rate asked for, else the project's.
-    fn rate(o: &AudioOptions, ps: &ProjectSettings) -> MediaResult<u32> {
-        match o.sample_rate {
-            Some(r) if AUDIO_RATES.contains(&r) => Ok(r),
-            Some(r) => Err(MediaError::Unsupported(format!("audio is exported at 44100, 48000 or 96000 Hz, not {r}"))),
-            None => Ok(ps.sample_rate.clamp(8_000, 192_000)),
-        }
-    }
-
-    fn pick(format: ExportFormat, container: Container, st: &ExportSettings, ps: &ProjectSettings, caps: &Caps) -> MediaResult<Self> {
+    fn pick(format: ExportFormat, st: &ExportSettings, ps: &ProjectSettings, caps: &Caps) -> MediaResult<Self> {
         let o = &st.audio;
         let q = st.quality;
         let bad = |m: String| MediaError::Unsupported(m);
         let missing = |what: &str, lib: &str| bad(format!("this ffmpeg build has no {what} encoder ({lib}); choose another audio format"));
-        let mut rate = Self::rate(o, ps)?;
+        let mut rate = match o.sample_rate {
+            Some(r) if AUDIO_RATES.contains(&r) => r,
+            Some(r) => return Err(bad(format!("audio is exported at 44100, 48000 or 96000 Hz, not {r}"))),
+            None => ps.sample_rate.clamp(8_000, 192_000),
+        };
         let kbps = |draft: u32, standard: u32, high: u32| format!("{}k", o.bitrate_kbps.unwrap_or(by(q, draft, standard, high)).clamp(32, 512));
         let depth = o.bit_depth.unwrap_or(24);
         if ![16, 24, 32].contains(&depth) {
@@ -802,34 +652,20 @@ impl Sound {
         let video_sound = |args: Vec<String>, rate: u32| Ok(Sound { args, muxer: vec![], rate });
         match format {
             ExportFormat::Gif => Err(bad("GIFs have no sound".into())),
-            ExportFormat::Mp4 | ExportFormat::Hevc | ExportFormat::H264Mov => video_sound(aac(kbps(128, 192, 256)), rate),
-            ExportFormat::Av1 if container == Container::Mp4 => video_sound(aac(kbps(128, 192, 256)), rate),
-            f if f.is_prores() || f.is_dnxhr() => {
-                // 16-bit unless asked (what ProRes exports always had); 24-bit for DNxHR, as Avid
-                // expects. MXF wants 48 kHz.
-                let depth = o.bit_depth.unwrap_or(if f.is_dnxhr() { 24 } else { 16 }).min(24);
-                let rate = if container == Container::Mxf { 48_000 } else { rate };
+            ExportFormat::Mp4 | ExportFormat::Hevc => video_sound(aac(kbps(128, 192, 256)), rate),
+            ExportFormat::Prores => {
+                // 16-bit unless asked: what ProRes exports always had.
+                let depth = o.bit_depth.unwrap_or(16).min(24);
                 video_sound(vec![s("-c:a"), s(if depth == 16 { "pcm_s16le" } else { "pcm_s24le" })], rate)
             }
-            ExportFormat::Ffv1 => {
-                let depth = o.bit_depth.unwrap_or(24).min(24);
-                let mut a = vec![s("-c:a"), s("flac"), s("-sample_fmt"), s(if depth == 16 { "s16" } else { "s32" })];
-                if depth == 24 {
-                    a.extend([s("-bits_per_raw_sample"), s("24")]);
-                }
-                video_sound(a, rate)
-            }
-            ExportFormat::Webm | ExportFormat::Av1 => {
+            ExportFormat::Webm => {
                 let args = match caps.pick(&["libopus", "libvorbis", "opus"]).ok_or_else(|| missing("Opus/Vorbis", "libopus"))? {
                     "libvorbis" => vec![s("-c:a"), s("libvorbis"), s("-q:a"), s(by(q, "4", "5", "7"))],
                     _ => opus(kbps(96, 128, 160))?,
                 };
                 video_sound(args, 48_000)
             }
-            f if f.is_sequence() => Err(bad("image sequences write their sound as a WAV beside the frames".into())),
-            ExportFormat::Audio | ExportFormat::Wav | ExportFormat::Prores | ExportFormat::Prores4444 | ExportFormat::ProresLt | ExportFormat::ProresProxy
-            | ExportFormat::DnxhrLb | ExportFormat::DnxhrSq | ExportFormat::DnxhrHq | ExportFormat::DnxhrHqx | ExportFormat::Dnxhr444
-            | ExportFormat::PngSequence | ExportFormat::Png16Sequence | ExportFormat::TiffSequence | ExportFormat::JpegSequence | ExportFormat::ExrSequence => {
+            ExportFormat::Audio | ExportFormat::Wav => {
                 let kind = o.format.unwrap_or(if format == ExportFormat::Wav { AudioFormat::Wav } else { AudioFormat::Aac });
                 let (args, muxer) = match kind {
                     AudioFormat::Wav => (pcm(true)?, vec![s("-rf64"), s("auto"), s("-f"), s("wav")]),
@@ -1298,11 +1134,6 @@ fn s(x: &str) -> String {
 fn path(p: &Path) -> String {
     crate::probe::input_path(p).to_string_lossy().into_owned()
 }
-
-mod formats;
-pub mod presets;
-
-pub use formats::{FormatGroup, FormatInfo};
 
 #[cfg(test)]
 mod tests;

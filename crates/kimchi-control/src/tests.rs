@@ -432,6 +432,56 @@ async fn exports_name_their_encoder() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn looks_from_other_apps() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({ "name": "Grade", "width": 640, "height": 360 })).await;
+    let a = ok(&s, Source::Window, "clip.addSolid", json!({ "color": "#808080", "start": 0, "duration": 3 })).await["clips"][0]["id"].as_str().unwrap().to_string();
+    // A folder with a LUT in a subfolder, a Lightroom preset and a file that isn't a look.
+    let looks = dir.path().join("My Looks");
+    std::fs::create_dir_all(looks.join("Film")).unwrap();
+    std::fs::write(looks.join("Film/Warm.3dl"), "0 1023\n0 0 0\n0 0 4095\n0 4095 0\n0 4095 4095\n4095 0 0\n4095 0 4095\n4095 4095 0\n4095 4095 4095\n").unwrap();
+    std::fs::write(
+        looks.join("Pop.xmp"),
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Contrast2012="+30" crs:Saturation="+20" crs:Clarity2012="+10"/></rdf:RDF></x:xmpmeta>"#,
+    )
+    .unwrap();
+    std::fs::write(looks.join("readme.txt"), "hi").unwrap();
+    let r = ok(&s, Source::Window, "looks.import", json!({ "paths": [looks] })).await;
+    let added = r["added"].as_array().unwrap();
+    assert_eq!(added.len(), 2, "{r}");
+    assert!(added.iter().any(|l| l["folder"] == "My Looks/Film" && l["name"] == "Warm"));
+    assert!(added.iter().any(|l| l["name"] == "Pop" && l["dropped"][0].as_str().unwrap().contains("Clarity")));
+    let list = ok(&s, Source::Agent, "looks.list", json!({})).await;
+    assert_eq!(list.as_array().unwrap().len(), kimchi_core::effects::LOOKS.len() + 2);
+    assert_eq!(ok(&s, Source::Agent, "looks.list", json!({ "query": "lightroom" })).await.as_array().unwrap().len(), 1);
+    // Applying: corrections and LUT replaced, one step; clip.setEffects takes library looks too.
+    ok(&s, Source::Agent, "clip.setEffects", json!({ "clipIds": [a], "chromaKey": true })).await;
+    ok(&s, Source::Agent, "looks.apply", json!({ "clipIds": [a], "look": "Warm", "strength": 0.5 })).await;
+    let c = ok(&s, Source::Agent, "clip.get", json!({ "clipId": a })).await;
+    assert_eq!(c["effects"]["lut"]["strength"].as_f64(), Some(0.5));
+    assert!(c["effects"]["chroma_key"].is_object(), "the key stays");
+    let c = ok(&s, Source::Agent, "clip.setEffects", json!({ "clipIds": [a], "look": "pop" })).await;
+    assert_eq!(c["clips"][0]["effects"]["contrast"].as_f64(), Some(0.3));
+    assert!(registry::call(&s, Source::Agent, "looks.apply", json!({ "clipIds": [a], "look": "Wram" })).await.unwrap_err().contains("Warm"));
+    // Saving: into the library, and as a .cube.
+    let saved = ok(&s, Source::Window, "looks.save", json!({ "clipId": a, "name": "Mine" })).await;
+    assert_eq!(saved["folder"], "Saved");
+    let cube = dir.path().join("out/mine.cube");
+    let r = ok(&s, Source::Window, "looks.save", json!({ "clipId": a, "path": cube })).await;
+    assert!(r["notIncluded"].as_array().unwrap().iter().any(|x| x == "the chroma key"));
+    assert!(kimchi_media::render::grade::lut(&cube).is_ok());
+    ok(&s, Source::Window, "looks.remove", json!({ "look": "Mine" })).await;
+    assert!(registry::call(&s, Source::Window, "looks.remove", json!({ "look": "noir" })).await.unwrap_err().contains("built-in"));
+    // Export presets: listed with the size they give this project; unknown ones explained.
+    let presets = ok(&s, Source::Agent, "export.presets", json!({})).await;
+    let yt = presets.as_array().unwrap().iter().find(|p| p["id"] == "youtube-1080p").unwrap();
+    assert_eq!((yt["params"]["width"].as_u64(), yt["params"]["height"].as_u64(), yt["params"]["loudness"].as_f64()), (Some(1920), Some(1080), Some(-14.0)));
+    let e = registry::call(&s, Source::Window, "export.start", json!({ "path": dir.path().join("x.mp4"), "preset": "youtub" })).await.unwrap_err();
+    assert!(e.contains("youtube"), "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn effects_transitions_and_freeze_frames() {
     let dir = tempfile::tempdir().unwrap();
     let s = session(dir.path());

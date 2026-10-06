@@ -323,6 +323,50 @@ fn the_colour_sliders_grade_the_clip_in_one_step(cx: &mut TestAppContext) {
     assert_eq!(graded.len(), 1, "the drag is one step: {steps}");
 }
 
+/// Looks imported from other apps show in the inspector's Colour section and go on the clip
+/// in one step; the grade is written out as a .cube other apps open.
+#[gpui::test]
+fn imported_looks_show_in_the_inspector_and_apply(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    let id = select_the_clip(&f, cx);
+    let dir = tempfile::tempdir().unwrap();
+    let cube = dir.path().join("Night Film.cube");
+    std::fs::write(&cube, "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n").unwrap();
+    let added = f.call("looks.import", json!({ "paths": [cube], "folder": "Resolve" }));
+    let look = added["added"][0]["id"].as_str().unwrap().to_string();
+    let inspector = cx.update(|_, cx| view.read(cx).editor().read(cx).inspector.clone());
+    let start = Instant::now();
+    while !cx.update(|_, cx| inspector.read(cx).library_look_names()).contains(&"Night Film".to_string()) && start.elapsed() < Duration::from_secs(3) {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+    }
+    assert!(cx.update(|_, cx| inspector.read(cx).library_look_names()).contains(&"Night Film".to_string()));
+    // What the look's button runs.
+    cx.update(|_, cx| cx.store().update(cx, |s, cx| s.run("looks.apply", json!({ "clipIds": [id], "look": look }), cx)));
+    let p = f.settle(cx, |p| p.clip(id).is_some_and(|c| c.effects.lut.is_some()));
+    assert!(p.clip(id).unwrap().effects.lut.as_ref().unwrap().path.contains("looks"));
+    let out = dir.path().join("graded.cube");
+    f.call("clip.setEffects", json!({ "clipIds": [id], "contrast": 0.3 }));
+    f.call("looks.save", json!({ "clipId": id, "path": out }));
+    assert!(std::fs::read_to_string(&out).unwrap().contains("LUT_3D_SIZE 33"));
+}
+
+/// The export dialog's presets fit the project: a vertical preset on a 16:9 project keeps 16:9.
+#[gpui::test]
+fn export_presets_fit_the_project(cx: &mut TestAppContext) {
+    let (f, _view, cx) = setup(cx);
+    let ps = f.project().settings;
+    let short = kimchi_control::commands::export::preset("shorts").unwrap();
+    let (w, h) = kimchi_control::commands::export::preset_size(short, &ps).unwrap();
+    assert_eq!((w, h), (1080, 608), "a 1920×1080 project in a 1080×1920 box");
+    let yt = kimchi_control::commands::export::preset("youtube-4k").unwrap();
+    assert_eq!(kimchi_control::commands::export::preset_size(yt, &ps), Some((3840, 2160)));
+    let listed = f.call("export.presets", json!({}));
+    let shorts = listed.as_array().unwrap().iter().find(|p| p["id"] == "shorts").unwrap();
+    assert!(shorts["warning"].as_str().unwrap().contains("1080×608"));
+    let _ = cx;
+}
+
 /// A person opens the Captions tab (⌘5 / ctrl-5), imports a file through the command the panel
 /// runs, and double-clicks a caption: it is selected and the playhead goes there.
 #[gpui::test]
