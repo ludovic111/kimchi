@@ -21,7 +21,6 @@ pub struct Settings {
     #[serde(default = "OnboardingSettings::set_up_before")]
     pub onboarding: OnboardingSettings,
     pub shortcuts: ShortcutSettings,
-    pub plugins: PluginSettings,
 }
 
 /// The first-run setup (`app.onboarding`, `app.finishOnboarding`).
@@ -62,14 +61,6 @@ impl Default for ShortcutSettings {
 
 /// Keyboard layouts kimchi can take from other editors (`app.keymaps` describes them).
 pub const KEYMAPS: &[&str] = &["kimchi", "premiere", "finalcut", "resolve", "avid", "capcut", "kdenlive", "shotcut", "vegas", "imovie"];
-
-/// Video plugins (kimchi's own, frei0r, OpenFX). Audio plugin folders are in [`AudioSettings`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default, rename_all = "camelCase")]
-pub struct PluginSettings {
-    /// More folders to look for video plugins in, besides the standard ones.
-    pub video_folders: Vec<String>,
-}
 
 /// What can run the built-in agent (`settings.agent.provider`): the person's coding CLIs, model
 /// APIs, and local servers. `kimchi_agent::ProviderKind` has one variant per id.
@@ -233,13 +224,11 @@ pub struct GenerateDefaults {
     pub image_model: String,
     /// `provider::model` used for video when a command names no model.
     pub video_model: String,
-    /// `provider::model` used for sound (speech, music, sound effects) when a command names no model.
-    pub audio_model: String,
 }
 
 impl Default for GenerateDefaults {
     fn default() -> Self {
-        Self { enabled: true, image_model: String::new(), video_model: String::new(), audio_model: String::new() }
+        Self { enabled: true, image_model: String::new(), video_model: String::new() }
     }
 }
 
