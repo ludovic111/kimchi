@@ -873,7 +873,9 @@ pub static SPECS: &[Spec] = &[
     edit("app.quit", "Quit kimchi.", &[]).perm(Perm::AppControl).window(),
     edit("app.notify", "Show a short message in the window.", &[req("text", String, "Message."), opt("kind", String, "info (default), success or error.")]).window(),
     // ---- agent ------------------------------------------------------------
-    query("agent.providers", "What can run the built-in agent: coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not, and which one is chosen.", &[]).window(),
+    query("agent.providers", "What can run the built-in agent: coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen.", &[
+        opt("refresh", Boolean, "Fetch the chosen provider's model list again now."),
+    ]).window(),
     query("agent.models", "The models a provider offers for the agent (the chosen one by default): fetched from the provider's own list where it has one (kept for a few hours), else a short built-in list; models that can't use tools are marked tools=false.", &[
         opt("provider", String, "A provider id from agent.providers."),
         opt("refresh", Boolean, "Fetch the list again now."),

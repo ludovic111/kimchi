@@ -661,3 +661,233 @@ async fn switching_projects_starts_afresh() {
     assert_eq!(runs["runs"], json!([]));
     assert_eq!(call(&s, Source::Cli, "agent.conversation", json!({})).await["entries"], json!([]));
 }
+
+// ---- more providers ---------------------------------------------------------------
+
+/// Answers each request with the next body of bytes (Bedrock's event stream).
+struct Bytes {
+    bodies: Vec<Vec<u8>>,
+    next: AtomicUsize,
+}
+
+impl Respond for Bytes {
+    fn respond(&self, _: &Request) -> ResponseTemplate {
+        let i = self.next.fetch_add(1, Ordering::SeqCst).min(self.bodies.len() - 1);
+        ResponseTemplate::new(200).insert_header("content-type", "application/vnd.amazon.eventstream").set_body_bytes(self.bodies[i].clone())
+    }
+}
+
+fn last_body(requests: &[Request], i: usize) -> Value {
+    serde_json::from_slice(&requests[i].body).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn openai_compatible_providers_share_one_client_with_their_quirks() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = with_project(dir.path()).await;
+    s.set_secret("mistral", Some("mk-1")).unwrap();
+    // Mistral: a whole call without an index, an id that isn't nine letters back to it.
+    let first = openai_sse(&[
+        json!({ "choices": [{ "index": 0, "delta": { "role": "assistant", "content": "" } }] }),
+        json!({ "choices": [{ "index": 0, "delta": { "tool_calls": [{ "id": "abc123XYZ", "function": { "name": "timeline_addMarker", "arguments": "{\"time\":1,\"label\":\"A\"}" } }] }, "finish_reason": "tool_calls" }] }),
+    ]);
+    let second = openai_sse(&[json!({ "choices": [{ "index": 0, "delta": { "content": "Done." }, "finish_reason": "stop" }] })]);
+    let server = mock("/chat/completions", "text/event-stream", vec![first, second]).await;
+    let config = AgentConfig { base_url: server.uri(), ..AgentConfig::new(ProviderKind::Mistral) };
+    let events = collect(&mut Agent::start(&s, config, "Mark 1 s", Conversation::new())).await;
+    assert!(matches!(events.last(), Some(AgentEvent::Done { changes: 1, .. })), "{events:#?}");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests[0].headers.get("authorization").unwrap(), "Bearer mk-1");
+    let body = last_body(&requests, 1);
+    let msgs = body["messages"].as_array().unwrap();
+    assert_eq!(msgs[2]["tool_calls"][0]["id"], "abc123XYZ");
+    assert_eq!(msgs[3]["tool_call_id"], "abc123XYZ");
+    assert_eq!(body["model"], ProviderKind::Mistral.default_model());
+
+    // Groq takes at most 128 tools: the core set, and kimchi_run for the rest.
+    s.set_secret("groq", Some("gsk_1")).unwrap();
+    let run_any = openai_sse(&[
+        json!({ "choices": [{ "index": 0, "delta": { "tool_calls": [{ "index": 0, "id": "c1", "function": { "name": "kimchi_run", "arguments": "{\"command\":\"timeline.addMarker\",\"params\":{\"time\":2,\"label\":\"B\"}}" } }] } }] }),
+        json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }] }),
+    ]);
+    let done = openai_sse(&[json!({ "choices": [{ "index": 0, "delta": { "content": "Ok." }, "finish_reason": "stop" }] })]);
+    let server = mock("/chat/completions", "text/event-stream", vec![run_any, done]).await;
+    let config = AgentConfig { base_url: server.uri(), model: "openai/gpt-oss-120b".into(), ..AgentConfig::new(ProviderKind::Groq) };
+    let events = collect(&mut Agent::start(&s, config, "Mark 2 s", Conversation::new())).await;
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Command { record, .. } if record.command == "timeline.addMarker" && record.ok)), "{events:#?}");
+    let body = last_body(&server.received_requests().await.unwrap(), 0);
+    let tools = body["tools"].as_array().unwrap();
+    assert!(tools.len() <= 128 && tools.iter().any(|t| t["function"]["name"] == RUN_TOOL), "{}", tools.len());
+    assert!(body["messages"][0]["content"].as_str().unwrap().contains(RUN_TOOL));
+    assert_eq!(s.project().unwrap().markers.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deepseek_gets_its_reasoning_back_within_a_tool_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = with_project(dir.path()).await;
+    s.set_secret("deepseek", Some("sk-d")).unwrap();
+    let first = openai_sse(&[
+        json!({ "choices": [{ "index": 0, "delta": { "reasoning_content": "A marker at 3." } }] }),
+        json!({ "choices": [{ "index": 0, "delta": { "tool_calls": [{ "index": 0, "id": "call_0", "type": "function", "function": { "name": "timeline_addMarker", "arguments": "{\"time\":3}" } }] }, "finish_reason": "tool_calls" }] }),
+    ]);
+    let second = openai_sse(&[json!({ "choices": [{ "index": 0, "delta": { "content": "Added." }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 5, "completion_tokens": 2 } })]);
+    let server = mock("/chat/completions", "text/event-stream", vec![first, second]).await;
+    let config = AgentConfig { base_url: server.uri(), ..AgentConfig::new(ProviderKind::DeepSeek) };
+    let events = collect(&mut Agent::start(&s, config, "Mark 3 s", Conversation::new())).await;
+    assert!(matches!(events.last(), Some(AgentEvent::Done { .. })), "{events:#?}");
+    let requests = server.received_requests().await.unwrap();
+    let body = last_body(&requests, 1);
+    assert_eq!(body["messages"][2]["reasoning_content"], "A marker at 3.");
+    assert_eq!(last_body(&requests, 0)["max_tokens"], 8192);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn azure_uses_its_resource_deployment_and_api_key_header() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = with_project(dir.path()).await;
+    s.set_secret("azure-openai", Some("az-key")).unwrap();
+    let reply = openai_sse(&[
+        // The content filter's note comes first, without choices.
+        json!({ "id": "", "choices": [], "prompt_filter_results": [{ "prompt_index": 0 }] }),
+        json!({ "choices": [{ "index": 0, "delta": { "content": "Hi." }, "finish_reason": "stop" }] }),
+    ]);
+    let server = mock("/openai/v1/chat/completions", "text/event-stream", vec![reply]).await;
+    let config = AgentConfig { base_url: server.uri(), model: "my-gpt".into(), ..AgentConfig::new(ProviderKind::AzureOpenAi) };
+    let events = collect(&mut Agent::start(&s, config, "Hello", Conversation::new())).await;
+    assert!(matches!(events.last(), Some(AgentEvent::Done { summary, .. }) if summary == "Hi."), "{events:#?}");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests[0].headers.get("api-key").unwrap(), "az-key");
+    assert!(requests[0].headers.get("authorization").is_none());
+    assert_eq!(last_body(&requests, 0)["model"], "my-gpt");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gemini_replays_its_parts_with_their_signatures() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = with_project(dir.path()).await;
+    s.set_secret("google", Some("AIza-test")).unwrap();
+    let call = json!({ "candidates": [{ "content": { "role": "model", "parts": [
+        { "text": "Marking.", "thoughtSignature": "sig-1" },
+        { "functionCall": { "id": "fc1", "name": "timeline_addMarker", "args": { "time": 4, "label": "G" } } },
+    ] }, "finishReason": "STOP" }], "usageMetadata": { "promptTokenCount": 10, "candidatesTokenCount": 3 } });
+    let done = json!({ "candidates": [{ "content": { "role": "model", "parts": [{ "text": "Done." }] }, "finishReason": "STOP" }] });
+    let server = mock("/models/gemini-test:streamGenerateContent", "text/event-stream", vec![format!("data: {call}\n\n"), format!("data: {done}\n\n")]).await;
+    let config = AgentConfig { base_url: server.uri(), model: "gemini-test".into(), ..AgentConfig::new(ProviderKind::Gemini) };
+    let events = collect(&mut Agent::start(&s, config, "Mark 4 s", Conversation::new())).await;
+    assert!(matches!(events.last(), Some(AgentEvent::Done { changes: 1, .. })), "{events:#?}");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests[0].headers.get("x-goog-api-key").unwrap(), "AIza-test");
+    let first = last_body(&requests, 0);
+    assert!(first["tools"][0]["functionDeclarations"].as_array().unwrap().iter().any(|f| f["name"] == "clip_addText" && f["parametersJsonSchema"]["type"] == "object"));
+    let body = last_body(&requests, 1);
+    let contents = body["contents"].as_array().unwrap();
+    assert_eq!(contents[1]["role"], "model");
+    assert_eq!(contents[1]["parts"][0]["thoughtSignature"], "sig-1");
+    assert_eq!(contents[2]["parts"][0]["functionResponse"]["id"], "fc1");
+    assert_eq!(contents[2]["parts"][0]["functionResponse"]["name"], "timeline_addMarker");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bedrock_converse_stream_runs_tools() {
+    use crate::eventstream::encode;
+    let dir = tempfile::tempdir().unwrap();
+    let s = with_project(dir.path()).await;
+    s.set_secret("bedrock", Some("ABSK-test")).unwrap();
+    let ev = |kind: &str, payload: Value| encode(&[(":event-type", kind), (":content-type", "application/json"), (":message-type", "event")], payload.to_string().as_bytes());
+    let mut first = vec![];
+    for frame in [
+        ev("messageStart", json!({ "role": "assistant" })),
+        ev("contentBlockDelta", json!({ "contentBlockIndex": 0, "delta": { "text": "On it." } })),
+        ev("contentBlockStart", json!({ "contentBlockIndex": 1, "start": { "toolUse": { "toolUseId": "tu1", "name": "timeline_addMarker" } } })),
+        ev("contentBlockDelta", json!({ "contentBlockIndex": 1, "delta": { "toolUse": { "input": "{\"time\":5," } } })),
+        ev("contentBlockDelta", json!({ "contentBlockIndex": 1, "delta": { "toolUse": { "input": "\"label\":\"B\"}" } } })),
+        ev("contentBlockStop", json!({ "contentBlockIndex": 1 })),
+        ev("messageStop", json!({ "stopReason": "tool_use" })),
+        ev("metadata", json!({ "usage": { "inputTokens": 9, "outputTokens": 4 } })),
+    ] {
+        first.extend(frame);
+    }
+    let mut second = vec![];
+    for frame in [ev("contentBlockDelta", json!({ "contentBlockIndex": 0, "delta": { "text": "Done." } })), ev("messageStop", json!({ "stopReason": "end_turn" })), ev("metadata", json!({ "usage": {} }))] {
+        second.extend(frame);
+    }
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/model/test.model-v1%3A0/converse-stream")).respond_with(Bytes { bodies: vec![first, second], next: AtomicUsize::new(0) }).mount(&server).await;
+    let config = AgentConfig { base_url: server.uri(), model: "test.model-v1:0".into(), ..AgentConfig::new(ProviderKind::Bedrock) };
+    let events = collect(&mut Agent::start(&s, config, "Mark 5 s", Conversation::new())).await;
+    assert!(matches!(events.last(), Some(AgentEvent::Done { changes: 1, summary, .. }) if summary == "Done."), "{events:#?}");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests[0].headers.get("authorization").unwrap(), "Bearer ABSK-test");
+    let body = last_body(&requests, 1);
+    assert_eq!(body["messages"][1]["content"][1]["toolUse"]["input"], json!({ "time": 5, "label": "B" }));
+    assert_eq!(body["messages"][2]["content"][0]["toolResult"]["toolUseId"], "tu1");
+    assert_eq!(body["messages"][2]["content"][0]["toolResult"]["status"], "success");
+    assert_eq!(s.project().unwrap().markers[0].label, "B");
+}
+
+#[test]
+fn trimmed_tool_sets_keep_the_core_and_name_real_commands() {
+    let set = ToolSet::new(Some(128), false);
+    assert!(set.trimmed && set.defs.len() <= 128);
+    assert_eq!(set.defs.last().unwrap().name, RUN_TOOL);
+    assert!(set.defs.iter().any(|t| t.name == "project_overview"));
+    let compact = ToolSet::new(None, true);
+    assert!(compact.defs.len() < 30);
+    assert!(!ToolSet::new(None, false).trimmed);
+    // Every core command named in the lists exists.
+    for t in set.defs.iter().chain(&compact.defs).filter(|t| t.name != RUN_TOOL) {
+        assert!(tools::spec_for_tool(&t.name).is_some(), "{}", t.name);
+    }
+}
+
+#[test]
+fn provider_ids_parse_from_what_people_type() {
+    assert_eq!(ProviderKind::parse("Google"), Some(ProviderKind::Gemini));
+    assert_eq!(ProviderKind::parse("lm studio"), Some(ProviderKind::LmStudio));
+    assert_eq!(ProviderKind::parse("aws"), Some(ProviderKind::Bedrock));
+    assert_eq!(ProviderKind::parse("gemini_cli"), Some(ProviderKind::GeminiCli));
+    assert_eq!(serde_json::to_value(ProviderKind::OpenAiCompatible).unwrap(), "openai-compatible");
+    for (p, key_id) in kimchi_control::commands::app::AGENT_KEY_IDS {
+        let kind = ProviderKind::parse(p).unwrap();
+        assert_eq!(kind.info().key.map(|k| k.id), Some(*key_id), "{p}: the agent and app.setAgentKey save its key under the same id");
+    }
+    let with_keys = ProviderKind::ALL.iter().filter(|k| k.info().key.is_some()).count();
+    assert_eq!(with_keys, kimchi_control::commands::app::AGENT_KEY_IDS.len());
+}
+
+#[test]
+fn gemini_cli_gets_kimchi_only() {
+    let live = cli::Live { mcp: "/k/kimchi-mcp".into(), control: "/data/control.json".into() };
+    let settings = cli::gemini_settings(&live);
+    assert_eq!(settings["mcpServers"]["kimchi"]["args"], json!(["--live"]));
+    assert_eq!(settings["mcpServers"]["kimchi"]["trust"], true);
+    let args = cli::gemini_args(std::path::Path::new("/p/policy.toml"), "flash", Some("s-1"));
+    for w in [["--output-format", "stream-json"], ["--extensions", "none"], ["--allowed-mcp-server-names", "kimchi"], ["--resume", "s-1"], ["--model", "flash"]] {
+        assert!(args.windows(2).any(|a| a == w), "{w:?} in {args:?}");
+    }
+    assert!(cli::GEMINI_POLICY.contains("mcpName = \"kimchi\""));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn gemini_cli_stream_json_becomes_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    let lines = [
+        json!({ "type": "init", "session_id": "g-1", "model": "auto" }),
+        json!({ "type": "message", "role": "user", "content": "hi" }),
+        json!({ "type": "message", "role": "assistant", "content": "Hel", "delta": true }),
+        json!({ "type": "tool_use", "tool_name": "mcp_kimchi_clip_list", "tool_id": "t1", "parameters": {} }),
+        json!({ "type": "tool_result", "tool_id": "t1", "status": "success" }),
+        json!({ "type": "message", "role": "assistant", "content": "lo", "delta": true }),
+        json!({ "type": "result", "status": "success", "stats": { "input_tokens": 7, "output_tokens": 2 } }),
+    ];
+    let echo: String = lines.iter().map(|l| format!("echo '{l}'\n")).collect();
+    let exe = script(dir.path(), &format!("cat > /dev/null\n{echo}"));
+    let (mut run, _handle) = Run::new(&s, AgentConfig::new(ProviderKind::GeminiCli), &Conversation::new());
+    let (out, result) = cli::run_child(&mut run, tokio::process::Command::new(exe), "x".into(), "Gemini CLI", cli::parse_gemini).await;
+    result.unwrap();
+    assert_eq!(out.session_id.as_deref(), Some("g-1"));
+    assert_eq!(out.reply, "Hel\n\nlo");
+}

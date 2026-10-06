@@ -47,8 +47,6 @@ impl Group {
 pub enum Wire {
     Cli,
     Anthropic,
-    /// OpenAI's Responses API.
-    Responses,
     /// Chat Completions, with the provider's quirks.
     Chat(Quirks),
     Gemini,
@@ -202,7 +200,8 @@ pub const ALL: &[Info] = &[
         label: "OpenAI API",
         group: Group::Api,
         tagline: "GPT models, billed per use by OpenAI.",
-        wire: Wire::Responses,
+        // OpenAI takes at most 128 functions in one request.
+        wire: chat(Some(128)),
         default_model: "gpt-5",
         default_base_url: "https://api.openai.com/v1",
         needs_base_url: false,

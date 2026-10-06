@@ -3,10 +3,9 @@
 
 mod anthropic;
 pub(crate) mod bedrock;
-mod chat;
 mod gemini;
 mod ollama;
-mod responses;
+mod openai;
 
 use serde_json::Value;
 
@@ -43,8 +42,6 @@ pub(crate) struct Api {
 fn tool_budget(wire: Wire) -> (Option<usize>, bool) {
     match wire {
         Wire::Chat(q) => (q.tool_limit, q.compact),
-        // OpenAI takes at most 128 functions in one request.
-        Wire::Responses => (Some(128), false),
         Wire::Ollama => (None, true),
         Wire::Gemini | Wire::Anthropic | Wire::Bedrock | Wire::Cli => (None, false),
     }
@@ -132,7 +129,8 @@ impl Api {
             }
             _ => {}
         }
-        if info.key.is_some_and(|k| k.required) && key.is_none() && bedrock.is_none() && !matches!(wire, Wire::Chat(_) if c.provider == ProviderKind::OpenAi) {
+        let other_server = c.provider == ProviderKind::OpenAi && base != info.default_base_url;
+        if info.key.is_some_and(|k| k.required) && key.is_none() && bedrock.is_none() && !other_server {
             return Err(missing_key());
         }
         if model.is_empty() {
@@ -159,8 +157,7 @@ impl Api {
     async fn step(&self, run: &Run, tools: &ToolSet, messages: &[Message], round: usize) -> Result<Step, String> {
         match self.wire {
             Wire::Anthropic => anthropic::step(self, run, tools, messages).await,
-            Wire::Responses => responses::step(self, run, tools, messages).await,
-            Wire::Chat(q) => chat::step(self, q, run, tools, messages, round).await,
+            Wire::Chat(q) => openai::step(self, q, run, tools, messages).await,
             Wire::Gemini => gemini::step(self, run, tools, messages, round).await,
             Wire::Bedrock => bedrock::step(self, run, tools, messages).await,
             Wire::Ollama => ollama::step(self, run, tools, messages, round).await,

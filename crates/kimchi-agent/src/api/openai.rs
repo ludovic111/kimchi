@@ -1,9 +1,9 @@
-//! Chat Completions (`POST {base}/chat/completions`) with streamed text and function tools:
-//! OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, LM
-//! Studio, any OpenAI-compatible server, and OpenAI itself at another address. One
-//! implementation; [`Quirks`] says where a server differs (the reply cap's name, usage in the
-//! stream, tool caps, Mistral's tool call ids, reasoning that has to go back, Azure's
-//! `api-key` header and its filter-only chunks).
+//! OpenAI Chat Completions with streamed text and function tools. Also every compatible
+//! provider (OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure
+//! OpenAI, LM Studio, any server through `settings.agent.baseUrl`): one client, with
+//! [`Quirks`] for where they differ (the reply cap's name, usage in the stream, Mistral's tool
+//! call ids, DeepSeek's reasoning that goes back within a tool loop, Azure's `api-key` header
+//! and its filter-only chunks).
 
 use serde_json::{Value, json};
 
@@ -39,7 +39,7 @@ pub(crate) fn short_id(id: &str) -> String {
 }
 
 pub(super) fn wire(api: &Api, q: Quirks, system: &str, messages: &[Message]) -> Vec<Value> {
-    let id = |s: &str| if q.short_ids { short_id(s) } else { s.to_string() };
+    let call_id = |s: &str| if q.short_ids { short_id(s) } else { s.to_string() };
     let mut out = vec![json!({ "role": "system", "content": system })];
     for m in messages {
         let text = m.text();
@@ -47,8 +47,8 @@ pub(super) fn wire(api: &Api, q: Quirks, system: &str, messages: &[Message]) -> 
             Role::User => {
                 // Tool answers come first: they must follow the assistant's calls.
                 for p in &m.parts {
-                    if let Part::ToolResult { id: call, output, .. } = p {
-                        out.push(json!({ "role": "tool", "tool_call_id": id(call), "content": output }));
+                    if let Part::ToolResult { id, output, .. } = p {
+                        out.push(json!({ "role": "tool", "tool_call_id": call_id(id), "content": output }));
                     }
                 }
                 if !text.is_empty() {
@@ -60,7 +60,7 @@ pub(super) fn wire(api: &Api, q: Quirks, system: &str, messages: &[Message]) -> 
                     .parts
                     .iter()
                     .filter_map(|p| match p {
-                        Part::ToolUse { id: call, name, input } => Some(json!({ "id": id(call), "type": "function", "function": { "name": name, "arguments": input.to_string() } })),
+                        Part::ToolUse { id, name, input } => Some(json!({ "id": call_id(id), "type": "function", "function": { "name": name, "arguments": input.to_string() } })),
                         _ => None,
                     })
                     .collect();
@@ -70,7 +70,7 @@ pub(super) fn wire(api: &Api, q: Quirks, system: &str, messages: &[Message]) -> 
                 } else if text.is_empty() {
                     msg["content"] = json!("…");
                 }
-                // What this provider asked to get back with the message (reasoning).
+                // What this provider asked to get back with the message (DeepSeek's reasoning).
                 for p in &m.parts {
                     if let Part::Opaque { provider, block } = p
                         && *provider == api.kind
@@ -88,16 +88,7 @@ pub(super) fn wire(api: &Api, q: Quirks, system: &str, messages: &[Message]) -> 
     out
 }
 
-/// A text delta: a string, or (Mistral's thinking models) a list of typed chunks.
-fn content_text(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Array(items) => items.iter().filter(|c| c["type"] == "text").filter_map(|c| c["text"].as_str()).collect(),
-        _ => String::new(),
-    }
-}
-
-pub(super) async fn step(api: &Api, q: Quirks, run: &Run, set: &ToolSet, messages: &[Message], round: usize) -> Result<Step, String> {
+pub(super) async fn step(api: &Api, q: Quirks, run: &Run, set: &ToolSet, messages: &[Message]) -> Result<Step, String> {
     let mut body = json!({
         "model": api.model,
         "messages": wire(api, q, &set.system_prompt(), messages),
@@ -119,7 +110,6 @@ pub(super) async fn step(api: &Api, q: Quirks, run: &Run, set: &ToolSet, message
     let mut lines = Lines::new(response);
     let mut text = String::new();
     let mut reasoning = String::new();
-    let mut details: Vec<Value> = vec![];
     // index → (id, name, arguments)
     let mut calls: Vec<(String, String, String)> = vec![];
     let mut finish = String::new();
@@ -140,45 +130,32 @@ pub(super) async fn step(api: &Api, q: Quirks, run: &Run, set: &ToolSet, message
         if let Some(u) = chunk.get("usage").filter(|u| u.is_object()) {
             run.usage(u["prompt_tokens"].as_u64().unwrap_or(0), u["completion_tokens"].as_u64().unwrap_or(0));
         }
-        // Azure's content filter notes come as chunks without choices or deltas.
+        // Azure's content filter notes come as chunks without choices.
         let Some(choice) = chunk["choices"].get(0) else { continue };
         let delta = &choice["delta"];
-        let t = content_text(&delta["content"]);
-        if !t.is_empty() {
-            text.push_str(&t);
-            run.text(&t);
+        if let Some(t) = delta["content"].as_str() {
+            text.push_str(t);
+            run.text(t);
         }
-        if let Some(r) = delta["reasoning_content"].as_str().or_else(|| delta["reasoning"].as_str()) {
+        if let Some(r) = delta["reasoning_content"].as_str() {
             reasoning.push_str(r);
-        }
-        if let Some(d) = delta["reasoning_details"].as_array() {
-            details.extend(d.iter().cloned());
         }
         for tc in delta["tool_calls"].as_array().into_iter().flatten() {
             // Mistral sends whole calls without an index: a new call, unless its id was seen.
-            let id = tc["id"].as_str().unwrap_or("");
-            let index = match tc["index"].as_u64() {
-                Some(i) => i as usize,
-                None => calls.iter().position(|c| !id.is_empty() && c.0 == id).unwrap_or(calls.len()),
-            };
+            let seen = tc["id"].as_str().and_then(|id| calls.iter().position(|c| !id.is_empty() && c.0 == id));
+            let index = tc["index"].as_u64().map(|i| i as usize).or(seen).unwrap_or(calls.len());
             while calls.len() <= index {
                 calls.push(Default::default());
             }
             let c = &mut calls[index];
-            if let Some(id) = tc["id"].as_str().filter(|i| !i.is_empty()) {
+            if let Some(id) = tc["id"].as_str() {
                 c.0 = id.to_string();
             }
             if let Some(n) = tc["function"]["name"].as_str() {
-                if c.1.is_empty() {
-                    run.status(format!("Running {}…", crate::cli::tool_label(n)));
-                }
                 c.1.push_str(n);
             }
-            match &tc["function"]["arguments"] {
-                Value::String(a) => c.2.push_str(a),
-                // Some servers send the arguments as an object.
-                v @ Value::Object(_) => c.2 = v.to_string(),
-                _ => {}
+            if let Some(a) = tc["function"]["arguments"].as_str() {
+                c.2.push_str(a);
             }
         }
         if let Some(f) = choice["finish_reason"].as_str() {
@@ -201,28 +178,20 @@ pub(super) async fn step(api: &Api, q: Quirks, run: &Run, set: &ToolSet, message
     }
     let mut out = vec![];
     for (i, (id, name, args)) in calls.into_iter().enumerate().filter(|(_, c)| !c.1.is_empty()) {
-        let id = if id.is_empty() { format!("call_{round}_{i}") } else { id };
+        let id = if id.is_empty() { format!("call_{i}") } else { id };
         let input = parse_args(&args);
         parts.push(Part::ToolUse { id: id.clone(), name: name.clone(), input: input.clone().unwrap_or_else(|_| json!({})) });
         out.push(Call { id, name, input });
     }
-    // Reasoning that must go back with this message, for this provider only.
-    let mut back = serde_json::Map::new();
     if q.reasoning_back && !reasoning.is_empty() && !out.is_empty() {
-        back.insert("reasoning_content".into(), json!(reasoning));
-    }
-    if q.reasoning_details && !details.is_empty() {
-        back.insert("reasoning_details".into(), json!(details));
-    }
-    if !back.is_empty() {
-        parts.push(Part::Opaque { provider: api.kind, block: Value::Object(back) });
+        parts.push(Part::Opaque { provider: api.kind, block: json!({ "reasoning_content": reasoning }) });
     }
     Ok(Step { parts, calls: out })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::short_id;
 
     #[test]
     fn mistral_ids_are_nine_letters_and_digits_and_stable() {
@@ -232,11 +201,5 @@ mod tests {
         assert_eq!(a, short_id("toolu_01ABCdef"));
         assert_ne!(a, short_id("toolu_01ABCdeg"));
         assert_eq!(short_id("Ab3dE6gH9"), "Ab3dE6gH9");
-    }
-
-    #[test]
-    fn typed_content_chunks_give_their_text() {
-        assert_eq!(content_text(&json!([{ "type": "thinking", "thinking": [] }, { "type": "text", "text": "Hi" }])), "Hi");
-        assert_eq!(content_text(&json!("Hey")), "Hey");
     }
 }

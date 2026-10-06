@@ -110,7 +110,9 @@ impl SettingsDialog {
             this.open = open;
             this.asked = if open { asked } else { None };
             let settings = store.read(cx).settings.clone();
-            this.agent.sync(&settings, cx);
+            if this.agent.sync(&settings, cx) && open && this.section == Section::Agent {
+                this.load_agent(cx);
+            }
             cx.notify();
         })];
         for (input, which) in [(&key, 0u8), (&base, 1), (&option, 2)] {

@@ -182,6 +182,10 @@ pub async fn status_of(session: &Arc<Session>, kind: ProviderKind) -> ProviderSt
         ProviderKind::OpenAiCompatible => compatible_status(session, &config, &mut s).await,
         _ => key_provider_status(&config, &key, &mut s),
     }
+    // Every provider names its models, for the model pickers: as last fetched, else built in.
+    if s.models.is_empty() {
+        s.models = crate::models::known(kind).0.into_iter().map(|m| m.id).collect();
+    }
     s
 }
 
@@ -213,7 +217,8 @@ fn key_provider_status(config: &AgentConfig, key: &Option<KeyStatus>, s: &mut Pr
             s.action = Action::link("Open the Azure portal", spec.url.unwrap_or(info.website));
             return;
         }
-        s.detail = crate::api::azure_url(&config.base_url, if config.model().is_empty() { "<deployment>" } else { &config.model() });
+        let model = config.model();
+        s.detail = crate::api::azure_url(&config.base_url, if model.is_empty() { "<deployment>" } else { &model });
     }
     match source.as_deref() {
         None => {
@@ -372,7 +377,7 @@ async fn cli_status(session: &Session, kind: ProviderKind, s: &mut ProviderStatu
         None => label.to_string(),
     };
     let signed_in = match kind {
-        ProviderKind::ClaudeCode => probe(&exe, &["auth", "status"]).await.map(|(_, s)| serde_json::from_str::<Value>(&s).ok().and_then(|v| v["loggedIn"].as_bool())).flatten(),
+        ProviderKind::ClaudeCode => probe(&exe, &["auth", "status"]).await.and_then(|(_, out)| serde_json::from_str::<Value>(&out).ok().and_then(|v| v["loggedIn"].as_bool())),
         ProviderKind::Codex => probe(&exe, &["login", "status"]).await.map(|(ok, _)| ok),
         // No status command: its settings and cached sign-in say, or a Gemini key in kimchi.
         _ => Some(crate::cli::gemini_auth().is_some() || session.secret("google").is_some()),

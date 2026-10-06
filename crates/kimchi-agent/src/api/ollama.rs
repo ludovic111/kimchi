@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Api, Call, Step, chat};
+use super::{Api, Call, Step, openai};
 use crate::http::{self, Lines};
 use crate::tools::ToolSet;
 use crate::{Message, Part, Role, Run};
@@ -46,7 +46,7 @@ pub(super) async fn step(api: &Api, run: &Run, set: &ToolSet, messages: &[Messag
     let body = json!({
         "model": api.model,
         "messages": wire(&set.system_prompt(), messages),
-        "tools": chat::tools(&set.defs),
+        "tools": openai::tools(&set.defs),
         "stream": true,
         // Ollama's default context is short for tools and a project overview.
         "options": { "num_ctx": 16_384 },

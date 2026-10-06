@@ -24,7 +24,7 @@ mod cli;
 mod eventstream;
 mod host;
 mod http;
-mod models;
+pub mod models;
 pub mod providers;
 mod sigv4;
 mod status;

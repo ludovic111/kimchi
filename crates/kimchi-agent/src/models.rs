@@ -86,6 +86,13 @@ fn builtin(kind: ProviderKind) -> Vec<ModelInfo> {
     kind.info().models.iter().map(|m| ModelInfo::new(*m)).collect()
 }
 
+/// What is known of `kind`'s models without asking it: the last list fetched, else the built-in one.
+pub fn known(kind: ProviderKind) -> (Vec<ModelInfo>, &'static str) {
+    let prefix = format!("{kind}|");
+    let cached = cache().lock().iter().filter(|(k, _)| k.starts_with(&prefix)).max_by_key(|(_, (at, _))| *at).map(|(_, (_, l))| (l.models.clone(), l.source));
+    cached.unwrap_or_else(|| (builtin(kind), "builtin"))
+}
+
 /// The models of `kind` (the chosen provider's address and key, or its defaults for another).
 pub async fn list(session: &Arc<Session>, kind: ProviderKind, refresh: bool) -> ModelList {
     let settings = session.settings().agent;

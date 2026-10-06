@@ -528,9 +528,23 @@ impl Host {
         match command {
             "agent.providers" => {
                 let config = AgentConfig::from_settings(&session.settings().agent);
-                let list = crate::provider_status(&session).await;
+                let statuses = crate::provider_status(&session).await;
+                // Every provider with its models, for a model picker: the chosen one's fetched
+                // (and kept a few hours), the others' as last fetched or built in.
+                let active_models = crate::list_models(&session, config.provider, a.bool_or("refresh", false)).await;
+                let list: Vec<Value> = statuses
+                    .iter()
+                    .map(|p| {
+                        let (models, source) = if p.provider == config.provider { (active_models.models.clone(), active_models.source) } else { crate::models::known(p.provider) };
+                        let mut v = json!(p);
+                        v["modelList"] = json!(models);
+                        v["modelSource"] = json!(source);
+                        v
+                    })
+                    .collect();
+                let list_ref = &statuses;
                 let groups: Vec<Value> = crate::Group::ALL.iter().map(|g| json!({ "id": g, "label": g.label() })).collect();
-                let model = list.iter().find(|p| p.active).map(|p| if config.model.is_empty() { p.default_model.clone() } else { config.model.clone() }).unwrap_or_default();
+                let model = list_ref.iter().find(|p| p.active).map(|p| if config.model.is_empty() { p.default_model.clone() } else { config.model.clone() }).unwrap_or_default();
                 Ok(json!({
                     "provider": config.provider,
                     "model": model,
