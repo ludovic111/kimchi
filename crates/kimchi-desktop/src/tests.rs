@@ -517,6 +517,14 @@ fn dialogs_fit_the_smallest_window(cx: &mut TestAppContext) {
         (Dialog::Shortcuts, "dialog-shortcuts", None),
         (Dialog::Palette, "dialog-palette", None),
         (Dialog::WhatsNew { since: None, all: true }, "dialog-whats-new", None),
+        (
+            Dialog::Interop {
+                title: "Opened cut.fcpxml".into(),
+                report: json!({"kept": ["12 clips on 3 tracks"], "approximated": ["Iris became a dissolve"], "dropped": ["crops"], "missingMedia": ["/gone/a.mov"]}),
+            },
+            "dialog-interop-report",
+            None,
+        ),
     ] {
         cx.update(|_, cx| cx.store().update(cx, |s, cx| s.open_dialog(dialog.clone(), cx)));
         resize(cx, WINDOW_MIN_W, WINDOW_MIN_H);
@@ -557,4 +565,16 @@ fn side_panels_close_and_open(cx: &mut TestAppContext) {
     resize(cx, 1600., 1000.);
     assert!(bounds_of(cx, "left-panel").is_some() && bounds_of(cx, "inspector").is_none());
     assert_eq!(f.call("ui.state", json!({}))["layout"]["inspectorOpen"], true);
+}
+
+/// The editor's menu offers opening other editors' projects and writing one for each app.
+#[test]
+fn interop_menu_targets() {
+    let targets = crate::views::dialogs::interop::export_targets();
+    let names: Vec<&str> = targets.iter().map(|t| t.1).collect();
+    for app in ["Premiere Pro", "Final Cut Pro", "DaVinci Resolve", "Avid Media Composer"] {
+        assert!(names.iter().any(|n| n.contains(app.split(' ').next().unwrap())), "{app} in {names:?}");
+    }
+    assert_eq!(crate::views::dialogs::interop::extension("xmeml"), "xml");
+    assert_eq!(crate::views::dialogs::interop::extension("fcpxml"), "fcpxml");
 }

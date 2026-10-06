@@ -54,6 +54,9 @@ pub enum Dialog {
     Shortcuts,
     /// Release notes: since a version (after an update) or this one; `all` for every release.
     WhatsNew { since: Option<String>, all: bool },
+    /// What came through opening or writing another editor's project (`project.importFrom` /
+    /// `project.exportTo`'s report).
+    Interop { title: String, report: serde_json::Value },
 }
 
 impl Dialog {
@@ -64,6 +67,7 @@ impl Dialog {
             Dialog::Palette => "palette",
             Dialog::Shortcuts => "shortcuts",
             Dialog::WhatsNew { .. } => "whatsNew",
+            Dialog::Interop { .. } => "interopReport",
         }
     }
 }

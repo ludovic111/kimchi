@@ -15,6 +15,7 @@ kimchi-core.workspace = true
 kimchi-control.workspace = true
 kimchi-agent.workspace = true
 kimchi-gen.workspace = true
+kimchi-interop.workspace = true
 kimchi-media.workspace = true
 
 anyhow = "1"

@@ -513,7 +513,13 @@ impl Home {
                     .justify_between()
                     .mb(px(14.))
                     .child(div().text_size(px(sz::MD)).font_weight(FontWeight::SEMIBOLD).child("Projects"))
-                    .child(Button::new("new-project", "New").small().ghost().with_icon("plus").on_click(cx.listener(|h, _, _, cx| h.create(false, cx)))),
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(4.))
+                            .child(Button::new("open-other", "Open from another editor").small().ghost().with_icon("folder-open").on_click(|_, _, cx| crate::views::dialogs::interop::open_from_other(cx)))
+                            .child(Button::new("new-project", "New").small().ghost().with_icon("plus").on_click(cx.listener(|h, _, _, cx| h.create(false, cx)))),
+                    ),
             )
             .when(list.is_empty(), |d| {
                 d.child(

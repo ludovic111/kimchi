@@ -235,6 +235,7 @@ impl Default for GenerateDefaults {
     }
 }
 
+
 impl Settings {
     /// Reads `settings.json`. A file that can't be read as settings is kept as
     /// `settings.json.bad` (so the next save doesn't lose it) and the defaults are used.
