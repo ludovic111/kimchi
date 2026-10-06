@@ -33,6 +33,8 @@ const ASSETS: &[(&str, &[&str])] = &[
     ("kimchi_x64-setup.exe", &["windows-x86_64-nsis", "windows-x86_64-msi", "windows-x86_64"]),
     ("kimchi_amd64.AppImage", &["linux-x86_64-appimage", "linux-x86_64"]),
     ("kimchi_amd64.deb", &["linux-x86_64-deb"]),
+    // Only linked to (a portable copy is updated by hand), but signed like the rest.
+    ("kimchi_x64-portable.zip", &["windows-x86_64-portable"]),
 ];
 
 fn b64(s: &str) -> String {
