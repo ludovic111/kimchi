@@ -58,6 +58,7 @@ rewritten from the ground up in Rust.
 - **Two render engines**: a fast GPU engine (Metal on Macs, Apple Silicon included; Vulkan or DirectX 12 elsewhere; on the CPU otherwise) and a path tracer for real reflections, refraction through glass, soft light and bounced light
 - **Expressions** on any property: `wiggle(2, 30)`, `loopOut("pingpong")`, `time * 90`, `prop("ball", "x") + 100`, staggering by `index`
 - **The Studio**: a workspace for a motion clip with an outliner, a 3D viewport (orbit, move / rotate / scale handles, edit mode) or a 2D canvas (handles, pen tool), the properties of what's selected (modifiers, effects, materials, expressions, world and render settings), a dope sheet and a graph editor
+- **Two sidebars**: navigation, Studio, scene properties and the searchable modelling workbench share the left sidebar; agents have the right sidebar. The workbench exposes mesh operations with editable parameters and undo.
 - **Camera navigation**: drag the visible orbit, pan and zoom controls, use the axis ball, or fly with WASD/QE. The Camera menu can lock the scene camera to your view, align it, add cameras and apply editable camera moves. The 2D canvas has visible pan, zoom and fit controls.
 - **Render now or at export**: a motion clip is drawn live (quick in the preview, full quality in the export), or rendered ahead into a file the timeline plays smoothly; edit the scene and it goes back to live until you render it again
 - **Templates**: lower third, title card, kinetic type, counter, bar chart, logo reveal, callout, quote, subscribe button, aurora background, wipe transition, glitch title, particle burst, kinetic sweep, radial burst, liquid background, 3D title, 3D logo spin, turntable, floating shapes, product shot, extruded logo, particle field, morphing blob; change their words and colours in the inspector
@@ -101,6 +102,11 @@ Model lists are fetched live where the provider exposes them, and every model
 declares what it can do (aspect ratios, durations, resolutions, first/last frame,
 reference images, sound), so the generate panel only shows controls that apply.
 
+**Audio and speech** have their own Generate tabs. ElevenLabs supplies speech with account voices,
+sound effects and music; Stability AI supplies Stable Audio 2.5. Results enter the media library
+and audio timeline with their original prompt and settings, and can be reused or regenerated.
+Set the provider key in Settings, or use `ELEVENLABS_API_KEY` / `STABILITY_API_KEY`.
+
 ### Your own ComfyUI workflows
 
 Export a workflow in API format into `~/Documents/kimchi/comfyui-workflows` (or
@@ -128,7 +134,11 @@ kimchi-cli --file cut.json clip.addText text="Opening title"                    
 ```
 
 The **Agent** panel (⌘J) runs the model you already have (Claude Code, Codex, an Anthropic or OpenAI key, or a
-local Ollama model), shows one card per command and lets you revert a whole run. What agents may do
+local Ollama model, or **Zenith**), shows one card per command and lets you revert a whole run. Choose
+the provider and model in the panel, send a steering message during a run, and keep multiple named
+conversations per project. Conversations and editable project memory survive restarts. Zenith uses
+its own provider accounts and threads through the lsuite command interface; install Zenith and run
+its server to select it. What agents may do
 (files, projects, generation, settings, quitting) is set in Settings › Agent, for the built-in agent and MCP alike.
 kimchi hands cuts to [ryolune](https://lsuite.xyz/ryolune) to score them and takes its audio back
 (`handoff.toRyolune`, `handoff.fromRyolune`). Details: [docs/AI_CONTROL.md](docs/AI_CONTROL.md).
@@ -151,7 +161,7 @@ crates/
   kimchi-media     ffmpeg probing, decoding and encoding; the compositor: text, 2D motion and effects, 3D (GPU, CPU and
                    the path tracer), colour, transitions, motion clips rendered ahead
   kimchi-captions  SRT / WebVTT, and speech to text with Whisper (candle, on the CPU)
-  kimchi-gen       the generation harness: Provider trait, 15 providers, keys, job queue
+  kimchi-gen       the generation harness: Provider trait, 16 providers, keys, job queue
   kimchi-control   the command registry, session, permissions, loopback bridge, lsuite discovery, updater
   kimchi-agent     the built-in agent (Claude Code, Codex, Anthropic, OpenAI, Ollama)
   kimchi-desktop   the window (GPUI), binary `kimchi`

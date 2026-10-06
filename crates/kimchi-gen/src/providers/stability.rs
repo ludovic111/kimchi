@@ -272,12 +272,16 @@ impl Provider for Stability {
             key_hint: Some("sk-…".into()),
             default_base_url: "https://api.stability.ai".into(),
             base_url_editable: false,
-            tasks: vec![Task::TextToImage, Task::ImageToImage],
+            tasks: vec![Task::TextToImage, Task::ImageToImage, Task::TextToAudio],
         }
     }
 
     async fn models(&self, _cx: &Ctx) -> GenResult<Vec<ModelInfo>> {
-        Ok(MODELS.iter().map(model_info).collect())
+        let mut models: Vec<_> = MODELS.iter().map(model_info).collect();
+        models.push(ModelInfo { durations: vec![10., 30., 60., 120., 180.], seed: true, featured: true,
+            description: Some("Music and sound effects from a prompt.".into()),
+            ..ModelInfo::new(ID, "stable-audio-2.5", "Stable Audio 2.5", &[Task::TextToAudio]) });
+        Ok(models)
     }
 
     async fn check(&self, cx: &Ctx) -> GenResult<String> {
@@ -290,6 +294,21 @@ impl Provider for Stability {
     }
 
     async fn generate(&self, cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput> {
+        if req.task == Task::TextToAudio {
+            if req.model != "stable-audio-2.5" { return Err(GenError::Unsupported("Choose Stable Audio for sound generation.".into())); }
+            let duration = req.duration.unwrap_or(30.);
+            if !duration.is_finite() || !(1.0..=190.0).contains(&duration) { return Err(GenError::Provider("Audio duration must be between 1 and 190 seconds.".into())); }
+            let mut form = Form::new().text("prompt", req.prompt.clone()).text("model", "stable-audio-2.5")
+                .text("duration", duration.to_string()).text("output_format", "wav");
+            if let Some(seed) = req.seed { form = form.text("seed", seed.rem_euclid(4_294_967_295).to_string()); }
+            cx.report(Progress::message("Generating audio…"));
+            let response = util::send(cx, cx.http.post(cx.url("/v2beta/audio/stable-audio-2/text-to-audio"))
+                .bearer_auth(cx.key()?).header("accept", "audio/*").multipart(form)).await?;
+            let data = response.bytes().await.map_err(util::net_err(cx))?;
+            if data.is_empty() { return Err(util::decode_err(cx, "Empty audio response")); }
+            return Ok(GenOutput { items: vec![OutputItem::bytes(OutputKind::Audio, data, "audio/wav")], seed: req.seed, cost_usd: None });
+        }
+
         let m = find(&req.model).ok_or_else(|| GenError::Unsupported(format!("unknown Stability model `{}`", req.model)))?;
         if !matches!(req.task, Task::TextToImage | Task::ImageToImage) {
             return Err(GenError::Unsupported(format!("{} only makes images", m.name)));

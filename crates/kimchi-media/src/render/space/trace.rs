@@ -120,7 +120,8 @@ impl Space {
     /// A path-traced picture of `scene` at `t` that refines a few samples at a time (the
     /// Studio's "Rendered" view): call [`Progressive::add`] while the view is still and show
     /// [`Progressive::picture`].
-    pub(crate) fn progressive(&mut self, scene: &Scene3d, t: f64, width: u32, height: u32, pics: &mut dyn Pictures) -> Progressive {
+    pub(crate) fn progressive(&mut self, scene: &Scene3d, t: f64, width: u32, height: u32, pics: &mut dyn Pictures,eval:kimchi_core::motion::EvalOptions) -> Progressive {
+        self.eval=eval;
         let frame = self.frame(scene, t, width, height, pics, Quality::Final);
         Progressive::new(&frame, Settings::of(&scene.render))
     }

@@ -15,8 +15,655 @@ fn session(dir: &std::path::Path) -> Arc<Session> {
     .unwrap()
 }
 
+#[tokio::test]
+async fn window_project_guards_reject_stale_reads_and_writes_without_touching_the_new_document() {
+    let dir=tempfile::tempdir().unwrap();let s=session(dir.path());
+    ok(&s,Source::Window,"project.create",json!({"name":"Original"})).await;
+    let original=s.project().unwrap();
+    let mut copy=original.clone();copy.id=kimchi_core::Id::new_v4();copy.name="Copy".into();
+    s.guard_project(Some(original.id),async {
+        assert_eq!(s.project().unwrap(),original);
+        s.open_doc(copy.clone(),crate::Location::Library);
+        tokio::task::yield_now().await;
+        assert!(s.project().unwrap_err().contains("project changed"));
+        // A command may have read its inputs already; its eventual write is checked too.
+        let edit=kimchi_core::Edit::RenameProject {name:"Stale edit".into()};
+        assert!(s.apply("test",Source::Window,&edit,None).unwrap_err().contains("project changed"));
+        let err=crate::call(&s,Source::Window,"clip.addSolid",json!({"color":"#fff","duration":1})).await.unwrap_err();
+        assert!(err.contains("project changed"),"{err}");
+    }).await;
+    assert_eq!(s.project().unwrap(),copy);
+    assert_eq!(ok(&s,Source::Cli,"history.list",json!({})).await["undo"],json!([]));
+    let edit=kimchi_core::Edit::RenameProject {name:"Current edit".into()};
+    s.guard_project(Some(copy.id),async {s.apply("test",Source::Window,&edit,None).unwrap();}).await;
+    assert_eq!(s.project().unwrap().name,"Current edit");
+    s.guard_project(None,async {assert!(s.apply("test",Source::Window,&edit,None).is_err());}).await;
+    ok(&s,Source::Window,"history.undo",json!({})).await;
+    assert_eq!(s.project().unwrap(),copy,"the guard expires with its command");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn generated_audio_lands_on_an_audio_track_with_measured_duration_and_provenance() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path}};
+    if kimchi_media::Tools::locate().is_err() { return; }
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    let server = MockServer::start().await;
+    // A real one-second mono PCM WAV, so the same probe/import path as production runs.
+    let samples = 8000u32;
+    let data_size = samples * 2;
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF"); wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt "); wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&samples.to_le_bytes()); wav.extend_from_slice(&(samples * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes()); wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data"); wav.extend_from_slice(&data_size.to_le_bytes());
+    wav.resize(44 + data_size as usize, 0);
+    Mock::given(method("POST")).and(path("/v2beta/audio/stable-audio-2/text-to-audio"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(wav)).expect(1).mount(&server).await;
+    s.harness.set_key("stability", Some("test-key")).unwrap();
+    s.harness.set_settings("stability", kimchi_gen::ProviderSettings { enabled: true, base_url: Some(server.uri()), ..Default::default() });
+    ok(&s, Source::Window, "project.create", json!({"name":"Generated sound"})).await;
+    let result = ok(&s, Source::Window, "generate.submit", json!({
+        "provider":"stability", "model":"stable-audio-2.5", "task":"text_to_audio", "prompt":"Quiet ambience",
+        "duration":5, "start":2, "wait":true
+    })).await;
+    assert_eq!(result["status"], "succeeded", "{result}");
+    let p = s.project().unwrap();
+    let (track, clip) = p.clips().next().expect("audio clip on the timeline");
+    assert_eq!(track.kind, kimchi_core::TrackKind::Audio);
+    assert_eq!(clip.start, 2.);
+    assert!((clip.duration - 1.).abs() < 0.01, "duration is measured from the generated audio");
+    let asset = p.asset(clip.asset_id().unwrap()).unwrap();
+    assert_eq!(asset.kind, kimchi_core::MediaKind::Audio);
+    let kimchi_core::AssetOrigin::Generated(origin) = &asset.origin else { panic!("generation provenance") };
+    assert_eq!(origin.provider, "stability");
+    assert_eq!(origin.prompt, "Quiet ambience");
+    assert_eq!(origin.params["task"], "text_to_audio");
+}
+
 async fn ok(s: &Arc<Session>, source: Source, name: &str, params: Value) -> Value {
     registry::call(s, source, name, params).await.unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mesh_operations_preserve_existing_precision_and_tiny_offsets() {
+    let dir=tempfile::tempdir().unwrap();let s=session(dir.path());
+    ok(&s,Source::Window,"project.create",json!({"name":"Mesh operation precision"})).await;
+    let added=ok(&s,Source::Window,"motion.add",json!({"duration":4,"scene":{"type":"3d","objects":[
+        {"id":"panel","type":"mesh","vertices":[[1e-12,0,0],[1,0,0],[1,0,1],[1e-12,0,1],
+            [3.123456789123,0,0],[4,0,0],[4,0,1],[3.123456789123,0,1]],"faces":[[3,2,1,0],[7,6,5,4]]}
+    ]}})).await;
+    let clip=added["clips"][0]["id"].clone();
+    let before=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    let result=ok(&s,Source::Window,"motion.editMesh",json!({"clipId":clip,"id":"panel","op":"extrude","faces":[0],"params":{"distance":0}})).await;
+    let flat=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    let original=before["scene"]["objects"][0]["vertices"].as_array().unwrap();
+    let vertices=flat["scene"]["objects"][0]["vertices"].as_array().unwrap();
+    assert_eq!(vertices.len(),12);assert_eq!(&vertices[..8],original);
+    ok(&s,Source::Window,"motion.editMesh",json!({"clipId":clip,"id":"panel","op":"translate",
+        "vertices":result["result"]["selection"]["vertices"],"params":{"offset":[0,1e-12,0]}})).await;
+    let pulled=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    let vertices=pulled["scene"]["objects"][0]["vertices"].as_array().unwrap();
+    assert_eq!(&vertices[..8],original);
+    for p in &vertices[8..] {assert_eq!(p[1],json!(1e-12));}
+    ok(&s,Source::Window,"history.undo",json!({})).await;
+    ok(&s,Source::Window,"history.undo",json!({})).await;
+    assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exact_mesh_vertex_updates_preserve_unselected_geometry_and_reject_invalid_batches() {
+    let dir=tempfile::tempdir().unwrap();let s=session(dir.path());
+    ok(&s,Source::Window,"project.create",json!({"name":"Exact mesh editing"})).await;
+    let added=ok(&s,Source::Window,"motion.add",json!({"duration":4,"scene":{"type":"3d","objects":[
+        {"id":"panel","type":"mesh","vertices":[[0,0,0],[1,0,0],[1,1,0],[0,1,0]],"faces":[[0,1,2,3]],
+         "uvs":[[[0,0],[1,0],[1,1],[0,1]]],"rotation":[10,20,30],"keyframes":{"position.x":[[0,0],[2,2]]}}
+    ]}})).await;
+    let clip=added["clips"][0]["id"].clone();
+    let before=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    let history=ok(&s,Source::Cli,"history.list",json!({})).await;
+    let update=|vertices:Value|json!({"clipId":clip,"id":"panel","vertices":vertices,"expectedVertexCount":4,"coalesce":"gesture:exact-vertices"});
+    for amount in [0.25,1e-12] {
+        ok(&s,Source::Window,"motion.updateMeshVertices",update(json!([{"index":0,"position":[amount,2,3]},{"index":2,"position":[2,3,4]}]))).await;
+    }
+    let after=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    let mut expected=before.clone();
+    expected["scene"]["objects"][0]["vertices"][0]=json!([1e-12,2.,3.]);expected["scene"]["objects"][0]["vertices"][2]=json!([2.,3.,4.]);
+    assert_eq!(after,expected);
+    assert_eq!(ok(&s,Source::Cli,"history.list",json!({})).await["undo"].as_array().unwrap().len(),history["undo"].as_array().unwrap().len()+1);
+    let changed=s.project().unwrap();let steps=ok(&s,Source::Cli,"history.list",json!({})).await;
+    for vertices in [json!([]),json!([{"index":0,"position":[9,9,9]},{"index":20,"position":[1,2,3]}]),
+        json!([{"index":0,"position":[9,9,9]},{"index":0,"position":[1,2,3]}]),json!([{"index":0,"position":[1,2]}]),
+        json!([{"index":-1,"position":[1,2,3]}]),json!([{"index":0,"position":[1,null,3]}]),json!([{"index":0,"position":[1,2,3],"typo":4}])] {
+        assert!(registry::call(&s,Source::Window,"motion.updateMeshVertices",update(vertices)).await.is_err());
+        assert_eq!(s.project().unwrap(),changed);assert_eq!(ok(&s,Source::Cli,"history.list",json!({})).await,steps);
+    }
+    let mut stale=update(json!([{"index":0,"position":[9,9,9]}]));stale["expectedVertexCount"]=json!(3);
+    assert!(registry::call(&s,Source::Window,"motion.updateMeshVertices",stale).await.unwrap_err().contains("start the transform again"));
+    assert_eq!(s.project().unwrap(),changed);
+    ok(&s,Source::Window,"history.undo",json!({})).await;assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+    ok(&s,Source::Window,"motion.updateMeshVertices",update(json!([{"index":1,"position":[7,8,9]}]))).await;
+    ok(&s,Source::Window,"motion.updateMeshVertices",update(json!([{"index":0,"position":[1,2,3]}]))).await;
+    let final_scene=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    assert_eq!(final_scene["scene"]["objects"][0]["vertices"][1],json!([7.,8.,9.]),"a preview never replaces an unselected vertex");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn overflowing_mesh_edits_preserve_the_scene_and_undo_history() {
+    let dir=tempfile::tempdir().unwrap();let s=session(dir.path());
+    ok(&s,Source::Window,"project.create",json!({"name":"Mesh precision"})).await;
+    let added=ok(&s,Source::Window,"motion.add",json!({"duration":4,"scene":{"type":"3d","objects":[
+        {"id":"panel","type":"mesh","vertices":[[-2,0,0],[2,0,0],[2,1,0],[-2,1,0]],"faces":[[0,1,2,3]]}
+    ]}})).await;
+    let clip=added["clips"][0]["id"].clone();
+    let original=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    // Storing a finite coordinate must not overflow just to round its decimal places.
+    ok(&s,Source::Window,"motion.editMesh",json!({"clipId":clip,"id":"panel","op":"scale","select":{"all":true},
+        "params":{"factor":[1e300,1,1],"pivot":[0,0,0]}})).await;
+    let large=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    assert_eq!(large["scene"]["objects"][0]["vertices"][0][0],-2e300);
+    kimchi_core::Scene::from_json(&large["scene"]).expect("stored mesh remains readable");
+    let before=serde_json::to_value(s.project().unwrap()).unwrap();
+    let history=ok(&s,Source::Cli,"history.list",json!({})).await;
+    let error=registry::call(&s,Source::Window,"motion.editMesh",json!({"clipId":clip,"id":"panel","op":"scale",
+        "select":{"all":true},"params":{"factor":[1e308,1,1],"pivot":[0,0,0]}})).await.unwrap_err();
+    assert!(error.contains("numeric range"),"{error}");
+    assert_eq!(serde_json::to_value(s.project().unwrap()).unwrap(),before,"overflow must not erase faces or store null vertices");
+    assert_eq!(ok(&s,Source::Cli,"history.list",json!({})).await,history);
+    ok(&s,Source::Window,"history.undo",json!({})).await;
+    assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,original);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn arrange_objects_respects_parents_animation_time_and_undo() {
+    use kimchi_core::{Scene, motion::find_object};
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({"name":"Arrange"})).await;
+    let added = ok(&s, Source::Window, "motion.add", json!({"start":5,"duration":4,"scene":{"type":"3d","objects":[
+        {"id":"parent","type":"group","position":[10,0,0],"rotation":[0,0,90],"scale":[2,3,1],"children":[
+            {"id":"child","type":"box","position":[1,1,0],"keyframes":{
+                "position":[[0,[1,1,0]],[4,[1,1,0]]], "position.y":[[0,1],[4,1]], "y":[[0,1],[4,1]]
+            }}
+        ]}, {"id":"anchor","type":"box","position":[2,4,0]}
+    ]}})).await;
+    let clip = added["clips"][0]["id"].clone();
+    ok(&s, Source::Window, "clip.update", json!({"clipId":clip,"speed":2})).await;
+    let before = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await["scene"].clone();
+    let result = ok(&s, Source::Window, "motion.arrangeObjects", json!({"clipId":clip,"ids":["child","anchor"],"operation":"alignActive","axis":"x","time":6})).await;
+    assert_eq!(result["moved"], json!(["child"]));
+    let after = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await["scene"].clone();
+    let Scene::Space(scene) = Scene::from_json(&after).unwrap() else { panic!() };
+    let child = find_object(&scene.objects, "child").unwrap();
+    for prop in ["position", "position.y", "y"] {
+        assert_eq!(child.keyframes[prop].len(), 3, "preserve and key both vector and component channels");
+        assert_eq!(child.keyframes[prop][1].time, 2., "timeline 6 maps to scene 2");
+    }
+    let world = kimchi_media::render::space::viewport::world_matrix(&scene, 2., "child").unwrap();
+    assert!((world[3][0] - 2.).abs() < 1e-5 && (world[3][1] - 2.).abs() < 1e-5, "world X aligns, Y stays unchanged: {world:?}");
+    let at_start = child.at(0.).position.0;
+    assert_eq!(at_start, [1.,1.,0.], "the original animation endpoints stay intact");
+    ok(&s, Source::Window, "history.undo", json!({})).await;
+    assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await["scene"], before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn arrange_objects_distributes_roots_and_rejects_unsolvable_edits_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({"name":"Arrange roots"})).await;
+    let added = ok(&s, Source::Window, "motion.add", json!({"scene":{"type":"3d","objects":[
+        {"id":"a","type":"group","position":[-4,0,0],"children":[{"id":"child","type":"box","position":[2,0,0]}]},
+        {"id":"b","type":"box","position":[-3,1,0]}, {"id":"c","type":"box","position":[0,2,0]},
+        {"id":"d","type":"box","position":[8,3,0]}
+    ]}})).await;
+    let clip = added["clips"][0]["id"].clone();
+    let args = json!({"clipId":clip,"ids":["d","c","child","a","b"],"operation":"distribute","axis":"x"});
+    let result = ok(&s, Source::Window, "motion.arrangeObjects", args.clone()).await;
+    assert_eq!(result["moved"], json!(["b","c"]));
+    for (id, x, y) in [("a",-4.,0.),("b",0.,1.),("c",4.,2.),("d",8.,3.),("child",2.,0.)] {
+        let object = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip,"id":id})).await;
+        assert_eq!(object["position"], json!([x,y,0.]));
+    }
+    let history = ok(&s, Source::Cli, "history.list", json!({})).await;
+    assert_eq!(ok(&s, Source::Window, "motion.arrangeObjects", args).await["changed"], false);
+    assert_eq!(ok(&s, Source::Cli, "history.list", json!({})).await, history, "no empty undo step");
+    ok(&s, Source::Window, "motion.updateLayer", json!({"clipId":clip,"id":"c","props":{"expressions":{"position.x":"4"}}})).await;
+    let before = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    let error = registry::call(&s, Source::Window, "motion.arrangeObjects", json!({"clipId":clip,"ids":["b","c","d"],"operation":"alignActive","axis":"x"})).await.unwrap_err();
+    assert!(error.contains("expression"), "{error}");
+    assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await, before, "no partial edit of b");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn studio_multi_object_updates_are_atomic_and_coalesce_as_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({"name":"Transform objects"})).await;
+    let objects: Vec<_> = (0..20).map(|i| json!({"id":format!("box{i}"),"type":"box"})).collect();
+    let added = ok(&s, Source::Window, "motion.add", json!({"scene":{"type":"3d","objects":objects}})).await;
+    let clip = added["clips"][0]["id"].clone();
+    let before = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    for x in [1.,2.,3.] {
+        let updates: Vec<_> = (0..20).map(|i| json!({"id":format!("box{i}"),"props":{"position.x":x}})).collect();
+        ok(&s, Source::Window, "motion.updateLayers", json!({"clipId":clip,"updates":updates,"coalesce":"one-transform"})).await;
+    }
+    let after = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    assert!(after["scene"]["objects"].as_array().unwrap().iter().all(|o| o["position"][0] == 3.));
+    assert!(registry::call(&s, Source::Window, "motion.updateLayers", json!({"clipId":clip,"updates":[
+        {"id":"box0","props":{"position.x":100}}, {"id":"missing","props":{"position.x":100}}
+    ]})).await.is_err());
+    assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await, after);
+    ok(&s, Source::Window, "history.undo", json!({})).await;
+    assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await, before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shifting_keyframes_accounts_for_trim_and_clip_speed() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({"name":"Trimmed animation"})).await;
+    let added = ok(&s, Source::Window, "motion.add", json!({"start":5,"duration":4,"scene":{"type":"3d","objects":[
+        {"id":"box","type":"box","keyframes":{"position.x":[[0,0],[1,10],[2,20],[4,40]]}}
+    ]}})).await;
+    let clip = added["clips"][0]["id"].clone();
+    ok(&s, Source::Window, "clip.update", json!({"clipId":clip,"speed":2})).await;
+    ok(&s, Source::Window, "clip.trim", json!({"clipId":clip,"edge":"start","time":5.25})).await;
+    let before = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    ok(&s, Source::Window, "motion.shiftKeyframes", json!({"clipId":clip,"id":"box","property":"position.x","times":[5.5],"by":0.25})).await;
+    let after = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    let scene = kimchi_core::Scene::from_json(&after["scene"]).unwrap();
+    let kimchi_core::Scene::Space(scene) = scene else { panic!() };
+    let keys = &scene.objects[0].keyframes["position.x"];
+    assert_eq!(keys.iter().map(|k| k.time).collect::<Vec<_>>(), [0.,1.5,2.,4.]);
+    assert_eq!(keys[1].value.as_f64(), Some(10.));
+    ok(&s, Source::Window, "history.undo", json!({})).await;
+    assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await, before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shifting_keyframes_preserves_group_spacing_and_checks_every_time() {
+    let dir=tempfile::tempdir().unwrap();
+    let s=session(dir.path());
+    ok(&s,Source::Window,"project.create",json!({"name":"Group retiming"})).await;
+    let added=ok(&s,Source::Window,"motion.add",json!({"start":10,"duration":5,"scene":{"objects":[
+        {"id":"box","type":"box","keyframes":{"position.x":[[1,10],[2,20,"hold"],[4,40,"easeOut"]],"position.y":[[0.5,5],[1.5,15]]}}
+    ]}})).await;
+    let clip=added["clips"][0]["id"].clone();
+    ok(&s,Source::Window,"clip.update",json!({"clipId":clip,"speed":2})).await;
+    let before=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    let result=ok(&s,Source::Window,"motion.shiftKeyframes",json!({"clipId":clip,"id":"box","by":-10})).await;
+    assert_eq!(result["moved"],5);
+    assert_eq!(result["by"],-0.25,"the applied timeline delta reflects the whole group's clamp");
+    let shifted=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip,"id":"box"})).await;
+    let keys:kimchi_core::Keyframes=serde_json::from_value(shifted["keyframes"].clone()).unwrap();
+    assert_eq!(keys["position.x"].iter().map(|k| k.time).collect::<Vec<_>>(),[0.5,1.5,3.5]);
+    assert_eq!(keys["position.y"].iter().map(|k| k.time).collect::<Vec<_>>(),[0.,1.]);
+    assert_eq!(keys["position.x"][1].easing,kimchi_core::Easing::Hold);
+    ok(&s,Source::Window,"history.undo",json!({})).await;
+    assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+    for times in [json!([10.5,"bad"]),json!([]),json!([null])] {
+        assert!(registry::call(&s,Source::Window,"motion.shiftKeyframes",json!({"clipId":clip,"id":"box","by":1,"times":times})).await.is_err());
+    }
+    assert!(registry::call(&s,Source::Window,"motion.shiftKeyframes",json!({"clipId":clip,"id":"box","by":f64::MAX})).await.is_err());
+    assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before,"invalid times leave every channel intact");
+    ok(&s,Source::Window,"motion.shiftKeyframes",json!({"clipId":clip,"id":"box","property":"position.x","times":[11,12],"by":-0.5})).await;
+    let item=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip,"id":"box"})).await;
+    let keys:kimchi_core::Keyframes=serde_json::from_value(item["keyframes"].clone()).unwrap();
+    assert_eq!(keys["position.x"].iter().map(|k| (k.time,k.value.as_f64().unwrap())).collect::<Vec<_>>(),[(1.,20.),(3.,40.)]);
+    assert_eq!(keys["position.y"].iter().map(|k| k.time).collect::<Vec<_>>(),[0.5,1.5]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicating_keyframes_preserves_sources_and_rejects_conflicts_atomically() {
+    let dir=tempfile::tempdir().unwrap();
+    let s=session(dir.path());
+    ok(&s,Source::Window,"project.create",json!({"name":"Key copies"})).await;
+    let added=ok(&s,Source::Window,"motion.add",json!({"start":5,"duration":5,"scene":{"objects":[
+        {"id":"box","type":"box","position":[9,8,7],"keyframes":{"position.x":[[0,0],[1,10,"hold"],[2,20,"easeOut"]],"position.y":[[1,5],[3,15]]}}
+    ]}})).await;
+    let clip=added["clips"][0]["id"].clone();
+    ok(&s,Source::Window,"clip.update",json!({"clipId":clip,"speed":2})).await;
+    ok(&s,Source::Window,"clip.trim",json!({"clipId":clip,"edge":"start","time":5.25})).await;
+    let before=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    let selected=json!([{"id":"box","property":"position.x","time":5.5},{"id":"box","property":"position.x","time":6},{"id":"box","property":"position.y","time":5.5}]);
+    let copied=ok(&s,Source::Window,"motion.duplicateKeyframes",json!({"clipId":clip,"keys":selected,"by":2})).await;
+    assert_eq!(copied["copied"],3);
+    assert_eq!(copied["selectedKeys"],json!([{"id":"box","property":"position.x","time":5.0},{"id":"box","property":"position.x","time":6.0},{"id":"box","property":"position.y","time":5.0}]));
+    let item=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip,"id":"box"})).await;
+    let keys:kimchi_core::Keyframes=serde_json::from_value(item["keyframes"].clone()).unwrap();
+    let x=&keys["position.x"];
+    assert_eq!(x.iter().map(|k| (k.time,k.value.as_f64().unwrap())).collect::<Vec<_>>(),[(0.,0.),(1.,10.),(2.,20.),(5.,10.),(6.,20.)]);
+    assert_eq!(x[3].easing,x[1].easing);
+    assert_eq!(x[4].easing,x[2].easing);
+    assert_eq!(item["position"],json!([9.,8.,7.]));
+    ok(&s,Source::Window,"history.undo",json!({})).await;
+    assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+    for params in [
+        json!({"keys":selected,"by":0}),json!({"keys":selected,"by":0.5}),
+        json!({"keys":[{"id":"box","property":"position.x","time":5.5},{"id":"missing","property":"x","time":5}],"by":2}),
+        json!({"keys":[{"id":"box","property":"position.x","time":5.5},{"id":"box","property":"position.x","time":5.5}],"by":2}),
+        json!({"keys":[{"id":"box","property":"position.x","time":5.5,"value":55}],"by":2}),
+        json!({"keys":selected,"by":f64::MAX}),json!({"keys":[],"by":2})
+    ] {
+        let mut params=params;
+        params["clipId"]=clip.clone();
+        assert!(registry::call(&s,Source::Window,"motion.duplicateKeyframes",params).await.is_err());
+        assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+    }
+    ok(&s,Source::Window,"motion.duplicateKeyframes",json!({"clipId":clip,"keys":[{"id":"box","property":"position.x","time":5.5},{"id":"box","property":"position.x","time":6}],"by":0.5,"replace":true})).await;
+    let item=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip,"id":"box"})).await;
+    let keys:kimchi_core::Keyframes=serde_json::from_value(item["keyframes"].clone()).unwrap();
+    assert_eq!(keys["position.x"].iter().map(|k| (k.time,k.value.as_f64().unwrap())).collect::<Vec<_>>(),[(0.,0.),(1.,10.),(2.,10.),(3.,20.)],"overlapping copies read original values before replacing destinations");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicating_selections_remaps_links_and_undoes_as_one_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({"name":"Copied rigs"})).await;
+    let added = ok(&s, Source::Window, "motion.add", json!({"scene":{"type":"3d",
+        "objects":[
+            {"id":"root","type":"box","children":[{"id":"child","type":"sphere","expressions":{"position.x":"prop('root', 'position.x') + 1"}}]},
+            {"id":"follower","type":"box","constraints":[{"id":"child","type":"lookAt","target":"child"}],
+                "modifiers":[{"type":"boolean","object":"child"}],"expressions":{"position.x":"prop('child', 'position.x') + prop('outside', 'position.x')"}},
+            {"id":"outside","type":"box"},{"id":"child2","type":"box"}],
+        "lights":[{"id":"lamp","type":"point","constraints":[{"type":"lookAt","target":"child"}]}],
+        "cameras":[{"id":"side","constraints":[{"type":"lookAt","target":"root"}]}],"activeCamera":"side"
+    }})).await;
+    let clip = added["clips"][0]["id"].clone();
+    let before = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    let copied = ok(&s, Source::Window, "motion.duplicateLayers", json!({"clipId":clip,"ids":["child","root","follower","root","lamp","side"]})).await;
+    assert_eq!(copied["ids"], json!(["root2","follower2","lamp2","side2"]));
+    assert_eq!(copied["idMap"]["child"], "child3", "ids also avoid unselected objects");
+    let after = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    let scene = &after["scene"];
+    let objects = scene["objects"].as_array().unwrap();
+    assert_eq!(objects.iter().map(|o| o["id"].as_str().unwrap()).collect::<Vec<_>>(), ["root","root2","follower","follower2","outside","child2"]);
+    assert_eq!(objects[1]["children"].as_array().unwrap().len(), 1);
+    assert_eq!(objects[1]["children"][0]["id"], "child3");
+    assert_eq!(objects[1]["children"][0]["expressions"]["position.x"], "prop('root2', 'position.x') + 1");
+    assert_eq!(objects[3]["constraints"][0]["target"], "child3");
+    assert_eq!(objects[3]["constraints"][0]["id"], "child", "stack ids name animation channels, not scene objects");
+    assert_eq!(objects[3]["modifiers"][0]["object"], "child3");
+    assert_eq!(objects[3]["expressions"]["position.x"], "prop('child3', 'position.x') + prop('outside', 'position.x')");
+    assert_eq!(scene["lights"][1]["constraints"][0]["target"], "child3");
+    assert_eq!(scene["cameras"][1]["constraints"][0]["target"], "root2");
+    assert_eq!(scene["activeCamera"], "side");
+    assert_eq!(objects[0], before["scene"]["objects"][0]);
+    assert_eq!(objects[2], before["scene"]["objects"][1]);
+    assert!(registry::call(&s, Source::Window, "motion.duplicateLayers", json!({"clipId":clip,"ids":["root","missing"]})).await.is_err());
+    assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await, after);
+    ok(&s, Source::Window, "history.undo", json!({})).await;
+    assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await, before);
+    // The single-copy command shares the hierarchy and light/camera fixes.
+    let copy = ok(&s, Source::Window, "motion.duplicateLayer", json!({"clipId":clip,"id":"root","newId":"rig"})).await;
+    assert_eq!(copy["id"], "rig");
+    let rig = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip,"id":"rig"})).await;
+    assert_eq!(rig["children"][0]["expressions"]["position.x"], "prop('rig', 'position.x') + 1");
+    assert_eq!(ok(&s, Source::Window, "motion.duplicateLayer", json!({"clipId":clip,"id":"lamp"})).await["id"], "lamp2");
+    assert_eq!(ok(&s, Source::Window, "motion.duplicateLayer", json!({"clipId":clip,"id":"side"})).await["id"], "side2");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicating_layer_groups_keeps_mattes_parents_and_compositions() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({"name":"Copied layers"})).await;
+    let added = ok(&s, Source::Window, "motion.add", json!({"scene":{
+        "layers":[{"id":"group","type":"group","layers":[
+            {"id":"a","type":"rect"},
+            {"id":"b","type":"text","text":"a","parent":"a","matte":{"layer":"a"},"expressions":{"x":"prop('a', 'x') + 2"}}
+        ]}],
+        "compositions":[{"id":"group2","layers":[{"id":"inside","type":"rect"}]}]
+    }})).await;
+    let clip = added["clips"][0]["id"].clone();
+    let before = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    let copied = ok(&s, Source::Window, "motion.duplicateLayers", json!({"clipId":clip,"ids":["b","group","inside"]})).await;
+    assert_eq!(copied["ids"], json!(["group3","inside2"]));
+    let after = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    let b = &after["scene"]["layers"][1]["layers"][1];
+    assert_eq!(b["id"], "b2");
+    assert_eq!(b["parent"], "a2");
+    assert_eq!(b["matte"]["layer"], "a2");
+    assert_eq!(b["expressions"]["x"], "prop('a2', 'x') + 2");
+    assert_eq!(b["text"], "a", "visible text is not a reference");
+    assert_eq!(after["scene"]["compositions"][0]["layers"][1]["id"], "inside2");
+    ok(&s, Source::Window, "history.undo", json!({})).await;
+    assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await, before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_linked_selections_validates_the_remaining_scene_atomically() {
+    let scenes = [json!({"layers":[
+        {"id":"root","type":"group","layers":[{"id":"target","type":"rect"}]},
+        {"id":"follower","type":"ellipse","parent":"root","matte":{"layer":"root"}},
+        {"id":"outside","type":"rect"}
+    ]}), json!({"type":"3d","objects":[
+        {"id":"root","type":"box","children":[{"id":"target","type":"sphere"}]},
+        {"id":"follower","type":"box","constraints":[{"type":"lookAt","target":"target"}]},
+        {"id":"outside","type":"box"}
+    ]})];
+    for scene in scenes {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(dir.path());
+        ok(&s, Source::Window, "project.create", json!({"name":"Remove selection"})).await;
+        let added = ok(&s, Source::Window, "motion.add", json!({"scene":scene})).await;
+        let clip = added["clips"][0]["id"].clone();
+        let before = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+        for ids in [json!(["root"]),json!(["outside","missing"]),json!([])] {
+            assert!(registry::call(&s, Source::Window, "motion.removeLayers", json!({"clipId":clip,"ids":ids})).await.is_err());
+            assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await, before);
+        }
+        ok(&s, Source::Window, "motion.removeLayers", json!({"clipId":clip,"ids":["root","target","follower","root"]})).await;
+        let after = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+        assert_eq!(kimchi_core::Scene::from_json(&after["scene"]).unwrap().ids(), ["outside"]);
+        ok(&s, Source::Window, "history.undo", json!({})).await;
+        assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await, before);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_selected_roots_keeps_scene_order_children_and_one_undo_step() {
+    let dir=tempfile::tempdir().unwrap();
+    let s=session(dir.path());
+    ok(&s,Source::Window,"project.create",json!({"name":"Move selection"})).await;
+    let added=ok(&s,Source::Window,"motion.add",json!({"scene":{"type":"3d","objects":[
+        {"id":"a","type":"group","position":[2,3,4],"children":[{"id":"child","type":"box","keyframes":{"rotation.y":[[0,0],[1,90,"easeOutBack"]]}}]},
+        {"id":"b","type":"box"},{"id":"c","type":"sphere"},{"id":"d","type":"group","children":[{"id":"inside","type":"box"}]}
+    ]}})).await;
+    let clip=added["clips"][0]["id"].clone();
+    let before=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    let moved=ok(&s,Source::Window,"motion.moveLayers",json!({"clipId":clip,"ids":["c","child","a","c"],"index":1})).await;
+    assert_eq!(moved["moved"],json!(["a","c"]));
+    let after=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    let objects=after["scene"]["objects"].as_array().unwrap();
+    assert_eq!(objects.iter().map(|o| o["id"].as_str().unwrap()).collect::<Vec<_>>(),["b","a","c","d"]);
+    assert_eq!(objects[1],before["scene"]["objects"][0],"children, animation and local transforms stay intact");
+    let history=ok(&s,Source::Cli,"history.list",json!({})).await;
+    assert_eq!(ok(&s,Source::Window,"motion.moveLayers",json!({"clipId":clip,"ids":["a","c"],"index":1})).await["changed"],false);
+    assert_eq!(ok(&s,Source::Cli,"history.list",json!({})).await,history,"no empty undo entry");
+    ok(&s,Source::Window,"history.undo",json!({})).await;
+    assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+    ok(&s,Source::Window,"motion.moveLayers",json!({"clipId":clip,"ids":["c","child","a"],"parent":"d","index":0})).await;
+    let after=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    let children=after["scene"]["objects"][1]["children"].as_array().unwrap();
+    assert_eq!(children.iter().map(|o| o["id"].as_str().unwrap()).collect::<Vec<_>>(),["a","c","inside"]);
+    assert_eq!(children[0],before["scene"]["objects"][0]);
+    ok(&s,Source::Window,"history.undo",json!({})).await;
+    assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+    let history=ok(&s,Source::Cli,"history.list",json!({})).await;
+    for args in [json!({"ids":[]}),json!({"ids":["a",7]}),json!({"ids":["b","missing"]}),
+        json!({"ids":["b","camera"]}),json!({"ids":["a","b"],"parent":"child"}),
+        json!({"ids":["a","b"],"parent":"a"}),json!({"ids":["a","b"],"parent":"missing"}),
+        json!({"ids":["b","inside"]}),json!({"ids":["a","b"],"index":-1})] {
+        let mut args=args;args["clipId"]=clip.clone();
+        assert!(registry::call(&s,Source::Window,"motion.moveLayers",args.clone()).await.is_err(),"{args}");
+        assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+        assert_eq!(ok(&s,Source::Cli,"history.list",json!({})).await,history);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_selected_layers_handles_compositions_and_reversed_display_order() {
+    let dir=tempfile::tempdir().unwrap();
+    let s=session(dir.path());
+    ok(&s,Source::Window,"project.create",json!({"name":"Move layers"})).await;
+    let added=ok(&s,Source::Window,"motion.add",json!({"scene":{"layers":[
+        {"id":"a","type":"rect"},{"id":"b","type":"ellipse","parent":"a","matte":{"layer":"a"}},
+        {"id":"group","type":"group","layers":[]},{"id":"card","type":"comp","comp":"card"}
+    ],"compositions":[{"id":"card","layers":[{"id":"inside","type":"text","text":"kept"}]}]}})).await;
+    let clip=added["clips"][0]["id"].clone();
+    let before=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    ok(&s,Source::Window,"motion.moveLayers",json!({"clipId":clip,"ids":["b","a"],"parent":"group"})).await;
+    let after=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    assert_eq!(after["scene"]["layers"][0]["layers"],json!([before["scene"]["layers"][0],before["scene"]["layers"][1]]));
+    ok(&s,Source::Window,"history.undo",json!({})).await;
+    assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+    let moved=ok(&s,Source::Window,"motion.moveLayers",json!({"clipId":clip,"ids":["inside","card"],"parent":"","index":0})).await;
+    assert_eq!(moved["moved"],json!(["card","inside"]),"composition contents are not structural children of a same-named comp layer");
+    let after=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    assert_eq!(after["scene"]["layers"][0]["id"],"card");
+    assert_eq!(after["scene"]["layers"][1]["id"],"inside");
+    assert_eq!(after["scene"]["compositions"][0]["layers"],json!([]));
+    ok(&s,Source::Window,"history.undo",json!({})).await;
+    assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+    ok(&s,Source::Window,"motion.moveLayers",json!({"clipId":clip,"ids":["b","a"],"parent":"card","index":0})).await;
+    let after=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    let layers=after["scene"]["compositions"][0]["layers"].as_array().unwrap();
+    assert_eq!(layers.iter().map(|o| o["id"].as_str().unwrap()).collect::<Vec<_>>(),["a","b","inside"]);
+    ok(&s,Source::Window,"history.undo",json!({})).await;
+    assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_selected_layers_distinguishes_same_named_groups_and_compositions() {
+    let dir=tempfile::tempdir().unwrap();
+    let s=session(dir.path());
+    ok(&s,Source::Window,"project.create",json!({"name":"Source lists"})).await;
+    let added=ok(&s,Source::Window,"motion.add",json!({"scene":{
+        "layers":[{"id":"bucket","type":"group","layers":[{"id":"a","type":"rect"},{"id":"b","type":"ellipse"}]}],
+        "compositions":[{"id":"bucket","layers":[{"id":"c","type":"rect"}]}]
+    }})).await;
+    let clip=added["clips"][0]["id"].clone();
+    let before=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    assert!(registry::call(&s,Source::Window,"motion.moveLayers",json!({"clipId":clip,"ids":["a","c"]})).await.is_err());
+    for (command,args) in [("motion.moveLayer",json!({"id":"a"})),("motion.moveLayers",json!({"ids":["a"]}))] {
+        let mut args=args;args["clipId"]=clip.clone();
+        ok(&s,Source::Window,command,args).await;
+        let after=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+        assert_eq!(after["scene"]["layers"][0]["layers"][0]["id"],"b");
+        assert_eq!(after["scene"]["layers"][0]["layers"][1]["id"],"a");
+        assert_eq!(after["scene"]["compositions"],before["scene"]["compositions"]);
+        ok(&s,Source::Window,"history.undo",json!({})).await;
+        assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn animated_property_updates_keep_easing_and_can_restore_exact_channels() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({"name":"Animated transforms"})).await;
+    let keys = json!([[0,0],[1,2,"easeOutBack"]]);
+    let added = ok(&s, Source::Window, "motion.add", json!({"scene":{"type":"3d","objects":[
+        {"id":"box","type":"box","position":[10,0,0],"keyframes":{"position.x":keys,"rotation.z":[[0,0],[1,90,"easeInOut"]]}}
+    ]}})).await;
+    let clip = added["clips"][0]["id"].clone();
+    let before = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    ok(&s, Source::Window, "motion.updateLayer", json!({"clipId":clip,"id":"box","props":{"position.x":3},"time":1})).await;
+    let after = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    let kimchi_core::Scene::Space(scene) = kimchi_core::Scene::from_json(&after["scene"]).unwrap() else { panic!() };
+    assert_eq!(scene.objects[0].keyframes["position.x"][1].easing, kimchi_core::Easing::parse("easeOutBack").unwrap());
+    ok(&s, Source::Window, "motion.updateLayer", json!({"clipId":clip,"id":"box","props":{"position.x":5},"time":0.5})).await;
+    ok(&s, Source::Window, "motion.updateLayer", json!({"clipId":clip,"id":"box","props":{"position.x":10,"keyframes":{"position.x":keys}},"time":0.5})).await;
+    assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await, before, "base values and original curves restored; unrelated channels stay unchanged");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn adding_keyframes_keeps_base_values_and_existing_easing() {
+    let dir=tempfile::tempdir().unwrap();let s=session(dir.path());
+    ok(&s,Source::Window,"project.create",json!({"name":"Insert keys"})).await;
+    let added=ok(&s,Source::Window,"motion.add",json!({"start":5,"duration":4,"scene":{"type":"3d","objects":[
+        {"id":"box","type":"box","position":[9,8,7],"keyframes":{"position.x":[[0,0],[2,4,"easeOutBack"]]}}
+    ]}})).await;
+    let clip=added["clips"][0]["id"].clone();
+    ok(&s,Source::Window,"clip.update",json!({"clipId":clip,"speed":2})).await;
+    let before=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+    for (time,value,easing) in [(5.5,None,None),(6.,Some(json!(6)),None),(6.,Some(json!(3)),Some("hold"))] {
+        let mut args=json!({"clipId":clip,"id":"box","property":"position.x","time":time});
+        if let Some(value)=value {args["value"]=value;}
+        if let Some(easing)=easing {args["easing"]=json!(easing);}
+        ok(&s,Source::Window,"motion.addKeyframe",args).await;
+        let after=ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await;
+        let kimchi_core::Scene::Space(scene)=kimchi_core::Scene::from_json(&after["scene"]).unwrap() else {panic!()};
+        assert_eq!(scene.objects[0].position.0,[9.,8.,7.]);
+        let keys=&scene.objects[0].keyframes["position.x"];
+        if time==5.5 {
+            assert_eq!(keys.len(),3);assert_eq!(keys[1].time,1.);
+            let original=kimchi_core::Scene::from_json(&before["scene"]).unwrap();
+            assert_eq!(Some(keys[1].value.clone()),original.value("box","position.x",1.));
+        } else {
+            assert_eq!(keys.len(),2);
+            assert_eq!(keys[1].easing,kimchi_core::Easing::parse(easing.unwrap_or("easeOutBack")).unwrap());
+        }
+        ok(&s,Source::Window,"history.undo",json!({})).await;
+        assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+    }
+    assert!(registry::call(&s,Source::Window,"motion.addKeyframe",json!({"clipId":clip,"id":"box","property":"position.x","time":6,"value":"wrong type"})).await.is_err());
+    assert_eq!(ok(&s,Source::Cli,"motion.get",json!({"clipId":clip})).await,before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn keyframe_edits_are_atomic_preserve_curves_and_support_swaps() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({"name":"Keyframe editing"})).await;
+    let added = ok(&s, Source::Window, "motion.add", json!({"start":5,"duration":4,"scene":{"type":"3d","objects":[
+        {"id":"box","type":"box","position":[9,8,7],"keyframes":{
+            "position.x":[[0,0],[1,10,"easeOutBack"],[2,20,"hold"],[4,40]],
+            "position.y":[[0,5],[2,10,"easeInOut"]]
+        }}
+    ]}})).await;
+    let clip = added["clips"][0]["id"].clone();
+    ok(&s, Source::Window, "clip.update", json!({"clipId":clip,"speed":2})).await;
+    ok(&s, Source::Window, "clip.trim", json!({"clipId":clip,"edge":"start","time":5.25})).await;
+    let before = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    let edited = ok(&s, Source::Window, "motion.updateKeyframes", json!({"clipId":clip,"updates":[
+        {"id":"box","property":"position.x","time":5.5,"newTime":6,"value":15},
+        {"id":"box","property":"position.x","time":6,"newTime":5.5},
+        {"id":"box","property":"position.y","time":5,"newTime":7.5,"value":12,"easing":"easeOut"}
+    ]})).await;
+    assert_eq!(edited["updated"], 3);
+    let after = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    let kimchi_core::Scene::Space(scene) = kimchi_core::Scene::from_json(&after["scene"]).unwrap() else { panic!() };
+    let object = &scene.objects[0];
+    assert_eq!(object.position.0, [9.,8.,7.], "editing keys never changes unanimated base values");
+    let x = &object.keyframes["position.x"];
+    assert_eq!(x.iter().map(|k| (k.time,k.value.as_f64().unwrap())).collect::<Vec<_>>(), [(0.,0.),(1.,20.),(2.,15.),(4.,40.)]);
+    assert_eq!(x[1].easing, kimchi_core::Easing::Hold);
+    assert_eq!(x[2].easing, kimchi_core::Easing::parse("easeOutBack").unwrap());
+    assert_eq!(object.keyframes["position.y"][1].time, 5., "keys beyond the clip end stay addressable");
+    for invalid in [
+        json!([{"id":"box","property":"position.x","time":5.5,"newTime":8},{"id":"missing","property":"x","time":0}]),
+        json!([{"id":"box","property":"position.x","time":5.5},{"id":"box","property":"position.x","time":5.5}]),
+        json!([{"id":"box","property":"position.x","time":5.5,"newTime":8},{"id":"box","property":"position.x","time":6,"newTime":8}]),
+        json!([{"id":"box","property":"position.x","time":5.5,"value":"invalid number"}]),
+        json!([{"id":"box","property":"position.x","time":5.5,"newtime":8}])
+    ] {
+        assert!(registry::call(&s, Source::Window, "motion.updateKeyframes", json!({"clipId":clip,"updates":invalid})).await.is_err());
+        assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await, after);
+    }
+    ok(&s, Source::Window, "history.undo", json!({})).await;
+    assert_eq!(ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await, before);
+    ok(&s, Source::Window, "motion.updateKeyframes", json!({"clipId":clip,"updates":[{"id":"box","property":"position.x","time":5.5,"newTime":7}]})).await;
+    let after = ok(&s, Source::Cli, "motion.get", json!({"clipId":clip})).await;
+    let kimchi_core::Scene::Space(scene) = kimchi_core::Scene::from_json(&after["scene"]).unwrap() else { panic!() };
+    let x = &scene.objects[0].keyframes["position.x"];
+    assert_eq!(x.len(), 3, "a moved key replaces an unselected destination");
+    assert_eq!((x[2].time,x[2].value.as_f64()), (4.,Some(10.)));
 }
 
 #[tokio::test(flavor = "multi_thread")]

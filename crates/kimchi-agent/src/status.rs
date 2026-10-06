@@ -45,6 +45,10 @@ pub async fn provider_status(session: &Arc<Session>) -> Vec<ProviderStatus> {
             config = AgentConfig::new(kind);
         }
         let (ready, message, detail, models) = match kind {
+            ProviderKind::Zenith => match crate::zenith::models().await {
+                Ok(models) => (true, "Connected to Zenith. Conversations use your lsuite agents and their permissions.".into(), crate::zenith::executable().map(|p| p.display().to_string()).unwrap_or_default(), models),
+                Err(e) => (false, e, String::new(), vec![]),
+            },
             ProviderKind::ClaudeCode | ProviderKind::Codex => cli_status(session, kind).await,
             ProviderKind::Anthropic | ProviderKind::OpenAi => {
                 let (id, env) = kind.key_source().unwrap_or_default();

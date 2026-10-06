@@ -159,7 +159,7 @@ impl Workspace {
         match command {
             "timeline.seek" => {
                 let t = params["time"].as_f64().ok_or("time is required")?;
-                playback.update(cx, |p, cx| p.seek(t, cx));
+                playback.update(cx, |p, cx| if params["exact"].as_bool()==Some(true) {p.seek_exact(t,cx);} else {p.seek(t,cx);});
                 Ok(json!({ "playhead": playback.read(cx).playhead }))
             }
             "timeline.play" => {
@@ -189,7 +189,7 @@ impl Workspace {
             "ui.showPanel" if params["open"] == json!(false) => {
                 let panel = params["panel"].as_str().unwrap_or("");
                 // The left panel closes to its rail (whichever tab is named); the inspector closes.
-                if matches!(panel, "media" | "generate" | "text" | "motion" | "captions" | "inspector") {
+                if matches!(panel, "media" | "generate" | "text" | "motion" | "studio" | "captions" | "inspector") {
                     self.editor.update(cx, |e, cx| if panel == "inspector" { e.set_inspector_open(false, cx) } else { e.set_left_open(false, cx) });
                     return Ok(json!({ "panel": panel, "open": false }));
                 }
@@ -216,6 +216,7 @@ impl Workspace {
                     "generate" => s.set_left_tab(LeftTab::Generate, cx),
                     "text" => s.set_left_tab(LeftTab::Text, cx),
                     "motion" => s.set_left_tab(LeftTab::Motion, cx),
+                    "studio" => s.set_left_tab(LeftTab::Studio, cx),
                     "captions" => s.set_left_tab(LeftTab::Captions, cx),
                     "agent" => s.set_agent_open(true, cx),
                     "jobs" => s.set_jobs_open(true, cx),
@@ -289,7 +290,12 @@ impl Workspace {
                     return Err(kimchi_control::session::NO_PROJECT.into());
                 }
                 let studio = self.editor.read(cx).studio.clone();
-                studio.update(cx, |s, cx| s.ui_command(params, window, cx))
+                let hide_panel=params["panel"].as_str()==Some("none");
+                let state=studio.update(cx, |s, cx| s.ui_command(params, window, cx))?;
+                if hide_panel {
+                    self.editor.update(cx,|e,cx| e.set_left_open(false,cx));
+                }
+                Ok(state)
             }
             "app.quit" => {
                 cx.quit();
@@ -1053,7 +1059,7 @@ impl Render for Workspace {
             .child(self.backdrop(window, cx))
             .child(if has_project { self.editor.clone().into_any_element() } else { self.home.clone().into_any_element() })
             .child(self.dialogs.clone())
-            .when_some(menu, |d, m| d.child(views::overlays::context_menu(m, cx)))
+            .when_some(menu, |d, m| d.child(views::overlays::context_menu(m, window, cx)))
             .child(views::overlays::toasts(toasts, cx))
             // An outline and a hint; the timeline shows where files dropped on a track will land.
             .when(dropping, |d| {

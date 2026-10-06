@@ -26,6 +26,7 @@ to these files.
 | `bfl.png` | Black Forest Labs | https://bfl.ai/apple-icon.png |
 | `stability.png` | Stability AI | the favicon stability.ai links, https://images.squarespace-cdn.com/content/v1/6213c340453c3f502425776e/804f0e8b-0028-4262-a8b0-b9f1c5de72c0/favicon.ico?format=500w |
 | `together.png` | Together AI | https://cdn.prod.website-files.com/69654e88dce9154b5f1206dd/69a59cff65ed0f267dd2fbe8_touchicon.png (the touch icon together.ai links) |
+| `elevenlabs.png` | ElevenLabs | https://elevenlabs.io/apple-icon.png?6592732ab34b1d42 (original 180 × 180 PNG, unchanged) |
 | `comfyui.png` | ComfyUI | https://www.comfy.org/apple-touch-icon.png |
 | `cursor.png` | Cursor (MCP setup) | https://cursor.com/apple-touch-icon.png |
 | `vscode.png` | VS Code (MCP setup) | https://code.visualstudio.com/apple-touch-icon.png |

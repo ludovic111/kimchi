@@ -364,6 +364,38 @@ fn lex(src: &str) -> Result<Vec<(Tok<'_>, usize)>, String> {
 // ---------------------------------------------------------------------------------------------
 // The parser
 
+pub(super) fn rename_prop_reference(src: &str, from: &str, to: &str) -> Result<String, String> {
+    let toks = lex(src)?;
+    let mut out = String::new();
+    let mut copied = 0;
+    for call in toks.windows(4) {
+        let [(Tok::Ident("prop"), _), (Tok::P("("), _), (Tok::Str(id), start), (Tok::P(","), _)] = call else { continue };
+        if id != from { continue; }
+        let start = *start;
+        let quote = src[start..].chars().next().expect("string token");
+        let mut chars = src[start..].char_indices().skip(1);
+        let mut end = start + 1;
+        while let Some((offset, ch)) = chars.next() {
+            if ch == '\\' { chars.next(); }
+            else if ch == quote { end = start + offset + ch.len_utf8(); break; }
+        }
+        out.push_str(&src[copied..start]);
+        out.push(quote);
+        for ch in to.chars() {
+            match ch {
+                '\n' => out.push_str("\\n"),
+                '\t' => out.push_str("\\t"),
+                ch if ch == quote || ch == '\\' => { out.push('\\'); out.push(ch); }
+                ch => out.push(ch),
+            }
+        }
+        out.push(quote);
+        copied = end;
+    }
+    out.push_str(&src[copied..]);
+    Ok(out)
+}
+
 struct Parser<'s> {
     src: &'s str,
     toks: Vec<(Tok<'s>, usize)>,

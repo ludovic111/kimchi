@@ -23,6 +23,7 @@ pub const COMMON_RATIOS: [&str; 6] = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9
 #[derive(Clone, Debug)]
 pub struct Draft {
     pub video: bool,
+    pub audio_task: Option<Task>,
     /// `provider::model` the person chose for this mode (`None`: the default in settings).
     pub model: Option<String>,
     /// `None`: the project's ratio.
@@ -45,6 +46,7 @@ impl Default for Draft {
     fn default() -> Self {
         Self {
             video: false,
+            audio_task: None,
             model: None,
             aspect: None,
             duration: None,
@@ -61,14 +63,15 @@ impl Default for Draft {
 
 impl Draft {
     pub fn task(&self) -> Task {
-        task_for(self.video, !self.refs.is_empty())
+        self.audio_task.unwrap_or_else(|| task_for(self.video, !self.refs.is_empty()))
     }
 
     /// Switches image/video: start and end frames for video, references for images.
     pub fn set_video(&mut self, video: bool) {
-        if self.video == video {
+        if self.video == video && self.audio_task.is_none() {
             return;
         }
+        self.audio_task = None;
         self.video = video;
         self.model = None;
         self.duration = None;
@@ -98,6 +101,7 @@ impl Draft {
 
     /// How many input images the model takes in this mode.
     pub fn max_refs(&self, model: Option<&ModelInfo>) -> usize {
+        if self.audio_task.is_some() { return 0; }
         if self.video {
             if model.is_some_and(|m| m.end_frame) { 2 } else { 1 }
         } else {

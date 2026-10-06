@@ -64,6 +64,13 @@ const MOVING: &[&str] = &["x", "y", "position", "anchorX", "anchorY", "scale", "
 /// Draws `scene` at scene time `t` onto `canvas`; `base` maps project pixels from the canvas
 /// centre to the canvas.
 pub(crate) fn draw(canvas: &mut Pixmap, scene: &Scene2d, t: f64, base: Transform, fx: &mut Flat) {
+    let axis = |a: f32, b: f32| (a * a + b * b).sqrt().max(1e-6) as f64;
+    let project = (canvas.width() as f64 / axis(base.sx, base.ky), canvas.height() as f64 / axis(base.kx, base.sy));
+    draw_on_canvas(canvas,scene,t,base,project,fx);
+}
+
+/// Render a cropped view without treating the visible crop as the scene's canvas size.
+pub(crate) fn draw_on_canvas(canvas:&mut Pixmap,scene:&Scene2d,t:f64,base:Transform,project:(f64,f64),fx:&mut Flat) {
     let bg = match scene.keyframes.get("background").and_then(|k| value_at(k, t)) {
         Some(v) => v.as_str().map(str::to_string),
         None => scene.background.clone(),
@@ -71,13 +78,25 @@ pub(crate) fn draw(canvas: &mut Pixmap, scene: &Scene2d, t: f64, base: Transform
     if let Some(bg) = bg {
         canvas.fill(color(&bg));
     }
-    let axis = |a: f32, b: f32| (a * a + b * b).sqrt().max(1e-6) as f64;
-    let project = (canvas.width() as f64 / axis(base.sx, base.ky), canvas.height() as f64 / axis(base.kx, base.sy));
     remember_canvas(project, fx.eval);
     let layers = scene.layers_at_with(t, &fx.eval);
     let hidden = hidden_ids(&layers);
     let cx = Cx { scene, comp: None, home: &layers, hidden: &hidden, t, rate: 1.0, depth: 0, nest: 0, canvas: project, project, k: fx.scale.max(1e-4), opts: fx.eval };
     draw_list(canvas, &layers, Place { to: base, home: base }, &cx, fx);
+}
+
+/// An opened composition is drawn directly into its visible crop, keeping its own canvas
+/// coordinates and time without first rasterising the entire composition into a thumbnail.
+pub(crate) fn draw_composition_view(canvas:&mut Pixmap,scene:&Scene2d,t:f64,id:&str,base:Transform,project:(f64,f64),fx:&mut Flat) {
+    let Some(comp)=scene.composition(id) else {return};
+    remember_canvas(project,fx.eval);
+    if !t.is_finite() || comp.duration.is_some_and(|d|!(-1e-9..=d+1e-9).contains(&t)) {return;}
+    if let Some(bg)=&comp.background {canvas.fill(color(bg));}
+    let Some(layers)=scene.comp_layers_at_with(id,t,&fx.eval) else {return};
+    let hidden=hidden_ids(&layers);
+    let extent=(comp.width.unwrap_or(project.0).max(1.),comp.height.unwrap_or(project.1).max(1.));
+    let cx=Cx {scene,comp:Some(id),home:&layers,hidden:&hidden,t,rate:1.,depth:1,nest:0,canvas:extent,project,k:fx.scale.max(1e-4),opts:fx.eval};
+    draw_list(canvas,&layers,Place {to:base,home:base},&cx,fx);
 }
 
 /// What a list of layers is drawn in.
@@ -996,6 +1015,10 @@ fn mapped(r: Rect, ts: Transform) -> Option<Rect> {
 /// stroke. `project` is the scene's canvas, `canvas` the one the layer is on.
 fn local_bounds(l: &Layer, scene: &Scene2d, project: (f64, f64), canvas: (f64, f64), t: f64, stroked: bool) -> Option<Rect> {
     let one = bounds_once(l, scene, project, canvas, t, stroked)?;
+    repeated_bounds(l,one)
+}
+
+fn repeated_bounds(l:&Layer,one:Rect)->Option<Rect> {
     match shapeops::copies(&l.operators) {
         Some(copies) if !matches!(l.kind, LayerKind::Particles(_)) => copies.iter().fold(None, |acc, (ts, _)| union(acc, mapped(one, *ts))),
         _ => Some(one),
@@ -1056,8 +1079,8 @@ fn bounds_once(l: &Layer, scene: &Scene2d, project: (f64, f64), canvas: (f64, f6
     }
 }
 
-/// The project canvas last drawn (compositions without a size use it) and what expressions saw
-/// then, for the Studio.
+/// Compatibility context for geometry callers that do not pass their own canvas and
+/// expression options. Studio supplies these explicitly through CanvasGeometry.
 fn last_canvas() -> &'static Mutex<((f64, f64), EvalOptions)> {
     static C: OnceLock<Mutex<((f64, f64), EvalOptions)>> = OnceLock::new();
     C.get_or_init(|| Mutex::new(((1920.0, 1080.0), EvalOptions::default())))
@@ -1069,66 +1092,203 @@ fn remember_canvas(size: (f64, f64), opts: EvalOptions) {
     }
 }
 
-/// The layers the Studio looks at: the scene's or a composition's, at `t`, with their canvas.
-/// Layers, the canvas they are on and the project's canvas.
-type StudioList = (Vec<Layer>, (f64, f64), (f64, f64));
+/// A 2D scene evaluated for one canvas and moment. Studio uses an explicit snapshot so
+/// background renders cannot change its picking, handles, framing or expression context.
+pub struct CanvasGeometry<'a> {
+    scene: &'a Scene2d,
+    t: f64,
+    layers: Vec<Layer>,
+    canvas: (f64, f64),
+    project: (f64, f64),
+}
 
-fn studio_list(scene: &Scene2d, t: f64, comp: Option<&str>) -> Option<StudioList> {
-    let (project, opts) = *last_canvas().lock().unwrap_or_else(|e| e.into_inner());
-    match comp {
-        None => Some((scene.layers_at_with(t, &opts), project, project)),
-        Some(id) => {
-            let c = scene.composition(id)?;
-            let canvas = (c.width.unwrap_or(project.0), c.height.unwrap_or(project.1));
-            Some((scene.comp_layers_at_with(id, t, &opts)?, canvas, project))
+impl<'a> CanvasGeometry<'a> {
+    pub fn new(scene: &'a Scene2d, t: f64, comp: Option<&str>, project: (f64, f64), opts: EvalOptions) -> Option<Self> {
+        if !t.is_finite() || !project.0.is_finite() || !project.1.is_finite() || project.0 <= 0. || project.1 <= 0. {
+            return None;
         }
+        let (layers, canvas) = match comp {
+            None => (scene.layers_at_with(t, &opts), project),
+            Some(id) => {
+                let c = scene.composition(id)?;
+                let canvas = (c.width.unwrap_or(project.0), c.height.unwrap_or(project.1));
+                (scene.comp_layers_at_with(id, t, &opts)?, canvas)
+            }
+        };
+        Some(Self {
+            scene,
+            t,
+            layers,
+            canvas,
+            project,
+        })
+    }
+
+    /// The evaluated layer, including its expressions, in its own parent coordinates.
+    pub fn layer(&self, id: &str) -> Option<&Layer> {
+        locate(&self.layers, id).map(|(_, _, layer)| layer)
+    }
+
+    /// Local pixels to canvas-centred pixels, including parents and groups, as
+    /// [a, b, c, d, e, f]: x' = a*x + c*y + e; y' = b*x + d*y + f.
+    pub fn transform(&self, id: &str) -> Option<[f64; 6]> {
+        let (chain, siblings, layer) = locate(&self.layers, id)?;
+        let m = chain.pre_concat(matrix(siblings, layer));
+        Some([m.sx, m.ky, m.kx, m.sy, m.tx, m.ty].map(f64::from))
+    }
+
+    /// Four transformed corners for the layer's editing handles.
+    pub fn bounds(&self, id: &str) -> Option<[[f64; 2]; 4]> {
+        let (chain, siblings, layer) = locate(&self.layers, id)?;
+        let r = local_bounds(layer, self.scene, self.project, self.canvas, self.t, false)?;
+        Some(corners_of(r, chain.pre_concat(matrix(siblings, layer))).map(|p| p.map(f64::from)))
     }
 }
 
-/// A layer's full transform at scene time `t` (parents and groups included): its own pixels
-/// (from its centre) → project pixels from the canvas centre (or the composition's, with
-/// `comp`). As `[a, b, c, d, e, f]`: x' = a·x + c·y + e, y' = b·x + d·y + f.
-pub fn layer_transform(scene: &Scene2d, t: f64, comp: Option<&str>, id: &str) -> Option<[f64; 6]> {
-    let (list, ..) = studio_list(scene, t, comp)?;
-    let (chain, sib, l) = locate(&list, id)?;
-    let m = chain.pre_concat(matrix(sib, l));
-    Some([m.sx, m.ky, m.kx, m.sy, m.tx, m.ty].map(f64::from))
+// Compatibility helpers for callers that use the last rendered canvas. Interactive tools
+// should construct CanvasGeometry with their project's dimensions and clip evaluation options.
+fn last_geometry<'a>(scene: &'a Scene2d, t: f64, comp: Option<&str>) -> Option<CanvasGeometry<'a>> {
+    let (project, opts) = *last_canvas().lock().unwrap_or_else(|e| e.into_inner());
+    CanvasGeometry::new(scene, t, comp, project, opts)
 }
 
-/// A layer's four corners at scene time `t` (top left, top right, bottom right, bottom left of
-/// what it covers), in project pixels from the canvas centre (or the composition's), after its
-/// full transform: for the Studio's handles.
+/// The layer transform using the last rendered canvas's evaluation context.
+pub fn layer_transform(scene: &Scene2d, t: f64, comp: Option<&str>, id: &str) -> Option<[f64; 6]> {
+    last_geometry(scene, t, comp)?.transform(id)
+}
+
+/// The layer's handle bounds using the last rendered canvas's evaluation context.
 pub fn layer_bounds(scene: &Scene2d, t: f64, comp: Option<&str>, id: &str) -> Option<[[f64; 2]; 4]> {
-    let (list, canvas, project) = studio_list(scene, t, comp)?;
-    let (chain, sib, l) = locate(&list, id)?;
-    let r = local_bounds(l, scene, project, canvas, t, false)?;
-    let c = corners_of(r, chain.pre_concat(matrix(sib, l)));
-    Some(c.map(|p| [p[0] as f64, p[1] as f64]))
+    last_geometry(scene, t, comp)?.bounds(id)
+}
+
+fn selectable(l: &Layer, t: f64, hidden: &HashSet<String>) -> bool {
+    l.visible_at(t) && !hidden.contains(&l.id) && l.opacity > 0. && !matches!(l.kind, LayerKind::Null {} | LayerKind::Adjustment {})
+}
+
+/// Particle emitters render independently of shape repeaters. Other layers, including
+/// groups, contribute only copies with positive opacity.
+fn selection_copies(l: &Layer) -> Vec<(Transform, f32)> {
+    let copies = if matches!(l.kind, LayerKind::Particles(_)) {
+        None
+    } else {
+        shapeops::copies(&l.operators)
+    };
+    copies
+        .unwrap_or_else(|| vec![(Transform::identity(), 1.)])
+        .into_iter()
+        .filter(|(_, alpha)| *alpha > 0.)
+        .collect()
+}
+
+/// Visible selection bounds in scene order, in canvas-centred pixels. Evaluate the scene
+/// once for the whole gesture. Group bounds include only selectable descendants; transforms
+/// can still inherit from invisible parent layers, as they do in the renderer. A child of
+/// a repeated group can have several entries; callers combine hits by layer id.
+pub fn layer_selection_bounds(scene: &Scene2d, t: f64, comp: Option<&str>) -> Vec<(String, [[f64; 2]; 4])> {
+    last_geometry(scene, t, comp).map_or_else(Vec::new, |g| g.selection_bounds())
+}
+
+impl CanvasGeometry<'_> {
+    /// Visible layer bounds in scene order. Repeated group children may occur more than once.
+    pub fn selection_bounds(&self) -> Vec<(String, [[f64; 2]; 4])> {
+        type Entry = (String, [[f64; 2]; 4]);
+        struct Selection<'a> {
+            scene: &'a Scene2d,
+            t: f64,
+            canvas: (f64, f64),
+            project: (f64, f64),
+            hidden: HashSet<String>,
+            bounds: Vec<Option<Entry>>,
+        }
+        impl Selection<'_> {
+            /// Return the visible union in this list's coordinates, also recording every layer
+            /// in the canvas's coordinates. Reserve each group's slot to preserve preorder.
+            fn walk(&mut self, list: &[Layer], chain: Transform) -> Option<Rect> {
+                let mut union_bounds = None;
+                for l in list {
+                    if !selectable(l, self.t, &self.hidden) {
+                        continue;
+                    }
+                    let copies = selection_copies(l);
+                    if copies.is_empty() {
+                        continue;
+                    }
+                    let index = self.bounds.len();
+                    self.bounds.push(None);
+                    let m = matrix(list, l);
+                    let world = chain.pre_concat(m);
+                    let one = match &l.kind {
+                        LayerKind::Group { layers } => {
+                            let mut local = None;
+                            for (copy, _) in &copies {
+                                // The local union is identical for each instance; every instance
+                                // still needs its children's bounds in canvas coordinates.
+                                local = self.walk(layers, world.pre_concat(*copy));
+                            }
+                            local
+                        }
+                        _ => bounds_once(l, self.scene, self.project, self.canvas, self.t, false),
+                    };
+                    if let Some(r) = one.and_then(|r| copies.iter().fold(None, |acc, (ts, _)| union(acc, mapped(r, *ts)))) {
+                        let corners = corners_of(r, world).map(|p| p.map(f64::from));
+                        self.bounds[index] = Some((l.id.clone(), corners));
+                        union_bounds = union(union_bounds, mapped(r, m));
+                    }
+                }
+                union_bounds
+            }
+        }
+        let mut selection = Selection {
+            scene: self.scene,
+            t: self.t,
+            canvas: self.canvas,
+            project: self.project,
+            hidden: hidden_ids(&self.layers),
+            bounds: vec![],
+        };
+        selection.walk(&self.layers, Transform::identity());
+        selection.bounds.into_iter().flatten().collect()
+    }
 }
 
 /// The topmost visible layer whose shape holds `point` (project pixels from the canvas centre,
 /// or the composition's) at scene time `t`. Inside a group, the group's layer under the point.
 pub fn hit_test(scene: &Scene2d, t: f64, comp: Option<&str>, point: [f64; 2]) -> Option<String> {
-    let (list, canvas, project) = studio_list(scene, t, comp)?;
-    let hidden = hidden_ids(&list);
-    hit(&list, Transform::identity(), [point[0] as f32, point[1] as f32], t, &hidden, scene, canvas, project)
+    last_geometry(scene, t, comp)?.hit_test(point)
+}
+
+impl CanvasGeometry<'_> {
+    /// The topmost visible layer holding a point in canvas-centred pixels.
+    pub fn hit_test(&self, point: [f64; 2]) -> Option<String> {
+        let hidden = hidden_ids(&self.layers);
+        hit(
+            &self.layers,
+            Transform::identity(),
+            point.map(|v| v as f32),
+            self.t,
+            &hidden,
+            self.scene,
+            self.canvas,
+            self.project,
+        )
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn hit(list: &[Layer], ts: Transform, pt: [f32; 2], t: f64, hidden: &HashSet<String>, scene: &Scene2d, canvas: (f64, f64), project: (f64, f64)) -> Option<String> {
     for l in list.iter().rev() {
-        if !l.visible_at(t) || hidden.contains(&l.id) || l.opacity <= 0.0 || matches!(l.kind, LayerKind::Null {} | LayerKind::Adjustment {}) {
+        if !selectable(l,t,hidden) {
             continue;
         }
         let m = ts.pre_concat(matrix(list, l));
+        let copies=selection_copies(l);
         if let LayerKind::Group { layers } = &l.kind {
-            let copies = shapeops::copies(&l.operators).unwrap_or_else(|| vec![(Transform::identity(), 1.0)]);
             if let Some(id) = copies.iter().rev().find_map(|(c, _)| hit(layers, m.pre_concat(*c), pt, t, hidden, scene, canvas, project)) {
                 return Some(id);
             }
             continue;
         }
-        let copies = shapeops::copies(&l.operators).unwrap_or_else(|| vec![(Transform::identity(), 1.0)]);
         for (c, _) in copies.iter().rev() {
             let Some(inv) = m.pre_concat(*c).invert() else { continue };
             let mut p = Point::from_xy(pt[0], pt[1]);

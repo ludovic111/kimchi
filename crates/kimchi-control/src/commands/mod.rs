@@ -493,6 +493,9 @@ pub static SPECS: &[Spec] = &[
         crate::registry::COALESCE,
     ]),
     edit("motion.removeLayer", "Remove a layer, object or light from a motion clip.", &[CLIP_ID, req("id", String, "Its id.")]),
+    edit("motion.removeLayers", "Remove a selection of layers, objects, lights or extra cameras, including their descendants, together. References are checked after all removals; an invalid remaining scene leaves everything unchanged. One undo step.", &[
+        CLIP_ID, req("ids", Array, "Nonempty selection of existing ids. Selecting a parent and its children removes the hierarchy once.").of(String),
+    ]),
     edit("motion.setKeyframes", "Animate one property of a layer, object, light or the camera inside a motion clip: replace its keyframes (times in scene seconds).", &[
         CLIP_ID,
         req("id", String, "A layer, object or light id, \"camera\", or \"scene\" (background, ambient)."),
@@ -500,20 +503,26 @@ pub static SPECS: &[Spec] = &[
         KEYFRAMES,
         crate::registry::COALESCE,
     ]),
-    edit("motion.updateLayer", "Change some properties of one layer, object, light, the camera or the scene (\"scene\": background, ambient) of a motion clip. A property that is animated gets a keyframe at that time instead; others change for the whole clip.", &[
+    edit("motion.updateLayer", "Change some properties of one layer, object, light, the camera or the scene (\"scene\": background, ambient) of a motion clip. A property that is animated gets a keyframe at that time instead, keeping an existing key's easing; others change for the whole clip.", &[
         CLIP_ID,
         req("id", String, "A layer, object or light id, \"camera\" or \"scene\"."),
-        req("props", Object, "Properties and values, e.g. {\"x\": 120, \"fill\": \"#ff5a36\", \"text\": \"Hi\"} (any field of motion.guide; nested ones like stroke or material merge)."),
+        req("props", Object, "Properties and values, e.g. {\"x\": 120, \"fill\": \"#ff5a36\", \"text\": \"Hi\"} (any field of motion.guide; nested ones like stroke or material merge). An explicit keyframes object replaces its named channels after values are set; an empty channel array removes it."),
         opt("time", Number, "Timeline seconds, for animated properties (default: the playhead)."),
         crate::registry::COALESCE,
     ]),
-    edit("motion.addKeyframe", "Set one keyframe of a layer, object, light or camera property at a timeline time (replacing one already there).", &[
+    edit("motion.updateLayers", "Change properties of several items in one motion scene atomically, as one undo step. Animated properties get keyframes, as with motion.updateLayer. Used for simultaneous Studio transforms.", &[
+        CLIP_ID,
+        req("updates", Array, "A nonempty list of {\"id\": \"object\", \"props\": {\"position\": [1, 2, 3]}}. Every update must succeed."),
+        opt("time", Number, "Timeline seconds, for animated properties (default: the playhead)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.addKeyframe", "Set one keyframe of a layer, object, light or camera property at a timeline time (replacing one already there). Base property values stay unchanged; an existing key keeps its easing unless supplied.", &[
         CLIP_ID,
         req("id", String, "A layer, object or light id, \"camera\" or \"scene\"."),
         req("property", String, "The property, e.g. x, opacity, rotation.y, fov."),
         opt("time", Number, "Timeline seconds (default: the playhead)."),
         opt("value", Any, "The value (default: what the property is at that time)."),
-        opt("easing", String, "How the value arrives here from the previous keyframe (default linear)."),
+        opt("easing", String, "How the value arrives here from the previous keyframe. Defaults to the existing key's easing, or linear for a new key."),
         crate::registry::COALESCE,
     ]),
     edit("motion.removeKeyframe", "Remove a keyframe of a layer, object, light or camera property at a timeline time, or its whole animation (it then keeps its value at the playhead).", &[
@@ -581,15 +590,33 @@ pub static SPECS: &[Spec] = &[
         opt("parent", String, "A group or composition (2D) or object (3D) to move it into; \"\" = the top level. Omit to stay in the same list."),
         opt("index", Integer, "Position in its list (0 = first, drawn first in 2D). Default: last."),
     ]),
+    edit("motion.moveLayers", "Reorder or reparent a selection of layers or objects together. Selected descendants travel with their selected ancestors; roots keep their scene order and local transforms. Invalid destinations leave the scene unchanged. One undo step.", &[
+        CLIP_ID,
+        req("ids", Array, "Layer or object ids. Duplicate ids are ignored; lights, cameras and compositions cannot be moved."),
+        opt("parent", String, "Destination group or composition (2D), or object (3D); empty string means the scene root. Omit only when all selected roots share a list."),
+        opt("index", Integer, "Insertion position after removing all selected roots from the destination list. Zero is first (drawn first in 2D); default is last."),
+    ]),
     edit("motion.renameLayer", "Give a layer, object, light, camera, composition or shared material of a motion clip a new id; everything that refers to it follows (parents, mattes and masks, modifier and constraint targets, expressions' prop(\"id\", …), the active camera, comp layers, objects using the material). One undo step.", &[
         CLIP_ID,
         req("id", String, "Its id now."),
-        req("newId", String, "The new id (unique in the scene)."),
+        req("newId", String, "The new id (unique in its namespace)."),
+        opt("namespace", String, "scene (layers, objects, lights, cameras and compositions) or material (shared materials). Defaults to scene if the id exists there, otherwise material. Renaming an object never renames a same-named material."),
     ]),
-    edit("motion.duplicateLayer", "Copy a layer, object or light (with its children) next to itself under a new id. One undo step.", &[
+    edit("motion.arrangeObjects", "Align or evenly distribute 3D object origins along a world axis. Children of selected objects move with their parents. Existing position animation gets a keyframe at the given time. One undo step.", &[
+        CLIP_ID,
+        req("ids", Array, "Object ids in selection order; after excluding selected descendants, the last is the active alignment reference. At least two independent objects for alignment, three for distribution."),
+        req("operation", String, "alignActive (to the last selected origin), alignCentre (to the mean origin) or distribute (even spacing between the outermost origins)."),
+        req("axis", String, "World axis: x, y or z. Other axes stay unchanged."),
+        opt("time", Number, "Timeline seconds. Defaults to the playhead; converted to scene time for trimmed or sped-up clips."),
+    ]),
+    edit("motion.duplicateLayer", "Copy a layer, object, light or extra camera (with its children) next to itself under a new id. References within the copied hierarchy follow the copies. One undo step.", &[
         CLIP_ID,
         req("id", String, "What to copy."),
         opt("newId", String, "The copy's id (default: the id with a number)."),
+    ]),
+    edit("motion.duplicateLayers", "Copy a selection of layers, objects, lights or extra cameras together. Selected descendants are included once through their selected ancestor. References between copied things follow the copies; external references stay unchanged. One undo step.", &[
+        CLIP_ID,
+        req("ids", Array, "Nonempty selection in order. Returns ids of the copied roots in that order and idMap for every copy, including descendants.").of(String),
     ]),
     edit("motion.convertToMesh", "Turn a 3D object's shape (box, sphere, cylinder, extruded text or path, lathe, curve…) into an editable mesh, optionally with its modifiers applied. One undo step.", &[
         CLIP_ID,
@@ -601,14 +628,21 @@ pub static SPECS: &[Spec] = &[
         req("id", String, "The object."),
         opt("modifierId", String, "One modifier (applied with the ones before it); omit for all."),
     ]),
-    edit("motion.editMesh", "Model a mesh object like Blender's edit mode: extrude, inset, bevel, subdivide, loop cut, delete, merge, fill, bridge, flip, move/rotate/scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap. Selections are vertex and/or face indices (motion.get shows them) or helpers. Returns the new selection. One undo step.", &[
+    edit("motion.editMesh", "Model a mesh object like Blender's edit mode: extrude, inset, bevel, subdivide, loop cut, delete, merge, fill, bridge, flip, move/rotate/scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap. Selections are vertex indices, explicit edge pairs and/or face indices (motion.get shows them) or helpers. Returns the new selection. One undo step.", &[
         CLIP_ID,
         req("id", String, "A mesh object (motion.convertToMesh makes one from any shape)."),
         req("op", String, "The operation: extrude, extrudeIndividual, inset, bevel, subdivide, loopCut, delete, dissolve, merge, fill, bridge, flip, recalcNormals, translate (or move), rotate, scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap."),
         opt("vertices", Array, "Selected vertex indices."),
+        opt("edges", Array, "Explicit selected edges [[a,b], ...]. Must be actual mesh edges; overrides edges inferred from vertices and does not implicitly select faces."),
         opt("faces", Array, "Selected face indices."),
         opt("select", Object, "Instead of indices: {\"all\": true}, {\"facing\": [0, 1, 0], \"angle\": 30}, {\"inside\": [[x0,y0,z0],[x1,y1,z1]]}, {\"edgeLoop\": [v0, v1]}, {\"edgeRing\": [v0, v1]}; add \"linked\": true to grow to everything connected."),
         opt("params", Object, "The operation's values, e.g. {\"distance\": 0.5} (extrude), {\"thickness\": 0.1, \"depth\": 0} (inset), {\"width\": 0.05, \"segments\": 2} (bevel), {\"cuts\": 1} (subdivide, loopCut), {\"what\": \"faces\"} (delete), {\"offset\": [0, 1, 0]} (translate), {\"angle\": [0, 45, 0], \"pivot\": [0,0,0]} (rotate), {\"factor\": [1,2,1]} (scale), {\"axis\": \"x\"} (mirror), {\"angle\": 360, \"steps\": 12, \"axis\": [0,1,0]} (spin), {\"method\": \"box\"} (unwrap). motion.stackTypes {\"family\": \"editOps\"} lists every operation's values."),
+    ]),
+    edit("motion.updateMeshVertices", "Set exact local positions for selected mesh vertices in one atomic undo step. Other vertices, faces, UVs, transforms and animation stay unchanged. Useful for precise transforms without accumulating preview rounding.", &[
+        CLIP_ID,
+        req("id", String, "The mesh object."),
+        req("vertices", Array, "Nonempty list of {\"index\": 0, \"position\": [x,y,z]}. Indices must be unique and in range; all coordinates must be finite.").of(Object),
+        opt("expectedVertexCount", Integer, "Reject the edit if the vertex count changed since the transform began."),
     ]),
     query("motion.view", "Render a motion clip's scene alone, the way the Studio shows it, to a PNG: a 3D scene from any angle (an axis, or a free view) with the floor grid and selection, or through its camera; a 2D scene or one of its compositions. For looking at a 3D scene from another side.", &[
         CLIP_ID,
@@ -622,12 +656,24 @@ pub static SPECS: &[Spec] = &[
         opt("composition", String, "2D: show this composition instead of the scene."),
         opt("width", Integer, "Picture width (default 960)."),
     ]),
-    edit("motion.shiftKeyframes", "Move keyframes of a layer, object, light or camera in time (the dope sheet's drag): all of them, one property's, or those at some times. One undo step.", &[
+    edit("motion.shiftKeyframes", "Move keyframes of a layer, object, light or camera in time: all of them, one property's, or those at some times. The selected group stops at scene time zero without collapsing its spacing. A moved key replaces an unselected destination key. One undo step.", &[
         CLIP_ID,
         req("id", String, "A layer, object, light or camera id, \"camera\" or \"scene\"."),
-        req("by", Number, "Seconds to move them (negative = earlier)."),
+        req("by", Number, "Timeline seconds to move them (negative = earlier on the timeline); clip speed is respected."),
         opt("property", String, "Only this property (default: every one)."),
         opt("times", Array, "Only the keyframes at these timeline times (seconds)."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.updateKeyframes", "Move or change existing keyframes together, preserving unspecified values and easing. Sources are read before any moves, so swaps and overlapping selections work. A moved key replaces an unselected key where it lands; duplicate sources or destinations are rejected. Base property values stay unchanged. One undo step.", &[
+        CLIP_ID,
+        req("updates", Array, "Nonempty list of {id, property, time, newTime?, value?, easing?}. time identifies an existing key; time and newTime are timeline seconds, converted using the clip's trim and speed. Every update must succeed."),
+        crate::registry::COALESCE,
+    ]),
+    edit("motion.duplicateKeyframes", "Copy existing keyframes with their values and easings at a common time offset. Original keys and base property values stay unchanged unless replace explicitly permits an occupied destination. Sources are read before any writes. One undo step. Returns selectedKeys in scene seconds, ready for ui.studio.", &[
+        CLIP_ID,
+        req("keys", Array, "Nonempty list of {id, property, time}; time identifies an existing key in timeline seconds. Duplicate sources are rejected."),
+        req("by", Number, "Nonzero timeline seconds between originals and copies; clip trim and speed are respected."),
+        opt("replace", Boolean, "Allow replacing an existing destination key (default false)."),
         crate::registry::COALESCE,
     ]),
     edit("motion.cameraMove", "Animate a 3D scene's camera with a classic move, written as ordinary keyframes, constraints and expressions you can edit afterwards: orbit (around what it looks at, an object or a point, by degrees), turntable (a whole turn at an even speed), dolly (in or out along the view), truck (sideways), crane (up or down, still looking at the same point), zoom (the lens), flyThrough (along a curve: a followPath constraint), handheld (a gentle shake: wiggle expressions), or clear (the camera's animation goes). A new move replaces the one it would fight. One undo step.", &[
@@ -654,7 +700,10 @@ pub static SPECS: &[Spec] = &[
     edit("motion.cancelRender", "Stop a render; the clip stays as it was.", &[req("renderId", String, "Render id from motion.render or motion.renderStatus.")]),
     edit("motion.unrender", "Go back to drawing motion clips live (forget their rendered frames). One undo step.", &[req("clipIds", Array, "Motion clips (ids or names).")]),
     // ---- timeline ---------------------------------------------------------
-    edit("timeline.seek", "Move the playhead.", &[req("time", Number, "Timeline time in seconds.")]).window(),
+    edit("timeline.seek", "Move the playhead, snapping to project frames by default.", &[
+        req("time", Number, "Timeline time in seconds."),
+        opt("exact", Boolean, "Keep the exact time, including subframes (default false). Useful for motion keys on trimmed or sped-up clips."),
+    ]).window(),
     edit("timeline.play", "Start playback from the playhead.", &[
         opt("speed", Number, "1 (default) plays with sound; 2 to 8 faster, -1 to -8 backwards, without sound (like L and J)."),
     ]).window(),
@@ -673,7 +722,7 @@ pub static SPECS: &[Spec] = &[
     query("generate.providers", "Image and video providers with whether each is ready (enabled, and has a key when it needs one).", &[]),
     query("generate.models", "Models of one provider, or of every ready provider, with what each can do (tasks, aspect ratios, durations, frames, sound).", &[
         opt("provider", String, "Provider id; omit for every ready provider."),
-        opt("task", String, "Only models that can do text_to_image, image_to_image, text_to_video or image_to_video."),
+        opt("task", String, "Only models that can do text_to_image, image_to_image, text_to_video, image_to_video, text_to_audio or text_to_speech."),
         opt("refresh", Boolean, "Fetch the list again instead of using the cache."),
     ]),
     query("generate.check", "Check that a provider answers with the saved key or address.", &[req("provider", String, "Provider id.")]),
@@ -688,7 +737,7 @@ pub static SPECS: &[Spec] = &[
         PROMPT,
         PROVIDER,
         MODEL,
-        opt("task", String, "text_to_image, image_to_image, text_to_video or image_to_video. Defaults from video and the images given."),
+        opt("task", String, "text_to_image, image_to_image, text_to_video, image_to_video, text_to_audio or text_to_speech. Defaults from video and the images given."),
         opt("video", Boolean, "Make a video rather than an image (when task is omitted)."),
         opt("negativePrompt", String, "What to avoid, for models that take it."),
         opt("images", Array, "Input images: [{role: reference|start_frame|end_frame, path?, assetId?, clipId?, time?}]. A clip gives the frame it shows at time.").of(Object),
@@ -819,7 +868,7 @@ pub static SPECS: &[Spec] = &[
     // ---- agent ------------------------------------------------------------
     query("agent.providers", "The models that can run the built-in agent (Claude Code, Codex, the Anthropic and OpenAI APIs, Ollama), whether each is ready on this computer and why not, and which one is chosen.", &[]).window(),
     edit("agent.setProvider", "Choose what runs the built-in agent (Settings › Agent).", &[
-        req("provider", String, "claude-code, codex, anthropic, openai or ollama."),
+        req("provider", String, "zenith, claude-code, codex, anthropic, openai or ollama."),
         opt("model", String, "Model id for the API providers and Ollama; empty for the provider's default."),
         opt("baseUrl", String, "Server address for Ollama or an OpenAI-compatible server; empty for the default."),
     ]).perm(Perm::PersonOnly),
@@ -841,11 +890,17 @@ pub static SPECS: &[Spec] = &[
     edit("agent.revert", "Revert an agent run: the project goes back to how it was before the run's first change, as one undo step (history.undo brings the run back).", &[
         opt("run", Integer, "Run id (default: the latest run that changed something and isn't reverted)."),
     ]).window(),
-    edit("agent.newConversation", "Start a new conversation in the Agent panel: the agent forgets the thread. Earlier runs can still be reverted.", &[]).window(),
+    edit("agent.newConversation", "Create a separate saved conversation in the current project; earlier conversations remain available.", &[]).window(),
+    query("agent.conversations", "Saved conversations in the current project, with the selected conversation id.", &[]).window(),
+    edit("agent.selectConversation", "Resume a saved conversation in this project. Stop an active run first.", &[req("id", String, "Conversation id from agent.conversations.")]).window(),
+    edit("agent.renameConversation", "Rename the selected conversation.", &[req("title", String, "Title, up to 120 characters.")]).window(),
+    query("agent.memory", "Read persistent project memory shared by this project's conversations.", &[]).window(),
+    edit("agent.setMemory", "Replace persistent project memory. This context is included in future agent requests.", &[req("text", String, "Project notes, up to 32,000 bytes; empty clears.")]).perm(Perm::PersonOnly).window(),
+    edit("agent.steer", "Redirect the active agent with a follow-up message while preserving its conversation and completed edits.", &[req("prompt", String, "Additional instructions for the current run.")]).perm(Perm::Generate).window(),
     // ---- ui ---------------------------------------------------------------
     query("ui.state", "What the window shows: home or editor, playhead, playing, selection, zoom, open panel and dialogs, theme.", &[]),
     edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears.").of(String), opt("assetId", String, "A media item to select instead.")]).window(),
-    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), inspector, agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it.", &[
+    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, studio, captions, inspector (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it.", &[
         req("panel", String, "Panel name."),
         opt("section", String, "For settings: models, agent, appearance, audio, updates, diagnostics or about."),
         opt("open", Boolean, "false closes the panel or dialog instead (the left panel, inspector, agent, jobs or a dialog; default true)."),
@@ -868,7 +923,7 @@ pub static SPECS: &[Spec] = &[
         opt("reset", Boolean, "Back to the starting sizes first."),
     ]).window(),
     edit("ui.action", "Do what a keyboard shortcut or menu item of the window does, by its action name. It acts on the window's selection, playhead and clipboard as the key would, a moment after the answer. Agents need the permission of what it does (NewProject: projects, ToggleTheme: settings, Quit: app control…).", &[
-        req("action", String, "PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide, StudioAlignCamera, StudioFly, StudioZoomIn, StudioZoomOut, StudioZoom100; sound: ToggleMixer, MuteTrack, SoloTrack, ArmTrack, RecordVoiceOver, AddEffect."),
+        req("action", String, "PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioPreviousKey, StudioNextKey, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide, StudioAlignCamera, StudioFly, StudioZoomIn, StudioZoomOut, StudioZoom100; sound: ToggleMixer, MuteTrack, SoloTrack, ArmTrack, RecordVoiceOver, AddEffect."),
     ]).window(),
     edit("ui.reveal", "Show a file in the file manager (Finder, Explorer…): a path, or a media item's file.", &[
         opt("path", String, "A file or folder (an export, a log folder…)."),
@@ -878,20 +933,30 @@ pub static SPECS: &[Spec] = &[
     edit("ui.studio", "Open, drive or close the Studio, the window's editor for motion clips (a Blender-like 3D editor, an After Effects-like 2D one). Every parameter is optional and applied in order; the answer is the Studio's state (also in ui.state). Edits to the scene itself are motion.* commands.", &[
         opt("clipId", String, "Open this motion clip (id or name)."),
         opt("close", Boolean, "Back to the edit."),
-        opt("panel", String, "In a narrow window: objects, properties or none opens or closes a Studio side drawer."),
-        opt("select", Array, "Select these ids (layers, objects, lights, cameras; \"scene\"; \"material:<id>\", \"comp:<id>\"); empty clears."),
+        opt("panel", String, "Show objects or properties in the shared left sidebar, or hide it with none. In a narrow window this controls the sidebar drawer."),
+        opt("select", Array, "Select these ids (layers, objects, lights, cameras; \"scene\"; \"material:<id>\", \"comp:<id>\"); empty clears when selectionOp is replace."),
+        opt("selectionOp", String, "How this call's select, editSelection and selectedKeys combine with the current selection: replace (default), add or subtract. Added items retain their order; subtraction preserves the surviving selection and active item when possible. View only."),
         opt("mode", String, "object or edit (3D mesh editing of the selected mesh object)."),
         opt("selectMode", String, "Edit mode: vertex, edge or face."),
-        opt("editSelection", Object, "Edit mode: {\"vertices\": [...], \"faces\": [...]} indices of the mesh."),
+        opt("editSelection", Object, "Edit mode: {\"vertices\": [...], \"edges\": [[a,b], ...], \"faces\": [...]} valid mesh indices."),
+        opt("meshTool", String, "Open a modelling tool in the Studio sidebar to configure its parameters, e.g. extrude, bevel, loopCut or unwrap. Does not apply it."),
+        opt("meshSelect", String, "Edit mode: all, none, invert, linked, grow, shrink or boundary in the current selection mode. edgeLoop and edgeRing extend selected edges in edge mode; loops stop at irregular vertices, rings cross quads. Selection only; does not change the mesh."),
         opt("tool", String, "3D: select, move, rotate, scale. 2D: select, anchor, pen, rect, ellipse, star, polygon, text."),
         opt("shading", String, "3D: solid, material or rendered."),
+        opt("pivot", String, "3D object transforms: median (selection centre), active (last selected object), individual (each object at its own origin) or origin (world origin)."),
+        opt("gizmo", String, "3D transform axes: global or local (the active object's axes)."),
+        opt("snapping", Boolean, "Studio viewport snapping for mouse transforms and mesh tools; separate from timeline snapping. Typed 3D transform amounts stay exact."),
         opt("view", Any, "3D: front, back, left, right, top, bottom, camera (through the active camera), persp or ortho; or a view {\"position\": [x,y,z], \"target\": [x,y,z], \"fov\": 40, \"ortho\": false, \"orthoSize\": 6}."),
-        opt("frame", Boolean, "Frame the selection in the view (all when nothing is selected)."),
+        opt("frame", Boolean, "Frame selected objects, mesh components or visible 2D layers at the playhead, including repeated group instances. With no visible 2D selection, fit the canvas; with no 3D selection, frame all objects. View only."),
         opt("grid", Boolean, "3D: floor grid and axes."),
         opt("helpers", Boolean, "3D: draw lights and cameras."),
         opt("composition", String, "2D: show and edit this composition (\"\" = the scene)."),
         opt("showGraph", Boolean, "The timeline area shows the graph editor (true) or the dope sheet."),
+        opt("selectedKeys", Array, "Select existing Studio keys as [{id, property, time}] using scene seconds; selectionOp chooses replace (default), add or subtract. Empty clears only with replace. Times are matched within 0.000001 seconds; duplicate keys are selected once. Invalid references leave the key selection unchanged. View only."),
+        opt("timelineRange", Array, "Visible Studio timeline range [start, end] in scene seconds, from 0 to 1000000; end must be greater than start."),
+        opt("fitTimeline", String, "Fit the Studio timeline to clip or selection (selected keyframes)."),
         opt("graphProperty", String, "The property the graph editor shows, e.g. position.x (of the selected item)."),
+        opt("graphComponent", Integer, "Preferred zero-based vector component for graph handles and numeric value edits: 0 (X/first), 1 (Y), 2 (Z), 3 (W); higher indices address longer vectors. Clamped to the shown curve's component count; scalar curves use 0. Choosing it is view only; no project edit."),
         opt("navigate", Object, "3D: move around, as the mouse would: {\"orbit\": [yaw°, pitch°], \"pan\": [dx, dy] (shares of the view), \"zoom\": 2 (twice as close), \"fly\": [forward, right, up] (world units), \"look\": [yaw°, pitch°] (turning where it stands)}. Through the camera with lockCamera, this moves the scene's camera (one undo step, a keyframe at the playhead when it is animated)."),
         opt("lockCamera", Boolean, "3D: while looking through the camera, navigating moves the scene's camera (Blender's Lock camera to view)."),
         opt("alignCamera", Boolean, "3D: put the active camera where the view is (then look through it)."),

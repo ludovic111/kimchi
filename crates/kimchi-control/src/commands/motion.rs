@@ -80,14 +80,20 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             check_media(&p, &scene)?;
             set_scene(s, cx, &a, clip.id, scene, None)
         }
-        "motion.removeLayer" => {
+        "motion.removeLayer" | "motion.removeLayers" => {
             let p = s.project()?;
             let (clip, mut scene, _) = motion_clip(&p, a.str("clipId")?)?;
-            let id = a.str("id")?;
-            if !scene.remove(id) {
-                return Err(format!("No layer, object or light \"{id}\" in \"{}\". Ids: {}.", clip.name, scene.ids().join(", ")));
+            let ids = if cx.spec.name == "motion.removeLayer" { vec![a.str("id")?.to_string()] } else { a.strings("ids") };
+            if ids.is_empty() { return Err("Select at least one thing to remove.".into()); }
+            let existing = scene.ids();
+            for id in &ids {
+                if !existing.contains(id) {
+                    return Err(format!("No removable layer, object, light or extra camera \"{id}\" in \"{}\". Ids: {}.", clip.name, existing.join(", ")));
+                }
             }
-            scene.validate().map_err(|e| format!("Removing \"{id}\" would break the scene: {e}"))?;
+            // A selected parent may have removed a later selected descendant already.
+            for id in &ids { scene.remove(id); }
+            scene.validate().map_err(|e| format!("Removing the selection would break the scene: {e}"))?;
             set_scene(s, cx, &a, clip.id, scene, None)
         }
         "motion.setKeyframes" => {
@@ -118,6 +124,18 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             update_item(&mut scene, id, &props, at).map_err(|e| format!("\"{id}\" in \"{}\": {e}", clip.name))?;
             set_scene(s, cx, &a, clip.id, scene, None)
         }
+        "motion.updateLayers" => {
+            let p = s.project()?;
+            let (clip, mut scene, _) = motion_clip(&p, a.str("clipId")?)?;
+            let updates = a.array("updates").filter(|v| !v.is_empty()).ok_or("updates must be a nonempty list of {id, props}")?;
+            let at = clip.scene_time(a.opt_f64("time").unwrap_or_else(|| s.ui_state().playhead));
+            for (i, update) in updates.iter().enumerate() {
+                let id = update.get("id").and_then(Value::as_str).ok_or_else(|| format!("updates[{i}].id must be a string"))?;
+                let props = update.get("props").and_then(Value::as_object).ok_or_else(|| format!("updates[{i}].props must be an object"))?;
+                update_item(&mut scene, id, props, at).map_err(|e| format!("updates[{i}] (\"{id}\"): {e}"))?;
+            }
+            set_scene(s, cx, &a, clip.id, scene, None)
+        }
         "motion.addKeyframe" => {
             let p = s.project()?;
             let (clip, mut scene, _) = motion_clip(&p, a.str("clipId")?)?;
@@ -127,12 +145,13 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 Some(v) => serde_json::from_value::<kimchi_core::KeyValue>(v.clone()).map_err(|_| format!("value {v} should be a number, a vector or a string"))?,
                 None => scene.value(id, property, at).ok_or_else(|| missing(&scene, &clip, id, property))?,
             };
-            let easing = a.opt_str("easing").map(kimchi_core::Easing::parse).transpose()?.unwrap_or_default();
+            let easing = a.opt_str("easing").map(kimchi_core::Easing::parse).transpose()?.or_else(|| scene.keyframes_mut(id)
+                .and_then(|keys| keys.get(property)).and_then(|keys| keys.iter().find(|key| (key.time-at).abs()<1e-6)).map(|key| key.easing)).unwrap_or_default();
             let not_found = missing(&scene, &clip, id, property);
-            let mut item = scene.item_mut(id).ok_or(not_found)?;
-            // Checked like any keyframe value (and the property must exist).
-            item.set(property, &value)?;
-            kimchi_core::anim::set_key(item.keyframes_mut(), property, Keyframe { time: at, value, easing });
+            // Reuse property/type validation without overwriting the unanimated base value.
+            let mut checked=scene.clone();
+            checked.item_mut(id).ok_or(not_found)?.set(property,&value)?;
+            kimchi_core::anim::set_key(scene.keyframes_mut(id).expect("validated item"), property, Keyframe { time: at, value, easing });
             scene.validate()?;
             set_scene(s, cx, &a, clip.id, scene, None)
         }
@@ -201,8 +220,9 @@ pub fn update_item(scene: &mut Scene, id: &str, props: &Map<String, Value>, at: 
             let animated = item.keyframes().contains_key(name);
             match value {
                 Some(value) if animated => {
+                    let easing = item.keyframes().get(name).and_then(|keys| keys.iter().find(|k| (k.time - at).abs() < 1e-6)).map(|k| k.easing).unwrap_or_default();
                     item.set(name, &value)?;
-                    kimchi_core::anim::set_key(item.keyframes_mut(), name, Keyframe { time: at, value, easing: Default::default() });
+                    kimchi_core::anim::set_key(item.keyframes_mut(), name, Keyframe { time: at, value, easing });
                 }
                 Some(value) if item.set(name, &value).is_ok() => {}
                 _ => {

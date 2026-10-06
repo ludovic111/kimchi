@@ -14,6 +14,7 @@ pub mod runway;
 pub mod luma;
 pub mod bfl;
 pub mod stability;
+pub mod elevenlabs;
 pub mod together;
 pub mod comfyui;
 pub mod a1111;
@@ -32,6 +33,7 @@ pub fn all() -> Vec<Arc<dyn Provider>> {
         Arc::new(luma::Luma),
         Arc::new(bfl::Bfl),
         Arc::new(stability::Stability),
+        Arc::new(elevenlabs::ElevenLabs),
         Arc::new(together::Together),
         Arc::new(comfyui::ComfyUi),
         Arc::new(a1111::A1111),

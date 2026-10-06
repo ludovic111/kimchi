@@ -51,6 +51,7 @@ pub const LOGOS: &[(&str, Option<LogoFile>)] = &[
     ("luma", themed("luma")),
     ("bfl", one("bfl")),
     ("stability", one("stability")),
+    ("elevenlabs", one("elevenlabs")),
     ("together", one("together")),
     ("comfyui", one("comfyui")),
     // Stable Diffusion WebUI (AUTOMATIC1111) has no logo; nor does a generic OpenAI-compatible server.

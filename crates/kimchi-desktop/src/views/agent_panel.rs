@@ -35,6 +35,11 @@ pub struct AgentPanel {
     pub(crate) store: Entity<Store>,
     tab: Tab,
     composer: Entity<TextInput>,
+    model_input: Entity<TextInput>,
+    title_input: Entity<TextInput>,
+    memory_input: Entity<TextInput>,
+    memory_open: bool,
+    model_seen: String,
     /// The host's conversation and runs, as last drawn.
     pub(crate) snap: Snapshot,
     _pump: Task<()>,
@@ -62,7 +67,10 @@ impl AgentPanel {
             i.bare = true;
             i
         });
-        let subs = vec![
+        let model_input = cx.new(|cx| TextInput::new(cx).placeholder("Provider default / model id"));
+        let title_input = cx.new(|cx| TextInput::new(cx).placeholder("Conversation title"));
+        let memory_input = cx.new(|cx| TextInput::new(cx).multiline(4).placeholder("Project preferences, decisions and context for every conversation…"));
+        let mut subs = vec![
             cx.observe(&store, |this, _, cx| this.on_store_changed(cx)),
             cx.subscribe(&composer, |this, _, e: &InputEvent, cx| match e {
                 InputEvent::Submit => this.send(cx),
@@ -70,6 +78,22 @@ impl AgentPanel {
                 _ => {}
             }),
         ];
+        subs.push(cx.subscribe(&model_input, |this, _, e: &InputEvent, cx| {
+            if matches!(e, InputEvent::Submit | InputEvent::Blur) {
+                let model = this.model_input.read(cx).text().trim().to_string();
+                if model != this.store.read(cx).settings.agent.model {
+                    this.store.update(cx, |s, cx| s.run("app.setSetting", json!({"key":"agent.model", "value": model}), cx));
+                }
+            }
+        }));
+        subs.push(cx.subscribe(&title_input, |this, _, e: &InputEvent, cx| {
+            if matches!(e, InputEvent::Submit | InputEvent::Blur) {
+                let title = this.title_input.read(cx).text().trim().to_string();
+                if !title.is_empty() && title != this.snap.conversation.title {
+                    this.store.update(cx, |s, cx| s.run("agent.renameConversation", json!({"title":title}), cx));
+                }
+            }
+        }));
         let provider_seen = store.read(cx).settings.agent.provider.clone();
         // Redraw whenever the host's conversation changes, whoever changed it.
         let host = store.read(cx).agent.clone();
@@ -85,6 +109,7 @@ impl AgentPanel {
             store,
             tab: Tab::Conversation,
             composer,
+            model_input, title_input, memory_input, memory_open: false, model_seen: String::new(),
             snap: host.snapshot(),
             _pump: pump,
             _ticker: None,
@@ -101,6 +126,7 @@ impl AgentPanel {
             provider_seen,
             _subs: subs,
         };
+        this.title_input.update(cx, |i, cx| i.set_text(this.snap.conversation.title.clone(), cx));
         this.on_store_changed(cx);
         this
     }
@@ -116,6 +142,11 @@ impl AgentPanel {
     // ---- store and session -------------------------------------------------
 
     fn on_store_changed(&mut self, cx: &mut Context<Self>) {
+        let model = self.store.read(cx).settings.agent.model.clone();
+        if self.model_seen != model {
+            self.model_seen = model.clone();
+            self.model_input.update(cx, |i, cx| i.set_text(model, cx));
+        }
         let s = self.store.read(cx);
         let open = s.agent_open;
         let provider = s.settings.agent.provider.clone();
@@ -182,6 +213,14 @@ impl AgentPanel {
         if snap.entries.is_empty() {
             self.expanded.clear();
         }
+        if self.snap.conversation.id != snap.conversation.id || self.snap.conversation.title != snap.conversation.title {
+            self.title_input.update(cx, |i, cx| i.set_text(snap.conversation.title.clone(), cx));
+        }
+        if self.snap.conversation.id != snap.conversation.id {
+            self.composer.update(cx, |i, cx| i.set_text("", cx));
+            self.memory_open = false;
+            self.memory_input.update(cx, |i, cx| i.set_text(snap.memory.clone(), cx));
+        }
         self.snap = snap;
         if grew {
             self.scroll.scroll_to_bottom();
@@ -212,11 +251,12 @@ impl AgentPanel {
 
     fn send(&mut self, cx: &mut Context<Self>) {
         let prompt = self.composer.read(cx).text().trim().to_string();
-        if prompt.is_empty() || self.snap.running.is_some() {
+        if prompt.is_empty() {
             return;
         }
         self.composer.update(cx, |i, cx| i.set_text("", cx));
-        self.store.update(cx, |s, cx| s.run("agent.send", json!({ "prompt": prompt }), cx));
+        let command = if self.snap.running.is_some() { "agent.steer" } else { "agent.send" };
+        self.store.update(cx, |s, cx| s.run(command, json!({ "prompt": prompt }), cx));
         self.tab = Tab::Conversation;
         self.scroll.scroll_to_bottom();
         cx.notify();
@@ -255,7 +295,7 @@ impl AgentPanel {
             .map(|&kind| {
                 let ready = self.status_of(kind).map(|s| s.ready);
                 let mut item = MenuItem::new(kind.label(), move |_, cx| {
-                    cx.store().update(cx, |s, cx| s.run("app.setSetting", json!({ "key": "agent.provider", "value": kind.id() }), cx));
+                    cx.store().update(cx, |s, cx| s.run("agent.setProvider", json!({ "provider": kind.id() }), cx));
                 })
 .logo(kind.id())
                 .shortcut(match ready {
@@ -327,9 +367,64 @@ impl AgentPanel {
                     .child(icon("chevron-down").size(px(12.))),
             )
             .child(div().flex_1())
-            .child(Button::icon("agent-new", "plus", "New conversation").disabled(self.snap.running.is_some() || self.snap.entries.is_empty()).on_click(cx.listener(|this, _, _, cx| this.new_conversation(cx))))
+            .child(Button::icon("agent-new", "plus", "New conversation").disabled(self.snap.running.is_some()).on_click(cx.listener(|this, _, _, cx| this.new_conversation(cx))))
             .child(Button::icon("agent-settings", "shield-check", "Agent settings and permissions").on_click(|_, _, cx| Self::open_agent_settings(cx)))
             .child(Button::icon("agent-close", "x", crate::actions::tip("Close", &crate::actions::ToggleAgent)).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_agent_open(false, cx))))
+    }
+
+    fn conversations_menu(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        let current = self.snap.conversation.id;
+        let entries = self.snap.conversations.iter().map(|c| {
+            let id = c.id;
+            let mut item = MenuItem::new(c.title.clone(), move |_, cx| {
+                cx.store().update(cx, |s, cx| s.run("agent.selectConversation", json!({"id": id}), cx));
+            });
+            if id == current { item = item.icon("check"); }
+            item.entry()
+        }).collect();
+        self.store.update(cx, |s, cx| s.open_menu(position, entries, cx));
+    }
+
+    fn model_menu(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        let mut models = self.status_of(self.provider(cx)).map(|s| s.models.clone()).unwrap_or_default();
+        let default = self.provider(cx).default_model();
+        if !default.is_empty() && !models.iter().any(|m| m == default) { models.insert(0, default.into()); }
+        let current = self.store.read(cx).settings.agent.model.clone();
+        if !current.is_empty() && !models.contains(&current) { models.insert(0, current); }
+        models.insert(0, String::new());
+        let entries = models.into_iter().map(|model| {
+            let label = if model.is_empty() { "Provider default".to_string() } else { model.clone() };
+            MenuItem::new(label, move |_, cx| cx.store().update(cx, |s, cx| s.run("app.setSetting", json!({"key":"agent.model", "value":model}), cx))).entry()
+        }).collect();
+        self.store.update(cx, |s, cx| s.open_menu(position, entries, cx));
+    }
+
+    fn conversation_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.theme().clone();
+        div().flex().flex_col().gap(px(6.)).p(px(10.)).border_b_1().border_color(t.line)
+            .child(div().flex().items_center().gap(px(6.))
+                .child(div().flex_1().min_w_0().child(self.title_input.clone()))
+                .child(Button::icon("agent-conversations", "message-square", "Conversations in this project")
+                    .disabled(self.snap.running.is_some()).on_click(cx.listener(|this, e: &gpui::ClickEvent, _, cx| this.conversations_menu(e.position(), cx)))))
+            .child(div().flex().items_center().gap(px(6.))
+                .child(div().text_size(px(sz::XS)).text_color(t.text_2).child("Model"))
+                .child(div().flex_1().min_w_0().child(self.model_input.clone()))
+                .child(Button::icon("agent-models", "chevron-down", "Choose an agent model")
+                    .on_click(cx.listener(|this, e: &gpui::ClickEvent, _, cx| this.model_menu(e.position(), cx)))))
+            .child(Button::new("agent-memory", if self.memory_open { "Close project memory" } else { "Project memory" }).small().ghost().with_icon("file-text")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.memory_open = !this.memory_open;
+                    if this.memory_open { this.memory_input.update(cx, |i, cx| i.set_text(this.snap.memory.clone(), cx)); }
+                    cx.notify();
+                })))
+            .when(self.memory_open, |d| d.child(self.memory_input.clone())
+                .child(Button::new("agent-memory-save", "Save memory").small().on_click(cx.listener(|this, _, _, cx| {
+                    let text = this.memory_input.read(cx).text().to_string();
+                    this.store.update(cx, |s, cx| s.run("agent.setMemory", json!({"text":text}), cx));
+                    this.memory_open = false; cx.notify();
+                }))))
+            .when_some(self.snap.storage_error.clone(), |d, e| d.child(div().text_size(px(sz::XS)).text_color(t.danger).child(e)))
+            .into_any_element()
     }
 
     /// Warns when the chosen provider can't run, or agents are turned off.
@@ -554,25 +649,10 @@ impl AgentPanel {
                         .gap(px(6.))
                         .px(px(8.))
                         .pb(px(6.))
-                        .child(div().flex_1().text_size(px(sz::XS)).text_color(t.text_2).child(if running { "Running. Stop keeps finished edits.".to_string() } else { format!("{} to send", crate::actions::keys_label("M-enter")) }))
-                        .child(if running {
-                            Button::icon("agent-stop", "square", "Stop").color(t.danger).on_click(cx.listener(|this, _, _, cx| this.stop(cx))).into_any_element()
-                        } else {
-                            div()
-                                .id("agent-send")
-                                .size(px(30.))
-                                .rounded(px(sz::R_MD))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .bg(t.accent)
-                                .text_color(t.text_on_accent)
-                                .tooltip(|_, cx| crate::ui::tooltip(format!("Send ({})", crate::actions::keys_label("M-enter")).into(), cx))
-                                .child(icon("arrow-up").size(px(15.)).text_color(t.text_on_accent))
-                                .when(empty, |d| d.opacity(0.35).cursor_not_allowed())
-                                .when(!empty, |d| d.cursor_pointer().hover(|s| s.bg(t.accent_hover)).on_click(cx.listener(|this, _, _, cx| this.send(cx))))
-                                .into_any_element()
-                        }),
+                        .child(div().flex_1().text_size(px(sz::XS)).text_color(t.text_2).child(if running { "Send to steer the current run.".to_string() } else { format!("{} to send", crate::actions::keys_label("M-enter")) }))
+                        .when(running, |d| d.child(Button::icon("agent-stop", "square", "Stop").color(t.danger).on_click(cx.listener(|this, _, _, cx| this.stop(cx)))))
+                        .child(Button::new("agent-send", if running { "Steer" } else { "Send" }).small().primary().disabled(empty)
+                            .on_click(cx.listener(|this, _, _, cx| this.send(cx)))),
                 ),
         )
     }
@@ -600,6 +680,8 @@ impl Render for AgentPanel {
             .border_color(t.line)
             .text_size(px(sz::BASE))
             .child(header)
+            .child(div().id("agent-options").flex_none().max_h(px((f32::from(window.viewport_size().height) * 0.4).max(120.)))
+                .overflow_y_scroll().child(self.conversation_controls(cx)).children(notices))
             .child(
                 div().px(px(10.)).pt(px(10.)).child(segmented(
                     "agent-tab",
@@ -619,7 +701,6 @@ impl Render for AgentPanel {
                     cx,
                 )),
             )
-            .children(notices)
             .child(div().flex_1().min_h_0().child(body))
             .when(self.tab == Tab::Conversation, |d| d.child(composer))
     }

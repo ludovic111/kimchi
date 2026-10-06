@@ -38,3 +38,4 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 [dev-dependencies]
 minisign.workspace = true
 tempfile.workspace = true
+wiremock.workspace = true

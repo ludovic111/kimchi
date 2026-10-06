@@ -13,9 +13,10 @@ use crate::session::{CmdResult, Session};
 pub const PANELS: &[&str] = &["media", "generate", "text", "motion", "captions", "inspector", "agent", "jobs", "settings", "export", "palette", "home", "shortcuts", "whatsNew", "diagnostics"];
 
 /// `ui.studio`'s words, checked before the window sees them.
-const STUDIO_CHOICES: [(&str, &[&str]); 4] = [
+const STUDIO_CHOICES: [(&str, &[&str]); 5] = [
     ("mode", &["object", "edit"]),
     ("selectMode", &["vertex", "edge", "face"]),
+    ("selectionOp", &["replace", "add", "subtract"]),
     ("tool", &["select", "move", "rotate", "scale", "anchor", "pen", "rect", "ellipse", "star", "polygon", "text"]),
     ("shading", &["solid", "material", "rendered"]),
 ];
@@ -92,6 +93,8 @@ pub const ACTIONS: &[(&str, Perm)] = &[
     ("OpenStudio", Perm::Edit),
     ("StudioEscape", Perm::Edit),
     ("StudioPlay", Perm::Edit),
+    ("StudioPreviousKey", Perm::Edit),
+    ("StudioNextKey", Perm::Edit),
     ("StudioGrab", Perm::Edit),
     ("StudioRotate", Perm::Edit),
     ("StudioScale", Perm::Edit),

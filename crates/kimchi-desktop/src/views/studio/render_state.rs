@@ -13,6 +13,7 @@ use serde_json::json;
 use crate::store::{Store, StoreExt};
 use crate::theme::{ActiveTheme, size as sz};
 use crate::ui::Button;
+use super::model::SnapshotIdentity;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RenderState {
@@ -50,7 +51,7 @@ impl RenderState {
 thread_local! {
     /// Whether each rendered clip's file still matches its scene, by project version (hashing
     /// a scene each frame would be wasteful).
-    static CURRENT: RefCell<(usize, HashMap<Id, bool>)> = RefCell::new((0, HashMap::new()));
+    static CURRENT: RefCell<(SnapshotIdentity, HashMap<Id, bool>)> = RefCell::new((SnapshotIdentity::default(), HashMap::new()));
 }
 
 /// A motion clip's state now (`None` for other clips).
@@ -62,7 +63,7 @@ pub fn state(store: &Store, project: &std::sync::Arc<Project>, clip: &Clip) -> O
         return Some(RenderState::Rendering(r.progress.clamp(0.0, 1.0), r.id.clone()));
     }
     let Some(rendered) = &clip.rendered else { return Some(RenderState::Live) };
-    let key = std::sync::Arc::as_ptr(project) as usize;
+    let key = SnapshotIdentity::new(project);
     let current = CURRENT.with(|c| {
         let mut c = c.borrow_mut();
         if c.0 != key {

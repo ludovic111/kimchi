@@ -13,7 +13,7 @@ fn session(dir: &std::path::Path) -> Arc<Session> {
     Session::new(SessionOptions { data_dir: Some(dir.join("data")), config_dir: Some(dir.join("config")), secrets: None, headless: true }).unwrap()
 }
 
-async fn with_project(dir: &std::path::Path) -> Arc<Session> {
+pub(crate) async fn with_project(dir: &std::path::Path) -> Arc<Session> {
     let s = session(dir);
     kimchi_control::call(&s, Source::Window, "project.create", json!({ "name": "Test" })).await.unwrap();
     s
@@ -607,9 +607,12 @@ async fn clients_drive_the_agent_with_commands() {
     let runs = call(&s, Source::Cli, "agent.runs", json!({})).await;
     assert_eq!(runs["runs"].as_array().unwrap().len(), 2);
 
-    // A new conversation forgets the thread; the runs stay.
+    // A new conversation is separate; the previous history remains selectable.
+    let previous = call(&s, Source::Cli, "agent.conversations", json!({})).await["current"].clone();
     call(&s, Source::Cli, "agent.newConversation", json!({})).await;
     assert_eq!(call(&s, Source::Cli, "agent.conversation", json!({})).await["entries"], json!([]));
+    assert_eq!(call(&s, Source::Cli, "agent.runs", json!({})).await["runs"], json!([]));
+    call(&s, Source::Cli, "agent.selectConversation", json!({"id": previous})).await;
     assert_eq!(call(&s, Source::Cli, "agent.runs", json!({})).await["runs"].as_array().unwrap().len(), 2);
 }
 
@@ -786,4 +789,78 @@ async fn an_openai_compatible_server_without_vision_gets_no_pictures() {
     let without: Value = serde_json::from_slice(&requests[2].body).unwrap();
     assert!(!without.to_string().contains("image_url"), "sent again without the picture");
     assert!(without.to_string().contains("earlier picture is not shown again"));
+#[tokio::test(flavor = "multi_thread")]
+async fn conversations_and_memory_survive_reinstall_and_stay_with_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = mock("/v1/messages", "text/event-stream", vec![anthropic_text("Saved the plan.")]).await;
+    let s = hosted(dir.path(), &server).await;
+    let project = s.current_id().unwrap();
+    call(&s, Source::Window, "agent.setMemory", json!({"text":"Keep the palette warm."})).await;
+    let first = call(&s, Source::Cli, "agent.conversations", json!({})).await["current"].clone();
+    call(&s, Source::Window, "agent.send", json!({"prompt":"Plan the title", "wait":true})).await;
+    let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+    assert!(body.to_string().contains("Keep the palette warm."));
+    call(&s, Source::Window, "agent.newConversation", json!({})).await;
+    call(&s, Source::Window, "agent.renameConversation", json!({"title":"Sound design"})).await;
+    let host = Host::install(&s);
+    assert_eq!(host.snapshot().conversation.title, "Sound design");
+    assert_eq!(host.snapshot().conversations.len(), 2);
+    assert_eq!(host.snapshot().memory, "Keep the palette warm.");
+    call(&s, Source::Window, "agent.selectConversation", json!({"id":first})).await;
+    assert!(host.snapshot().entries.iter().any(|e| matches!(e, Entry::Assistant {text, ..} if text == "Saved the plan.")));
+    assert!(host.snapshot().runs.iter().all(|r| r.checkpoint.is_none()));
+    call(&s, Source::Window, "project.create", json!({"name":"Separate project"})).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while host.snapshot().conversation.id.to_string() == first.as_str().unwrap() { tokio::task::yield_now().await; }
+    }).await.unwrap();
+    assert!(host.snapshot().memory.is_empty());
+    assert!(kimchi_control::call(&s, Source::Window, "agent.selectConversation", json!({"id":first})).await.is_err());
+    call(&s, Source::Window, "project.open", json!({"projectId":project})).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while host.snapshot().memory.is_empty() { tokio::task::yield_now().await; }
+    }).await.unwrap();
+    assert_eq!(host.snapshot().conversations.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn steering_interrupts_a_model_request_and_preserves_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)).set_body_string(anthropic_text("Old direction.")))
+        .mount(&server).await;
+    let s = hosted(dir.path(), &server).await;
+    let run = call(&s, Source::Window, "agent.send", json!({"prompt":"Make a red title"})).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while server.received_requests().await.unwrap().is_empty() { tokio::task::yield_now().await; }
+    }).await.unwrap();
+    server.reset().await;
+    Mock::given(method("POST")).and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/event-stream").set_body_string(anthropic_text("Using blue instead.")))
+        .mount(&server).await;
+    let steer = call(&s, Source::Window, "agent.steer", json!({"prompt":"Use blue instead"})).await;
+    assert_eq!(steer["run"], run["id"]);
+    let done = call(&s, Source::Window, "agent.status", json!({"wait":true,"timeout":5})).await;
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(done["reply"], "Using blue instead.");
+    let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+    assert!(body.to_string().contains("Make a red title"));
+    assert!(body.to_string().contains("Use blue instead"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unreadable_history_is_never_overwritten() {
+    use futures::StreamExt;
+    let dir = tempfile::tempdir().unwrap();
+    let s = with_project(dir.path()).await;
+    let mut calls = s.attach_ui();
+    tokio::spawn(async move { while calls.next().await.is_some() {} });
+    let path = s.data_dir.join("agent-conversations.json");
+    std::fs::write(&path, b"{damaged but recoverable history").unwrap();
+    let host = Host::install(&s);
+    assert!(host.snapshot().storage_error.is_some());
+    call(&s, Source::Window, "agent.setMemory", json!({"text":"New memory"})).await;
+    call(&s, Source::Window, "agent.newConversation", json!({})).await;
+    assert_eq!(std::fs::read(&path).unwrap(), b"{damaged but recoverable history");
+    assert!(host.snapshot().storage_error.is_some());
 }

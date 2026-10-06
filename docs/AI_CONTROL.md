@@ -61,8 +61,11 @@ panel shows them in the command's card, so the person sees what the agent saw.
 - Track 0 is drawn on top. New video tracks go on top, new audio tracks at the bottom.
 - Positions (`x`, `y`) are offsets of the centre from the canvas centre in project pixels
   (positive `y` is down); `scale` 1 fits the canvas.
-- Commands that edit the project also accept `coalesce`: edits with the same key within about a
-  second fold into one undo step (drags, sliders).
+- Commands that edit the project also accept `coalesce`: consecutive edits from the same source
+  with the same key within about a second fold into one undo step (drags, sliders). Use a fresh
+  `gesture:<unique-id>` key for each gesture to keep its updates together across pauses. A
+  different edit, another source, undo or redo ends that group. Never reuse a gesture ID for a
+  later operation. Studio generates a unique ID for each drag or modal transform.
 - Errors are written for the reader: they say what was expected and how to fix the call.
 
 ## The CLI
@@ -195,11 +198,11 @@ command records the panel shows also name the clips each command created.
 
 ## The built-in agent from a script
 
-The Agent panel's conversation is one, whoever drives it: the panel, `kimchi-cli` or an MCP
-client. `agent.send` asks the agent in words (with the model chosen in Settings › Agent, or with
+The Agent panel, `kimchi-cli` and MCP share the currently selected conversation. Each project has
+its own saved conversations and editable memory. `agent.send` asks the agent in words (with the model chosen in the panel, Settings › Agent, or with
 `agent.setProvider`), `agent.status` follows a run (what it is doing, its reply, every command it
 ran), `agent.stop` stops it, `agent.revert` puts the project back as it was before the run (one
-undo step), and `agent.newConversation` starts afresh. A request sent from a terminal shows in the
+undo step), and `agent.newConversation` saves the current conversation and starts another. A request sent from a terminal shows in the
 panel like one typed there. One run at a time; these commands need the running app.
 
 Each request reaches the model with a short `<context>` block in front of it: the project, the
@@ -211,7 +214,40 @@ composer shows what it will say (hover for all of it).
 kimchi-cli agent.send --prompt "Add a title saying Hello at 0 s and fade it in" --wait
 kimchi-cli agent.status                     # the latest run, with its commands
 kimchi-cli agent.revert                     # undo the whole run
+kimchi-cli agent.steer --prompt "Keep the title, but use blue" # during a run
+kimchi-cli agent.conversations              # this project's saved threads
+kimchi-cli agent.selectConversation id=…    # when idle
+kimchi-cli agent.renameConversation title="Opening sequence"
+kimchi-cli agent.setMemory text="Use warm colours and short titles"
 ```
+
+Memory is shared across the project's conversations and added to each new request. The person
+edits it; an agent cannot change it. History is stored in `<data>/agent-conversations.json` using
+atomic replacement. Restored runs cannot revert old, session-local undo checkpoints.
+
+Select **Zenith · lsuite** in the Agent panel, or use
+`agent.setProvider provider=zenith model=<provider-instance>/<model>`. Kimchi discovers `zenith-cli`
+through lsuite's installed-app record or PATH (`KIMCHI_ZENITH_CLI` overrides it), reads its model
+catalogue, and creates a Zenith workspace per Kimchi project. Follow-ups resume the same Zenith
+thread. Steering interrupts the remote turn, waits for it to stop, then sends the new direction.
+Zenith retains its own accounts and approval policy; approvals and questions are handled in Zenith.
+Its agents use Kimchi's live MCP tools under the existing permissions and undo history. Both apps
+must be installed with their CLI/MCP companions and Zenith's server must be running.
+
+Audio uses `generate.submit` with `task=text_to_audio` or `task=text_to_speech`. For example:
+
+```sh
+kimchi-cli generate.submit provider=stability model=stable-audio-2.5 task=text_to_audio prompt="Quiet forest ambience" duration=30 --wait
+kimchi-cli generate.submit --args '{"provider":"elevenlabs","model":"eleven_multilingual_v2","task":"text_to_speech","prompt":"Our story begins.","params":{"voice_id":"YOUR_VOICE_ID"},"wait":true}'
+```
+
+`generate.models provider=elevenlabs task=text_to_speech` lists speech models and available voices.
+`generate.audioModel` and `generate.speechModel` store the respective defaults. Audio results retain
+their provider, prompt and parameters, so `generate.regenerate` also works for sound and speech.
+Provider contracts: [ElevenLabs speech](https://elevenlabs.io/docs/api-reference/text-to-speech/convert),
+[sound effects](https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert),
+[music](https://elevenlabs.io/docs/api-reference/music/compose),
+[Stability API](https://platform.stability.ai/docs/api-reference).
 
 ## The window's shortcuts by name
 
@@ -486,3 +522,204 @@ Playback, selection, panels, notifications, screenshots and the built-in agent (
 the running window (`--file` and `--headless` refuse them with a hint). In file and headless mode the undo history
 lasts as long as the process. One request at a time per MCP server; a long `wait` holds the next
 call until the job finishes, so prefer `generate.jobs` and `generate.wait` for long generations.
+
+## Studio modelling
+
+Object transforms support `ui.studio {"pivot":"median|active|individual|origin"}` and
+`{"gizmo":"global|local"}`. The toolbar exposes the same pivot choices. Individual origins
+rotate or scale each selected object in place; world origin also works with a single object.
+`motion.updateLayers` changes several items atomically and supports the same animation and
+coalescing behaviour as `motion.updateLayer`.
+Updating an animated value preserves easing when a key already exists at that time. An explicit
+`props.keyframes` object replaces the named channels after base values are set; use an empty
+array to remove a channel. Studio uses this to restore the exact original curves on Escape.
+
+`motion.duplicateLayers {"clipId":"…","ids":["rig","light"]}` duplicates a selection in
+one edit. Children of selected roots are copied once. Expressions, constraints, modifiers,
+parents and mattes referring to another copied item follow its copy; references outside the
+selection keep their original targets. The response includes copied root `ids` in selection
+order and an `idMap` including descendants. Studio's Duplicate shortcut uses this command.
+`motion.removeLayers {"clipId":"…","ids":["rig","follower"]}` removes a selection together,
+checking references after all selected items and their descendants have gone. A remaining
+dependency rejects the whole edit. Studio also rolls back mixed object/material/composition
+deletions as one operation and keeps the selection when they fail.
+`motion.moveLayers {"clipId":"…","ids":["left","right"],"parent":"rig","index":0}`
+moves selected objects or layers together. Nested selections travel with their selected
+ancestors, roots keep their original scene order, and local transforms and animation stay
+unchanged. The insertion index counts the destination's remaining items after removing all
+selected roots; omitted means append. An empty parent selects the scene root; omit parent only
+for siblings. Studio Outliner dragging uses this command, with one undo step. Escape cancels
+the drag; self/descendant drops are unavailable, and intervening hierarchy changes discard it.
+
+The Arrange menu aligns or evenly distributes **object origins** along a world axis. Use
+`motion.arrangeObjects` with `clipId`, `ids`, `axis` (`x`, `y`, `z`) and `operation`
+(`alignActive`, `alignCentre`, `distribute`). Selected descendants follow their selected parents;
+the last remaining object is the active reference. Distribution keeps the outermost origins
+fixed. Existing position channels receive a keyframe at `time` (timeline seconds, default the
+playhead). Driven positions or collapsed parents that prevent the arrangement return an error
+without partially changing the scene.
+
+Use `ui.studio {"select":["object-id"],"selectionOp":"add"}` to extend the object or layer
+selection, or `"selectionOp":"subtract"` to remove those ids. The same operation applies to
+`editSelection` for mesh vertices, edges and faces, and to `selectedKeys` for animation,
+retaining the surviving selection order.
+Each call defaults to `replace`; these operations only change selection, with no project edit
+or undo step. In the viewport, B arms box selection. Shift-drag adds; Ctrl/Cmd+Shift-drag removes;
+Escape or right-click cancels the rectangle before it changes the selection. Fully transparent repeater copies
+are excluded; selecting a visible repeated group child selects its original layer id.
+
+In a 2D viewport, F or period centres and zooms to the visible selected layers at the
+playhead. Rotated bounds, nested groups, visible repeater instances and the opened
+composition are included. Home or Shift+Z fits the full canvas. Use `ui.studio
+{"frame":true}` for selected layers, or `{"zoom":"fit"}` for the canvas. An empty
+or entirely invisible selection falls back to the canvas. Framing only changes the view.
+
+The dope sheet and graph share a time view. Use `ui.studio {"timelineRange":[1,3]}` for a range
+in scene seconds or `{"fitTimeline":"clip"}` / `{"fitTimeline":"selection"}` to frame the
+clip or selected keyframes. This only changes the view. In the window, Ctrl/Cmd-wheel zooms
+around the pointer; Shift-wheel or a horizontal scroll pans through time. The timeline's
+buttons also zoom and frame keys. Ordinary wheel scrolling moves dope-sheet rows or zooms
+the graph's value range around the pointer. Framing also resets the graph's value zoom and
+fits the curve inside the visible time range. Keys outside the clip's playback interval can
+still be selected, moved or deleted.
+Shift-click or Ctrl/Cmd-click graph keys to add or remove them, then drag the selection in time
+and value. For a vector curve, only the grabbed component changes value. Select all in the
+graph selects the visible property's keys. A group stops at time zero without losing its spacing.
+The curve previews key and Bézier-handle drags before release.
+Time drags snap the grabbed key to the nearest project frame, including the clip's trim and
+speed. Hold Alt while dragging for subframe placement. Other selected keys keep their offsets.
+Click a vector key's component or use the X/Y/Z Component buttons to place handles on that curve;
+the vector's easing still applies to all its components. `ui.studio {"graphComponent":1}`
+chooses Y (zero-based; longer vectors also accept higher indices). Escape or right-click cancels an unfinished
+timeline drag without changing the scene. Switching clips or graph properties discards the preview.
+Shift-drag empty graph space to select keys inside a rectangle; Ctrl/Cmd+Shift adds that region
+to the selection. With B armed, Shift-drag adds and Ctrl/Cmd+Shift-drag removes keys
+in both the graph and dope sheet; other selected channels remain selected.
+`ui.studio {"selectedKeys":[{"id":"box","property":"position.x","time":1}]}`
+selects keys directly, using scene seconds. All references must exist, duplicate references are
+selected once, and `[]` clears with the default `selectionOp: "replace"`. Use `"add"` or
+`"subtract"` to refine the existing key selection; an empty list leaves it unchanged in those modes.
+Selection does not add undo history. Keys removed
+by undo or external edits leave the selection; Delete with no selected keys leaves objects intact.
+With the Studio timeline active, B arms box selection, Escape or right-click cancels it, period or F frames
+selected keys, Home fits the clip, and +/− zoom time. These shortcuts leave the viewport and
+scene camera unchanged. Clicking timeline property names or controls also makes it active.
+In the graph, 1/2/3 chooses the X/Y/Z component. I and the Keyframe button insert only the
+visible curve, including while the selected mesh is in edit mode. In the dope sheet, I inserts
+the selected items' transform keys. Modelling and visibility shortcuts do not modify objects
+while the timeline is active; click the viewport or Outliner to work on objects again.
+Selecting World (`select: ["scene"]`) also exposes its numeric curves, such as `ambient`, for
+the same graph selection, insertion and editing controls.
+Alt+Left/Right (or the previous/next keyframe buttons) jumps the playhead between keys within
+the clip's playback interval. The graph follows its visible property; the dope sheet follows
+selected items, or all animated items when none are selected. These actions are also available
+as `ui.action` names `StudioPreviousKey` and `StudioNextKey`, and in the Keys menu. Navigation
+pauses Studio playback and leaves key selection, scene values and undo history unchanged.
+Key jumps keep their exact time even between project frames. Scripts can request the same
+precision with `timeline.seek {"time":0.75,"exact":true}`; ordinary seeking still snaps to frames.
+Shift+D or Duplicate keyframes in the key menu copies the selected range after itself, leaving
+one project frame before the first copy. If a destination is occupied, copies move after the
+remaining keys on the selected channels. New keys are selected and framed, with one undo step.
+An empty key selection leaves scene objects unchanged.
+G moves selected keys in time: type a project-frame count (negative moves earlier) or move the
+pointer, then press Enter or click to apply. S scales their spacing from the first selected
+key: 2 doubles the duration, 0.5 halves it. Scaling requires a positive factor. Escape or right
+click cancels either preview without editing the project; confirmation uses one
+`motion.updateKeyframes` command. Moving past scene time zero limits the group's offset.
+The Keys menu exposes these operations alongside duplication and easing. If another client
+changes the source keys or clip timing during a preview, confirmation discards the stale edit.
+In the graph, Y switches the active G/S operation to values; X switches back to time. G then Y
+then 2.5 offsets selected values by 2.5. S then Y then 2 doubles values about zero; negative
+factors mirror them and zero flattens them. For vectors, the Component buttons choose the
+affected component; the others stay unchanged. Scalar curves ignore the vector preference.
+Value edits require every selected key to belong to the visible numeric curve. They keep key
+times, easing and base properties, preview before confirmation, and undo together.
+Typed amounts remain visible at their entered precision, and scientific notation such as
+`4e-4` is accepted. Incomplete or overflowing numbers cannot be applied.
+Studio selects newly inserted keys so the next timeline edit can move, scale or ease them.
+Insertion uses the displayed scene frame, held at the clip ends when the global playhead is
+outside the clip; trim and speed are respected. Clicking the shared Studio sidebar
+restores its keyboard shortcuts, while search and property inputs keep their typing behavior.
+In the Outliner, Up/Down selects the previous/next visible item; Shift+Up/Down extends a range.
+Left collapses a group or selects its parent, and Right expands it or selects its first child.
+Selection scrolls into view. Search results and collapsed branches determine which items are
+reachable; searching leaves the saved folding state intact. Elsewhere, Left/Right still steps
+the playhead by a frame.
+Typed 3D move, rotate and scale amounts apply even when the selected objects are behind the
+viewport camera. Numeric input accepts scientific notation, bypasses grid snapping for exact
+3D transforms, and rejects incomplete or overflowing amounts without replacing the last valid
+preview. Correct the input with Backspace or cancel with Escape. Ctrl snapping lasts only while
+held unless the Studio snapping toggle (`ui.studio {"snapping": true}`) is on. This setting is
+separate from timeline snapping. Scene and composition switches discard previews
+from the previous context.
+On the 2D canvas, R accepts a rotation in degrees and S accepts a scale factor, including
+scientific notation. X/Y constrains scaling to that axis; press the same axis again for uniform
+scaling. Each preview starts from the original layer transforms. Switching constraints restores
+the base values and curves of channels the new constraint leaves alone. Enter/click confirms,
+Escape restores the original values, and incomplete numbers remain editable.
+
+`motion.addKeyframe` keeps base property values unchanged. Replacing a key preserves its easing
+unless `easing` is explicitly supplied; a new key defaults to linear easing.
+
+`motion.duplicateKeyframes {"clipId":"…","keys":[{"id":"box","property":"position.x","time":2}],"by":1}`
+copies existing keys by a common offset in timeline seconds, preserving values, easings and base
+properties. Occupied destinations are rejected unless `replace:true` is explicitly supplied.
+The operation is atomic; returned `selectedKeys` use scene seconds and can be passed to `ui.studio`.
+
+`motion.updateKeyframes {"clipId":"…","updates":[{"id":"box","property":"position.x","time":2,"newTime":3,"value":4}]}`
+edits existing keys together, preserving omitted values and easings and leaving base properties
+unchanged. `time` and `newTime` are timeline seconds; clip trim and speed are accounted for.
+All source keys are read before editing, so swaps work. A moved key replaces an unselected key
+at its destination; duplicate sources or destinations are rejected. The entire edit is atomic
+and has one undo step.
+`motion.shiftKeyframes` applies a common time offset to matching keys of one item. If moving
+earlier would cross scene time zero, it limits the entire group's offset to preserve spacing
+across channels. Its response includes the applied `by` in timeline seconds. Every entry in
+`times` must be a finite number.
+
+`motion.renameLayer` accepts `namespace: "scene"` or `"material"` when a shared material and
+an object use the same name. It defaults to the scene item if present. Only references within
+the chosen namespace follow the rename; the Studio outliner chooses the namespace for you.
+
+The Studio's left sidebar has Scene, Properties and Model views. Search in Scene finds names
+and types inside collapsed groups.
+Shift-click in Scene selects a visible range from the last clicked anchor; Ctrl/Cmd-click adds
+individual items, and combining it with Shift adds a range to the current selection.
+Model includes mesh statistics, selection controls, grouped
+modelling tools, parameters and the last operation's result. Optional custom offsets and pivots
+can be switched off to return to the tool's automatic normal or selection centre.
+
+```sh
+kimchi-cli ui.studio --args '{"clipId":"<motion-clip-id>","select":["mesh-id"],"mode":"edit","selectMode":"face","meshSelect":"all","meshTool":"inset"}'
+kimchi-cli ui.studio --args '{"meshSelect":"shrink","frame":true}'
+kimchi-cli motion.editMesh --args '{"clipId":"<motion-clip-id>","id":"mesh-id","op":"extrude","edges":[[0,1],[2,3]],"params":{"offset":[0,0,1]}}'
+```
+
+`meshSelect` accepts `all`, `none`, `invert`, `linked`, `grow`, `shrink` and `boundary` in the
+current vertex, edge or face selection mode. In edge mode, `edgeLoop` follows selected edges
+through regular four-edge vertices, and `edgeRing` follows opposite edges across quads. Both
+require a selected edge and extend every selected seed. They stop at ambiguous junctions and
+preserve exact edges, so a ring touching all corners of a face does not select that face or
+connecting edges. The Model panel provides both buttons. Selection alone adds no undo history.
+`editSelection` also accepts exact `edges` pairs and validates every index. `meshTool` opens a
+tool's parameter form without applying it. Modelling operations use `motion.editMesh`, including
+from the window, and share the same undo history. Its optional `edges` pairs override edges
+inferred from vertices and do not implicitly select faces.
+
+G/R/S and the viewport gizmos transform the selected mesh components in global or local space.
+X/Y/Z constrains an axis; Shift plus an axis constrains a plane. Repeating an axis cycles its
+orientation. The pivot menu includes the active component and individual selection islands.
+The last selected component stays active through scene refreshes and undo.
+Typed amounts preserve precision, and Escape restores the original positions. Object transforms,
+their animation, and unselected vertices remain intact.
+
+Extrusion pulls also start from the original vertex positions on every preview. Small distances
+retain their precision; Escape cancels the pull, and Undo removes its new topology.
+Exact previews use `motion.updateMeshVertices`, also available to agents and scripts:
+
+```sh
+kimchi-cli motion.updateMeshVertices --args '{"clipId":"<motion-clip-id>","id":"mesh-id","vertices":[{"index":0,"position":[1,2,3]}],"expectedVertexCount":8}'
+```
+
+Positions are local to the mesh. The list is validated atomically; `expectedVertexCount` is an
+optional guard against vertex-count changes while a transform is active.

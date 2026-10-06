@@ -537,6 +537,7 @@ impl Provider for OpenRouter {
 
     async fn generate(&self, cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput> {
         match req.task {
+            Task::TextToAudio | Task::TextToSpeech => Err(GenError::Unsupported("This provider does not generate audio.".into())),
             Task::TextToImage | Task::ImageToImage => self.image(cx, req).await,
             Task::TextToVideo | Task::ImageToVideo => self.video(cx, req).await,
         }

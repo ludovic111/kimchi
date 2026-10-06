@@ -76,11 +76,22 @@ pub fn ear_clip_with_holes(outer: &[[f64; 2]], holes: &[Vec<[f64; 2]>]) -> Vec<[
 }
 
 /// Triangles of one 3D face (corner indices), clipped in the face's best-fit plane.
-pub(crate) fn face_triangles(pts: &[V3]) -> Vec<[usize; 3]> {
+/// Picking and drawing share this tessellation, including concave faces and either winding.
+pub fn face_triangles(pts: &[V3]) -> Vec<[usize; 3]> {
+    if !pts.iter().copied().all(finite) {
+        return vec![];
+    }
     match pts.len() {
         0..=2 => vec![],
         3 => vec![[0, 1, 2]],
         _ => {
+            // Face-local units keep its normal and ear tests stable for very small or large
+            // coordinates, and avoid cancellation from a distant scene origin.
+            let mut local: Vec<V3> = pts.iter().map(|p| sub(*p,pts[0])).collect();
+            let extent = local.iter().flatten().map(|v|v.abs()).fold(0.,f64::max);
+            if extent == 0. || !extent.is_finite() { return vec![]; }
+            local.iter_mut().for_each(|p| *p=p.map(|v|v/extent));
+            let pts=&local;
             let Some(n) = try_norm(newell(pts.iter().copied())) else { return vec![] };
             if pts.len() == 4 {
                 // A convex quad splits along its shorter diagonal.

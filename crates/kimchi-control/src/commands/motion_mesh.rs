@@ -26,6 +26,29 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
     };
     let obj = motion::find_object(&sp.objects, &id).cloned().ok_or_else(|| format!("No object \"{id}\" in \"{}\".", clip.name))?;
     let answer = match cx.spec.name {
+        "motion.updateMeshVertices" => {
+            let object=motion::find_object_mut(&mut sp.objects,&id).expect("found above");
+            let Shape3d::Mesh {vertices,..}=&mut object.shape else {return Err(format!("\"{id}\" is not a mesh. Convert it with motion.convertToMesh first."))};
+            if let Some(expected)=a.get("expectedVertexCount") {
+                let expected=expected.as_u64().ok_or("expectedVertexCount must be a nonnegative integer")?;
+                if expected!=vertices.len() as u64 {return Err(format!("The mesh now has {} vertices instead of {expected}; start the transform again.",vertices.len()))}
+            }
+            let updates=a.array("vertices").filter(|v|!v.is_empty()).ok_or("vertices must be a nonempty list of {index, position}")?;
+            let mut seen=std::collections::HashSet::new();
+            for (i,update) in updates.iter().enumerate() {
+                let fields=update.as_object().ok_or_else(||format!("vertices[{i}] must be an object with index and position"))?;
+                if let Some(key)=fields.keys().find(|k| !matches!(k.as_str(),"index"|"position")) {return Err(format!("vertices[{i}]: unknown field {key:?}; use index and position"))}
+                let index=fields.get("index").and_then(|v|v.as_u64()).filter(|&v|v<vertices.len() as u64).ok_or_else(||format!("vertices[{i}].index must name a vertex in this mesh ({} vertices)",vertices.len()))? as usize;
+                if !seen.insert(index) {return Err(format!("Vertex {index} is listed more than once"))}
+                let position=fields.get("position").and_then(|v|v.as_array()).filter(|v|v.len()==3).ok_or_else(||format!("vertices[{i}].position takes [x, y, z]"))?;
+                let mut point=[0.;3];
+                for (axis,value) in position.iter().enumerate() {
+                    point[axis]=value.as_f64().filter(|v|v.is_finite()).ok_or_else(||format!("vertices[{i}].position[{axis}] must be finite"))?;
+                }
+                vertices[index]=point;
+            }
+            json!({"id":id,"updated":updates.len(),"vertices":vertices.len()})
+        }
         "motion.convertToMesh" => {
             let mut poly = base(&p, &obj)?;
             let bake = a.bool_or("applyModifiers", false);
@@ -79,7 +102,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             let new_sel = ops::apply(&mut m, &sel, &op)?;
             m.smooth_angle = smooth;
             let o = motion::find_object_mut(&mut sp.objects, &id).expect("found above");
-            o.shape = m.to_shape();
+            o.shape = m.to_shape_exact();
             json!({ "id": id, "selection": new_sel, "vertices": vertex_count(o), "faces": m.faces.len() })
         }
         _ => return Err(crate::commands::unhandled(cx)),
@@ -148,7 +171,7 @@ fn others<'a>(sp: &'a Scene3d, t: f64, id: &'a str) -> impl Fn(&str) -> Option<P
 /// The selection the command names: indices, or a helper (`select`).
 fn selection(a: &Args, m: &PolyMesh, op: &str) -> CmdResult<Selection> {
     if let Some(v) = a.get("select") {
-        let pick: Select = serde_json::from_value(v.clone()).map_err(|e| format!("select: {e} (fields: all, vertices, faces, facing, angle, inside, edgeLoop, edgeRing, linked)"))?;
+        let pick: Select = serde_json::from_value(v.clone()).map_err(|e| format!("select: {e} (fields: all, vertices, edges, faces, facing, angle, inside, edgeLoop, edgeRing, linked)"))?;
         return pick.resolve_for(m, op);
     }
     let list = |name: &str, max: usize| -> CmdResult<Vec<u32>> {
@@ -163,8 +186,15 @@ fn selection(a: &Args, m: &PolyMesh, op: &str) -> CmdResult<Selection> {
             })
             .collect()
     };
-    let sel = Selection { vertices: list("vertices", m.positions.len())?, faces: list("faces", m.faces.len())? };
-    Ok(sel)
+    let edges: Vec<(u32, u32)> = a.get("edges").map(|v| serde_json::from_value(v.clone())).transpose().map_err(|e| format!("edges: {e}; give pairs of vertex indices [[a,b], ...]"))?.unwrap_or_default();
+    if !edges.is_empty() {
+        let valid: std::collections::HashSet<_> = m.edges().into_iter().map(|e| (e.a, e.b)).collect();
+        if let Some(&(a, b)) = edges.iter().find(|&&(a, b)| !valid.contains(&(a.min(b), a.max(b)))) {
+            return Err(format!("{a}–{b} is not an edge of the mesh"));
+        }
+    }
+    // Preserve vertex order: merge at "first" uses the first supplied index.
+    Ok(Selection { vertices: list("vertices", m.positions.len())?, edges, faces: list("faces", m.faces.len())? })
 }
 
 fn vertex_count(o: &Object3d) -> usize {

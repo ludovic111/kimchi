@@ -370,6 +370,25 @@ fn patterns_show_both_colours_and_bumps_change_shading() {
 // ---- Cameras and camera effects ----
 
 #[test]
+fn tiny_orthographic_meshes_match_the_viewport_projection() {
+    let mut reference=None;
+    for size in [1.,1e-4,1e-8,1e-12] {
+        let s=scene(json!({"background":"#000000","camera":{"position":[0,0,8],"target":[0,0,0],"projection":"orthographic","orthoSize":size*6.},
+            "objects":[{"id":"panel","type":"mesh","vertices":[[-size,-size,0],[size,-size,0],[size,size,0],[-size,size,0]],
+                "faces":[[0,1,2,3]],"material":{"color":"#ffffff","unlit":true}}]}));
+        let picture=Space::cpu().render(&s,0.,160,90,&mut None_,Quality::Preview).unwrap();
+        let lit=picture.pixels().iter().filter(|c|c.red()>200).count();
+        assert!(lit>800 && lit<1000,"scale {size}: expected a visible 30px square, got {lit} pixels");
+        let view=ViewCamera::from_camera(&s.camera);
+        let edge=view.project(160.,90.,[size,0.,0.]).unwrap();assert!((edge[0]-95.).abs()<1e-9);
+        assert_eq!(viewport::pick(&s,0.,view.ray(160.,90.,82.,43.)).as_deref(),Some("panel"),"scale {size}: a visible object can be selected");
+        assert_eq!(viewport::pick(&s,0.,view.ray(160.,90.,120.,43.)),None);
+        if let Some(reference)=&reference {assert!(mean_diff(reference,&picture)<0.1,"scene scale must not change its picture");}
+        reference=Some(picture);
+    }
+}
+
+#[test]
 fn orthographic_cameras_keep_sizes_with_distance() {
     let width_at = |z: f64, ortho: bool| {
         let cam = if ortho { json!({"position": [0, 0, z], "projection": "orthographic", "orthoSize": 4}) } else { json!({"position": [0, 0, z]}) };
@@ -467,8 +486,8 @@ fn motion_blur_smears_fast_things_in_final_frames() {
     let s = scene(json!({"background": "#000000", "camera": {"position": [0, 0, 6]}, "render": {"motionBlur": 1, "motionBlurSamples": 8},
         "objects": [{"id": "s", "type": "box", "size": 0.6, "material": {"color": "#ffffff", "unlit": true}, "keyframes": {"x": [[0, -3], [1, 3]]}}]}));
     let mut space = Space::cpu();
-    let sharp = space.render_frame(&s, 0.5, 0.25, 160, 90, &mut None_, Quality::Preview).unwrap();
-    let blurred = space.render_frame(&s, 0.5, 0.25, 160, 90, &mut None_, Quality::Final).unwrap();
+    let sharp = space.render_frame(&s, 0.5, 0.25, 160, 90, &mut None_, Quality::Preview,Default::default()).unwrap();
+    let blurred = space.render_frame(&s, 0.5, 0.25, 160, 90, &mut None_, Quality::Final,Default::default()).unwrap();
     dump("motion-blur", &blurred);
     let partial = |p: &Pixmap| (0..160).filter(|x| (20..235).contains(&rgba(p, *x, 45)[0])).count();
     assert!(partial(&blurred) > partial(&sharp) + 10, "smeared: {} vs {}", partial(&blurred), partial(&sharp));
@@ -522,7 +541,7 @@ fn obj_and_stl_models_load_centred() {
 fn studio(v: serde_json::Value, opts: &ViewOptions) -> Pixmap {
     let s = scene(v);
     let view = ViewCamera::default();
-    viewport::render_view(&mut Space::cpu(), &s, 0.0, 1.0 / 30.0, 160, 90, &mut None_, Some(&view), opts).unwrap()
+    viewport::render_view(&mut Space::cpu(), &s, 0.0, 1.0 / 30.0, 160, 90, &mut None_, Some(&view), opts,Default::default()).unwrap()
 }
 
 #[test]
@@ -552,7 +571,7 @@ fn the_grid_shows_on_a_floor_at_its_height() {
     let view = ViewCamera { position: [6.0, 1.0, 7.0], target: [0.0, 0.8, 0.0], ..Default::default() };
     let draw = |objects: serde_json::Value| {
         let s = scene(json!({"background": "#000000", "objects": objects}));
-        viewport::render_view(&mut Space::cpu(), &s, 0.0, 1.0 / 30.0, 320, 180, &mut None_, Some(&view), &opts).unwrap()
+        viewport::render_view(&mut Space::cpu(), &s, 0.0, 1.0 / 30.0, 320, 180, &mut None_, Some(&view), &opts,Default::default()).unwrap()
     };
     let floor = json!([{"id": "floor", "type": "plane", "width": 20, "height": 20, "rotation": [-90, 0, 0], "material": {"color": "#000000", "unlit": true}}]);
     let (bare, on) = (draw(json!([])), draw(floor));
@@ -579,6 +598,81 @@ fn selection_outlines_edit_wires_and_helpers() {
     let helpers = studio(s, &ViewOptions { helpers: true, ..Default::default() });
     dump("helpers", &helpers);
     assert!(mean_diff(&none, &helpers) > 0.3, "light and camera icons drawn");
+}
+
+#[test]
+fn refining_views_keep_grid_helpers_outlines_and_mesh_highlights() {
+    let mut s = scene(json!({"background":"#202020", "render":{"engine":"path","samples":4,"denoise":false},
+        "lights":[{"id":"spot","type":"spot","position":[-2,3,1]}],
+        "cameras":[{"id":"side","position":[4,1,0]}],
+        "objects":[{"id":"panel","type":"box","size":1.5,"material":{"color":"#404040","unlit":true}}]}));
+    let view = ViewCamera::default();
+    let options = [
+        ViewOptions { grid:true, ..Default::default() },
+        ViewOptions { helpers:true, ..Default::default() },
+        ViewOptions { selected:vec!["panel".into()], ..Default::default() },
+        ViewOptions { edit:Some("panel".into()), edit_faces:vec![0], edit_vertices:vec![0], ..Default::default() },
+    ];
+    for (i, mut opts) in options.into_iter().enumerate() {
+        s.render.denoise = i % 2 == 0;
+        opts.shading = Shading::Rendered;
+        let mut plain = viewport::refining_view(&mut Space::cpu(), &s, 0., 160, 90, &mut None_, Some(&view), &ViewOptions::default(), Default::default());
+        let mut editing = viewport::refining_view(&mut Space::cpu(), &s, 0., 160, 90, &mut None_, Some(&view), &opts, Default::default());
+        for samples in [1,3] {
+            plain.add(samples); editing.add(samples);
+            assert_eq!(plain.samples(), editing.samples());
+            assert!(mean_diff(&plain.picture(), &editing.picture()) > 0.1, "overlay {i} remains at {} samples", editing.samples());
+        }
+        assert!(editing.done());
+        assert_eq!(editing.samples(), editing.target());
+        let complete = viewport::render_view(&mut Space::cpu(), &s, 0., 1./30., 160, 90, &mut None_, Some(&view), &opts, Default::default()).unwrap();
+        let difference = mean_diff(&complete, &editing.picture());
+        assert!(difference < 0.2, "overlay {i} matches the finished Studio picture, allowing premultiplied rounding: {difference}");
+    }
+}
+
+#[test]
+fn selected_faces_keep_their_visible_area_across_the_camera_plane() {
+    let draw = |vertices: serde_json::Value, face: serde_json::Value, ortho, selected| {
+        let s=scene(json!({"background":"#000000","objects":[{"id":"mesh","type":"mesh","vertices":vertices,"faces":[face],"material":{"color":"#404040","unlit":true}}]}));
+        let view=ViewCamera {position:[0.;3],target:[0.,0.,-1.],ortho,ortho_size:6.,..Default::default()};
+        let opts=ViewOptions {edit:Some("mesh".into()),edit_faces:if selected {vec![0]} else {vec![]},..Default::default()};
+        viewport::render_view(&mut Space::cpu(),&s,0.,1./30.,160,90,&mut None_,Some(&view),&opts,Default::default()).unwrap()
+    };
+    let vertices=json!([[-1,-1,-3],[1,-1,1],[0,1,-3]]);
+    for face in [json!([0,1,2]),json!([2,1,0])] {
+        let plain=draw(vertices.clone(),face.clone(),false,false);
+        let selected=draw(vertices.clone(),face,false,true);
+        let (a,b)=(rgba(&plain,80,45),rgba(&selected,80,45));
+        assert!(b[0]>a[0]+30 && b[0]>b[2]+30,"visible part keeps its face tint: {a:?} -> {b:?}");
+    }
+    let plain=draw(vertices.clone(),json!([0,1,2]),true,false);
+    let selected=draw(vertices,json!([0,1,2]),true,true);
+    assert!(rgba(&selected,80,45)[0]>rgba(&plain,80,45)[0]+30);
+    assert_eq!(rgba(&plain,90,58),rgba(&selected,90,58),"the portion behind the eye has no face tint");
+    // Triangulating before clipping preserves a concave face's empty notch, in either winding.
+    let vertices=json!([[-2,-2,-3],[2,-2,-3],[2,-1,-3],[-1,-1,-3],[-1,1,-3],[2,1,-3],[2,2,-3],[-2,2,-3]]);
+    for face in [json!([0,1,2,3,4,5,6,7]),json!([7,6,5,4,3,2,1,0])] {
+        let plain=draw(vertices.clone(),face.clone(),true,false);
+        let selected=draw(vertices.clone(),face,true,true);
+        assert_eq!(rgba(&plain,80,45),rgba(&selected,80,45),"the notch stays empty");
+        assert!(rgba(&selected,57,45)[0]>rgba(&plain,57,45)[0]+30,"the side remains selected");
+    }
+    // The camera plane can split one concave polygon into two separate visible islands.
+    let vertices=json!([[-2,-2,2],[2,-2,-2],[2,-1,-2],[-1,-1,1],[-1,1,1],[2,1,-2],[2,2,-2],[-2,2,2]]);
+    let plain=draw(vertices.clone(),json!([0,1,2,3,4,5,6,7]),true,false);
+    let selected=draw(vertices,json!([0,1,2,3,4,5,6,7]),true,true);
+    assert_eq!(rgba(&plain,95,45),rgba(&selected,95,45),"clipping must not bridge the gap between islands");
+    for y in [22,67] {assert!(rgba(&selected,95,y)[0]>rgba(&plain,95,y)[0]+30,"each visible island stays tinted");}
+}
+
+#[test]
+fn orthographic_edit_overlays_exclude_geometry_behind_the_eye() {
+    let s=scene(json!({"background":"#000000","objects":[{"id":"mesh","type":"mesh","vertices":[[-1,-1,1],[1,-1,1],[0,1,1]],"faces":[[0,1,2]]}]}));
+    let view=ViewCamera {position:[0.;3],target:[0.,0.,-1.],ortho:true,ortho_size:6.,..Default::default()};
+    let opts=ViewOptions {edit:Some("mesh".into()),edit_vertices:vec![0,1,2],edit_faces:vec![0],..Default::default()};
+    let image=viewport::render_view(&mut Space::cpu(),&s,0.,1./30.,160,90,&mut None_,Some(&view),&opts,Default::default()).unwrap();
+    assert!(image.pixels().iter().all(|p|p.red()==0 && p.green()==0 && p.blue()==0),"faces, edges and vertices behind an orthographic camera stay hidden");
 }
 
 #[test]
@@ -625,6 +719,9 @@ fn gpu_matches_cpu() {
         return;
     }
     let scenes = [
+        ("tiny-orthographic",json!({"background":"#000000","camera":{"position":[0,0,8],"target":[0,0,0],"projection":"orthographic","orthoSize":6e-8},
+            "objects":[{"id":"panel","type":"mesh","vertices":[[-1e-8,-1e-8,0],[1e-8,-1e-8,0],[1e-8,1e-8,0],[-1e-8,1e-8,0]],
+                "faces":[[0,1,2,3]],"material":{"color":"#ffffff","unlit":true}}]})),
         ("basic", json!({"background": "#101014", "camera": {"position": [2, 2, 5]},
             "objects": [
                 {"id": "b", "type": "box", "size": 1.4, "bevel": 0.1, "rotation": [10, 30, 0], "material": {"color": "#ff5a36", "roughness": 0.3}},
@@ -671,8 +768,8 @@ fn gpu_matches_cpu() {
     let s = scene(json!({"background": "#202020", "objects": [{"id": "b", "type": "box", "size": 1.5}]}));
     let opts = ViewOptions { grid: true, selected: vec!["b".into()], edit: Some("b".into()), ..Default::default() };
     let view = ViewCamera::default();
-    let g = viewport::render_view(&mut gpu, &s, 0.0, 1.0 / 30.0, 160, 90, &mut None_, Some(&view), &opts).unwrap();
-    let c = viewport::render_view(&mut Space::cpu(), &s, 0.0, 1.0 / 30.0, 160, 90, &mut None_, Some(&view), &opts).unwrap();
+    let g = viewport::render_view(&mut gpu, &s, 0.0, 1.0 / 30.0, 160, 90, &mut None_, Some(&view), &opts,Default::default()).unwrap();
+    let c = viewport::render_view(&mut Space::cpu(), &s, 0.0, 1.0 / 30.0, 160, 90, &mut None_, Some(&view), &opts,Default::default()).unwrap();
     dump("gpu-studio", &g);
     assert!(mean_diff(&g, &c) < 6.0, "studio: {}", mean_diff(&g, &c));
 }
@@ -755,4 +852,15 @@ fn zz_probe_lights() {
         let p = Space::cpu().render(&s, 0.0, 640, 360, &mut None_, Quality::Preview).unwrap();
         dump(&format!("probe-lights-{shadows}"), &p);
     }
+}
+
+#[test]
+fn edit_mode_highlights_only_explicit_edges() {
+    let s = json!({"background":"#000000", "objects":[{"id":"quad", "type":"mesh", "vertices":[[-1,-1,0],[1,-1,0],[1,1,0],[-1,1,0]], "faces":[[0,1,2,3]], "material":{"color":"#404040", "unlit":true}}]});
+    let draw = |edges| studio(s.clone(), &ViewOptions { edit: Some("quad".into()), edit_vertices: vec![0,1,2,3], edit_edges: edges, ..Default::default() });
+    let orange = |p: &Pixmap| p.pixels().iter().filter(|c| c.red() > 200 && c.green() > 100 && c.green() < 190 && c.blue() < 90).count();
+    let none = orange(&draw(Some(vec![])));
+    let two = orange(&draw(Some(vec![(0,1),(2,3)])));
+    let all = orange(&draw(None));
+    assert!(none < two && two < all, "only the picked edges light up: vertices {none}, two edges {two}, all edges {all}");
 }

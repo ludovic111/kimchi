@@ -34,6 +34,8 @@ pub fn err(e: impl std::fmt::Display) -> String {
 tokio::task_local! {
     /// Set while `project.batch` runs its commands: their edits belong to its open batch.
     static IN_BATCH: ();
+    /// A window edit belongs to the document visible when the person started it.
+    static PROJECT_SCOPE: (usize, Option<Id>);
 }
 
 /// Whether this task is running a `project.batch`'s commands.
@@ -454,6 +456,18 @@ impl Session {
         self.doc.lock().as_ref().map(|d| d.editor.project().id)
     }
 
+    /// Binds a command's reads and edits to the project its caller displayed. Checks happen
+    /// under the document lock, including after any await between reading and applying an edit.
+    /// Background work that intentionally targets a saved project uses `with_project` instead.
+    pub async fn guard_project<F: std::future::Future>(&self, project: Option<Id>, command: F) -> F::Output {
+        PROJECT_SCOPE.scope((self as *const Self as usize,project),command).await
+    }
+
+    fn check_project_scope(&self, project: Id) -> CmdResult<()> {
+        let changed=PROJECT_SCOPE.try_with(|(session,expected)| *session==self as *const Self as usize && *expected!=Some(project)).unwrap_or(false);
+        if changed {Err("The project changed before this edit finished. Start the edit again in the current project.".into())} else {Ok(())}
+    }
+
     pub fn location(&self) -> Option<Location> {
         self.doc.lock().as_ref().map(|d| d.location.clone())
     }
@@ -467,6 +481,7 @@ impl Session {
     pub fn read<R>(&self, f: impl FnOnce(&Editor) -> R) -> CmdResult<R> {
         let guard = self.doc.lock();
         let doc = guard.as_ref().ok_or(NO_PROJECT)?;
+        self.check_project_scope(doc.editor.project().id)?;
         Ok(f(&doc.editor))
     }
 
@@ -509,6 +524,7 @@ impl Session {
     pub fn edit<R>(&self, label: &str, source: Source, f: impl FnOnce(&mut Editor) -> CmdResult<R>) -> CmdResult<R> {
         let mut guard = self.doc.lock();
         let doc = guard.as_mut().ok_or(NO_PROJECT)?;
+        self.check_project_scope(doc.editor.project().id)?;
         doc.editor.set_step_info(label, source.as_str());
         // Only a batch already open when this call came in is someone else's (a command's own
         // internal batch, opened inside `f`, is not).

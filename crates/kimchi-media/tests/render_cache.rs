@@ -32,6 +32,17 @@ fn red_x(p: &kimchi_media::tiny_skia::Pixmap) -> Option<u32> {
 }
 
 #[tokio::test]
+async fn cache_keys_follow_expression_duration_and_shutter_timing() {
+    let (p,id)=project();let original=p.clip(id).unwrap();let base=cache::key(&p,original).unwrap();
+    let mut changed=original.clone();changed.start=10.;
+    assert_eq!(cache::key(&p,&changed).unwrap(),base,"moving a clip keeps its scene render reusable");
+    changed.duration=4.;
+    assert_ne!(cache::key(&p,&changed).unwrap(),base,"duration expressions must refresh after trimming");
+    changed.speed=0.5;
+    assert_ne!(cache::key(&p,&changed).unwrap(),base,"the same source span at another speed changes the motion-blur shutter");
+}
+
+#[tokio::test]
 async fn renders_ahead_and_plays_the_file() {
     let Some(tools) = tools() else { return };
     let (mut p, id) = project();

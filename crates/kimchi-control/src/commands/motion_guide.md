@@ -22,12 +22,45 @@ one; `motion.setStackItem` adds a modifier, constraint, effect, operator, mask o
 property with a formula, `motion.editMesh` models a mesh. People make the same changes in the
 Studio (the window's motion editor), so keep ids readable (`title`, `logo`, `floor`).
 
+For simultaneous transforms, `motion.updateLayers {clipId, updates:[{id, props}, ...], time}`
+applies every item together and leaves the scene unchanged if one update fails. In a 3D scene,
+`motion.arrangeObjects {clipId, ids, operation, axis, time}` aligns object origins to the last
+selected independent object (`alignActive`), their mean (`alignCentre`), or spaces them evenly
+between the outermost origins (`distribute`). Axes are world `x`, `y` or `z`; selected descendants
+follow their selected parents. The Studio toolbar provides these operations and rotation/scale
+pivots at the selection centre, active object, individual origins and world origin.
+
+`motion.duplicateLayers {clipId, ids}` copies a whole selection as one undo step. Selected
+descendants are copied once through their selected ancestor. Internal references in expressions,
+constraints, modifiers, parents and mattes follow copied targets; outside references stay as
+they were. It returns copied root `ids` in selection order and an `idMap` for all copies.
+`motion.duplicateLayer` copies one item and can take a custom `newId`.
+Use `motion.removeLayers {clipId, ids}` to delete linked selections together. Their descendants
+go with them, references are checked against the remaining scene, and a failed edit removes
+nothing. One undo restores the whole selection.
+`motion.moveLayers {clipId, ids, parent, index}` moves a selection into a group, composition
+(2D) or object (3D). Selected descendants travel with their selected ancestors, and roots keep
+their original scene order. Local transforms and curves remain unchanged. `parent: ""` means
+the scene root; omit it only for siblings. `index` is the insertion position after removing
+all selected roots (omit to append). The entire move validates and undoes together.
+`motion.renameLayer {clipId, id, newId}` updates the item's references too. Objects and shared
+materials have separate namespaces: use `namespace: "material"` to rename a shared material
+when an object has the same id. By default the scene item takes precedence. Duplication leaves
+material references and inline material ids unchanged.
+
 Work in this order: add, then **look** (`project.renderFrame` with a few `times`; the result is
 a PNG path you can open; `motion.view` shows a 3D scene from any side), then fix what you see. A motion clip sits on a video track like any
 clip: tracks above draw over it, its own placement and fades apply, and without a `background`
 it is transparent over what's below.
 
 ## Keyframes
+
+Use `motion.updateKeyframes {clipId, updates: [{id, property, time, newTime?, value?, easing?}]}`
+to edit existing keys together in one undo step. Its times are timeline seconds (converted for
+clip trim and speed). Omitted values and easings are preserved, as are the unanimated base
+properties. Sources are read before any changes, so moving keys through one another or swapping
+them works. A moved key replaces an unselected destination key. Duplicate sources/destinations
+or invalid changes reject the whole edit.
 
 Keyframes are `[time, value]`, `[time, value, "easing"]` or `{"time", "value", "easing"}`:
 
@@ -332,7 +365,7 @@ on the CPU when there is none; both give the same picture. The path tracer runs 
 
 Any object can become an editable mesh: `motion.convertToMesh {clipId, id}` (keeps its
 modifiers, or bakes them with `applyModifiers`); `motion.applyModifier` bakes one modifier or
-the stack. Then `motion.editMesh {clipId, id, op, faces | vertices | select, params}` works like
+the stack. Then `motion.editMesh {clipId, id, op, faces | vertices | edges | select, params}` works like
 Blender's edit mode, and answers with the new selection to chain the next step:
 
 ```json
@@ -344,13 +377,41 @@ Blender's edit mode, and answers with the new selection to chain the next step:
 
 Ops: extrude, extrudeIndividual, inset, bevel, subdivide, loopCut, delete, dissolve, merge,
 fill, bridge, flip, recalcNormals, translate (move), rotate, scale, mirror, duplicate, triangulate, poke,
-smooth, spin, knife, unwrap. Selections: vertex and face indices (`motion.get` shows the mesh),
+smooth, spin, knife, unwrap. Selections: vertex and face indices, or exact `edges: [[a,b], ...]` pairs (`motion.get` shows the mesh),
 or `{"all": true}`, `{"facing": [x, y, z], "angle": 30}`, `{"inside": [[x0, y0, z0], [x1, y1,
 z1]]}`, `{"edgeLoop": [v0, v1]}`, `{"edgeRing": [v0, v1]}` (add `"linked": true` to grow to
 everything connected). `motion.stackTypes {"family": "editOps"}` lists each operation's values. Add a `subdivision` modifier for smooth,
-organic shapes; `bevel` for crisp product shots.
+organic shapes; `bevel` for crisp product shots. Explicit edges must exist in the mesh and override
+edge inference from vertices. They never implicitly select faces: two opposite edges of a quad
+extrude as two edges, leaving the original face in place. Loop and ring selections also keep
+their exact edges. Loops stop at irregular vertices; rings cross opposite edges of quads and
+stop at ambiguous junctions. A ring around a box selects four edges, not its six faces.
+Mesh edits retain stored vertex precision, including small numeric offsets.
+
+Studio selection is separate from the mesh: `ui.studio {"editSelection":{"faces":[2]},
+"selectionOp":"add"}` adds faces to the current selection; `"subtract"` removes them.
+The same `selectionOp` applies to `select` for objects or 2D layers and to `selectedKeys`
+for animation keyframes. It defaults to `replace`
+on each call, retains selection order, and does not edit the project or its undo history.
+In the viewport, B arms box selection; Shift-drag adds, and Ctrl/Cmd+Shift-drag removes.
+In the timeline and graph editor, B arms the same replace/add/remove box controls.
+Escape or right-click cancels the box before applying it. Right-click also cancels
+an unfinished keyframe or Bézier-handle drag in the graph and dope sheet.
+In a 2D viewport, F or period frames the selected layers at the playhead, including
+visible repeated copies and the current composition. Home or Shift+Z fits the canvas.
+Agents use `ui.studio {"frame":true}` to frame, or `{"zoom":"fit"}` for the canvas.
+
+For exact vertex placement, use `motion.updateMeshVertices {clipId, id, vertices:
+[{"index": 0, "position": [1, 2, 3]}]}`. Positions are local to the mesh; only the listed
+vertices change. The whole list validates before one undoable write. An optional
+`expectedVertexCount` rejects a transform when the mesh's vertex count has changed.
 
 EXPRESSIONS_GUIDE
+
+In Studio, `fps` and `frame` use the project's frame rate in both 2D and 3D. `duration`
+is the clip's visible span in scene seconds (timeline duration × speed), or the composition's
+own duration inside a composition. Picking, framing, mesh overlays and camera helpers use
+the same expression context as the displayed scene.
 
 ## Rendering ahead
 
@@ -358,7 +419,7 @@ A motion clip is drawn live: quickly in the preview, at full quality (the scene'
 samples, motion blur) in the export. `motion.render {clipIds}` renders it ahead at full quality
 into a file the timeline then plays: smooth playback, fast exports, and the path tracer's
 quality while editing. `motion.renderStatus` follows it and shows each clip's state (live,
-rendered, outdated: the scene changed since, so it is drawn live again until rendered again);
+rendered, outdated: the scene, expression duration or shutter timing changed since, so it is drawn live again until rendered again);
 `motion.unrender` goes back to live. Render heavy 3D (path tracer, many particles, big
 subdivisions) once the scene is settled.
 

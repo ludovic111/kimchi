@@ -328,7 +328,7 @@ impl Properties {
         );
         // Focus on an object: the focus distance becomes how far it is.
         let t = self.studio.read(cx).scene_time(cx);
-        let w = model::worlds(s, t);
+        let w = self.studio.read(cx).worlds(s,t,cx);
         let eye = w.get(key).map(super::math::origin).unwrap_or_default();
         let objects: Vec<(String, f64)> = model::thing_ids(scene)
             .into_iter()
@@ -867,7 +867,7 @@ impl Render for Properties {
             .flex()
             .flex_col()
             .bg(t.bg_raised)
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.studio.update(cx, |s, _| s.area = Area::Properties)))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.studio.update(cx, |s, cx| s.focus_area(Area::Properties,cx))))
             .child(
                 div()
                     .h(px(32.))

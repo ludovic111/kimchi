@@ -11,7 +11,7 @@ use gpui::{
     prelude::*, px,
 };
 use kimchi_core::{ClipContent, MediaKind, TrackKind};
-use kimchi_gen::{ModelInfo, ProviderKind};
+use kimchi_gen::{ModelInfo, ProviderKind, Task};
 use serde_json::{Value, json};
 
 use crate::playback::Playback;
@@ -151,7 +151,12 @@ impl GeneratePanel {
     pub(crate) fn current_model(&self, cx: &App) -> Option<ModelInfo> {
         let s = self.store.read(cx);
         let task = self.draft.task();
-        let default = if self.draft.video { &s.settings.generate.video_model } else { &s.settings.generate.image_model };
+        let default = match self.draft.audio_task {
+            Some(Task::TextToSpeech) => &s.settings.generate.speech_model,
+            Some(_) => &s.settings.generate.audio_model,
+            None if self.draft.video => &s.settings.generate.video_model,
+            None => &s.settings.generate.image_model,
+        };
         let wanted = self.draft.model.clone().or_else(|| Some(default.clone()).filter(|d| !d.is_empty()));
         let fits = || s.models.iter().filter(|m| m.supports(task));
         wanted
@@ -172,7 +177,8 @@ impl GeneratePanel {
     /// Providers usable now: cloud ones with a key, local servers that answered with models.
     fn connected(&self, cx: &App) -> usize {
         let s = self.store.read(cx);
-        s.providers.iter().filter(|p| p.ready && (p.info.kind == ProviderKind::Cloud || s.models.iter().any(|m| m.provider == p.info.id))).count()
+        s.providers.iter().filter(|p| p.ready && p.info.tasks.contains(&self.draft.task())
+            && (p.info.kind == ProviderKind::Cloud || s.models.iter().any(|m| m.provider == p.info.id && m.supports(self.draft.task())))).count()
     }
 
     fn project_ratio(&self, cx: &App) -> String {
@@ -229,12 +235,27 @@ impl GeneratePanel {
             d.params.insert(p.key.clone(), p.default.clone());
         }
         self.param_fields = m.params.iter().map(|spec| ParamField::new(spec.clone(), cx)).collect();
+        if d.audio_task.is_some() && !m.params.is_empty() {
+            self.show_advanced = true;
+        }
     }
 
     fn set_video(&mut self, video: bool, cx: &mut Context<Self>) {
         self.draft.set_video(video);
         self.prompt.update(cx, |i, cx| i.set_placeholder(if video { VIDEO_PLACEHOLDER } else { IMAGE_PLACEHOLDER }, cx));
         self.sync_model(cx);
+        cx.notify();
+    }
+
+    fn set_mode(&mut self, mode: u8, cx: &mut Context<Self>) {
+        self.set_video(mode == 1, cx);
+        if mode >= 2 {
+            self.draft.audio_task = Some(if mode == 3 { Task::TextToSpeech } else { Task::TextToAudio });
+            self.draft.refs.clear(); self.draft.model = None; self.draft.duration = None; self.draft.params.clear();
+            self.params_for = None;
+            self.prompt.update(cx, |i, cx| i.set_placeholder(if mode == 3 { "Write the words to speak…" } else { "Describe music, atmosphere or a sound effect…" }, cx));
+            self.sync_model(cx);
+        }
         cx.notify();
     }
 
@@ -246,7 +267,10 @@ impl GeneratePanel {
         self.params_for = None;
         self.sync_model(cx);
         // Remember it for this mode (it is also what the CLI and MCP use by default).
-        let setting = if self.draft.video { "generate.videoModel" } else { "generate.imageModel" };
+        let setting = match self.draft.audio_task {
+            Some(Task::TextToSpeech) => "generate.speechModel", Some(_) => "generate.audioModel",
+            None if self.draft.video => "generate.videoModel", None => "generate.imageModel",
+        };
         let current = self.store.read(cx).settings.get(setting).and_then(|v| v.as_str().map(str::to_string));
         if current.as_deref() != Some(key.as_str()) {
             self.store.update(cx, |s, cx| s.run("app.setSetting", json!({ "key": setting, "value": key }), cx));
@@ -255,7 +279,7 @@ impl GeneratePanel {
     }
 
     fn apply_compose(&mut self, req: crate::store::ComposeRequest, cx: &mut Context<Self>) {
-        self.set_video(req.video, cx);
+        self.set_mode(match req.audio_task { Some(Task::TextToSpeech) => 3, Some(_) => 2, None if req.video => 1, None => 0 }, cx);
         if let Some(p) = req.prompt {
             self.prompt.update(cx, |i, cx| i.set_text(p, cx));
         }
@@ -282,6 +306,14 @@ impl GeneratePanel {
         self.draft.target = req.target;
         self.params_for = None;
         self.sync_model(cx);
+        if let Some(model) = self.current_model(cx) {
+            self.param_fields = model.params.iter().map(|spec| {
+                let mut spec = spec.clone();
+                if let Some(value) = req.params.get(&spec.key) { spec.default = value.clone(); }
+                self.draft.params.insert(spec.key.clone(), spec.default.clone());
+                ParamField::new(spec, cx)
+            }).collect();
+        }
         if self.draft.negative_or_seed_set(&self.negative, &self.seed, cx) {
             self.show_advanced = true;
         }
@@ -407,7 +439,7 @@ impl GeneratePanel {
         if m.negative_prompt && !negative.is_empty() {
             o.insert("negativePrompt".into(), json!(negative));
         }
-        if d.video {
+        if d.video || d.audio_task.is_some() {
             o.insert("duration".into(), json!(d.duration.or_else(|| m.durations.first().copied()).unwrap_or(5.0)));
         }
         if let Some(r) = d.resolution.clone().or_else(|| m.resolutions.first().cloned()) {
@@ -460,7 +492,11 @@ impl GeneratePanel {
 
     fn connect_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
-        let quick = ["openrouter", "fal", "replicate", "openai", "google", "comfyui"];
+        let (quick, description): (&[&'static str], &str) = match self.draft.audio_task {
+            Some(Task::TextToSpeech) => (&["elevenlabs"], "Connect ElevenLabs to generate speech with voices from your account."),
+            Some(_) => (&["elevenlabs", "stability"], "Connect ElevenLabs for music and sound effects, or Stability AI for audio and ambience."),
+            None => (&["openrouter", "fal", "replicate", "openai", "google", "comfyui"], "Bring an API key from OpenRouter, fal, Replicate, OpenAI, Google, Runway, Luma… or run models on this computer with ComfyUI, Forge or Ollama."),
+        };
         div()
             .mb(px(12.))
             .p(px(16.))
@@ -479,7 +515,7 @@ impl GeneratePanel {
                     .text_color(t.text_2)
                     .line_height(px(18.))
                     .mb(px(8.))
-                    .child("Bring an API key from OpenRouter, fal, Replicate, OpenAI, Google, Runway, Luma… or run models on this computer with ComfyUI, Forge or Ollama."),
+                    .child(description),
             )
             .child(
                 div().flex().flex_wrap().gap(px(6.)).children(quick.iter().copied().map(|id| {
@@ -644,7 +680,7 @@ impl GeneratePanel {
                 )
             })
             .child(div().min_h(px(92.)).child(self.prompt.clone()))
-            .child(self.refs_row(model, cx))
+            .when(self.draft.audio_task.is_none(), |d| d.child(self.refs_row(model, cx)))
             .child(
                 div()
                     .flex()
@@ -706,8 +742,8 @@ impl GeneratePanel {
             .gap(px(12.))
             .pt(px(16.))
             .px(px(2.))
-            .child(section("Aspect", aspect.into_any_element()))
-            .when(d.video && !m.durations.is_empty(), |el| {
+            .when(d.audio_task.is_none(), |el| el.child(section("Aspect", aspect.into_any_element())))
+            .when((d.video || d.audio_task.is_some()) && !m.durations.is_empty(), |el| {
                 let current = d.duration.or_else(|| m.durations.first().copied());
                 el.child(section(
                     "Length",
@@ -894,11 +930,10 @@ fn rand_seed() -> u32 {
 
 impl Render for GeneratePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.theme().clone();
         let model = self.current_model(cx);
         let loading = self.store.read(cx).models_loading;
         let show_connect = self.connected(cx) == 0 && !loading;
-        let video = self.draft.video;
+        let mode = match self.draft.audio_task { Some(Task::TextToSpeech) => 3u8, Some(_) => 2, None if self.draft.video => 1, None => 0 };
         let this = cx.entity().downgrade();
         let composer = self.composer(model.as_ref(), window, cx).into_any_element();
         let settings = model.as_ref().map(|m| self.settings(m, cx).into_any_element());
@@ -916,13 +951,12 @@ impl Render for GeneratePanel {
                     .px(px(14.))
                     .pt(px(12.))
                     .pb(px(10.))
-                    .child(div().text_size(px(sz::BASE)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_text).child("Generate"))
-                    .child(div().w(px(170.)).child(segmented(
+                    .child(div().flex_1().child(segmented(
                         "gen-mode",
-                        vec![(false, "Image".into()), (true, "Video".into())],
-                        video,
+                        vec![(0u8, "Image".into()), (1, "Video".into()), (2, "Audio".into()), (3, "Speech".into())],
+                        mode,
                         move |v, _, cx| {
-                            this.update(cx, |p, cx| p.set_video(*v, cx)).ok();
+                            this.update(cx, |p, cx| p.set_mode(*v, cx)).ok();
                         },
                         cx,
                     ))),

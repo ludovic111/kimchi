@@ -24,11 +24,14 @@ pub fn cross(a: V3, b: V3) -> V3 {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 pub fn len(a: V3) -> f64 {
-    dot(a, a).sqrt()
+    a[0].hypot(a[1]).hypot(a[2])
 }
 pub fn norm(a: V3) -> V3 {
-    let l = len(a);
-    if l < 1e-12 { [0.0, 0.0, 0.0] } else { scale(a, 1.0 / l) }
+    if a.iter().any(|v| !v.is_finite()) { return [0.; 3]; }
+    let largest = a.iter().copied().map(f64::abs).fold(0., f64::max);
+    if largest == 0. { return [0.; 3]; }
+    let unit = a.map(|v| v / largest);
+    scale(unit, 1. / len(unit))
 }
 pub fn lerp(a: V3, b: V3, t: f64) -> V3 {
     add(a, scale(sub(b, a), t))
@@ -132,16 +135,26 @@ pub fn m3_transpose(a: &M3) -> M3 {
 }
 
 pub fn m3_inverse(a: &M3) -> Option<M3> {
+    if a.iter().flatten().any(|v| !v.is_finite()) { return None; }
+    // Equilibrate the rows before taking a determinant. Its magnitude must describe a
+    // collapsed transform, not the units in which the scene happens to be modelled.
+    let sizes = a.map(|row| row.into_iter().map(f64::abs).fold(0., f64::max));
+    if sizes.contains(&0.) { return None; }
+    let a: M3 = std::array::from_fn(|r| a[r].map(|v| v / sizes[r]));
     let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
     if det.abs() < 1e-15 {
         return None;
     }
     let k = 1.0 / det;
-    Some([
+    let mut inverse = [
         [(a[1][1] * a[2][2] - a[1][2] * a[2][1]) * k, (a[0][2] * a[2][1] - a[0][1] * a[2][2]) * k, (a[0][1] * a[1][2] - a[0][2] * a[1][1]) * k],
         [(a[1][2] * a[2][0] - a[1][0] * a[2][2]) * k, (a[0][0] * a[2][2] - a[0][2] * a[2][0]) * k, (a[0][2] * a[1][0] - a[0][0] * a[1][2]) * k],
         [(a[1][0] * a[2][1] - a[1][1] * a[2][0]) * k, (a[0][1] * a[2][0] - a[0][0] * a[2][1]) * k, (a[0][0] * a[1][1] - a[0][1] * a[1][0]) * k],
-    ])
+    ];
+    for row in &mut inverse {
+        for (c, value) in row.iter_mut().enumerate() { *value /= sizes[c]; }
+    }
+    inverse.iter().flatten().all(|v| v.is_finite()).then_some(inverse)
 }
 
 pub fn m3_apply(a: &M3, v: V3) -> V3 {
@@ -250,25 +263,29 @@ pub fn ray_box(o: V3, d: V3, lo: V3, hi: V3) -> Option<f64> {
 
 /// Ray against a triangle (Möller–Trumbore): the distance.
 pub fn ray_triangle(o: V3, d: V3, a: V3, b: V3, c: V3) -> Option<f64> {
+    if [o,d,a,b,c].iter().flatten().any(|v| !v.is_finite()) { return None; }
     let (e1, e2) = (sub(b, a), sub(c, a));
+    let extent = e1.into_iter().chain(e2).map(f64::abs).fold(0., f64::max);
+    if extent == 0. || !extent.is_finite() { return None; }
+    let (e1,e2) = (e1.map(|v|v/extent),e2.map(|v|v/extent));
     let p = cross(d, e2);
     let det = dot(e1, p);
-    if det.abs() < 1e-12 {
+    if !det.is_finite() || det.abs() < 1e-12 {
         return None;
     }
     let inv = 1.0 / det;
     let s = sub(o, a);
-    let u = dot(s, p) * inv;
+    let u = (dot(s, p) * inv) / extent;
     if !(0.0..=1.0).contains(&u) {
         return None;
     }
     let q = cross(s, e1);
-    let v = dot(d, q) * inv;
-    if v < 0.0 || u + v > 1.0 {
+    let v = (dot(d, q) * inv) / extent;
+    if !v.is_finite() || v < 0.0 || u + v > 1.0 {
         return None;
     }
     let t = dot(e2, q) * inv;
-    (t > 1e-9).then_some(t)
+    (t.is_finite() && t > 0.).then_some(t)
 }
 
 // ---- 2D -------------------------------------------------------------------------------------
@@ -292,13 +309,11 @@ pub fn aff_apply(m: &Affine, p: [f64; 2]) -> [f64; 2] {
 }
 
 pub fn aff_invert(m: &Affine) -> Option<Affine> {
-    let det = m[0] * m[3] - m[1] * m[2];
-    if det.abs() < 1e-12 {
-        return None;
-    }
-    let k = 1.0 / det;
-    let (a, b, c, d) = (m[3] * k, -m[1] * k, -m[2] * k, m[0] * k);
-    Some([a, b, c, d, -(a * m[4] + c * m[5]), -(b * m[4] + d * m[5])])
+    if m.iter().any(|v| !v.is_finite()) { return None; }
+    let inverse = m3_inverse(&[[m[0],m[2],0.],[m[1],m[3],0.],[0.,0.,1.]])?;
+    let (a,b,c,d) = (inverse[0][0],inverse[1][0],inverse[0][1],inverse[1][1]);
+    let result = [a,b,c,d,-(a*m[4]+c*m[5]),-(b*m[4]+d*m[5])];
+    result.iter().all(|v|v.is_finite()).then_some(result)
 }
 
 /// The linear part applied to a direction.
@@ -341,9 +356,44 @@ pub fn in_polygon(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
     inside
 }
 
+/// Whether a selection rectangle intersects a convex layer outline, including edge
+/// crossings and either shape containing the other. Tests axes from both shapes so the
+/// empty corners around a rotated layer are excluded.
+pub fn convex_intersects_rect(poly:&[[f64;2]],a:[f64;2],b:[f64;2])->bool {
+    if poly.is_empty() || !poly.iter().flatten().chain(a.iter()).chain(b.iter()).all(|v|v.is_finite()) {return false;}
+    let (lo,hi)=([a[0].min(b[0]),a[1].min(b[1])],[a[0].max(b[0]),a[1].max(b[1])]);
+    let rect=[lo,[hi[0],lo[1]],hi,[lo[0],hi[1]]];
+    let separated=|axis:[f64;2]| {
+        let extent=axis[0].abs().max(axis[1].abs());
+        if extent==0. {return false;}
+        let axis=axis.map(|v|v/extent);
+        let interval=|points:&[[f64;2]]|points.iter().fold((f64::INFINITY,f64::NEG_INFINITY),|(lo,hi),p| {
+            let d=p[0]*axis[0]+p[1]*axis[1];(lo.min(d),hi.max(d))
+        });
+        let (p,r)=(interval(poly),interval(&rect));p.1<r.0 || r.1<p.0
+    };
+    !separated([1.,0.]) && !separated([0.,1.]) && !poly.iter().zip(poly.iter().cycle().skip(1)).any(|(a,b)|separated([a[1]-b[1],b[0]-a[0]]))
+}
+
 /// Snaps `v` to multiples of `step`.
 pub fn snap(v: f64, step: f64) -> f64 {
     if step <= 0.0 { v } else { (v / step).round() * step }
+}
+
+/// A compact six-significant-digit readout, without rounding the value stored by a tool.
+/// Scientific notation keeps tiny offsets visible and large amounts within the status bar.
+pub fn compact_number(value: f64) -> String {
+    if value == 0. { return "0".into(); }
+    if !value.is_finite() { return value.to_string(); }
+    let trim = |s: &str| if s.contains('.') {s.trim_end_matches('0').trim_end_matches('.').to_string()} else {s.to_string()};
+    if !(1e-3..1e6).contains(&value.abs()) {
+        let text=format!("{value:.5e}");
+        let (mantissa,exponent)=text.split_once('e').unwrap_or((&text,"0"));
+        format!("{}e{exponent}",trim(mantissa))
+    } else {
+        let places=(5-value.abs().log10().floor() as i32).max(0) as usize;
+        trim(&format!("{value:.places$}"))
+    }
 }
 
 #[cfg(test)]
@@ -376,6 +426,42 @@ mod tests {
     }
 
     #[test]
+    fn inverse_and_axes_do_not_depend_on_scene_units() {
+        for size in [1e-200, 1e-8, 1., 1e100, 1e200] {
+            let m = trs([0.; 3], [23., -41., 67.], [size, size * -2., size * 3.]);
+            let back = mul(&inverse(&m), &m);
+            for (c, column) in back.iter().enumerate() {
+                for (r, value) in column.iter().enumerate() {
+                    assert!((value - IDENTITY[c][r]).abs() < 1e-12, "scale {size}: {back:?}");
+                }
+            }
+            let rotation = rotation_of(&m);
+            let reference = rotation_of(&trs([0.; 3], [23., -41., 67.], [1., -2., 3.]));
+            for (a, b) in rotation.into_iter().zip(reference) { assert!(close(a, b)); }
+        }
+        let mixed = [[1e-200, 0., 0.], [0., -1e200, 0.], [0., 0., 3.]];
+        let back = m3_mul(&m3_inverse(&mixed).unwrap(), &mixed);
+        assert!(close(back[0], [1., 0., 0.]));
+        assert!(close(back[1], [0., 1., 0.]));
+        assert!(close(back[2], [0., 0., 1.]));
+    }
+
+    #[test]
+    fn inverse_rejects_collapsed_or_unrepresentable_transforms() {
+        for a in [
+            [[0.; 3]; 3],
+            [[1., 2., 3.], [2., 4., 6.], [0., 0., 1.]],
+            [[1., 0., 0.], [0., f64::INFINITY, 0.], [0., 0., 1.]],
+            [[1., 0., 0.], [0., f64::NAN, 0.], [0., 0., 1.]],
+            [[1e-320, 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+        ] { assert!(m3_inverse(&a).is_none(), "{a:?}"); }
+        assert_eq!(norm([0.; 3]), [0.; 3]);
+        assert_eq!(norm([f64::INFINITY, 0., 0.]), [0.; 3]);
+        assert!(len([3e200, 4e200, 0.]).is_finite());
+        assert!(close(norm([3e-200, 4e-200, 0.]), [0.6, 0.8, 0.]));
+    }
+
+    #[test]
     fn rays_meet_lines_planes_and_boxes() {
         let hit = ray_plane([0.0, 5.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]).unwrap();
         assert!(close(hit, [0.0, 0.0, 0.0]));
@@ -383,6 +469,38 @@ mod tests {
         assert!((t - 2.0).abs() < 1e-9);
         assert!(ray_box([0.0, 0.0, 5.0], [0.0, 0.0, -1.0], [-1.0; 3], [1.0; 3]).is_some_and(|t| (t - 4.0).abs() < 1e-9));
         assert!(ray_box([3.0, 0.0, 5.0], [0.0, 0.0, -1.0], [-1.0; 3], [1.0; 3]).is_none());
+    }
+
+    #[test]
+    fn triangle_picking_uses_relative_scale_and_rejects_invalid_rays() {
+        for size in [1e-200, 1e-8, 1., 1e100, 1e200] {
+            let (a,b,c)=([0.;3],[size,0.,0.],[0.,size,0.]);
+            let origin=[size*0.25,size*0.25,size];
+            let hit=ray_triangle(origin,[0.,0.,-1.],a,b,c).expect("visible triangle at any scale");
+            assert!((hit/size-1.).abs()<1e-12);
+            assert!(ray_triangle(origin,[0.,0.,-1.],a,c,b).is_some(),"back faces can be selected");
+            assert!(ray_triangle([size*0.75,size*0.75,size],[0.,0.,-1.],a,b,c).is_none());
+            assert!(ray_triangle(origin,[0.,0.,1.],a,b,c).is_none());
+            assert!(ray_triangle(origin,[1.,0.,0.],a,b,c).is_none());
+            assert!(ray_triangle(origin,[0.;3],a,b,c).is_none());
+            assert!(ray_triangle(origin,[0.,0.,-1.],a,b,b).is_none());
+        }
+        assert!(ray_triangle([0.;3],[0.,0.,-1.],[0.,0.,f64::NEG_INFINITY],[1.,0.,0.],[0.,1.,0.]).is_none());
+        assert!(ray_triangle([0.,0.,1.],[f64::NAN,0.,-1.],[0.;3],[1.,0.,0.],[0.,1.,0.]).is_none());
+    }
+
+    #[test]
+    fn affine_inverse_preserves_small_layers_and_rejects_nonfinite_results() {
+        for size in [1e-200,1e-8,1.,1e100,1e200] {
+            let transform=layer_affine(0.,0.,37.,0.,size,-size*2.,0.,0.);
+            let inverse=aff_invert(&transform).expect("finite invertible layer transform");
+            let p=[0.3,-0.7];let back=aff_apply(&inverse,aff_apply(&transform,p));
+            assert!((back[0]-p[0]).abs()<1e-12 && (back[1]-p[1]).abs()<1e-12,"{size}: {back:?}");
+        }
+        for invalid in [[0.;6],[1.,2.,2.,4.,0.,0.],[1.,0.,0.,f64::NAN,0.,0.],
+            [1.,0.,0.,1.,f64::INFINITY,0.],[1e-200,0.,0.,1e-200,1e200,1e200]] {
+            assert!(aff_invert(&invalid).is_none(),"{invalid:?}");
+        }
     }
 
     #[test]

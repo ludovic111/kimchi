@@ -23,6 +23,7 @@ mod host;
 mod http;
 mod status;
 mod tools;
+pub mod zenith;
 
 #[cfg(test)]
 mod tests;
@@ -58,6 +59,8 @@ pub const MAX_HISTORY: usize = 80;
 /// Which model runs the agent (`settings.agent.provider`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderKind {
+    #[serde(rename = "zenith")]
+    Zenith,
     #[serde(rename = "claude-code")]
     ClaudeCode,
     #[serde(rename = "codex")]
@@ -71,11 +74,12 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    pub const ALL: [ProviderKind; 5] = [ProviderKind::ClaudeCode, ProviderKind::Codex, ProviderKind::Anthropic, ProviderKind::OpenAi, ProviderKind::Ollama];
+    pub const ALL: [ProviderKind; 6] = [ProviderKind::ClaudeCode, ProviderKind::Codex, ProviderKind::Anthropic, ProviderKind::OpenAi, ProviderKind::Ollama, ProviderKind::Zenith];
 
     /// The id used in settings.
     pub fn id(self) -> &'static str {
         match self {
+            ProviderKind::Zenith => "zenith",
             ProviderKind::ClaudeCode => "claude-code",
             ProviderKind::Codex => "codex",
             ProviderKind::Anthropic => "anthropic",
@@ -86,6 +90,7 @@ impl ProviderKind {
 
     pub fn label(self) -> &'static str {
         match self {
+            ProviderKind::Zenith => "Zenith · lsuite",
             ProviderKind::ClaudeCode => "Claude Code",
             ProviderKind::Codex => "Codex",
             ProviderKind::Anthropic => "Anthropic API",
@@ -98,6 +103,7 @@ impl ProviderKind {
         let id = id.trim().to_ascii_lowercase();
         Some(match id.as_str() {
             "claude-code" | "claude" | "claudecode" => ProviderKind::ClaudeCode,
+            "zenith" => ProviderKind::Zenith,
             "codex" => ProviderKind::Codex,
             "anthropic" => ProviderKind::Anthropic,
             "openai" => ProviderKind::OpenAi,
@@ -112,7 +118,7 @@ impl ProviderKind {
         match self {
             ProviderKind::Anthropic => "claude-sonnet-5-5",
             ProviderKind::OpenAi => "gpt-5",
-            ProviderKind::ClaudeCode | ProviderKind::Codex | ProviderKind::Ollama => "",
+            ProviderKind::ClaudeCode | ProviderKind::Codex | ProviderKind::Ollama | ProviderKind::Zenith => "",
         }
     }
 
@@ -121,7 +127,7 @@ impl ProviderKind {
             ProviderKind::Anthropic => "https://api.anthropic.com",
             ProviderKind::OpenAi => "https://api.openai.com/v1",
             ProviderKind::Ollama => "http://127.0.0.1:11434",
-            ProviderKind::ClaudeCode | ProviderKind::Codex => "",
+            ProviderKind::ClaudeCode | ProviderKind::Codex | ProviderKind::Zenith => "",
         }
     }
 
@@ -344,6 +350,9 @@ struct Shared {
     changes: AtomicUsize,
     conversation: Mutex<Conversation>,
     finished: AtomicBool,
+    zenith_thread: Mutex<Option<(std::path::PathBuf, String)>>,
+    steering: Mutex<std::collections::VecDeque<String>>,
+    steered: tokio::sync::Notify,
 }
 
 /// A cloneable handle on a run: cancel it from anywhere, read its state.
@@ -354,6 +363,12 @@ pub struct RunHandle {
 }
 
 impl RunHandle {
+    pub fn steer(&self, prompt: String) -> Result<(), String> {
+        if self.is_finished() || self.is_cancelled() { return Err("The run has ended. Send a new message.".into()); }
+        self.shared.steering.lock().push_back(prompt);
+        self.shared.steered.notify_one();
+        Ok(())
+    }
     /// Stops the run: the model request is dropped and CLI processes (with their
     /// `kimchi-mcp`) are killed. Finished edits stay in the undo history.
     pub fn cancel(&self) {
@@ -435,10 +450,14 @@ impl Agent {
         let cancel = run.cancel.clone();
         let prompt = prompt.into();
         session.runtime().spawn(async move {
-            let outcome = tokio::select! {
+            let mut outcome = tokio::select! {
                 r = run.execute(prompt, conversation) => Some(r),
                 _ = cancel.cancelled() => None,
             };
+            if !matches!(outcome, Some(Ok(_))) && run.config.provider == ProviderKind::Zenith
+                && let Err(error) = zenith::interrupt(&run).await {
+                outcome = Some(Err(format!("Could not confirm Zenith stopped: {error}")));
+            }
             run.finish(outcome);
         });
         run_handle
@@ -565,11 +584,35 @@ impl Run {
         }
         // Commands from before this run are not its own.
         while !matches!(self.commands.try_recv(), Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed)) {}
-        if self.config.provider.is_cli() { cli::run(self, prompt, conversation).await } else { api::run(self, prompt, conversation).await }
+        let mut request = prompt;
+        let mut context = conversation;
+        loop {
+            let shared = self.shared.clone();
+            let outcome = tokio::select! {
+                biased;
+                _ = shared.steered.notified() => None,
+                result = async {
+                    match self.config.provider {
+                        ProviderKind::Zenith => zenith::run(self, request.clone(), context.clone()).await,
+                        p if p.is_cli() => cli::run(self, request.clone(), context.clone()).await,
+                        _ => api::run(self, request.clone(), context.clone()).await,
+                    }
+                } => Some(result),
+            };
+            if let Some(result) = outcome { return result; }
+            if self.config.provider == ProviderKind::Zenith { zenith::interrupt(self).await?; }
+            let messages: Vec<String> = self.shared.steering.lock().drain(..).collect();
+            if messages.is_empty() { continue; }
+            context = self.shared.conversation.lock().clone();
+            if context.messages.is_empty() { context.messages.push(Message::user(request.clone())); }
+            request = format!("Steering from the user; preserve completed work and follow these updated instructions:\n{}", messages.join("\n\n"));
+            self.status("Applying your steering message…");
+            self.break_text();
+        }
     }
 
     fn finish(&mut self, outcome: Option<Result<String, String>>) {
-        if self.config.provider.is_cli() {
+        if self.config.provider.is_cli() || self.config.provider == ProviderKind::Zenith {
             self.drain_commands(Source::Mcp);
         }
         let checkpoint = *self.shared.checkpoint.lock();

@@ -383,7 +383,7 @@ pub struct Space {
     faceted: HashMap<usize, (Arc<Mesh>, Arc<Mesh>)>,
     /// Pictures made into textures, by the picture (kept alive alongside, so its address isn't reused).
     textures: HashMap<PictureKey, (Arc<Pixmap>, Arc<Texture>)>,
-    /// How scenes are evaluated (the frame rate of the clip being drawn).
+    /// Expression frame rate and duration for the clip currently being drawn.
     eval: EvalOptions,
 }
 
@@ -449,8 +449,8 @@ impl Space {
     /// (`render.motionBlur` × one frame, centred on `t`, `render.motionBlurSamples` of them);
     /// otherwise the same as [`Space::render`].
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn render_frame(&mut self, scene: &Scene3d, t: f64, frame: f64, width: u32, height: u32, pics: &mut dyn Pictures, quality: Quality) -> MediaResult<Pixmap> {
-        self.set_frame(frame);
+    pub(crate) fn render_frame(&mut self, scene: &Scene3d, t: f64, frame: f64, width: u32, height: u32, pics: &mut dyn Pictures, quality: Quality, eval:EvalOptions) -> MediaResult<Pixmap> {
+        self.eval=eval;
         let shutter = scene.render.motion_blur.clamp(0.0, 4.0) * frame.abs();
         if quality != Quality::Final || shutter <= 1e-9 || !shutter.is_finite() {
             return self.render(scene, t, width, height, pics, quality);
@@ -467,13 +467,6 @@ impl Space {
         let out: Vec<u8> = acc.iter().map(|v| crate::render::byte(v / n as f32)).collect();
         Pixmap::from_vec(out, tiny_skia::IntSize::from_wh(width.max(1), height.max(1)).ok_or_else(|| crate::MediaError::Unsupported("empty frame".into()))?)
             .ok_or_else(|| crate::MediaError::Unsupported("bad frame".into()))
-    }
-
-    /// Expressions see the frame rate one output frame of `frame` scene seconds makes.
-    pub(crate) fn set_frame(&mut self, frame: f64) {
-        if frame.is_finite() && frame.abs() > 1e-6 {
-            self.eval.fps = (1.0 / frame.abs()).clamp(1.0, 1000.0);
-        }
     }
 
     /// Draws a frame on the GPU (falling back to the CPU for good if it fails), camera effects
@@ -535,7 +528,7 @@ impl Space {
         let view = M4::look_at(eye, target, up);
         let ortho = cam.orthographic();
         let fov = cam.fov.clamp(1.0, 170.0) as f32;
-        let ortho_size = (cam.ortho_size as f32).max(1e-3);
+        let ortho_size = cam.ortho_size.max(viewport::MIN_ORTHO_SIZE) as f32;
         // `look_at` makes its own right/up from `up`: use the same so post effects agree.
         let right = fwd.cross(up).norm();
         let up = right.cross(fwd);

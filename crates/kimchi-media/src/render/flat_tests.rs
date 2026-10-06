@@ -24,6 +24,123 @@ fn scene(v: serde_json::Value) -> Scene2d {
     }
 }
 
+#[test]
+fn canvas_geometry_uses_explicit_context_before_and_after_foreign_renders() {
+    let s=scene(json!({"layers":[
+        {"id":"comp","type":"comp","comp":"nested"},
+        {"id":"card","type":"rect","width":20,"height":10,"expressions":{"x":"fps * 2 + frame","y":"duration * 10","anchorX":"fps / 10"}}
+    ],"compositions":[{"id":"nested","duration":3,"layers":[
+        {"id":"inner","type":"rect","width":20,"height":10,"expressions":{"x":"frame","y":"duration * 10"}}
+    ]}]}));
+    let opts=EvalOptions {fps:60.,duration:Some(4.)};
+    let geometry=CanvasGeometry::new(&s,0.5,None,(320.,180.),opts).unwrap();
+    let comp=geometry.bounds("comp").unwrap();
+    assert_eq!(comp,[[-160.,-90.],[160.,-90.],[160.,90.],[-160.,90.]]);
+    let card=geometry.bounds("card").unwrap();
+    assert_eq!(card[0],[134.,35.]);
+    assert_eq!(geometry.layer("card").unwrap().anchor_x,6.);
+    assert_eq!(geometry.hit_test([144.,40.]).as_deref(),Some("card"));
+    let nested=CanvasGeometry::new(&s,0.5,Some("nested"),(320.,180.),opts).unwrap();
+    assert_eq!(nested.bounds("inner").unwrap()[0],[20.,25.]);
+    let bounds=geometry.selection_bounds();
+    // A thumbnail from another clip must not change either an existing snapshot or the
+    // geometry created for the next pointer event in the original project.
+    let foreign=scene(json!({"layers":[{"id":"other","type":"rect"}]}));
+    draw_on(&foreign,0.,200,100,Quality::Preview);
+    assert_eq!(geometry.bounds("card"),Some(card));
+    assert_eq!(geometry.selection_bounds(),bounds);
+    let fresh=CanvasGeometry::new(&s,0.5,None,(320.,180.),opts).unwrap();
+    assert_eq!(fresh.bounds("comp"),Some(comp));
+    assert_eq!(fresh.bounds("card"),Some(card));
+    assert_eq!(fresh.transform("card"),geometry.transform("card"));
+    assert_eq!(fresh.hit_test([144.,40.]).as_deref(),Some("card"));
+    assert!(CanvasGeometry::new(&s,0.,Some("missing"),(320.,180.),opts).is_none());
+}
+
+#[test]
+fn box_selection_candidates_follow_layer_visibility_and_composition() {
+    let s=scene(json!({"layers":[
+        {"id":"shown","type":"rect"},{"id":"hidden","type":"rect","hidden":true},
+        {"id":"transparent","type":"rect","opacity":0},{"id":"null","type":"null"},{"id":"adjust","type":"adjustment"},
+        {"id":"group","type":"group","layers":[{"id":"child","type":"rect"}]},
+        {"id":"hiddenGroup","type":"group","hidden":true,"layers":[{"id":"hiddenChild","type":"rect"}]},
+        {"id":"mask","type":"rect"},{"id":"masked","type":"rect","mask":"mask"},
+        {"id":"later","type":"rect","start":1},{"id":"ended","type":"rect","end":1}
+    ],"compositions":[{"id":"inside","layers":[{"id":"inner","type":"rect"},{"id":"innerHidden","type":"rect","hidden":true}]}]}));
+    let ids=|time,comp|layer_selection_bounds(&s,time,comp).into_iter().map(|(id,_)|id).collect::<Vec<_>>();
+    assert_eq!(ids(0.,None),vec!["shown","group","child","masked","ended"]);
+    assert_eq!(ids(2.,None),vec!["shown","group","child","masked","later"]);
+    assert_eq!(ids(0.,Some("inside")),vec!["inner"]);
+    assert!(ids(0.,Some("missing")).is_empty());
+}
+
+#[test]
+fn picking_repeated_shapes_and_groups_skips_fully_transparent_copies() {
+    for group in [false,true] {
+        let card=json!({"id":"card","type":"rect","width":20,"height":20,"fill":"#ff0000"});
+        let mut repeated=if group {json!({"id":"group","type":"group","layers":[card]})} else {card};
+        repeated["x"]=json!(-60);
+        repeated["operators"]=json!([{"type":"repeater","copies":3,"position":[60,0],"startOpacity":1,"endOpacity":0}]);
+        let s=scene(json!({"layers":[{"id":"behind","type":"rect","width":20,"height":20,"x":60,"fill":"#0000ff"},repeated]}));
+        let image=draw_on(&s,0.,200,100,Quality::Final);
+        assert_eq!(rgba(&image,160,50),[0,0,255,255],"the last copy is invisible");
+        assert_eq!(hit_test(&s,0.,None,[60.,0.]).as_deref(),Some("behind"),"group={group}: the visible layer behind remains selectable");
+        for x in [-60.,0.] {assert_eq!(hit_test(&s,0.,None,[x,0.]).as_deref(),Some("card"));}
+        for (id,corners) in layer_selection_bounds(&s,0.,None).into_iter().filter(|(id,_)|id!="behind") {
+            assert!(corners.iter().all(|p|p[0]<=10.),"{id}: invisible copies must not inflate selection bounds");
+        }
+    }
+    let s=scene(json!({"layers":[{"id":"empty","type":"group","operators":[{"type":"repeater","copies":3,"startOpacity":0,"endOpacity":0}],
+        "layers":[{"id":"child","type":"rect"}]}]}));
+    assert_eq!(hit_test(&s,0.,None,[0.,0.]),None);
+    assert!(layer_selection_bounds(&s,0.,None).is_empty(),"an invisible group has no selectable descendants");
+    // Shape repeaters do not move or hide the particle emitter in the renderer.
+    let s=scene(json!({"layers":[{"id":"particles","type":"particles","burst":10,"rate":0,"speed":0,"size":6,"fadeIn":0,"fadeOut":0,
+        "operators":[{"type":"repeater","copies":3,"position":[80,0],"startOpacity":0,"endOpacity":0}]}]}));
+    assert_eq!(alpha(&draw_on(&s,0.5,200,100,Quality::Final),100,50),255);
+    assert_eq!(hit_test(&s,0.5,None,[0.,0.]).as_deref(),Some("particles"));
+    assert_eq!(hit_test(&s,0.5,None,[80.,0.]),None);
+}
+
+#[test]
+fn selection_bounds_evaluate_nested_transforms_repeaters_and_only_visible_children() {
+    let clean=json!({"layers":[
+        {"id":"group","type":"group","x":100,"rotation":30,"operators":[{"type":"repeater","copies":2,"position":[150,0]}],"layers":[
+            {"id":"a","type":"rect","width":20,"height":40,"x":-100,"y":10,"rotation":30,"keyframes":{"x":[[0,-100],[2,-50]]}},
+            {"id":"nested","type":"group","x":30,"rotation":20,"layers":[{"id":"b","type":"rect","width":30,"height":20,"x":20}]}]},
+        {"id":"parent","type":"null","x":10,"rotation":15,"hidden":true},
+        {"id":"parented","type":"rect","width":20,"height":20,"parent":"parent","x":200}
+    ]});
+    let mut dirty=clean.clone();
+    dirty["layers"][0]["layers"].as_array_mut().unwrap().extend([
+        json!({"id":"hidden","type":"rect","x":10000,"hidden":true}),
+        json!({"id":"transparent","type":"rect","x":20000,"opacity":0}),
+        json!({"id":"later","type":"rect","x":30000,"start":3}),
+        json!({"id":"expired","type":"rect","x":40000,"end":0}),
+        json!({"id":"null","type":"null","x":50000}),
+        json!({"id":"adjust","type":"adjustment","x":60000}),
+    ]);
+    dirty["layers"].as_array_mut().unwrap().push(json!({"id":"empty","type":"group","layers":[{"id":"invisible","type":"rect","hidden":true}]}));
+    for comp in [None,Some("inside")] {
+        let wrap=|v:&serde_json::Value|if comp.is_some() {json!({"compositions":[{"id":"inside","width":640,"height":360,"layers":v["layers"]}]})} else {v.clone()};
+        let (clean,dirty)=(scene(wrap(&clean)),scene(wrap(&dirty)));
+        for time in [0.,1.,2.] {
+            let bounds=layer_selection_bounds(&dirty,time,comp);
+            assert_eq!(bounds.iter().map(|(id,_)|id.as_str()).collect::<Vec<_>>(),["group","a","nested","b","a","nested","b","parented"]);
+            let mut seen=std::collections::HashSet::new();
+            for (id,actual) in bounds {
+                let mut expected=layer_bounds(&clean,time,comp,&id).unwrap();
+                if !seen.insert(id.clone()) {
+                    // The second group copy translates 150 pixels along the group's rotated X.
+                    for p in &mut expected {p[0]+=150.*30_f64.to_radians().cos();p[1]+=150.*30_f64.to_radians().sin();}
+                }
+                for (a,b) in actual.into_iter().flatten().zip(expected.into_iter().flatten()) {assert!((a-b).abs()<1e-4,"{id}, {time}: {actual:?} vs {expected:?}");}
+            }
+        }
+        assert!(layer_selection_bounds(&dirty,3.,comp).iter().any(|(id,_)|id=="later"));
+    }
+}
+
 fn draw_on(s: &Scene2d, t: f64, w: u32, h: u32, quality: Quality) -> Pixmap {
     let mut canvas = Pixmap::new(w, h).unwrap();
     let mut pics = Blue;

@@ -2,7 +2,7 @@
 
 Generated from the command registry (`crates/kimchi-control`) by `kimchi-cli docs`. Do not edit by hand.
 
-Every command works the same from the window, the built-in agent, `kimchi-cli` and `kimchi-mcp` (where `family.verb` becomes the tool `family_verb`). Times are seconds on the timeline; ids and unique names are accepted wherever an id is expected. Commands that edit the project also accept `coalesce` (edits with the same key within about a second fold into one undo step). See [AI_CONTROL.md](AI_CONTROL.md).
+Every command works the same from the window, the built-in agent, `kimchi-cli` and `kimchi-mcp` (where `family.verb` becomes the tool `family_verb`). Times are seconds on the timeline; ids and unique names are accepted wherever an id is expected. Commands that edit the project also accept `coalesce` (consecutive edits from the same source and key fold into one undo step within about a second; a unique `gesture:` key keeps a gesture together across pauses). See [AI_CONTROL.md](AI_CONTROL.md).
 
 ## project
 
@@ -77,7 +77,7 @@ Rename the open project (one undo step), or another library project. _(changes t
 | --- | --- | --- | --- |
 | `name` | string | required | New name. |
 | `projectId` | string |  | A library project (id or unique name); defaults to the open one. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `project.setSettings`
 
@@ -268,7 +268,7 @@ Move a clip to another time and/or track of the same kind. Whatever it lands on 
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `start` | number |  | New start in seconds. |
 | `trackId` | string |  | Destination track. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `clip.moveMany`
 
@@ -277,7 +277,7 @@ Move several clips at once, as one undo step. _(changes things)_
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `moves` | array of objects | required | Array of {clipId, start, trackId?}. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `clip.trim`
 
@@ -288,7 +288,7 @@ Move one edge of a clip to a timeline time, like dragging it. Bounded by the nei
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `edge` | string | required | "start" or "end". |
 | `time` | number | required | Timeline time in seconds for that edge. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `clip.split`
 
@@ -348,7 +348,7 @@ Change a clip: name, position, scale, rotation, opacity, fit, volume, fades, spe
 | `reverse` | boolean |  | Video and sound clips: play the same part of the media backwards. |
 | `style` | object |  | Text clips: style fields to change (see clip.addText). |
 | `color` | string |  | Solid clips: colour #rrggbb. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `clip.setKeyframes`
 
@@ -359,7 +359,7 @@ Animate one property of a clip: replace its keyframes (times in seconds from the
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `property` | string | required | The property to animate. |
 | `keyframes` | array | required | [{"time": 0, "value": 0}, {"time": 0.6, "value": 1, "easing": "easeOut"}] or [[0, 0], [0.6, 1, "easeOut"]]. A keyframe's easing shapes the move into it: linear (default), hold, ease, easeIn, easeOut, easeInOut, ease<In\|Out\|InOut><Sine\|Quad\|Cubic\|Quart\|Quint\|Expo\|Circ\|Back\|Elastic\|Bounce>, cubicBezier(x1,y1,x2,y2), spring(bounce 0-1). Empty removes the animation. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `clip.addKeyframe`
 
@@ -372,7 +372,7 @@ Set one keyframe of a clip property at a timeline time, replacing one already th
 | `time` | number |  | Timeline seconds (default: the playhead). |
 | `value` | any |  | The value (default: what the property is at that time). |
 | `easing` | string |  | How the value arrives here from the previous keyframe (default linear). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `clip.removeKeyframe`
 
@@ -413,7 +413,7 @@ Colour and picture effects on clips: a ready-made look, corrections (brightness,
 | `lut` | any |  | Absolute path of a 3D .cube LUT, {path, strength}, or null to remove it. |
 | `lutStrength` | number |  | 0-1: how much of the LUT shows (default 1). |
 | `reset` | boolean |  | Remove every effect first. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `clip.looks`
 
@@ -450,7 +450,7 @@ Put a transition at the start of clips. On a cut (the clip before ends where thi
 | `kind` | string |  | dissolve (default), dipToBlack, dipToWhite, wipeLeft, wipeRight, wipeUp, wipeDown, slideLeft, slideRight, slideUp, slideDown, pushLeft, pushRight, pushUp, pushDown, zoom, iris or blur. |
 | `duration` | number |  | Seconds (default 0.8). On a cut it can't be longer than the shorter clip; otherwise than half the clip. |
 | `easing` | string |  | How the progress moves (default easeInOutSine; any keyframe easing). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `transition.remove`
 
@@ -530,7 +530,7 @@ Restyle every caption at once: text style fields (see clip.addText) and/or their
 | --- | --- | --- | --- |
 | `style` | object |  | Text style fields to change, e.g. {"fontSize": 60, "background": null}. |
 | `y` | number |  | Vertical offset of the captions' centre from the canvas centre, project pixels (positive is down). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `captions.clear`
 
@@ -556,7 +556,7 @@ Mix a track: fader, pan, mute, solo, where it goes (the master or a bus), duckin
 | `output` | string |  | "master" or a bus (id or name, audio.addBus). |
 | `duck` | any |  | Automatic ducking: true (under every other track with sound), false or "off" to remove it, or {"under": [tracks], "amountDb": -12, "thresholdDb": -40, "attack": 0.15, "release": 0.6}. |
 | `armed` | boolean |  | Arm for recording a voice-over take (audio.record). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `audio.setClip`
 
@@ -575,7 +575,7 @@ Change how clips sound: gain, pan, fades and their curve, which channels play, p
 | `pitch` | number |  | Pitch shift in semitones, -24 to 24, without changing the speed. |
 | `preservePitch` | boolean |  | A speed change keeps the pitch (true, the default) or plays like tape (false). |
 | `muted` | boolean |  | Silence this clip's sound (a video clip keeps its picture). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `audio.addBus`
 
@@ -607,7 +607,7 @@ Rename or mix a bus: fader, pan, mute, solo. Only the given fields change. One u
 | `pan` | number |  | -1 (left) to 1 (right). |
 | `muted` | boolean |  | Silence the bus. |
 | `solo` | boolean |  | Hear only soloed buses and tracks. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `audio.setSend`
 
@@ -619,7 +619,7 @@ Send part of a track's sound to a bus (made or changed): its level, before or af
 | `busId` | string | required | Bus id or name. |
 | `levelDb` | number |  | Send level in dB (default 0 for a new send; -96 is off). |
 | `preFader` | boolean |  | Taken before the track's fader and pan (default false). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `audio.removeSend`
 
@@ -640,7 +640,7 @@ The master: its fader, the true-peak limiter at the very end and its ceiling, an
 | `limiter` | boolean |  | Keep the mix under the ceiling (default on). |
 | `ceilingDb` | number |  | The limiter's ceiling in dBTP, -24 to 0 (default -1). |
 | `loudness` | any |  | Integrated loudness of exports in LUFS (-40 to -5), or "youtube" / "streaming" (-14), "podcast" (-16), "broadcast" (-23), or null / "off" to export as mixed. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `audio.effects`
 
@@ -707,7 +707,7 @@ Change an effect's parameters (by name or id, numbers or text like "-6 dB" or "H
 | `params` | object |  | Values by parameter name or id, e.g. {"Threshold": -20, "Ratio": "4:1"}. |
 | `bypassed` | boolean |  | Switch the effect off (true) or on. |
 | `reset` | boolean |  | Every parameter back to its default first. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `audio.copyEffects`
 
@@ -746,7 +746,7 @@ Automate a track's, bus's or the master's fader, pan or an effect parameter over
 | `target` | string | required | A track or bus (id or name), or "master". |
 | `property` | string | required | gainDb, pan (not on the master), or an effect parameter: "<effect or slot>.<parameter>" such as "Space.Mix", or effects.<slot id>.<parameter id>. |
 | `keyframes` | array | required | [{"time": 0, "value": 0}, {"time": 0.6, "value": 1, "easing": "easeOut"}] or [[0, 0], [0.6, 1, "easeOut"]]. A keyframe's easing shapes the move into it: linear (default), hold, ease, easeIn, easeOut, easeInOut, ease<In\|Out\|InOut><Sine\|Quad\|Cubic\|Quart\|Quint\|Expo\|Circ\|Back\|Elastic\|Bounce>, cubicBezier(x1,y1,x2,y2), spring(bounce 0-1). Empty removes the animation. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `audio.addAutomationKey`
 
@@ -759,7 +759,7 @@ Set one automation keyframe at a time (default: the playhead), replacing one the
 | `time` | number |  | Timeline seconds (default: the playhead). |
 | `value` | any |  | The value (default: what it is at that time); effect parameters also take text such as "-6 dB". |
 | `easing` | string |  | How the value arrives here from the previous keyframe (default linear). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `audio.removeAutomationKey`
 
@@ -958,7 +958,7 @@ Replace a motion clip's whole scene. One undo step. _(changes things)_
 | --- | --- | --- | --- |
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `scene` | object | required | The new scene. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `motion.setLayer`
 
@@ -969,7 +969,7 @@ Add a layer (2D) or an object or light (3D) to a motion clip, or replace the one
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `layer` | object | required | The layer, object or light (with its id). |
 | `parent` | string |  | Put it inside this group (2D) or object (3D). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `motion.removeLayer`
 
@@ -979,6 +979,15 @@ Remove a layer, object or light from a motion clip. _(changes things)_
 | --- | --- | --- | --- |
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `id` | string | required | Its id. |
+
+### `motion.removeLayers`
+
+Remove a selection of layers, objects, lights or extra cameras, including their descendants, together. References are checked after all removals; an invalid remaining scene leaves everything unchanged. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `ids` | array of strings | required | Nonempty selection of existing ids. Selecting a parent and its children removes the hierarchy once. |
 
 ### `motion.setKeyframes`
 
@@ -990,23 +999,34 @@ Animate one property of a layer, object, light or the camera inside a motion cli
 | `id` | string | required | A layer, object or light id, "camera", or "scene" (background, ambient). |
 | `property` | string | required | The property, e.g. x, opacity, trimEnd, reveal, rotation.y, position, fov. |
 | `keyframes` | array | required | [{"time": 0, "value": 0}, {"time": 0.6, "value": 1, "easing": "easeOut"}] or [[0, 0], [0.6, 1, "easeOut"]]. A keyframe's easing shapes the move into it: linear (default), hold, ease, easeIn, easeOut, easeInOut, ease<In\|Out\|InOut><Sine\|Quad\|Cubic\|Quart\|Quint\|Expo\|Circ\|Back\|Elastic\|Bounce>, cubicBezier(x1,y1,x2,y2), spring(bounce 0-1). Empty removes the animation. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `motion.updateLayer`
 
-Change some properties of one layer, object, light, the camera or the scene ("scene": background, ambient) of a motion clip. A property that is animated gets a keyframe at that time instead; others change for the whole clip. _(changes things)_
+Change some properties of one layer, object, light, the camera or the scene ("scene": background, ambient) of a motion clip. A property that is animated gets a keyframe at that time instead, keeping an existing key's easing; others change for the whole clip. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `id` | string | required | A layer, object or light id, "camera" or "scene". |
-| `props` | object | required | Properties and values, e.g. {"x": 120, "fill": "#ff5a36", "text": "Hi"} (any field of motion.guide; nested ones like stroke or material merge). |
+| `props` | object | required | Properties and values, e.g. {"x": 120, "fill": "#ff5a36", "text": "Hi"} (any field of motion.guide; nested ones like stroke or material merge). An explicit keyframes object replaces its named channels after values are set; an empty channel array removes it. |
 | `time` | number |  | Timeline seconds, for animated properties (default: the playhead). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
+
+### `motion.updateLayers`
+
+Change properties of several items in one motion scene atomically, as one undo step. Animated properties get keyframes, as with motion.updateLayer. Used for simultaneous Studio transforms. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `updates` | array | required | A nonempty list of {"id": "object", "props": {"position": [1, 2, 3]}}. Every update must succeed. |
+| `time` | number |  | Timeline seconds, for animated properties (default: the playhead). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `motion.addKeyframe`
 
-Set one keyframe of a layer, object, light or camera property at a timeline time (replacing one already there). _(changes things)_
+Set one keyframe of a layer, object, light or camera property at a timeline time (replacing one already there). Base property values stay unchanged; an existing key keeps its easing unless supplied. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -1015,8 +1035,8 @@ Set one keyframe of a layer, object, light or camera property at a timeline time
 | `property` | string | required | The property, e.g. x, opacity, rotation.y, fov. |
 | `time` | number |  | Timeline seconds (default: the playhead). |
 | `value` | any |  | The value (default: what the property is at that time). |
-| `easing` | string |  | How the value arrives here from the previous keyframe (default linear). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `easing` | string |  | How the value arrives here from the previous keyframe. Defaults to the existing key's easing, or linear for a new key. |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `motion.removeKeyframe`
 
@@ -1037,7 +1057,7 @@ Re-make a template clip with new values (the others keep theirs). Edits made to 
 | --- | --- | --- | --- |
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `values` | object | required | Values to change. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `motion.stackTypes`
 
@@ -1058,7 +1078,7 @@ Add a modifier or constraint (3D object, light, camera), or an effect, operator,
 | `field` | string | required | modifiers, constraints, effects, operators, masks or animators. |
 | `item` | object | required | {"type": "blur", "radius": 12} (see motion.stackTypes); with an id it replaces that item. |
 | `index` | integer |  | Position in the stack for a new item (default: last). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `motion.removeStackItem`
 
@@ -1093,7 +1113,7 @@ Drive a property with a formula evaluated every frame (After Effects expressions
 | `id` | string | required | A layer, object, light or camera id. |
 | `property` | string | required | The property, e.g. rotation, x, opacity, rotation.y, effects.blur.radius. |
 | `expression` | string |  | The formula; empty or omitted removes it. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `motion.setMaterial`
 
@@ -1103,7 +1123,7 @@ Add or replace a shared material in a 3D scene (objects use it with "material": 
 | --- | --- | --- | --- |
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `material` | object | required | {"id": "gold", "color": "#e8b04a", "metallic": 1, "roughness": 0.25} (fields as an object's material: color, metallic, roughness, emissive, emissiveIntensity, opacity, transmission, ior, clearcoat, texture, pattern, textureScale, flat, unlit). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `motion.removeMaterial`
 
@@ -1122,7 +1142,7 @@ Add or change a composition of a 2D scene (After Effects' precomp: layers with t
 | --- | --- | --- | --- |
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `composition` | object | required | {"id": "card", "width": 800, "height": 400, "duration": 3, "background": null, "layers": [...]}. |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `motion.removeComposition`
 
@@ -1154,6 +1174,17 @@ Reorder a layer (2D: later draws on top) or object (3D), or move it into a group
 | `parent` | string |  | A group or composition (2D) or object (3D) to move it into; "" = the top level. Omit to stay in the same list. |
 | `index` | integer |  | Position in its list (0 = first, drawn first in 2D). Default: last. |
 
+### `motion.moveLayers`
+
+Reorder or reparent a selection of layers or objects together. Selected descendants travel with their selected ancestors; roots keep their scene order and local transforms. Invalid destinations leave the scene unchanged. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `ids` | array | required | Layer or object ids. Duplicate ids are ignored; lights, cameras and compositions cannot be moved. |
+| `parent` | string |  | Destination group or composition (2D), or object (3D); empty string means the scene root. Omit only when all selected roots share a list. |
+| `index` | integer |  | Insertion position after removing all selected roots from the destination list. Zero is first (drawn first in 2D); default is last. |
+
 ### `motion.renameLayer`
 
 Give a layer, object, light, camera, composition or shared material of a motion clip a new id; everything that refers to it follows (parents, mattes and masks, modifier and constraint targets, expressions' prop("id", …), the active camera, comp layers, objects using the material). One undo step. _(changes things)_
@@ -1162,17 +1193,39 @@ Give a layer, object, light, camera, composition or shared material of a motion 
 | --- | --- | --- | --- |
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `id` | string | required | Its id now. |
-| `newId` | string | required | The new id (unique in the scene). |
+| `newId` | string | required | The new id (unique in its namespace). |
+| `namespace` | string |  | scene (layers, objects, lights, cameras and compositions) or material (shared materials). Defaults to scene if the id exists there, otherwise material. Renaming an object never renames a same-named material. |
+
+### `motion.arrangeObjects`
+
+Align or evenly distribute 3D object origins along a world axis. Children of selected objects move with their parents. Existing position animation gets a keyframe at the given time. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `ids` | array | required | Object ids in selection order; after excluding selected descendants, the last is the active alignment reference. At least two independent objects for alignment, three for distribution. |
+| `operation` | string | required | alignActive (to the last selected origin), alignCentre (to the mean origin) or distribute (even spacing between the outermost origins). |
+| `axis` | string | required | World axis: x, y or z. Other axes stay unchanged. |
+| `time` | number |  | Timeline seconds. Defaults to the playhead; converted to scene time for trimmed or sped-up clips. |
 
 ### `motion.duplicateLayer`
 
-Copy a layer, object or light (with its children) next to itself under a new id. One undo step. _(changes things)_
+Copy a layer, object, light or extra camera (with its children) next to itself under a new id. References within the copied hierarchy follow the copies. One undo step. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `id` | string | required | What to copy. |
 | `newId` | string |  | The copy's id (default: the id with a number). |
+
+### `motion.duplicateLayers`
+
+Copy a selection of layers, objects, lights or extra cameras together. Selected descendants are included once through their selected ancestor. References between copied things follow the copies; external references stay unchanged. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `ids` | array of strings | required | Nonempty selection in order. Returns ids of the copied roots in that order and idMap for every copy, including descendants. |
 
 ### `motion.convertToMesh`
 
@@ -1196,7 +1249,7 @@ Bake a modifier (or the whole stack) into an object's mesh, like Blender's Apply
 
 ### `motion.editMesh`
 
-Model a mesh object like Blender's edit mode: extrude, inset, bevel, subdivide, loop cut, delete, merge, fill, bridge, flip, move/rotate/scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap. Selections are vertex and/or face indices (motion.get shows them) or helpers. Returns the new selection. One undo step. _(changes things)_
+Model a mesh object like Blender's edit mode: extrude, inset, bevel, subdivide, loop cut, delete, merge, fill, bridge, flip, move/rotate/scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap. Selections are vertex indices, explicit edge pairs and/or face indices (motion.get shows them) or helpers. Returns the new selection. One undo step. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -1204,9 +1257,21 @@ Model a mesh object like Blender's edit mode: extrude, inset, bevel, subdivide, 
 | `id` | string | required | A mesh object (motion.convertToMesh makes one from any shape). |
 | `op` | string | required | The operation: extrude, extrudeIndividual, inset, bevel, subdivide, loopCut, delete, dissolve, merge, fill, bridge, flip, recalcNormals, translate (or move), rotate, scale, mirror, duplicate, triangulate, poke, smooth, spin, knife, unwrap. |
 | `vertices` | array |  | Selected vertex indices. |
+| `edges` | array |  | Explicit selected edges [[a,b], ...]. Must be actual mesh edges; overrides edges inferred from vertices and does not implicitly select faces. |
 | `faces` | array |  | Selected face indices. |
 | `select` | object |  | Instead of indices: {"all": true}, {"facing": [0, 1, 0], "angle": 30}, {"inside": [[x0,y0,z0],[x1,y1,z1]]}, {"edgeLoop": [v0, v1]}, {"edgeRing": [v0, v1]}; add "linked": true to grow to everything connected. |
 | `params` | object |  | The operation's values, e.g. {"distance": 0.5} (extrude), {"thickness": 0.1, "depth": 0} (inset), {"width": 0.05, "segments": 2} (bevel), {"cuts": 1} (subdivide, loopCut), {"what": "faces"} (delete), {"offset": [0, 1, 0]} (translate), {"angle": [0, 45, 0], "pivot": [0,0,0]} (rotate), {"factor": [1,2,1]} (scale), {"axis": "x"} (mirror), {"angle": 360, "steps": 12, "axis": [0,1,0]} (spin), {"method": "box"} (unwrap). motion.stackTypes {"family": "editOps"} lists every operation's values. |
+
+### `motion.updateMeshVertices`
+
+Set exact local positions for selected mesh vertices in one atomic undo step. Other vertices, faces, UVs, transforms and animation stay unchanged. Useful for precise transforms without accumulating preview rounding. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `id` | string | required | The mesh object. |
+| `vertices` | array of objects | required | Nonempty list of {"index": 0, "position": [x,y,z]}. Indices must be unique and in range; all coordinates must be finite. |
+| `expectedVertexCount` | integer |  | Reject the edit if the vertex count changed since the transform began. |
 
 ### `motion.view`
 
@@ -1227,16 +1292,38 @@ Render a motion clip's scene alone, the way the Studio shows it, to a PNG: a 3D 
 
 ### `motion.shiftKeyframes`
 
-Move keyframes of a layer, object, light or camera in time (the dope sheet's drag): all of them, one property's, or those at some times. One undo step. _(changes things)_
+Move keyframes of a layer, object, light or camera in time: all of them, one property's, or those at some times. The selected group stops at scene time zero without collapsing its spacing. A moved key replaces an unselected destination key. One undo step. _(changes things)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `id` | string | required | A layer, object, light or camera id, "camera" or "scene". |
-| `by` | number | required | Seconds to move them (negative = earlier). |
+| `by` | number | required | Timeline seconds to move them (negative = earlier on the timeline); clip speed is respected. |
 | `property` | string |  | Only this property (default: every one). |
 | `times` | array |  | Only the keyframes at these timeline times (seconds). |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
+
+### `motion.updateKeyframes`
+
+Move or change existing keyframes together, preserving unspecified values and easing. Sources are read before any moves, so swaps and overlapping selections work. A moved key replaces an unselected key where it lands; duplicate sources or destinations are rejected. Base property values stay unchanged. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `updates` | array | required | Nonempty list of {id, property, time, newTime?, value?, easing?}. time identifies an existing key; time and newTime are timeline seconds, converted using the clip's trim and speed. Every update must succeed. |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
+
+### `motion.duplicateKeyframes`
+
+Copy existing keyframes with their values and easings at a common time offset. Original keys and base property values stay unchanged unless replace explicitly permits an occupied destination. Sources are read before any writes. One undo step. Returns selectedKeys in scene seconds, ready for ui.studio. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `keys` | array | required | Nonempty list of {id, property, time}; time identifies an existing key in timeline seconds. Duplicate sources are rejected. |
+| `by` | number | required | Nonzero timeline seconds between originals and copies; clip trim and speed are respected. |
+| `replace` | boolean |  | Allow replacing an existing destination key (default false). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `motion.cameraMove`
 
@@ -1257,7 +1344,7 @@ Animate a 3D scene's camera with a classic move, written as ordinary keyframes, 
 | `from` | number |  | Scene seconds the move starts (default the clip's start). |
 | `to` | number |  | Scene seconds it ends (default the clip's end). |
 | `easing` | string |  | How it moves (default easeInOut; a whole turn linear): linear, easeIn, easeOut, easeInOut, easeInOutCubic… |
-| `coalesce` | string |  | Edits with the same key within ~1 s fold into one undo step (drags, sliders). |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `motion.render`
 
@@ -1296,11 +1383,12 @@ Go back to drawing motion clips live (forget their rendered frames). One undo st
 
 ### `timeline.seek`
 
-Move the playhead. _(changes things · needs the window)_
+Move the playhead, snapping to project frames by default. _(changes things · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `time` | number | required | Timeline time in seconds. |
+| `exact` | boolean |  | Keep the exact time, including subframes (default false). Useful for motion keys on trimmed or sped-up clips. |
 
 ### `timeline.play`
 
@@ -1383,7 +1471,7 @@ Models of one provider, or of every ready provider, with what each can do (tasks
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `provider` | string |  | Provider id; omit for every ready provider. |
-| `task` | string |  | Only models that can do text_to_image, image_to_image, text_to_video or image_to_video. |
+| `task` | string |  | Only models that can do text_to_image, image_to_image, text_to_video, image_to_video, text_to_audio or text_to_speech. |
 | `refresh` | boolean |  | Fetch the list again instead of using the cache. |
 
 ### `generate.check`
@@ -1423,7 +1511,7 @@ Generate an image or a video. By default a placeholder clip appears on the timel
 | `prompt` | string | required | What to make, in words. |
 | `provider` | string |  | Provider id (generate.providers). With model, picks the model; defaults to settings.generate. |
 | `model` | string |  | Model id from generate.models, or "provider::model". Defaults to the model set in settings.generate, else the first featured ready model. |
-| `task` | string |  | text_to_image, image_to_image, text_to_video or image_to_video. Defaults from video and the images given. |
+| `task` | string |  | text_to_image, image_to_image, text_to_video, image_to_video, text_to_audio or text_to_speech. Defaults from video and the images given. |
 | `video` | boolean |  | Make a video rather than an image (when task is omitted). |
 | `negativePrompt` | string |  | What to avoid, for models that take it. |
 | `images` | array of objects |  | Input images: [{role: reference\|start_frame\|end_frame, path?, assetId?, clipId?, time?}]. A clip gives the frame it shows at time. |
@@ -1725,7 +1813,7 @@ Choose what runs the built-in agent (Settings › Agent). _(changes things · pe
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `provider` | string | required | claude-code, codex, anthropic, openai or ollama. |
+| `provider` | string | required | zenith, claude-code, codex, anthropic, openai or ollama. |
 | `model` | string |  | Model id for the API providers and Ollama; empty for the provider's default. |
 | `baseUrl` | string |  | Server address for Ollama or an OpenAI-compatible server; empty for the default. |
 
@@ -1775,7 +1863,47 @@ Revert an agent run: the project goes back to how it was before the run's first 
 
 ### `agent.newConversation`
 
-Start a new conversation in the Agent panel: the agent forgets the thread. Earlier runs can still be reverted. _(changes things · needs the window)_
+Create a separate saved conversation in the current project; earlier conversations remain available. _(changes things · needs the window)_
+
+### `agent.conversations`
+
+Saved conversations in the current project, with the selected conversation id. _(read only · needs the window)_
+
+### `agent.selectConversation`
+
+Resume a saved conversation in this project. Stop an active run first. _(changes things · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `id` | string | required | Conversation id from agent.conversations. |
+
+### `agent.renameConversation`
+
+Rename the selected conversation. _(changes things · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `title` | string | required | Title, up to 120 characters. |
+
+### `agent.memory`
+
+Read persistent project memory shared by this project's conversations. _(read only · needs the window)_
+
+### `agent.setMemory`
+
+Replace persistent project memory. This context is included in future agent requests. _(changes things · person only · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `text` | string | required | Project notes, up to 32,000 bytes; empty clears. |
+
+### `agent.steer`
+
+Redirect the active agent with a follow-up message while preserving its conversation and completed edits. _(changes things · permission: generate · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `prompt` | string | required | Additional instructions for the current run. |
 
 ## ui
 
@@ -1794,7 +1922,7 @@ Select clips (or one media item) in the window. _(changes things · needs the wi
 
 ### `ui.showPanel`
 
-Open a panel or dialog: media, generate, text, motion, captions (left panel), inspector, agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it. _(changes things · needs the window)_
+Open a panel or dialog: media, generate, text, motion, studio, captions, inspector (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it. _(changes things · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -1846,7 +1974,7 @@ Do what a keyboard shortcut or menu item of the window does, by its action name.
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `action` | string | required | PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide, StudioAlignCamera, StudioFly, StudioZoomIn, StudioZoomOut, StudioZoom100; sound: ToggleMixer, MuteTrack, SoloTrack, ArmTrack, RecordVoiceOver, AddEffect. |
+| `action` | string | required | PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioPreviousKey, StudioNextKey, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide, StudioAlignCamera, StudioFly, StudioZoomIn, StudioZoomOut, StudioZoom100; sound: ToggleMixer, MuteTrack, SoloTrack, ArmTrack, RecordVoiceOver, AddEffect. |
 
 ### `ui.reveal`
 
@@ -1873,20 +2001,30 @@ Open, drive or close the Studio, the window's editor for motion clips (a Blender
 | --- | --- | --- | --- |
 | `clipId` | string |  | Open this motion clip (id or name). |
 | `close` | boolean |  | Back to the edit. |
-| `panel` | string |  | In a narrow window: objects, properties or none opens or closes a Studio side drawer. |
-| `select` | array |  | Select these ids (layers, objects, lights, cameras; "scene"; "material:<id>", "comp:<id>"); empty clears. |
+| `panel` | string |  | Show objects or properties in the shared left sidebar, or hide it with none. In a narrow window this controls the sidebar drawer. |
+| `select` | array |  | Select these ids (layers, objects, lights, cameras; "scene"; "material:<id>", "comp:<id>"); empty clears when selectionOp is replace. |
+| `selectionOp` | string |  | How this call's select, editSelection and selectedKeys combine with the current selection: replace (default), add or subtract. Added items retain their order; subtraction preserves the surviving selection and active item when possible. View only. |
 | `mode` | string |  | object or edit (3D mesh editing of the selected mesh object). |
 | `selectMode` | string |  | Edit mode: vertex, edge or face. |
-| `editSelection` | object |  | Edit mode: {"vertices": [...], "faces": [...]} indices of the mesh. |
+| `editSelection` | object |  | Edit mode: {"vertices": [...], "edges": [[a,b], ...], "faces": [...]} valid mesh indices. |
+| `meshTool` | string |  | Open a modelling tool in the Studio sidebar to configure its parameters, e.g. extrude, bevel, loopCut or unwrap. Does not apply it. |
+| `meshSelect` | string |  | Edit mode: all, none, invert, linked, grow, shrink or boundary in the current selection mode. edgeLoop and edgeRing extend selected edges in edge mode; loops stop at irregular vertices, rings cross quads. Selection only; does not change the mesh. |
 | `tool` | string |  | 3D: select, move, rotate, scale. 2D: select, anchor, pen, rect, ellipse, star, polygon, text. |
 | `shading` | string |  | 3D: solid, material or rendered. |
+| `pivot` | string |  | 3D object transforms: median (selection centre), active (last selected object), individual (each object at its own origin) or origin (world origin). |
+| `gizmo` | string |  | 3D transform axes: global or local (the active object's axes). |
+| `snapping` | boolean |  | Studio viewport snapping for mouse transforms and mesh tools; separate from timeline snapping. Typed 3D transform amounts stay exact. |
 | `view` | any |  | 3D: front, back, left, right, top, bottom, camera (through the active camera), persp or ortho; or a view {"position": [x,y,z], "target": [x,y,z], "fov": 40, "ortho": false, "orthoSize": 6}. |
-| `frame` | boolean |  | Frame the selection in the view (all when nothing is selected). |
+| `frame` | boolean |  | Frame selected objects, mesh components or visible 2D layers at the playhead, including repeated group instances. With no visible 2D selection, fit the canvas; with no 3D selection, frame all objects. View only. |
 | `grid` | boolean |  | 3D: floor grid and axes. |
 | `helpers` | boolean |  | 3D: draw lights and cameras. |
 | `composition` | string |  | 2D: show and edit this composition ("" = the scene). |
 | `showGraph` | boolean |  | The timeline area shows the graph editor (true) or the dope sheet. |
+| `selectedKeys` | array |  | Select existing Studio keys as [{id, property, time}] using scene seconds; selectionOp chooses replace (default), add or subtract. Empty clears only with replace. Times are matched within 0.000001 seconds; duplicate keys are selected once. Invalid references leave the key selection unchanged. View only. |
+| `timelineRange` | array |  | Visible Studio timeline range [start, end] in scene seconds, from 0 to 1000000; end must be greater than start. |
+| `fitTimeline` | string |  | Fit the Studio timeline to clip or selection (selected keyframes). |
 | `graphProperty` | string |  | The property the graph editor shows, e.g. position.x (of the selected item). |
+| `graphComponent` | integer |  | Preferred zero-based vector component for graph handles and numeric value edits: 0 (X/first), 1 (Y), 2 (Z), 3 (W); higher indices address longer vectors. Clamped to the shown curve's component count; scalar curves use 0. Choosing it is view only; no project edit. |
 | `navigate` | object |  | 3D: move around, as the mouse would: {"orbit": [yaw°, pitch°], "pan": [dx, dy] (shares of the view), "zoom": 2 (twice as close), "fly": [forward, right, up] (world units), "look": [yaw°, pitch°] (turning where it stands)}. Through the camera with lockCamera, this moves the scene's camera (one undo step, a keyframe at the playhead when it is animated). |
 | `lockCamera` | boolean |  | 3D: while looking through the camera, navigating moves the scene's camera (Blender's Lock camera to view). |
 | `alignCamera` | boolean |  | 3D: put the active camera where the view is (then look through it). |

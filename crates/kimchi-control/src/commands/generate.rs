@@ -196,11 +196,13 @@ fn image(role: ImageRole, path: String) -> InputImage {
 
 pub fn task(t: &str) -> CmdResult<Task> {
     Ok(match t {
+        "text_to_audio" | "textToAudio" => Task::TextToAudio,
+        "text_to_speech" | "textToSpeech" => Task::TextToSpeech,
         "text_to_image" | "textToImage" => Task::TextToImage,
         "image_to_image" | "imageToImage" => Task::ImageToImage,
         "text_to_video" | "textToVideo" => Task::TextToVideo,
         "image_to_video" | "imageToVideo" => Task::ImageToVideo,
-        other => return Err(format!("task is text_to_image, image_to_image, text_to_video or image_to_video, not \"{other}\"")),
+        other => return Err(format!("task is text_to_audio, text_to_speech, text_to_image, image_to_image, text_to_video or image_to_video, not \"{other}\"")),
     })
 }
 
@@ -310,7 +312,7 @@ fn placement_from(s: &Session, a: &Args, r: &GenRequest) -> CmdResult<Placement>
             let p = s.project()?;
             let track_id = a.opt_str("trackId").map(|k| resolve::track(&p, k)).transpose()?;
             let start = a.opt_f64("start").unwrap_or_else(|| s.ui_state().playhead);
-            let fallback = if r.task.output() == OutputKind::Video { r.duration.unwrap_or(5.0) } else { kimchi_core::DEFAULT_STILL_DURATION };
+            let fallback = if r.task.output() != OutputKind::Image { r.duration.unwrap_or(5.0) } else { kimchi_core::DEFAULT_STILL_DURATION };
             Ok(Placement::Timeline { track_id, start, duration: a.opt_f64("length").unwrap_or(fallback) })
         }
         other => Err(format!("place is \"timeline\" or \"library\", not \"{other}\"")),
@@ -326,7 +328,7 @@ async fn model_request(s: &Arc<Session>, a: &Args, task: Task, prompt: &str) -> 
     r.width = Some(p.settings.width);
     r.height = Some(p.settings.height);
     r.seed = a.opt_i64("seed");
-    if task.output() == OutputKind::Video {
+    if task.output() != OutputKind::Image {
         r.duration = a.opt_f64("duration").or_else(|| model.durations.first().copied());
     }
     Ok(Submit { provider, request: r, placement: Placement::Library, input_assets: vec![] })
@@ -345,7 +347,12 @@ pub async fn pick_model(s: &Arc<Session>, provider: Option<&str>, model: Option<
     let (provider, model) = match (provider, model) {
         (p, None) => {
             let settings = s.settings().generate;
-            let default = if task.output() == OutputKind::Video { settings.video_model } else { settings.image_model };
+            let default = match task {
+                Task::TextToSpeech => settings.speech_model,
+                Task::TextToAudio => settings.audio_model,
+                _ if task.output() == OutputKind::Video => settings.video_model,
+                _ => settings.image_model,
+            };
             match default.split_once("::") {
                 Some((dp, dm)) if p.as_deref().is_none_or(|p| p == dp) => (Some(dp.to_string()), Some(dm.to_string())),
                 _ => (p, None),

@@ -96,7 +96,7 @@ impl Api {
             ProviderKind::Anthropic => anthropic::step(self, run, tools, messages).await,
             ProviderKind::OpenAi => openai::step(self, run, tools, messages).await,
             ProviderKind::Ollama => ollama::step(self, run, tools, messages, round).await,
-            ProviderKind::ClaudeCode | ProviderKind::Codex => Err("This provider runs as a CLI.".into()),
+            ProviderKind::ClaudeCode | ProviderKind::Codex | ProviderKind::Zenith => Err("This provider runs as a CLI.".into()),
         }
     }
 }

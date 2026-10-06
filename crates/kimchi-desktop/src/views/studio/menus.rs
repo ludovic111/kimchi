@@ -422,7 +422,7 @@ pub fn thing_menu(studio: &Entity<Studio>, selection: Vec<String>, cx: &App) -> 
                 let s = studio.clone();
                 out.push(MenuItem::new("Edit mesh", move |_, cx| s.update(cx, |s, cx| s.toggle_edit(cx))).icon("hexagon").shortcut_of(&act::StudioToggleEdit).entry());
                 out.push(MenuItem::new("Apply modifiers", run("motion.applyModifier", json!({ "clipId": clip, "id": id }))).icon("check").entry());
-            } else if !matches!(shape, "group" | "particles" | "model" | "image") {
+            } else if !matches!(shape, "group" | "particles" | "image") {
                 out.push(MenuItem::new("Convert to mesh", run("motion.convertToMesh", json!({ "clipId": clip, "id": id }))).icon("hexagon").entry());
                 out.push(MenuItem::new("Convert to mesh, modifiers applied", run("motion.convertToMesh", json!({ "clipId": clip, "id": id, "applyModifiers": true }))).icon("hexagon").entry());
             }
@@ -490,6 +490,26 @@ pub fn thing_menu(studio: &Entity<Studio>, selection: Vec<String>, cx: &App) -> 
     let deletable = selection.iter().any(|k| k != "scene" && k != "camera");
     out.push(MenuItem::new("Delete", move |w, cx| s.update(cx, |s, cx| s.delete(w, cx))).icon("trash").shortcut_of(&act::StudioDelete).danger().disabled(!deletable).entry());
     out
+}
+
+/// Arrange object origins. The labels distinguish origins from the visible mesh's bounds.
+pub fn arrange_menu(studio: &Entity<Studio>, cx: &App) -> Vec<MenuEntry> {
+    let st = studio.read(cx);
+    let Some((_, Scene::Space(scene))) = st.clip_scene(cx) else { return vec![] };
+    let objects: Vec<_> = st.selection.iter().filter(|id| kimchi_core::motion::find_object(&scene.objects, id).is_some()).cloned().collect();
+    let count = objects.iter().filter(|id| !objects.iter().any(|parent| parent != *id && kimchi_core::motion::find_object(&scene.objects, parent)
+        .is_some_and(|o| kimchi_core::motion::find_object(&o.children, id).is_some()))).count();
+    let mut entries = vec![];
+    for (operation, label, needed) in [("alignActive", "Align origins to active", 2), ("alignCentre", "Align origins to centre", 2), ("distribute", "Space origins evenly", 3)] {
+        if !entries.is_empty() { entries.push(MenuEntry::Separator); }
+        for axis in ["x", "y", "z"] {
+            let params = json!({ "clipId": st.clip, "ids": objects, "operation": operation, "axis": axis, "time": st.playhead(cx) });
+            entries.push(MenuItem::new(format!("{label} · {}", axis.to_uppercase()), move |_, cx| {
+                super::run("motion.arrangeObjects", params.clone(), cx);
+            }).disabled(count < needed).entry());
+        }
+    }
+    entries
 }
 
 /// The Camera menu (the toolbar's, a camera's right-click and its Properties): looking through
@@ -571,7 +591,6 @@ pub fn mesh_menu(studio: &Entity<Studio>, _cx: &App) -> Vec<MenuEntry> {
     for op in kimchi_core::mesh::ops::EDIT_OPS {
         let s = studio.clone();
         let name = op.name;
-        let params: serde_json::Map<String, Value> = op.params.iter().filter_map(|p| p.default.value().map(|v| (p.name.to_string(), v))).collect();
         let interactive = matches!(name, "extrude" | "inset" | "bevel" | "loopCut");
         let mut item = MenuItem::new(op.label, move |w, cx| {
             let vp = s.read(cx).viewport.clone();
@@ -580,7 +599,7 @@ pub fn mesh_menu(studio: &Entity<Studio>, _cx: &App) -> Vec<MenuEntry> {
                 "inset" => vp.update(cx, |v, cx| v.start_modal(super::viewport::ModalKind::Inset, w, cx)),
                 "bevel" => vp.update(cx, |v, cx| v.start_modal(super::viewport::ModalKind::Bevel, w, cx)),
                 "loopCut" => vp.update(cx, |v, cx| v.arm_loop_cut(cx)),
-                _ => s.update(cx, |s, cx| s.mesh_op(name, Value::Object(params.clone()), cx)),
+                _ => s.update(cx, |s, cx| { let _ = s.open_mesh_tool(name, cx); }),
             }
         })
         .icon(if interactive { "mouse-pointer-2" } else { "hexagon" });

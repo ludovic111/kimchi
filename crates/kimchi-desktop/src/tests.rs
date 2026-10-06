@@ -165,6 +165,7 @@ fn people_edit_motion_scenes_in_the_inspector(cx: &mut TestAppContext) {
     store_settles(cx, |s| s.studio.is_some());
     let studio = cx.update(|_, cx| view.read(cx).editor().read(cx).studio.clone());
     cx.update(|_, cx| studio.update(cx, |s, cx| s.close(cx)));
+    cx.update(|_, cx| cx.store().update(cx, |s, cx| s.set_left_tab(crate::store::LeftTab::Inspector, cx)));
     cx.run_until_parked();
     // Pick its text layer, then type in the words field.
     let inspector = cx.update(|_, cx| view.read(cx).editor().read(cx).inspector.clone());
@@ -529,7 +530,12 @@ fn side_panels_close_and_open(cx: &mut TestAppContext) {
     let before = preview_w(cx);
     cx.simulate_keystrokes(&format!("{M}-alt-i"));
     resize(cx, 1600., 1000.);
-    assert!(bounds_of(cx, "inspector").is_none(), "the shortcut hides the inspector");
+    assert!(bounds_of(cx, "left-panel").is_some(), "the inspector occupies the left sidebar");
+    assert!(bounds_of(cx, "inspector").is_none(), "there is no separate inspector dock");
+    assert!((preview_w(cx) - before).abs() < 1., "switching a left tab keeps the viewport width");
+    assert_eq!(f.call("ui.state", json!({}))["layout"]["inspectorOpen"], true);
+    cx.simulate_keystrokes(&format!("{M}-alt-i"));
+    resize(cx, 1600., 1000.);
     assert!(preview_w(cx) > before + 200.);
     remote(&f, cx, "ui.setLayout", json!({ "leftOpen": false }));
     resize(cx, 1600., 1000.);
@@ -540,5 +546,6 @@ fn side_panels_close_and_open(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(&format!("{M}-3"));
     cx.simulate_keystrokes(&format!("{M}-alt-i"));
     resize(cx, 1600., 1000.);
-    assert!(bounds_of(cx, "left-panel").is_some() && bounds_of(cx, "inspector").is_some());
+    assert!(bounds_of(cx, "left-panel").is_some() && bounds_of(cx, "inspector").is_none());
+    assert_eq!(f.call("ui.state", json!({}))["layout"]["inspectorOpen"], true);
 }

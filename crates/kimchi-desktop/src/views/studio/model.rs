@@ -9,6 +9,40 @@ use kimchi_core::{Clip, ClipContent, KeyValue, Keyframes, Project, Scene};
 
 use super::math::{self, Affine, M4, V3};
 
+/// Identity for a cached project snapshot. A weak reference keeps its allocation address
+/// reserved after the document is dropped, so a later edit cannot reuse a stale cache key.
+#[derive(Clone, Default)]
+pub struct SnapshotIdentity(std::sync::Weak<Project>);
+
+impl SnapshotIdentity {
+    pub fn new(project: &std::sync::Arc<Project>) -> Self {Self(std::sync::Arc::downgrade(project))}
+}
+
+impl PartialEq for SnapshotIdentity {
+    fn eq(&self, other: &Self) -> bool {self.0.ptr_eq(&other.0)}
+}
+
+impl Eq for SnapshotIdentity {}
+
+/// Unanimated values retained before a modal transform changes base values and keyframes.
+pub fn base_props(names: &[&str], get: impl Fn(&str) -> Option<KeyValue>) -> serde_json::Map<String, serde_json::Value> {
+    names.iter().filter_map(|name| get(name).map(|v| ((*name).to_string(), serde_json::json!(v)))).collect()
+}
+
+/// Restore just the channels touched by a transform, including their exact original curves.
+pub fn restore_props(base: &serde_json::Map<String, serde_json::Value>, keys: &Keyframes, touched: &serde_json::Map<String, serde_json::Value>) -> serde_json::Map<String, serde_json::Value> {
+    let mut props = serde_json::Map::new();
+    let mut curves = serde_json::Map::new();
+    for name in touched.keys() {
+        if let Some(value) = base.get(name) {
+            props.insert(name.clone(), value.clone());
+            curves.insert(name.clone(), serde_json::json!(keys.get(name).map(Vec::as_slice).unwrap_or_default()));
+        }
+    }
+    props.insert("keyframes".into(), serde_json::Value::Object(curves));
+    props
+}
+
 /// The selection key of a shared material (3D) and of a composition (2D) in the outliner.
 pub const MATERIAL: &str = "material:";
 pub const COMPOSITION: &str = "comp:";
@@ -26,11 +60,11 @@ pub fn scene_time(clip: &Clip, t: f64) -> f64 {
     clip.scene_time(t.clamp(clip.start, clip.end()))
 }
 
-/// The timeline time that shows scene time `st` (the inverse of [`scene_time`]).
+/// Timeline time for a scene time, including keyframes outside the clip's trimmed range.
+/// Playback callers clamp this to the clip; editing callers must keep the exact time.
 pub fn timeline_time(clip: &Clip, st: f64) -> f64 {
     let local = (st - clip.in_point) / clip.speed.max(1e-6);
-    let t = if clip.reverse { clip.start + clip.duration - local } else { clip.start + local };
-    t.clamp(clip.start, clip.end())
+    if clip.reverse { clip.start + clip.duration - local } else { clip.start + local }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -361,10 +395,11 @@ pub fn vec_props(keys: &Keyframes, base: &str, v: V3) -> serde_json::Map<String,
     let mut m = serde_json::Map::new();
     if keys.contains_key(base) {
         m.insert(base.into(), serde_json::json!(v));
-    } else {
-        for (i, a) in ["x", "y", "z"].iter().enumerate() {
-            m.insert(format!("{base}.{a}"), serde_json::json!(v[i]));
-        }
+    }
+    for (i, a) in ["x", "y", "z"].iter().enumerate() {
+        let name = format!("{base}.{a}");
+        if !keys.contains_key(base) || keys.contains_key(&name) { m.insert(name, serde_json::json!(v[i])); }
+        if base == "position" && keys.contains_key(*a) { m.insert((*a).into(), serde_json::json!(v[i])); }
     }
     m
 }
@@ -393,7 +428,13 @@ pub fn fresh_id(scene: &Scene, stem: &str) -> String {
 
 /// World matrices of every object (keyframes, expressions and constraints applied) at `t`,
 /// plus lights and cameras (placed at their position, looking at their target or direction).
+#[cfg(test)]
 pub fn worlds(s: &Scene3d, t: f64) -> HashMap<String, M4> {
+    worlds_with(s,t,&Default::default())
+}
+
+pub fn worlds_with(s: &Scene3d, t: f64, opts:&kimchi_core::motion::EvalOptions) -> HashMap<String, M4> {
+    let solved=s.evaluate_at(t,opts);
     let mut out = HashMap::new();
     fn walk(list: &[Object3d], parent: &M4, out: &mut HashMap<String, M4>) {
         for o in list {
@@ -402,14 +443,14 @@ pub fn worlds(s: &Scene3d, t: f64) -> HashMap<String, M4> {
             out.insert(o.id.clone(), m);
         }
     }
-    walk(&s.objects_at(t), &math::IDENTITY, &mut out);
+    walk(&solved.objects, &math::IDENTITY, &mut out);
     // Lights that are shown come solved (constraints); hidden ones keep their keyframed place.
-    for l in s.lights_at(t) {
+    for l in solved.lights {
         out.insert(l.id.clone(), math::translate(l.position.0));
     }
     let hidden: Vec<(String, M4)> = s.lights.iter().filter(|l| !out.contains_key(&l.id)).map(|l| (l.id.clone(), math::translate(l.at(t).position.0))).collect();
     out.extend(hidden);
-    let cams = std::iter::once(("camera".to_string(), s.camera.at(t))).chain(s.cameras.iter().map(|c| (c.id.clone(), c.at(t))));
+    let cams=std::iter::once("camera").chain(s.cameras.iter().map(|c|c.id.as_str())).filter_map(|id|s.camera_by_id_at_with(id,t,opts).map(|c|(id.to_string(),c)));
     for (id, c) in cams {
         out.insert(id, look_at(c.position.0, c.target.0));
     }
@@ -498,9 +539,14 @@ pub fn corners(lo: V3, hi: V3) -> [V3; 8] {
 
 /// An object's box in world space at `t` (the drawn mesh, modifiers applied; children's too
 /// for groups), or a small box around a light or camera.
+#[cfg(test)]
 pub fn world_bounds(s: &Scene3d, worlds: &HashMap<String, M4>, t: f64, id: &str) -> Option<(V3, V3)> {
+    world_bounds_with(s,worlds,t,id,&Default::default())
+}
+
+pub fn world_bounds_with(s: &Scene3d, worlds: &HashMap<String, M4>, t: f64, id: &str, opts:&kimchi_core::motion::EvalOptions) -> Option<(V3, V3)> {
     if find_object(&s.objects, id).is_some()
-        && let Some(b) = kimchi_media::render::space::viewport::object_bounds(s, t, id)
+        && let Some(b) = kimchi_media::render::space::viewport::object_bounds_with(s, t, id, opts)
     {
         return Some(b);
     }
@@ -597,50 +643,29 @@ pub fn own_affine(l: &Layer) -> Affine {
     math::layer_affine(l.x, l.y, l.rotation, l.skew_x, l.scale * l.scale_x, l.scale * l.scale_y, l.anchor_x, l.anchor_y)
 }
 
-/// The layer at `t` (keyframes applied) and its full transform to the view's canvas (parents
-/// and groups included), project pixels from the canvas centre.
-pub fn layer_world(s: &Scene2d, comp: Option<&str>, t: f64, id: &str) -> Option<(Layer, Affine)> {
-    fn chain(list: &[Layer], l: &Layer) -> Affine {
-        let mut m = own_affine(l);
-        let mut at = l;
-        for _ in 0..64 {
-            let Some(p) = at.parent.as_deref() else { break };
-            let Some(parent) = list.iter().find(|x| x.id == p) else { break };
-            m = math::aff_mul(&own_affine(parent), &m);
-            at = parent;
-        }
-        m
-    }
-    fn look(list: &[Layer], id: &str, outer: Affine) -> Option<(Layer, Affine)> {
-        if let Some(l) = list.iter().find(|l| l.id == id) {
-            return Some((l.clone(), math::aff_mul(&outer, &chain(list, l))));
-        }
-        list.iter().find_map(|g| match &g.kind {
-            LayerKind::Group { layers } => look(layers, id, math::aff_mul(&outer, &chain(list, g))),
-            _ => None,
-        })
-    }
-    let list: Vec<Layer> = view_layers(s, comp).iter().map(|l| l.at(t)).collect();
-    let (layer, ours) = look(&list, id, math::AFFINE_ID)?;
-    // The engine's transform has expressions applied: what is drawn.
-    Some((layer, kimchi_media::render::layer_transform(s, t, comp, id).unwrap_or(ours)))
-}
-
-/// A layer's four corners (top left, top right, bottom right, bottom left) on the view's canvas
-/// (the 2D engine's: expressions, parents and groups included).
-pub fn layer_corners(s: &Scene2d, comp: Option<&str>, t: f64, id: &str, _project: (f64, f64)) -> Option<[[f64; 2]; 4]> {
-    kimchi_media::render::layer_bounds(s, t, comp, id)
-}
-
-/// The topmost visible layer under `point` (project pixels from the canvas centre).
-pub fn hit2d(s: &Scene2d, comp: Option<&str>, t: f64, point: [f64; 2], _project: (f64, f64)) -> Option<String> {
-    kimchi_media::render::hit_test(s, t, comp, point)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn snapshot_cache_keys_survive_document_replacement_without_retaining_its_data() {
+        use std::sync::Arc;
+        let original=Arc::new(Project::new("Cache identity",Default::default()));
+        let equal_document=(*original).clone();
+        let cached=SnapshotIdentity::new(&original);
+        assert!(cached==SnapshotIdentity::new(&original),"notifications of the same snapshot keep the cache");
+        assert_eq!(Arc::strong_count(&original),1,"cache keys do not keep old document contents alive");
+        let allocation=cached.0.as_ptr();
+        drop(original);
+        assert!(cached.0.upgrade().is_none());
+        for _ in 0..100 {
+            let next=Arc::new(equal_document.clone());
+            assert!(Arc::as_ptr(&next)!=allocation,"the old allocation stays reserved while a cache still names it");
+            assert!(cached!=SnapshotIdentity::new(&next),"even an equal document is a new snapshot after replacement");
+        }
+    }
 
     #[test]
     fn rows_follow_the_scene() {
@@ -692,9 +717,10 @@ mod tests {
         ]}))
         .unwrap();
         let Scene::Flat(f) = &s else { panic!() };
-        assert_eq!(hit2d(f, None, 0.0, [100.0, 0.0], (1920.0, 1080.0)).as_deref(), Some("small"));
-        assert_eq!(hit2d(f, None, 0.0, [-100.0, 0.0], (1920.0, 1080.0)).as_deref(), Some("big"));
-        let c = layer_corners(f, None, 0.0, "small", (1920.0, 1080.0)).unwrap();
+        let geometry=kimchi_media::render::CanvasGeometry::new(f,0.,None,(1920.,1080.),Default::default()).unwrap();
+        assert_eq!(geometry.hit_test([100.,0.]).as_deref(),Some("small"));
+        assert_eq!(geometry.hit_test([-100.,0.]).as_deref(), Some("big"));
+        let c = geometry.bounds("small").unwrap();
         assert_eq!(c[0], [75.0, -25.0]);
     }
 
@@ -706,5 +732,11 @@ mod tests {
         let st = scene_time(&c, 3.0);
         assert!((st - 3.0).abs() < 1e-9);
         assert!((timeline_time(&c, st) - 3.0).abs() < 1e-9);
+        for reverse in [false, true] {
+            c.reverse = reverse;
+            for scene in [0., 5., 12.] {
+                assert!((c.scene_time(timeline_time(&c, scene)) - scene).abs() < 1e-9, "keys outside the trim remain addressable");
+            }
+        }
     }
 }

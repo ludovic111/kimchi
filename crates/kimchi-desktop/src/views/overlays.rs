@@ -1,13 +1,13 @@
 //! Things that float above the window: the context menu and toasts.
 
-use gpui::{AnyElement, App, FontWeight, MouseButton, anchored, deferred, div, prelude::*, px};
+use gpui::{AnyElement, App, FontWeight, MouseButton, Window, anchored, deferred, div, prelude::*, px};
 use kimchi_control::ToastKind;
 
 use crate::store::{ContextMenu, MenuEntry, StoreExt, Toast};
 use crate::theme::{ActiveTheme, size as sz};
 use crate::ui::{GlassExt, icon, kbd, logo, motion};
 
-pub fn context_menu(menu: ContextMenu, cx: &App) -> AnyElement {
+pub fn context_menu(menu: ContextMenu, window: &Window, cx: &App) -> AnyElement {
     let t = cx.theme().clone();
     let items = menu.entries.into_iter().enumerate().map(|(i, e)| match e {
         MenuEntry::Separator => div().my(px(4.)).h(px(1.)).bg(t.line).into_any_element(),
@@ -52,6 +52,8 @@ pub fn context_menu(menu: ContextMenu, cx: &App) -> AnyElement {
                 .occlude()
                 .relative()
                 .min_w(px(220.))
+                .max_h((window.viewport_size().height-px(16.)).max(px(80.)))
+                .overflow_y_scroll()
                 .p(px(4.))
                 .rounded(px(sz::R_MD))
                 .glass(t.glass2)

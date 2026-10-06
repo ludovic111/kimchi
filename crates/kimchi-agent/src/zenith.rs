@@ -1,0 +1,235 @@
+//! lsuite agent integration over Zenith's public command interface.
+//! Credentials and provider sessions stay in Zenith, not in the Kimchi document.
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+use serde_json::{Value, json};
+use crate::{CliSession, Conversation, Message, ProviderKind, Run};
+
+pub fn executable() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("KIMCHI_ZENITH_CLI").map(PathBuf::from).filter(|p| p.is_file()) { return Some(p); }
+    kimchi_control::discovery::installed_apps().into_iter().find(|app| app.app == "zenith")
+        .and_then(|app| app.cli).filter(|p| p.is_absolute() && p.is_file())
+        .or_else(|| std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths)
+            .map(|p| p.join(format!("zenith-cli{}", std::env::consts::EXE_SUFFIX))).find(|p| p.is_file())))
+}
+
+pub(crate) async fn call(exe: &Path, command: &str, args: Value) -> Result<Value, String> {
+    let mut child = tokio::process::Command::new(exe);
+    child.arg(command).arg("--json").arg(args.to_string()).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    let out = tokio::time::timeout(Duration::from_secs(30), child.output()).await
+        .map_err(|_| format!("Zenith timed out on {command}. Check that its server is running."))?
+        .map_err(|e| format!("Could not start Zenith: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("Zenith {command}: {}", crate::tools::bounded(&String::from_utf8_lossy(&out.stderr), 2000)));
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("Invalid response from Zenith for {command}: {e}"))
+}
+
+pub(crate) async fn models() -> Result<Vec<String>, String> {
+    let exe = executable().ok_or("Install Zenith to use its lsuite agents.")?;
+    models_at(&exe).await
+}
+
+async fn models_at(exe: &Path) -> Result<Vec<String>, String> {
+    let providers = call(exe, "provider.list", json!({})).await?;
+    Ok(providers.as_array().into_iter().flatten().filter(|p| p["enabled"] != false)
+        .flat_map(|p| p["models"].as_array().into_iter().flatten().filter_map(|m| {
+            Some(format!("{}/{}", p["provider"].as_str()?, m["model"].as_str()?))
+        })).collect())
+}
+
+fn selection(model: &str, args: &mut Value) {
+    if let Some((provider, model)) = model.split_once('/') {
+        args["provider"] = json!(provider);
+        args["model"] = json!(model);
+    } else if !model.is_empty() { args["model"] = json!(model); }
+}
+
+pub(crate) async fn interrupt(run: &Run) -> Result<(), String> {
+    let remote = run.shared.zenith_thread.lock().clone();
+    if let Some((exe, id)) = remote {
+        call(&exe, "thread.interrupt", json!({"threadId": id})).await?;
+        let wait = async {
+            loop {
+                let state = call(&exe, "thread.get", json!({"threadId": id, "messages": 0})).await?;
+                if matches!(state["status"].as_str(), Some("ready" | "failed" | "plan-ready" | "monitoring")) { return Ok(()); }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        };
+        return tokio::time::timeout(Duration::from_secs(15), wait).await
+            .map_err(|_| "Zenith has not stopped yet. Open Zenith to check the conversation before sending again.".to_string())?;
+        }
+    Ok(())
+}
+
+pub(crate) async fn run(run: &mut Run, prompt: String, conv: Conversation) -> Result<String, String> {
+    let exe = executable().ok_or("Zenith was not found. Install it and start its server, then choose Zenith again.")?;
+    run_at(run, prompt, conv, exe).await
+}
+
+fn context_prompt(name: &str, id: kimchi_core::Id, prompt: &str) -> String {
+    format!("You are working in kimchi, part of lsuite. Use the installed kimchi MCP tools to edit project '{name}' (id {id}). Check project.overview before editing; stop if another project is open. Use the suite's Ryolune tools when audio work needs them. Kimchi's command permissions and undo history apply.\n\n{}\n\nRequest:\n{prompt}", crate::SYSTEM_PROMPT)
+}
+
+async fn run_at(run: &mut Run, prompt: String, mut conv: Conversation, exe: PathBuf) -> Result<String, String> {
+    if run.session.bridge_port().is_none() { return Err("Zenith needs Kimchi's live bridge. Restart Kimchi.".into()); }
+    let project = run.session.project()?;
+    let workspace = run.session.data_dir.join("agent-workspaces").join(project.id.to_string());
+    std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
+    let resume = conv.cli_session.as_ref().filter(|s| s.provider == ProviderKind::Zenith).map(|s| s.id.clone());
+    let prompt = context_prompt(&project.name, project.id, &prompt);
+    run.ensure_checkpoint().await;
+    conv.prepare_turn();
+    conv.messages.push(Message::user(prompt.clone()));
+    let id = if let Some(id) = resume {
+        *run.shared.zenith_thread.lock() = Some((exe.clone(), id.clone()));
+        let mut args = json!({"threadId": id, "prompt": prompt});
+        selection(&run.config.model, &mut args);
+        call(&exe, "thread.send", args).await?;
+        id
+    } else {
+        let projects = call(&exe, "project.list", json!({})).await?;
+        let path = workspace.to_string_lossy();
+        let existing = projects.as_array().into_iter().flatten().find(|p| p["path"].as_str() == Some(path.as_ref()));
+        let project_id = match existing.and_then(|p| p["projectId"].as_str()) {
+            Some(id) => id.to_string(),
+            None => call(&exe, "project.add", json!({"path": workspace, "title": format!("kimchi · {}", project.name)})).await?
+                ["projectId"].as_str().ok_or("Zenith did not return a project id.")?.to_string(),
+        };
+        // Choose the id before dispatch so cancellation can interrupt even when
+        // the command's acknowledgement was lost.
+        let id = kimchi_core::Id::new_v4().to_string();
+        *run.shared.zenith_thread.lock() = Some((exe.clone(), id.clone()));
+        conv.cli_session = Some(CliSession { provider: ProviderKind::Zenith, id: id.clone() });
+        run.set_conversation(&conv);
+        let mut args = json!({"threadId": id, "projectId": project_id, "prompt": prompt});
+        selection(&run.config.model, &mut args);
+        call(&exe, "thread.new", args).await?;
+        id
+    };
+    conv.cli_session = Some(CliSession { provider: ProviderKind::Zenith, id: id.clone() });
+    run.set_conversation(&conv);
+    run.status("Working in Zenith…");
+    let started = Instant::now();
+    let mut reply = String::new();
+    loop {
+        let state = call(&exe, "thread.get", json!({"threadId": id, "messages": 100})).await?;
+        let status = state["status"].as_str().unwrap_or("working");
+        let timeline = state["timeline"].as_array().cloned().unwrap_or_default();
+        let last_user = timeline.iter().rposition(|m| m["kind"] == "message" && m["role"] == "user");
+        // A command acknowledgement can precede the new turn appearing in the
+        // snapshot. Never stream or finish with the previous turn's answer.
+        if !last_user.is_some_and(|i| timeline[i]["text"].as_str() == Some(prompt.as_str())) {
+            if started.elapsed() > Duration::from_secs(30) { return Err("Zenith did not show the submitted message. Open Zenith to check this conversation.".into()); }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+        let text = timeline.iter().skip(last_user.map_or(0, |i| i + 1)).filter(|m| m["kind"] == "message" && m["role"] == "assistant")
+            .filter_map(|m| m["text"].as_str()).collect::<Vec<_>>().join("\n\n");
+        if let Some(delta) = text.strip_prefix(&reply).filter(|s| !s.is_empty()) { run.text(delta); }
+        reply = text;
+        run.drain_commands(kimchi_control::Source::Mcp);
+        match status {
+            "approval" => run.status("Zenith is waiting for your approval. Open the conversation in Zenith."),
+            "input" => run.status("Zenith has a question for you. Open the conversation in Zenith."),
+            "failed" => return Err(state["session"]["error"].as_str().unwrap_or("The Zenith agent failed. Open Zenith for details.").into()),
+            "ready" | "plan-ready" | "monitoring" if started.elapsed() > Duration::from_secs(1) => break,
+            _ => {}
+        }
+        tokio::time::sleep(Duration::from_millis(750)).await;
+    }
+    conv.messages.push(Message::assistant(reply.clone()));
+    run.set_conversation(&conv);
+    Ok(reply)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mock_cli(dir: &Path) -> PathBuf {
+        let exe = dir.join("zenith-cli");
+        std::fs::write(&exe, r##"#!/bin/sh
+cd "$(dirname "$0")" || exit 1
+printf '%s\n%s\n' "$1" "$3" >> calls
+case "$1" in
+  thread.new|thread.send) printf '%s' "$3" > submitted.json; printf '{}' ;;
+  thread.interrupt) touch interrupted; printf '{}' ;;
+  thread.get)
+    if [ -f interrupted ]; then
+      if [ -f stopping ]; then cat ready.json; else touch stopping; printf '{"status":"working"}'; fi
+    elif [ -f polled ]; then cat turn.json
+    else touch polled; cat old.json
+    fi ;;
+  bad) printf 'not json' ;;
+  denied) printf 'Permission denied' >&2; exit 1 ;;
+  *) cat "$1.json" ;;
+esac
+"##).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        exe
+    }
+
+    fn response(dir: &Path, name: &str, body: Value) {
+        std::fs::write(dir.join(format!("{name}.json")), body.to_string()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn discovers_qualified_models_and_reports_cli_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = mock_cli(dir.path());
+        response(dir.path(), "provider.list", json!([
+            {"provider":"my-codex","enabled":true,"models":[{"model":"coding-model"}]},
+            {"provider":"off","enabled":false,"models":[{"model":"hidden"}]}
+        ]));
+        assert_eq!(models_at(&exe).await.unwrap(), ["my-codex/coding-model"]);
+        assert!(call(&exe, "bad", json!({})).await.unwrap_err().contains("Invalid response"));
+        assert!(call(&exe, "denied", json!({})).await.unwrap_err().contains("Permission denied"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn creates_and_resumes_project_threads_ignoring_stale_replies_and_waits_for_interrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = mock_cli(dir.path());
+        let session = crate::tests::with_project(dir.path()).await;
+        let _bridge = kimchi_control::bridge::Server::start(session.clone()).await.unwrap();
+        let project = session.project().unwrap();
+        response(dir.path(), "project.list", json!([]));
+        response(dir.path(), "project.add", json!({"projectId":"zenith-project"}));
+        response(dir.path(), "old", json!({"status":"ready","timeline":[
+            {"kind":"message","role":"user","text":"an old request"},
+            {"kind":"message","role":"assistant","text":"stale answer"}
+        ]}));
+        let turn = |prompt: &str, answer: &str| json!({"status":"ready","timeline":[
+            {"kind":"message","role":"user","text":context_prompt(&project.name, project.id, prompt)},
+            {"kind":"message","role":"assistant","text":answer}
+        ]});
+        response(dir.path(), "turn", turn("Add a cube", "Cube added."));
+        let mut config = crate::AgentConfig::new(ProviderKind::Zenith);
+        config.model = "my-codex/coding-model".into();
+        let (mut run, _handle) = Run::new(&session, config, &Conversation::new());
+        let reply = run_at(&mut run, "Add a cube".into(), Conversation::new(), exe.clone()).await.unwrap();
+        assert_eq!(reply, "Cube added.");
+        let submitted: Value = serde_json::from_slice(&std::fs::read(dir.path().join("submitted.json")).unwrap()).unwrap();
+        assert_eq!(submitted["projectId"], "zenith-project");
+        assert_eq!(submitted["provider"], "my-codex");
+        assert_eq!(submitted["model"], "coding-model");
+        assert!(submitted.get("runtimeMode").is_none(), "Zenith retains its approval policy");
+        let conv = run.shared.conversation.lock().clone();
+        let thread_id = conv.cli_session.as_ref().unwrap().id.clone();
+        std::fs::remove_file(dir.path().join("polled")).unwrap();
+        response(dir.path(), "turn", turn("Make it blue", "Cube is blue."));
+        assert_eq!(run_at(&mut run, "Make it blue".into(), conv, exe).await.unwrap(), "Cube is blue.");
+        let submitted: Value = serde_json::from_slice(&std::fs::read(dir.path().join("submitted.json")).unwrap()).unwrap();
+        assert_eq!(submitted["threadId"], thread_id);
+        assert!(submitted.get("projectId").is_none(), "follow-ups use thread.send");
+        response(dir.path(), "ready", json!({"status":"ready"}));
+        interrupt(&run).await.unwrap();
+        let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
+        assert_eq!(calls.lines().filter(|l| *l == "project.add").count(), 1);
+        assert_eq!(calls.lines().filter(|l| *l == "thread.new").count(), 1);
+        let stop = calls.split("thread.interrupt").nth(1).unwrap();
+        assert_eq!(stop.lines().filter(|l| *l == "thread.get").count(), 2, "interrupt waits for the remote turn to finish");
+    }
+}
