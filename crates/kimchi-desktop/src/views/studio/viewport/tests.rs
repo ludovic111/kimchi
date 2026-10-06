@@ -61,7 +61,8 @@ fn canvas_geometry_keeps_picking_handles_and_framing_with_the_open_clip(cx:&mut 
         s.canvas=super::super::Canvas2d {zoom:1.,pan:[0.;2],fit:false};s.changed(cx);
     }));cx.run_until_parked();
     let before=f.project();let history=f.call("history.list",json!({}));
-    f.call("motion.view",json!({"clipId":foreign,"time":10,"width":160}));
+    // Viewing another clip renders a picture, which needs ffmpeg (absent on some CI runners).
+    if f.session.tools().is_ok() {f.call("motion.view",json!({"clipId":foreign,"time":10,"width":160}));}
     let centre=cx.update(|_,cx| {
         let v=viewport.read(cx);let (p,_,Scene::Flat(s),t)=v.scene(cx).unwrap() else {panic!()};
         let view=v.view2(&s,&p,cx);let geometry=studio.read(cx).canvas_geometry(&s,t,&p).unwrap();
