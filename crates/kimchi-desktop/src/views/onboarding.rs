@@ -480,7 +480,7 @@ fn monogram(name: &str, cx: &App) -> AnyElement {
 /// A small coloured label ("Found on this computer").
 fn badge(text: impl Into<SharedString>, cx: &App) -> AnyElement {
     let t = cx.theme();
-    div().flex_none().px(px(6.)).py(px(1.)).rounded_full().bg(t.accent_soft).text_color(t.accent_text).text_size(px(sz::XS)).child(text.into()).into_any_element()
+    div().flex_none().px(px(6.)).py(px(1.)).rounded(px(sz::R_XS)).bg(t.accent_soft).text_color(t.accent_text).text_size(px(sz::XS)).child(text.into()).into_any_element()
 }
 
 /// A note in the step's colour for what happened.
@@ -890,7 +890,7 @@ impl Onboarding {
             .items_center()
             .gap(px(6.))
             .aria_label(SharedString::from(format!("Step {} of {DOTS}", at + 1)))
-            .children((0..DOTS).map(|i| div().h(px(6.)).w(px(if i == at { 18. } else { 6. })).rounded_full().bg(if i <= at { t.accent } else { t.line_strong }).into_any_element()))
+            .children((0..DOTS).map(|i| div().h(px(6.)).w(px(if i == at { 18. } else { 6. })).rounded(px(sz::R_XS)).bg(if i <= at { t.accent } else { t.line_strong }).into_any_element()))
             .into_any_element()
     }
 }
