@@ -473,9 +473,12 @@ agent doesn't see the `agent.*` commands: it can't drive itself. Agents never se
 | `KIMCHI_NO_UPDATE=1` | never check for updates |
 | `KIMCHI_WINDOW_SIZE` | the window's size when it opens, e.g. `2000x1250` (screenshots) |
 | `KIMCHI_GPU` | `0` draws 3D on the CPU; `any` accepts a software GPU adapter (default: a hardware GPU when there is one) |
-| `KIMCHI_KEYCHAIN` | `1` reads API keys from the OS keychain, `0` only from environment variables (default: on in release builds, off in debug builds) |
+| `KIMCHI_KEYCHAIN` | `1` stores API keys in the OS keychain; `0` keeps keys entered in the window in memory until quit. Keys in environment variables work either way (default: on in release builds, off in debug builds) |
+| `KIMCHI_HARDWARE=0` | never use hardware video encoders |
 | `RYOLUNE_CONTROL` | ryolune's control file, for the hand-offs (default `~/.ryolune/control.json`) |
 | `LSUITE_HOME` | where lsuite apps register (default `~/.lsuite`) |
+
+[CONFIGURATION.md](CONFIGURATION.md#environment-variables) lists every variable, with the settings and where kimchi keeps its files.
 
 ## Limits
 
