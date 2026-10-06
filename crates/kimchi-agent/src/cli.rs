@@ -1,4 +1,4 @@
-//! The person's installed Claude Code or Codex CLI as the agent.
+//! The person's installed Claude Code, Codex or Gemini CLI as the agent.
 //!
 //! The CLI runs one turn non-interactively, in its own process group, with
 //! kimchi's MCP server (`kimchi-mcp --live`) as its only tools. Its commands
@@ -28,6 +28,8 @@ const CODEX_PLACES: &[&str] = &[
     "/Applications/Codex.app/Contents/Resources/codex",
     "/Applications/ChatGPT.app/Contents/Resources/codex",
 ];
+
+const GEMINI_PLACES: &[&str] = &["~/.local/bin/gemini", "/opt/homebrew/bin/gemini", "/usr/local/bin/gemini", "~/.npm-global/bin/gemini"];
 
 /// Built-in tools Claude Code must never use in a kimchi session.
 const CLAUDE_DENIED: &str = "Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Glob,Grep,WebFetch,WebSearch,Task,Agent";
@@ -152,6 +154,7 @@ pub fn cli_executable(kind: ProviderKind) -> Option<PathBuf> {
     let (name, places) = match kind {
         ProviderKind::ClaudeCode => ("claude", CLAUDE_PLACES),
         ProviderKind::Codex => ("codex", CODEX_PLACES),
+        ProviderKind::GeminiCli => ("gemini", GEMINI_PLACES),
         _ => return None,
     };
     find_in(search_dirs(), name).or_else(|| {
@@ -202,6 +205,7 @@ pub(crate) async fn run(run: &mut Run, prompt: String, mut conv: Conversation) -
     let kind = run.config.provider;
     let exe = cli_executable(kind).ok_or_else(|| match kind {
         ProviderKind::Codex => "Codex isn't installed. Install it (npm install -g @openai/codex), sign in with `codex login`, then try again.".to_string(),
+        ProviderKind::GeminiCli => "Gemini CLI isn't installed. Install it (npm install -g @google/gemini-cli), sign in by running `gemini` once, then try again.".to_string(),
         _ => "Claude Code isn't installed. Install it from claude.com/claude-code, sign in by running `claude` once, then try again.".to_string(),
     })?;
     let live = live(run)?;
@@ -265,6 +269,7 @@ async fn turn(
 ) -> (Outcome, Result<(), String>) {
     match kind {
         ProviderKind::Codex => codex(run, exe, live, workspace, resume, prompt, conv).await,
+        ProviderKind::GeminiCli => gemini(run, exe, live, workspace, resume, prompt, conv).await,
         _ => claude(run, exe, live, workspace, resume, prompt, conv).await,
     }
 }
@@ -339,8 +344,11 @@ async fn claude(run: &mut Run, exe: &Path, live: &Live, workspace: &Path, resume
     run_child(run, cmd, input, "Claude Code", parse_claude).await
 }
 
-fn tool_label(name: &str) -> String {
-    name.trim_start_matches("mcp__kimchi__").replacen('_', ".", 1)
+/// `clip.addText` for a tool name as any client shows it (`mcp__kimchi__clip_addText`,
+/// `mcp_kimchi_clip_addText`, `clip_addText`).
+pub(crate) fn tool_label(name: &str) -> String {
+    let name = name.trim_start_matches("mcp__kimchi__").trim_start_matches("mcp_kimchi_");
+    if name.contains('.') { name.to_string() } else { name.replacen('_', ".", 1) }
 }
 
 pub(crate) fn parse_claude(run: &Run, ev: &Value, out: &mut Outcome) {
@@ -611,6 +619,161 @@ pub(crate) fn parse_codex(run: &Run, ev: &Value, out: &mut Outcome) {
     }
 }
 
+
+// ---- Gemini CLI ---------------------------------------------------------------------
+//
+// Gemini CLI 0.62 (github.com/google-gemini/gemini-cli, docs/cli/headless.md,
+// docs/tools/mcp-server.md, docs/reference/policy-engine.md). It has no flag for an MCP
+// configuration, so kimchi's server goes in a settings file of kimchi's own, passed as the
+// system settings (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`: the highest precedence, and the person's
+// Google sign-in in `~/.gemini` still works). A policy file denies every tool but kimchi's;
+// `GEMINI_SYSTEM_MD` replaces its coding-assistant prompt with kimchi's. The prompt goes on
+// stdin; `-o stream-json` reports `init` (with the session id), `message` deltas, `tool_use`,
+// `tool_result`, `error` and a final `result` with the token counts.
+
+/// The person's Gemini CLI home (`GEMINI_CLI_HOME`, else `~/.gemini`).
+fn gemini_home() -> PathBuf {
+    std::env::var_os("GEMINI_CLI_HOME").map(|h| PathBuf::from(h).join(".gemini")).unwrap_or_else(|| home("~/.gemini"))
+}
+
+/// How the Gemini CLI signs in, if it can without asking: a method chosen in its settings
+/// (with the Google sign-in cached for `oauth-personal`), or one in the environment.
+pub(crate) fn gemini_auth() -> Option<String> {
+    for var in ["GEMINI_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_GENAI_USE_GCA", "GOOGLE_GEMINI_BASE_URL"] {
+        if std::env::var(var).is_ok_and(|v| !v.trim().is_empty()) {
+            return Some(var.to_string());
+        }
+    }
+    let dir = gemini_home();
+    let settings: Value = std::fs::read_to_string(dir.join("settings.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+    let selected = settings["security"]["auth"]["selectedType"].as_str().or_else(|| settings["selectedAuthType"].as_str()).map(str::to_string);
+    match selected.as_deref() {
+        Some("oauth-personal") | None if dir.join("oauth_creds.json").is_file() => Some("oauth-personal".into()),
+        Some("oauth-personal") | None => None,
+        Some(other) => Some(other.to_string()),
+    }
+}
+
+/// kimchi's settings for a Gemini CLI turn: its MCP server only, trusted, and no context files.
+pub(crate) fn gemini_settings(live: &Live) -> Value {
+    json!({
+        "mcpServers": { "kimchi": {
+            "command": live.mcp,
+            "args": ["--live"],
+            "env": { "KIMCHI_CONTROL": live.control, "KIMCHI_MCP_BUILTIN_AGENT": "1" },
+            "trust": true,
+            // Generation commands can wait for a render.
+            "timeout": 900_000,
+        }},
+        "mcp": { "allowed": ["kimchi"] },
+        // The person's GEMINI.md files are about their code, not this edit.
+        "context": { "fileName": "KIMCHI-AGENT-CONTEXT.md" },
+    })
+}
+
+/// Every tool denied except kimchi's MCP tools.
+pub(crate) const GEMINI_POLICY: &str = "[[rule]]\ntoolName = \"*\"\ndecision = \"deny\"\npriority = 998\n\n[[rule]]\nmcpName = \"kimchi\"\ndecision = \"allow\"\npriority = 999\n";
+
+/// The arguments for one Gemini CLI turn (the prompt goes on stdin).
+pub(crate) fn gemini_args(policy: &Path, model: &str, resume: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = ["--output-format", "stream-json", "--extensions", "none", "--allowed-mcp-server-names", "kimchi", "--skip-trust", "--policy"].into_iter().map(String::from).collect();
+    args.push(policy.to_string_lossy().into_owned());
+    if !model.is_empty() {
+        args.extend(["--model".into(), model.into()]);
+    }
+    if let Some(id) = resume {
+        args.extend(["--resume".into(), id.into()]);
+    }
+    // Headless mode; the request itself comes on stdin, ahead of this line.
+    args.extend(["--prompt".into(), "(The request is above.)".into()]);
+    args
+}
+
+async fn gemini(run: &mut Run, exe: &Path, live: &Live, workspace: &Path, resume: Option<&str>, prompt: &str, conv: &Conversation) -> (Outcome, Result<(), String>) {
+    let dir = run.session.data_dir.join("agent-gemini");
+    let (settings, policy, system) = (dir.join("settings.json"), dir.join("policy.toml"), dir.join("system.md"));
+    let system_text = format!("{SYSTEM_PROMPT}\nkimchi's commands are your tools mcp_kimchi_family_verb (the kimchi MCP server); you have no other tools.\n");
+    let written = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(&settings, serde_json::to_string_pretty(&gemini_settings(live)).unwrap_or_default()))
+        .and_then(|()| std::fs::write(&policy, GEMINI_POLICY))
+        .and_then(|()| std::fs::write(&system, system_text));
+    if let Err(e) = written {
+        return (Outcome::default(), Err(format!("Couldn't write the Gemini CLI configuration: {e}")));
+    }
+    let mut cmd = Command::new(exe);
+    cmd.args(gemini_args(&policy, &run.config.model(), resume))
+        .current_dir(workspace)
+        .env("PATH", child_path(exe))
+        .env("GEMINI_CLI_SYSTEM_SETTINGS_PATH", &settings)
+        .env("GEMINI_SYSTEM_MD", &system)
+        .env("GEMINI_CLI_TRUST_WORKSPACE", "true")
+        // A missing sign-in fails at once instead of waiting for a browser.
+        .env("NO_BROWSER", "true");
+    // Signed in nowhere, but a Gemini API key is saved in kimchi: the CLI can use that.
+    if gemini_auth().is_none()
+        && let Some(key) = run.session.secret("google")
+    {
+        cmd.env("GEMINI_API_KEY", key);
+    }
+    let input = if resume.is_some() { prompt.to_string() } else { with_context(conv, prompt) };
+    run.status("Starting Gemini CLI…");
+    run_child(run, cmd, input, "Gemini CLI", parse_gemini).await
+}
+
+pub(crate) fn parse_gemini(run: &Run, ev: &Value, out: &mut Outcome) {
+    match ev["type"].as_str().unwrap_or("") {
+        "init" => {
+            out.started = true;
+            if let Some(id) = ev["session_id"].as_str() {
+                out.session_id = Some(id.to_string());
+            }
+            run.status("Gemini CLI is connected to kimchi");
+        }
+        "message" if ev["role"] == "assistant" => {
+            if !out.partials {
+                out.partials = true;
+                run.break_text();
+            }
+            out.say(run, ev["content"].as_str().unwrap_or(""));
+        }
+        "tool_use" => {
+            // The next text is a new paragraph.
+            out.partials = false;
+            run.status(format!("Running {}…", tool_label(ev["tool_name"].as_str().unwrap_or("a command"))));
+        }
+        "error" => {
+            let msg = ev["message"].as_str().unwrap_or("Gemini CLI reported a problem");
+            if ev["severity"] == "error" {
+                out.error = Some(bounded(msg, 2000));
+            } else {
+                run.status(msg);
+            }
+        }
+        "result" => {
+            out.completed = true;
+            let s = &ev["stats"];
+            run.usage(s["input_tokens"].as_u64().unwrap_or(0), s["output_tokens"].as_u64().unwrap_or(0));
+            if ev["status"] == "error" {
+                let msg = ev["error"]["message"].as_str().unwrap_or("Gemini CLI reported a failed turn");
+                out.error = Some(bounded(&gemini_error(msg), 2000));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The readable part of a Gemini CLI error (it wraps the API's JSON in its own).
+fn gemini_error(msg: &str) -> String {
+    let inner = msg.trim().trim_start_matches("[API Error: ").trim_end_matches(']');
+    let v: Option<Value> = serde_json::from_str(inner).ok();
+    let nested = v.as_ref().and_then(|v| v["error"]["message"].as_str()).and_then(|m| serde_json::from_str::<Value>(m).ok());
+    nested
+        .as_ref()
+        .and_then(|n| n["error"]["message"].as_str().map(str::to_string))
+        .or_else(|| v.as_ref().and_then(|v| v["error"]["message"].as_str().map(str::to_string)))
+        .unwrap_or_else(|| msg.to_string())
+}
+
 // ---- the child process ------------------------------------------------------------
 
 /// What one CLI turn produced.
@@ -762,10 +925,14 @@ pub(crate) async fn run_child(run: &mut Run, mut cmd: Command, input: String, la
     };
     let signin = match label {
         "Codex" => "Check that Codex is signed in: run `codex login` in a terminal.",
+        "Gemini CLI" => "Check that Gemini CLI is signed in: run `gemini` once in a terminal, or add a Gemini API key in Settings › Agent.",
         _ => "Check that Claude Code is signed in: run `claude` once in a terminal.",
     };
+    let code = status.as_ref().ok().and_then(|s| s.code());
     let result = if let Some(e) = out.error.clone() {
         Err(if e.starts_with(label) { e } else { format!("{label}: {e}") })
+    } else if label == "Gemini CLI" && code == Some(41) {
+        Err("Gemini CLI isn't signed in. Run `gemini` once in a terminal and sign in with Google, or add a Gemini API key in Settings › Agent.".to_string())
     } else if !status.as_ref().is_ok_and(|s| s.success()) {
         let detail = if stderr.is_empty() { signin.to_string() } else { bounded(&stderr, 1500) };
         Err(format!("{label} stopped with an error. {detail}"))

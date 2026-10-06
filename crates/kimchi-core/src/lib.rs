@@ -22,7 +22,7 @@ pub use store::{Library, ProjectSummary};
 
 pub use audio::{Beats, Bus, Channels, ClipAudio, Duck, FadeCurve, Insert, Master, Mixer, SongRef, TrackMix};
 pub use anim::{Easing, KeyValue, Keyframe, Keyframes};
-pub use effects::{ChromaKey, Effects, Lut};
+pub use effects::{ChromaKey, Effects, Lut, PluginEffect, PluginValue};
 pub use motion::{Scene, Scene2d, Scene3d, TemplateRef};
 pub use transition::{Transition, TransitionKind};
 

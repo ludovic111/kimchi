@@ -30,13 +30,16 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             Ok(json!({ "key": key, "value": settings.get(&key) }))
         }
         "app.setAgentKey" => {
-            let provider = a.str("provider")?;
-            if !matches!(provider, "anthropic" | "openai") {
-                return Err(format!("The agent keeps keys for \"anthropic\" and \"openai\", not \"{provider}\"."));
-            }
-            s.set_secret(provider, a.opt_str("key"))?;
+            let provider = a.str("provider")?.trim().to_ascii_lowercase();
+            let id = agent_key_id(&provider).ok_or_else(|| {
+                let ids: Vec<&str> = AGENT_KEY_IDS.iter().map(|(p, _)| *p).collect();
+                let hint = registry::closest(&provider, &ids).map(|c| format!(" Did you mean \"{c}\"?")).unwrap_or_default();
+                format!("The agent keeps keys for {}, not \"{provider}\".{hint}", ids.join(", "))
+            })?;
+            let key = agent_key_value(&provider, &a)?;
+            s.set_secret(id, key.as_deref())?;
             s.emit(crate::session::Event::SettingsChanged);
-            Ok(json!({ "provider": provider, "saved": s.secret(provider).is_some() }))
+            Ok(json!({ "provider": provider, "saved": s.secret(id).is_some() }))
         }
         "app.checkUpdates" => Ok(json!(crate::update::check(s, true).await?)),
         "app.installUpdate" => Ok(json!(crate::update::install(s).await?)),
@@ -82,6 +85,54 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "app.clearCrashReports" => Ok(json!({ "deleted": crate::diagnostics::clear_reports(&s.data_dir) })),
         "app.quit" | "app.notify" | "app.restart" => s.ui_call(cx.spec.name, Value::Object(a.0)).await,
         _ => Err(crate::commands::unhandled(cx)),
+    }
+}
+
+/// The agent providers that take a key, with the keychain id it is saved under. Where the
+/// service is also a generation provider the id is the same, so one key serves both.
+pub const AGENT_KEY_IDS: &[(&str, &str)] = &[
+    ("anthropic", "anthropic"),
+    ("openai", "openai"),
+    ("gemini", "google"),
+    ("openrouter", "openrouter"),
+    ("groq", "groq"),
+    ("mistral", "mistral"),
+    ("deepseek", "deepseek"),
+    ("xai", "xai"),
+    ("together", "together"),
+    ("fireworks", "fireworks"),
+    ("cerebras", "cerebras"),
+    ("azure-openai", "azure-openai"),
+    ("bedrock", "bedrock"),
+    ("lmstudio", "lmstudio"),
+    ("openai-compatible", "openai-compatible"),
+];
+
+/// The keychain id of an agent provider's key.
+pub fn agent_key_id(provider: &str) -> Option<&'static str> {
+    AGENT_KEY_IDS.iter().find(|(p, _)| *p == provider).map(|(_, id)| *id)
+}
+
+/// What `app.setAgentKey` saves: the key as given, or for Bedrock access keys as JSON
+/// (`accessKeyId`, `secretAccessKey`, `sessionToken`). `None` removes it.
+fn agent_key_value(provider: &str, a: &Args) -> CmdResult<Option<String>> {
+    let field = |k: &str| a.opt_str(k).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let (id, secret) = (field("accessKeyId"), field("secretAccessKey"));
+    if id.is_none() && secret.is_none() {
+        return Ok(field("key"));
+    }
+    if provider != "bedrock" {
+        return Err("accessKeyId and secretAccessKey are for bedrock; other providers take key.".into());
+    }
+    match (id, secret) {
+        (Some(id), Some(secret)) => {
+            let mut v = json!({ "accessKeyId": id, "secretAccessKey": secret });
+            if let Some(t) = field("sessionToken") {
+                v["sessionToken"] = json!(t);
+            }
+            Ok(Some(v.to_string()))
+        }
+        _ => Err("Give both accessKeyId and secretAccessKey (or a Bedrock API key as key).".into()),
     }
 }
 
@@ -172,6 +223,31 @@ mod tests {
         let d = registry::call(&s, Source::Cli, "app.diagnostics", json!({})).await.unwrap();
         assert_eq!(d["version"], crate::update::CURRENT);
         assert!(d["system"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_keys_are_saved_per_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = session(dir.path());
+        registry::call(&s, Source::Cli, "app.setAgentKey", json!({ "provider": "groq", "key": " gsk_1 " })).await.unwrap();
+        assert_eq!(s.secret("groq").as_deref(), Some("gsk_1"));
+        // Gemini's key is Google's, shared with generation.
+        registry::call(&s, Source::Cli, "app.setAgentKey", json!({ "provider": "gemini", "key": "AIza1" })).await.unwrap();
+        assert_eq!(s.secret("google").as_deref(), Some("AIza1"));
+        let v = registry::call(&s, Source::Cli, "app.setAgentKey", json!({ "provider": "bedrock", "accessKeyId": "AKIA1", "secretAccessKey": "sec" })).await.unwrap();
+        assert_eq!(v["saved"], true);
+        let saved: serde_json::Value = serde_json::from_str(&s.secret("bedrock").unwrap()).unwrap();
+        assert_eq!(saved, json!({ "accessKeyId": "AKIA1", "secretAccessKey": "sec" }));
+        assert!(registry::call(&s, Source::Cli, "app.setAgentKey", json!({ "provider": "bedrock", "accessKeyId": "AKIA1" })).await.is_err());
+        let e = registry::call(&s, Source::Cli, "app.setAgentKey", json!({ "provider": "mistrall", "key": "x" })).await.unwrap_err();
+        assert!(e.contains("Did you mean \"mistral\""), "{e}");
+        assert!(registry::call(&s, Source::Cli, "app.setAgentKey", json!({ "provider": "codex", "key": "x" })).await.is_err());
+        registry::call(&s, Source::Cli, "app.setAgentKey", json!({ "provider": "groq" })).await.unwrap();
+        assert_eq!(s.secret("groq"), None);
+        // Every provider with a key is a provider.
+        for (p, _) in super::AGENT_KEY_IDS {
+            assert!(crate::settings::AGENT_PROVIDERS.contains(p), "{p}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

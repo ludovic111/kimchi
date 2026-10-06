@@ -10,11 +10,14 @@ pub mod export;
 pub mod generate;
 pub mod handoff;
 pub mod history;
+pub mod interop;
+pub mod looks;
 pub mod media;
 pub mod motion;
 pub mod motion_camera;
 pub mod motion_edit;
 pub mod motion_mesh;
+pub mod onboarding;
 pub mod project;
 pub mod timeline;
 pub mod track;
@@ -86,6 +89,24 @@ pub static SPECS: &[Spec] = &[
         opt("atomic", Boolean, "Roll everything back if one command fails (default true)."),
         opt("label", String, "Name of the undo step (default \"batch\")."),
     ]),
+    query("project.formats", "What kimchi opens from and writes for other editors: project and timeline formats (project.importFrom, project.exportTo) with the apps that use each and how much survives the trip, look formats (looks.import), and every app kimchi knows with how to bring its projects over, its looks, plugins and keyboard layout.", &[
+        opt("app", String, "Only what concerns this app (premiere, finalcut, resolve, capcut, avid, vegas, kdenlive, shotcut, openshot, aftereffects, nuke, lightroom, blender…)."),
+    ]),
+    edit("project.importFrom", "Open a project or timeline from another editor as a new library project (opened): OpenTimelineIO (.otio, Resolve), FCPXML (Final Cut Pro, Resolve), Final Cut 7 / Premiere XML (.xml), CMX 3600 EDL, Kdenlive (.kdenlive), Shotcut (.mlt), OpenShot (.osp), a Premiere Pro .prproj or a CapCut draft folder. Media is imported from where the file says; returns what came through, what changed, and the files that are missing (media.relink).", &[
+        req("path", String, "The project or timeline file, or a bundle or draft folder."),
+        opt("format", String, "Format id from project.formats (default: from the file)."),
+        opt("into", String, "new (default): a new library project, opened. open: add its tracks to the open project, at start (one undo step)."),
+        START,
+        opt("name", String, "Name of the new project (default: the timeline's own)."),
+        opt("mediaFolder", String, "A folder to look in (with its subfolders) for media that isn't where the file says, by file name."),
+    ]).perm(Perm::Files),
+    edit("project.exportTo", "Write the open project for another editor: OpenTimelineIO (Resolve, Nuke), FCPXML (Final Cut Pro, Resolve), Final Cut 7 XML (Premiere Pro, VEGAS), EDL (Avid, any editor), Kdenlive, Shotcut or OpenShot. Returns what the format couldn't carry.", &[
+        req("path", String, "Destination file."),
+        opt("format", String, "Format id from project.formats (default: from app, else from the extension; .xml is Final Cut 7 XML)."),
+        opt("app", String, "The app it is for (premiere, finalcut, resolve, avid, vegas, kdenlive, shotcut, openshot, nuke): picks its best format."),
+        opt("renderMotion", Boolean, "Render motion clips, titles and solids to video files beside it so the other app shows them (default true)."),
+        opt("collect", Boolean, "Also copy every media file into a folder beside it, so the project can move to another computer (default false)."),
+    ]).perm(Perm::Files),
     // ---- media ------------------------------------------------------------
     query("media.list", "List the open project's media (imported and generated) with kind, length, size, previews and generation details.", &[]),
     query("media.get", "One media item in full, including how it was generated (prompt, model, seed, inputs).", &[ASSET_ID]),
@@ -102,6 +123,11 @@ pub static SPECS: &[Spec] = &[
         opt("frames", Integer, "Video: how many frames, evenly spread over its length (1 to 16, default 6)."),
         opt("width", Integer, "Width of each frame in pixels (default 480 in a sheet, 960 for one frame)."),
     ]),
+    edit("media.relink", "Point media at files that moved: one item at a new file (assetId and path), or every missing item at the file of the same name in a folder or its subfolders (folder). Previews are made again. One undo step.", &[
+        opt("assetId", String, "Media id or unique name (with path)."),
+        opt("path", String, "The new file for assetId."),
+        opt("folder", String, "Look here, with subfolders, for every missing file by name."),
+    ]).perm(Perm::Files),
     // ---- track ------------------------------------------------------------
     query("track.list", "List tracks from top to bottom with their kind, flags and clip count. Track 0 is drawn on top.", &[]),
     edit("track.add", "Add a track. New video tracks go on top, new audio tracks at the bottom.", &[
@@ -207,9 +233,9 @@ pub static SPECS: &[Spec] = &[
         req("preset", String, "Preset name."),
         opt("length", Number, "Seconds the move takes (default 0.6; one cycle for repeating ones)."),
     ]),
-    edit("clip.setEffects", "Colour and picture effects on clips: a ready-made look, corrections (brightness, contrast, saturation, temperature, tint), vignette, sharpen, a chroma key (green or blue screen) and a .cube LUT. Drawn in the preview and the export. Only the given fields change; animate the numeric ones with clip.setKeyframes. One undo step.", &[
+    edit("clip.setEffects", "Colour and picture effects on clips: a ready-made look, corrections (brightness, contrast, saturation, temperature, tint), vignette, sharpen, a chroma key (green or blue screen) and a LUT. Drawn in the preview and the export. Only the given fields change; animate the numeric ones with clip.setKeyframes. One undo step.", &[
         req("clipIds", Array, "Clips to change (ids or names).").of(String),
-        opt("look", String, "Start from a look (clip.looks): none, punchy, warm, cool, mono, faded, vintage, noir, teal, dreamy. The other fields given go on top."),
+        opt("look", String, "Start from a look: a built-in one (none, punchy, warm, cool, mono, faded, vintage, noir, teal, dreamy) or one from the library (looks.list). The other fields given go on top."),
         opt("brightness", Number, "-1 to 1 (0 = unchanged)."),
         opt("contrast", Number, "-1 (flat grey) to 1 (twice the contrast)."),
         opt("saturation", Number, "-1 (black and white) to 1 (twice as colourful)."),
@@ -218,12 +244,31 @@ pub static SPECS: &[Spec] = &[
         opt("vignette", Number, "0-1: darker corners."),
         opt("sharpen", Number, "0-1."),
         opt("chromaKey", Any, "Key a colour out: true (a green screen), a colour #rrggbb (the screen's colour, best picked from the footage), {color, similarity, softness, spill} (0-1 each; similarity 0.5, softness 0.1, spill 0.5 by default), or false to remove it."),
-        opt("lut", Any, "Absolute path of a 3D .cube LUT, {path, strength}, or null to remove it."),
+        opt("lut", Any, "Absolute path of a LUT (.cube 1D or 3D, .3dl, .csp, .spi1d, .spi3d, or a Hald CLUT .png / .tif), {path, strength}, or null to remove it."),
         opt("lutStrength", Number, "0-1: how much of the LUT shows (default 1)."),
         opt("reset", Boolean, "Remove every effect first."),
         crate::registry::COALESCE,
     ]),
     query("clip.looks", "The ready-made looks clip.setEffects applies, with their values.", &[]),
+    // ---- looks ------------------------------------------------------------
+    query("looks.list", "The look library: kimchi's built-in looks, and the looks imported from other apps (LUTs, Lightroom / Camera Raw presets, Lumetri presets) or saved from clips, with what each sets.", &[
+        opt("query", String, "Only looks whose name, folder or source app contains this."),
+    ]),
+    edit("looks.import", "Add looks to the library from files or folders (with subfolders): LUTs (.cube, .3dl, .csp, .spi1d, .spi3d, Hald CLUT images), Lightroom / Camera Raw presets (.xmp, .lrtemplate) and Premiere Lumetri presets (.prfpset). The files are copied into the library. Returns the looks added and what didn't carry over.", &[
+        req("paths", Array, "Files or folders.").of(String),
+        opt("folder", String, "Library folder to put them in (default: the source folder's name)."),
+    ]).perm(Perm::Files),
+    edit("looks.apply", "Put a look on clips: a built-in look or one from the library. Its corrections and LUT replace the clips' (the chroma key stays). One undo step.", &[
+        req("clipIds", Array, "Clips (ids or names).").of(String),
+        req("look", String, "Look id or name from looks.list."),
+        opt("strength", Number, "0-1: how much of a LUT shows (default 1)."),
+    ]),
+    edit("looks.save", "Save a clip's corrections and LUT as a look in the library, or write them as a .cube LUT file other apps open.", &[
+        CLIP_ID,
+        opt("name", String, "The look's name (default: the clip's)."),
+        opt("path", String, "Instead: write a 33-point .cube LUT of the corrections and LUT here."),
+    ]).perm(Perm::Files),
+    edit("looks.remove", "Remove a look from the library (built-in looks stay).", &[req("look", String, "Look id or name.")]),
     edit("clip.freezeFrame", "Hold the frame a clip shows at a time: the clip is split there and a still of that frame plays for the duration, pushing the rest of its track later. The still keeps the clip's position, size and effects. One undo step.", &[
         CLIP_ID,
         opt("time", Number, "Timeline time inside the clip (default: the playhead)."),
@@ -798,9 +843,11 @@ pub static SPECS: &[Spec] = &[
     // ---- export -----------------------------------------------------------
     query("export.formats", "Export formats, qualities and encoder choices.", &[]),
     query("export.encoders", "The video encoders this computer uses per format: hardware ones (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API, Media Foundation) that passed a test encode, and the CPU ones.", &[]),
+    query("export.presets", "Ready-made export settings: for YouTube, TikTok, Instagram, X, Vimeo, LinkedIn, and for other editors and finishing (ProRes, DNxHR, image sequences), with the format, size, frame rate and quality each sets.", &[]),
     edit("export.start", "Render the open project to a file: every frame drawn as in the preview (titles, animation, motion graphics, 3D), encoded on the GPU or CPU with the mixed sound. Returns an export id; follow it with export.status, or pass wait.", &[
-        req("path", String, "Destination file. The extension should match the format."),
-        opt("format", String, "mp4 (default), hevc, prores, webm, gif, audio (sound only: AAC unless audioFormat says) or wav."),
+        req("path", String, "Destination file (a folder for image sequences). The extension should match the format."),
+        opt("preset", String, "Start from an export preset (export.presets); the other parameters given go on top."),
+        opt("format", String, "mp4 (default), hevc, prores, webm, gif, audio (sound only: AAC unless audioFormat says) or wav; more in export.formats."),
         opt("quality", String, "draft, standard (default) or high."),
         opt("width", Integer, "Output width (default: the project's)."),
         opt("height", Integer, "Output height (default: the project's)."),
@@ -839,13 +886,27 @@ pub static SPECS: &[Spec] = &[
     query("app.commands", "Describe every command with its parameters, or one command.", &[opt("command", String, "One command name.")]),
     query("app.fonts", "Font families text clips can use: the bundled ones (Manrope, IBM Plex Mono, Instrument Sans, Instrument Serif) first, then this computer's.", &[]),
     query("app.settings", "Every setting with its value (agent permissions, updates, appearance, default models, diagnostics).", &[]),
+    query("app.onboarding", "The first-run setup: whether it was done, its steps and what each would set, and what is on this computer: the editors found (with how to bring their projects, looks and plugins over), the AI coding tools and local model servers found, the providers with keys, the plugins and Ryolune.", &[]),
+    edit("app.finishOnboarding", "Finish (or skip) the first-run setup with the choices made: the editor the person comes from (its keyboard layout unless keymap says otherwise), generative AI on or off, the agent on or off. Saved in settings.onboarding; Help › Set up kimchi shows it again.", &[
+        opt("comingFrom", String, "App id from project.formats (premiere, finalcut, resolve, capcut…), or none."),
+        opt("keymap", String, "Keyboard layout (app.keymaps); default: the app's."),
+        opt("generativeAi", Boolean, "Offer generation in the window (settings.generate.enabled)."),
+        opt("agent", Boolean, "Offer the Agent panel (settings.agent.enabled)."),
+        opt("skipped", Boolean, "The person skipped it (the choices given still apply)."),
+    ]).perm(Perm::Settings),
+    query("app.keymaps", "Keyboard layouts kimchi can use (settings.shortcuts.keymap): its own, or Premiere Pro's, Final Cut Pro's, DaVinci Resolve's, Avid's, CapCut's, Kdenlive's, Shotcut's, VEGAS's or iMovie's keys for the commands they share; with every key each one binds.", &[
+        opt("keymap", String, "One layout's keys only."),
+    ]),
     edit("app.setSetting", "Change one setting by dotted key, e.g. updates.checkOnStart or appearance.mode. Agent permissions stay with the person.", &[
         req("key", String, "Dotted key from app.settings."),
         req("value", Any, "New value, of the same type."),
     ]).perm(Perm::Settings),
-    edit("app.setAgentKey", "Save (or with no key, remove) the API key the built-in agent uses, in the OS keychain.", &[
-        req("provider", String, "\"anthropic\" or \"openai\"."),
-        opt("key", String, "The key; omit to remove it."),
+    edit("app.setAgentKey", "Save (or with no key, remove) the API key the built-in agent uses, in the OS keychain. Keys for services that also generate (OpenAI, Gemini, OpenRouter, xAI, Together) are the same key generation uses.", &[
+        req("provider", String, "An API provider from agent.providers (anthropic, openai, gemini, openrouter, groq, mistral, deepseek, xai, together, fireworks, cerebras, azure-openai, bedrock, lmstudio, openai-compatible)."),
+        opt("key", String, "The key (for bedrock, a Bedrock API key); omit to remove it."),
+        opt("accessKeyId", String, "bedrock: an AWS access key id, instead of an API key (with secretAccessKey)."),
+        opt("secretAccessKey", String, "bedrock: the secret access key."),
+        opt("sessionToken", String, "bedrock: the session token of temporary credentials."),
     ]).perm(Perm::PersonOnly),
     query("app.checkUpdates", "Check GitHub Releases for a newer kimchi and report it.", &[]),
     edit("app.installUpdate", "Download, verify (signature) and install the update found by app.checkUpdates; kimchi restarts into it.", &[]).perm(Perm::AppControl),
@@ -867,11 +928,17 @@ pub static SPECS: &[Spec] = &[
     edit("app.quit", "Quit kimchi.", &[]).perm(Perm::AppControl).window(),
     edit("app.notify", "Show a short message in the window.", &[req("text", String, "Message."), opt("kind", String, "info (default), success or error.")]).window(),
     // ---- agent ------------------------------------------------------------
-    query("agent.providers", "The models that can run the built-in agent (Claude Code, Codex, the Anthropic and OpenAI APIs, Ollama), whether each is ready on this computer and why not, and which one is chosen.", &[]).window(),
-    edit("agent.setProvider", "Choose what runs the built-in agent (Settings › Agent).", &[
-        req("provider", String, "zenith, claude-code, codex, anthropic, openai or ollama."),
-        opt("model", String, "Model id for the API providers and Ollama; empty for the provider's default."),
-        opt("baseUrl", String, "Server address for Ollama or an OpenAI-compatible server; empty for the default."),
+    query("agent.providers", "What can run the built-in agent: Zenith, coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen.", &[
+        opt("refresh", Boolean, "Fetch the chosen provider's model list again now."),
+    ]).window(),
+    query("agent.models", "The models a provider offers for the agent (the chosen one by default): fetched from the provider's own list where it has one (kept for a few hours), else a short built-in list; models that can't use tools are marked tools=false.", &[
+        opt("provider", String, "A provider id from agent.providers."),
+        opt("refresh", Boolean, "Fetch the list again now."),
+    ]).window(),
+    edit("agent.setProvider", "Choose what runs the built-in agent (Settings › Agent). Answers whether it is ready and, if not, what to do next.", &[
+        req("provider", String, "A provider id from agent.providers."),
+        opt("model", String, "Model id (agent.models lists them; for Azure OpenAI, the deployment name); empty for the provider's default."),
+        opt("baseUrl", String, "Address: a local or compatible server's URL, an Azure OpenAI resource (name or URL), or Bedrock's region; empty for the default."),
     ]).perm(Perm::PersonOnly),
     edit("agent.send", "Ask the built-in agent (the Agent panel) to do something, in words. It continues the panel's conversation, runs commands like any client (permissions apply) and shows them as cards. Returns the run at once, or once it ends with wait. One run at a time. Uses the person's model account, so agents need the generate permission.", &[
         req("prompt", String, "The request, e.g. \"Add a title saying Hello at 0 s and fade it in\"."),
@@ -901,9 +968,9 @@ pub static SPECS: &[Spec] = &[
     // ---- ui ---------------------------------------------------------------
     query("ui.state", "What the window shows: home or editor, playhead, playing, selection, zoom, open panel and dialogs, theme.", &[]),
     edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears.").of(String), opt("assetId", String, "A media item to select instead.")]).window(),
-    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, studio, captions, inspector (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it.", &[
+    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, studio, captions, inspector (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics, onboarding (the first-run setup); or home. With open false, close it.", &[
         req("panel", String, "Panel name."),
-        opt("section", String, "For settings: models, agent, appearance, audio, updates, diagnostics or about."),
+        opt("section", String, "For settings: models, agent, appearance, audio, keyboard, updates, diagnostics or about. For onboarding: the step to show (welcome, comingFrom, generativeAi, agent, done)."),
         opt("open", Boolean, "false closes the panel or dialog instead (the left panel, inspector, agent, jobs or a dialog; default true)."),
         opt("all", Boolean, "For whatsNew: the notes of every release, not only this one's."),
     ]).window(),
@@ -924,7 +991,7 @@ pub static SPECS: &[Spec] = &[
         opt("reset", Boolean, "Back to the starting sizes first."),
     ]).window(),
     edit("ui.action", "Do what a keyboard shortcut or menu item of the window does, by its action name. It acts on the window's selection, playhead and clipboard as the key would, a moment after the answer. Agents need the permission of what it does (NewProject: projects, ToggleTheme: settings, Quit: app control…).", &[
-        req("action", String, "PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioPreviousKey, StudioNextKey, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide, StudioAlignCamera, StudioFly, StudioZoomIn, StudioZoomOut, StudioZoom100; sound: ToggleMixer, MuteTrack, SoloTrack, ArmTrack, RecordVoiceOver, AddEffect."),
+        req("action", String, "PlayPause, ShuttleBack, ShuttleStop, ShuttleForward, ToggleLoop, StepBack, StepForward, StepBackSecond, StepForwardSecond, PrevEdit, NextEdit, GoToStart, GoToEnd, Undo, Redo, CopyClips, CutClips, PasteClips, Duplicate, Split, TrimStart, TrimEnd, NudgeLeft, NudgeRight, NudgeLeftMore, NudgeRightMore, Delete, RippleDelete, SelectAll, Deselect, AddText, AddMarker, ToggleSnap, ZoomIn, ZoomOut, ZoomFit, Palette, FocusGenerate, ShowMedia, ShowGenerate, ShowText, ShowMotion, ShowCaptions, ToggleLeftPanel, ToggleInspector, ToggleAgent, ToggleJobs, ShowShortcuts, OpenSettings, WhatsNew, ShowDiagnostics, About, Save, CheckUpdates, OpenHelp, OpenSupport, ReportProblem, Import, Export, NewProject, CloseProject, ToggleTheme, RestartApp or Quit; in the Studio: OpenStudio, StudioEscape, StudioPlay, StudioPreviousKey, StudioNextKey, StudioGrab, StudioRotate, StudioScale, StudioAdd, StudioDelete, StudioDuplicate, StudioToggleEdit, StudioSelectAll, StudioBoxSelect, StudioKey1, StudioKey2, StudioKey3, StudioKey7, StudioKey0, StudioOrtho, StudioFrame, StudioFill, StudioFrameAll, StudioInsert, StudioExtrude, StudioBevel, StudioLoopCut, StudioMerge, StudioFlip, StudioRecalc, StudioToolSelect, StudioToolCycle, StudioPen, StudioShape, StudioText, StudioAnchor, StudioFit, StudioGraph, StudioHide, StudioUnhide, StudioAlignCamera, StudioFly, StudioZoomIn, StudioZoomOut, StudioZoom100; sound: ToggleMixer, MuteTrack, SoloTrack, ArmTrack, RecordVoiceOver, AddEffect, SetUpKimchi."),
     ]).window(),
     edit("ui.reveal", "Show a file in the file manager (Finder, Explorer…): a path, or a media item's file.", &[
         opt("path", String, "A file or folder (an export, a log folder…)."),
@@ -973,6 +1040,11 @@ pub static SPECS: &[Spec] = &[
 pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
     // Each family's handler is boxed: their futures are large (big matches), and on the
     // stack of a 2 MB thread (tests, tokio workers in debug builds) they overflow it.
+    match cx.spec.name {
+        "project.formats" | "project.importFrom" | "project.exportTo" | "media.relink" => return Box::pin(interop::run(s, cx, a)).await,
+        "app.onboarding" | "app.finishOnboarding" | "app.keymaps" => return Box::pin(onboarding::run(s, cx, a)).await,
+        _ => {}
+    }
     match cx.spec.family() {
         "project" => Box::pin(project::run(s, cx, a)).await,
         "media" => Box::pin(media::run(s, cx, a)).await,
@@ -981,6 +1053,7 @@ pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "clip" => Box::pin(clip::run(s, cx, a)).await,
         "transition" => Box::pin(transition::run(s, cx, a)).await,
         "captions" => Box::pin(captions::run(s, cx, a)).await,
+        "looks" => Box::pin(looks::run(s, cx, a)).await,
         "audio" => Box::pin(audio::run(s, cx, a)).await,
         "timeline" => Box::pin(timeline::run(s, cx, a)).await,
         "history" => Box::pin(history::run(s, cx, a)).await,

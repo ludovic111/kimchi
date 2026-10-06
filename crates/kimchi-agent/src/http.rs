@@ -30,10 +30,19 @@ pub async fn post(
     build: impl Fn() -> reqwest::RequestBuilder,
     body: &Value,
 ) -> Result<reqwest::Response, String> {
+    send(cancel, label, || build().json(body)).await
+}
+
+/// [`post`] with a body of exact bytes (a signed request).
+pub async fn post_bytes(cancel: &CancellationToken, label: &str, build: impl Fn() -> reqwest::RequestBuilder, body: &[u8]) -> Result<reqwest::Response, String> {
+    send(cancel, label, || build().body(body.to_vec())).await
+}
+
+async fn send(cancel: &CancellationToken, label: &str, build: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response, String> {
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let retry = match build().json(body).send().await {
+        let retry = match build().send().await {
             Ok(r) if r.status().is_success() => return Ok(r),
             Ok(r) => {
                 let status = r.status();

@@ -10,7 +10,7 @@ use crate::registry::{Args, Ctx, Perm};
 use crate::resolve;
 use crate::session::{CmdResult, Session};
 
-pub const PANELS: &[&str] = &["media", "generate", "text", "motion", "captions", "inspector", "agent", "jobs", "settings", "export", "palette", "home", "shortcuts", "whatsNew", "diagnostics"];
+pub const PANELS: &[&str] = &["media", "generate", "text", "motion", "captions", "inspector", "agent", "jobs", "settings", "export", "palette", "home", "shortcuts", "whatsNew", "diagnostics", "onboarding"];
 
 /// `ui.studio`'s words, checked before the window sees them.
 const STUDIO_CHOICES: [(&str, &[&str]); 5] = [
@@ -75,6 +75,7 @@ pub const ACTIONS: &[(&str, Perm)] = &[
     ("ShowShortcuts", Perm::Edit),
     ("OpenSettings", Perm::Edit),
     ("WhatsNew", Perm::Edit),
+    ("SetUpKimchi", Perm::Edit),
     ("ShowDiagnostics", Perm::Edit),
     ("About", Perm::Edit),
     ("Save", Perm::Edit),

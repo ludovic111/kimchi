@@ -43,6 +43,88 @@ pub fn tool_defs() -> Vec<ToolDef> {
         .collect()
 }
 
+/// The tool that runs any command by name, for providers that take fewer tools than kimchi has
+/// commands (see [`ToolSet`]).
+pub const RUN_TOOL: &str = "kimchi_run";
+
+/// Commands that stay tools of their own when a provider caps the number of tools: the editing
+/// core. Everything else is reached through [`RUN_TOOL`]. In registry order is not needed; the
+/// set keeps the registry's order.
+const CORE: &[&str] = &[
+    "project.overview", "project.get", "project.renderFrame", "project.setSettings", "project.batch",
+    "media.list", "media.get", "media.import",
+    "track.list", "track.add", "track.remove", "track.update", "track.move",
+    "clip.list", "clip.get", "clip.insertMedia", "clip.addText", "clip.addSolid", "clip.move", "clip.moveMany", "clip.trim", "clip.split",
+    "clip.delete", "clip.duplicate", "clip.update", "clip.setKeyframes", "clip.addKeyframe", "clip.removeKeyframe", "clip.animate",
+    "clip.setEffects", "clip.freezeFrame",
+    "transition.kinds", "transition.set", "transition.remove",
+    "timeline.seek", "timeline.closeGap", "timeline.markers", "timeline.addMarker", "timeline.removeMarker",
+    "history.list", "history.undo", "history.redo",
+    "captions.list", "captions.transcribe", "captions.add",
+    "motion.guide", "motion.templates", "motion.presets", "motion.add", "motion.addTemplate", "motion.get", "motion.update", "motion.setLayer",
+    "motion.setKeyframes", "motion.setTemplate",
+    "audio.overview", "audio.setTrack", "audio.setClip", "audio.normalize", "audio.autoDuck",
+    "looks.list", "looks.apply",
+    "generate.models", "generate.submit", "generate.jobs", "generate.wait", "generate.animateFrame", "generate.extendClip", "generate.restyleFrame",
+    "export.presets", "export.start", "export.status",
+    "app.commands", "ui.state", "ui.select",
+];
+
+/// Commands for small local models (a short tool list keeps their context free for the work).
+const COMPACT: &[&str] = &[
+    "project.overview", "project.batch", "media.list", "track.list", "track.add",
+    "clip.list", "clip.get", "clip.insertMedia", "clip.addText", "clip.move", "clip.trim", "clip.split", "clip.delete", "clip.update", "clip.animate",
+    "transition.set", "timeline.addMarker", "history.undo", "motion.templates", "motion.addTemplate", "app.commands",
+];
+
+/// The tools one provider gets: every command when they fit, else a core set and [`RUN_TOOL`].
+#[derive(Clone, Debug)]
+pub struct ToolSet {
+    pub defs: Vec<ToolDef>,
+    /// Some commands are only reachable through [`RUN_TOOL`].
+    pub trimmed: bool,
+}
+
+impl ToolSet {
+    /// At most `limit` tools (`None`: no limit). `compact`: the short list for small models.
+    pub fn new(limit: Option<usize>, compact: bool) -> Self {
+        let all = tool_defs();
+        let limit = limit.unwrap_or(usize::MAX);
+        if !compact && all.len() <= limit {
+            return Self { defs: all, trimmed: false };
+        }
+        let keep: &[&str] = if compact { COMPACT } else { CORE };
+        let mut defs: Vec<ToolDef> = all.into_iter().filter(|t| keep.contains(&t.command)).take(limit.saturating_sub(1)).collect();
+        defs.push(run_tool_def());
+        Self { defs, trimmed: true }
+    }
+
+    /// What the model is told, with how to reach the other commands when the set is trimmed.
+    pub fn system_prompt(&self) -> String {
+        if self.trimmed {
+            format!("{SYSTEM_PROMPT}\nOnly the most used commands are tools here. Run any other command with {RUN_TOOL} (command: its name, like \"audio.addEffect\"; params: its parameters); app_commands describes every command and its parameters.")
+        } else {
+            SYSTEM_PROMPT.to_string()
+        }
+    }
+}
+
+fn run_tool_def() -> ToolDef {
+    ToolDef {
+        name: RUN_TOOL.into(),
+        command: "",
+        description: "Run any kimchi command by name, for the commands that aren't tools of their own here. app_commands lists them with their parameters.",
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "command": { "type": "string", "description": "The command's name, family.verb, e.g. audio.addEffect." },
+                "params": { "type": "object", "description": "The command's parameters." },
+            },
+            "required": ["command"],
+        }),
+    }
+}
+
 /// The command behind a tool name: `clip_addText`, `clip.addText` or `mcp__kimchi__clip_addText`.
 pub fn spec_for_tool(name: &str) -> Option<&'static Spec> {
     let name = name.trim().trim_start_matches("mcp__kimchi__");
@@ -92,12 +174,28 @@ impl Run {
     /// apply there), shows its card and returns what the model sees. Never fails:
     /// errors, refusals included, go back to the model as tool errors.
     pub async fn run_tool(&mut self, name: &str, input: Result<Value, String>) -> Ran {
+        // The catch-all tool names its command in the arguments.
+        let (name, input) = match (name, input) {
+            (RUN_TOOL, Ok(v)) => {
+                let Some(command) = v["command"].as_str().map(str::to_string) else {
+                    return Ran::error(format!("{RUN_TOOL} needs \"command\": the command's name, like \"clip.addText\"."));
+                };
+                let params = v.get("params").cloned().unwrap_or(json!({}));
+                (command, Ok(params))
+            }
+            (n, i) => (n.to_string(), i),
+        };
+        let name = name.as_str();
         let Some(spec) = spec_for_tool(name) else {
-            let names: Vec<String> = kimchi_control::specs().iter().map(|s| s.tool_name()).collect();
+            let dotted = name.contains('.');
+            let names: Vec<String> = kimchi_control::specs().iter().map(|s| if dotted { s.name.to_string() } else { s.tool_name() }).collect();
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
             let hint = kimchi_control::registry::closest(name, &names).map(|c| format!(" Did you mean {c}?")).unwrap_or_default();
-            return Ran::error(format!("There is no tool {name}.{hint}"));
+            return Ran::error(format!("There is no {} {name}.{hint}", if dotted { "command" } else { "tool" }));
         };
+        if spec.family() == "agent" {
+            return Ran::error("The agent can't drive the Agent panel itself.".into());
+        }
         let input = match input {
             Ok(Value::Null) => json!({}),
             Ok(v) => v,

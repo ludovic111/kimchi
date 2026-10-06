@@ -30,6 +30,7 @@ enum Section {
     Provider(String),
     Agent,
     Appearance,
+    Keyboard,
     Audio,
     Updates,
     Diagnostics,
@@ -42,6 +43,7 @@ impl Section {
             "models" | "keys" | "providers" => Section::Provider(String::new()),
             "agent" | "permissions" => Section::Agent,
             "appearance" | "theme" => Section::Appearance,
+            "keyboard" | "shortcuts" | "keymap" => Section::Keyboard,
             "audio" | "sound" | "devices" | "plugins" => Section::Audio,
             "updates" | "update" | "whatsnew" => Section::Updates,
             "diagnostics" | "logs" | "crashes" | "crash" => Section::Diagnostics,
@@ -110,7 +112,9 @@ impl SettingsDialog {
             this.open = open;
             this.asked = if open { asked } else { None };
             let settings = store.read(cx).settings.clone();
-            this.agent.sync(&settings, cx);
+            if this.agent.sync(&settings, cx) && open && this.section == Section::Agent {
+                this.load_agent(cx);
+            }
             cx.notify();
         })];
         for (input, which) in [(&key, 0u8), (&base, 1), (&option, 2)] {
@@ -249,6 +253,7 @@ impl SettingsDialog {
         let mut children: Vec<AnyElement> = vec![div().px(px(9.)).pb(px(4.)).child(caps("kimchi", cx)).into_any_element()];
         for (sec, label, ic) in [
             (Section::Appearance, "Appearance", "sun"),
+            (Section::Keyboard, "Keyboard", "keyboard"),
             (Section::Audio, "Audio", "audio-lines"),
             (Section::Agent, "Agent", "bot"),
             (Section::Updates, "Updates", "refresh-cw"),
@@ -311,6 +316,7 @@ impl SettingsDialog {
             Section::Provider(_) => ("Models & keys".into(), format!("Keys are stored in your {} and only sent to the provider they belong to.", crate::ui::keychain_name())),
             Section::Agent => ("Agent".into(), "The built-in agent, and what any agent or MCP client may do in kimchi.".into()),
             Section::Appearance => ("Appearance".into(), "Light or dark, and how see-through the chrome is.".into()),
+            Section::Keyboard => ("Keyboard".into(), "Use the keys of the editor you know, for the actions kimchi shares with it.".into()),
             Section::Audio => ("Audio".into(), "Speakers and microphone, loudness, plugins, and ryolune.".into()),
             Section::Updates => ("Updates".into(), format!("kimchi {} · signed updates from GitHub Releases", kimchi_control::update::CURRENT)),
             Section::Diagnostics => ("Diagnostics".into(), "Logs and crash reports, to understand what went wrong.".into()),
@@ -359,6 +365,44 @@ impl SettingsDialog {
             .when(self.reduce_transparency, |d| {
                 d.child(note("circle-alert", "Reduce transparency is on in your system's accessibility settings, so surfaces stay opaque whatever this says.", t.warning, cx))
             })
+            .into_any_element()
+    }
+
+    // ---- keyboard -------------------------------------------------------------
+
+    fn keyboard(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.theme().clone();
+        let current = kimchi_control::keymaps::layout(&self.store.read(cx).settings.shortcuts.keymap).map(|l| l.id).unwrap_or("kimchi");
+        let rows: Vec<AnyElement> = kimchi_control::keymaps::LAYOUTS
+            .iter()
+            .map(|l| {
+                let selected = l.id == current;
+                let id = l.id;
+                div()
+                    .id(ElementId::Name(format!("keymap-{id}").into()))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .p(px(10.))
+                    .rounded(px(sz::R_SM))
+                    .border_1()
+                    .cursor_pointer()
+                    .role(gpui::Role::RadioButton)
+                    .aria_label(SharedString::from(l.name))
+                    .when(selected, |d| d.bg(t.accent_soft).border_color(t.accent_ring))
+                    .when(!selected, |d| d.border_color(t.line).hover(|s| s.bg(t.hover)))
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_setting("shortcuts.keymap", json!(id), cx)))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).text_color(if selected { t.accent_text } else { t.text }).child(if l.id == "kimchi" { "kimchi's own keys".to_string() } else { format!("{}'s keys", l.name) }))
+                    .child(div().text_size(px(sz::SM)).text_color(t.text_2).child(l.notes))
+                    .into_any_element()
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .child(group("Keyboard layout", Some("kimchi's own keys stay for what the other editor has no key for, except keys that editor uses for something else."), div().flex().flex_col().gap(px(6.)).children(rows).into_any_element(), cx))
+            .child(div().flex().child(Button::new("keyboard-sheet", "See every key").with_icon("keyboard").on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Shortcuts, cx)))))
             .into_any_element()
     }
 
@@ -664,6 +708,7 @@ impl Render for SettingsDialog {
             Section::Provider(_) => self.provider_detail(window, cx),
             Section::Agent => self.agent_section(window, cx),
             Section::Appearance => self.appearance(cx),
+            Section::Keyboard => self.keyboard(cx),
             Section::Audio => self.audio_section(cx),
             Section::Updates => self.updates(cx),
             Section::Diagnostics => self.diagnostics_section(cx),

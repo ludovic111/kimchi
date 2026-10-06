@@ -333,6 +333,53 @@ fn the_colour_sliders_grade_the_clip_in_one_step(cx: &mut TestAppContext) {
     assert_eq!(graded.len(), 1, "the drag is one step: {steps}");
 }
 
+/// Looks imported from other apps show in the inspector's Colour section and go on the clip
+/// in one step; the grade is written out as a .cube other apps open.
+#[gpui::test]
+fn imported_looks_show_in_the_inspector_and_apply(cx: &mut TestAppContext) {
+    let (f, view, cx) = setup(cx);
+    let id = select_the_clip(&f, cx);
+    let dir = tempfile::tempdir().unwrap();
+    let cube = dir.path().join("Night Film.cube");
+    std::fs::write(&cube, "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n").unwrap();
+    let added = f.call("looks.import", json!({ "paths": [cube], "folder": "Resolve" }));
+    let look = added["added"][0]["id"].as_str().unwrap().to_string();
+    // The inspector lives in the left sidebar: show it so its Colour section draws.
+    remote(&f, cx, "ui.setLayout", json!({ "inspectorOpen": true }));
+    resize(cx, 1600., 1000.);
+    let inspector = cx.update(|_, cx| view.read(cx).editor().read(cx).inspector.clone());
+    let start = Instant::now();
+    while !cx.update(|_, cx| inspector.read(cx).library_look_names()).contains(&"Night Film".to_string()) && start.elapsed() < Duration::from_secs(3) {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+    }
+    assert!(cx.update(|_, cx| inspector.read(cx).library_look_names()).contains(&"Night Film".to_string()));
+    // What the look's button runs.
+    cx.update(|_, cx| cx.store().update(cx, |s, cx| s.run("looks.apply", json!({ "clipIds": [id], "look": look }), cx)));
+    let p = f.settle(cx, |p| p.clip(id).is_some_and(|c| c.effects.lut.is_some()));
+    assert!(p.clip(id).unwrap().effects.lut.as_ref().unwrap().path.contains("looks"));
+    let out = dir.path().join("graded.cube");
+    f.call("clip.setEffects", json!({ "clipIds": [id], "contrast": 0.3 }));
+    f.call("looks.save", json!({ "clipId": id, "path": out }));
+    assert!(std::fs::read_to_string(&out).unwrap().contains("LUT_3D_SIZE 33"));
+}
+
+/// The export dialog's presets fit the project: a vertical preset on a 16:9 project keeps 16:9.
+#[gpui::test]
+fn export_presets_fit_the_project(cx: &mut TestAppContext) {
+    let (f, _view, cx) = setup(cx);
+    let ps = f.project().settings;
+    let short = kimchi_control::commands::export::preset("shorts").unwrap();
+    let (w, h) = kimchi_control::commands::export::preset_size(short, &ps).unwrap();
+    assert_eq!((w, h), (1080, 608), "a 1920×1080 project in a 1080×1920 box");
+    let yt = kimchi_control::commands::export::preset("youtube-4k").unwrap();
+    assert_eq!(kimchi_control::commands::export::preset_size(yt, &ps), Some((3840, 2160)));
+    let listed = f.call("export.presets", json!({}));
+    let shorts = listed.as_array().unwrap().iter().find(|p| p["id"] == "shorts").unwrap();
+    assert!(shorts["warning"].as_str().unwrap().contains("1080×608"));
+    let _ = cx;
+}
+
 /// A person opens the Captions tab (⌘5 / ctrl-5), imports a file through the command the panel
 /// runs, and double-clicks a caption: it is selected and the playhead goes there.
 #[gpui::test]
@@ -517,6 +564,14 @@ fn dialogs_fit_the_smallest_window(cx: &mut TestAppContext) {
         (Dialog::Shortcuts, "dialog-shortcuts", None),
         (Dialog::Palette, "dialog-palette", None),
         (Dialog::WhatsNew { since: None, all: true }, "dialog-whats-new", None),
+        (
+            Dialog::Interop {
+                title: "Opened cut.fcpxml".into(),
+                report: json!({"kept": ["12 clips on 3 tracks"], "approximated": ["Iris became a dissolve"], "dropped": ["crops"], "missingMedia": ["/gone/a.mov"]}),
+            },
+            "dialog-interop-report",
+            None,
+        ),
     ] {
         cx.update(|_, cx| cx.store().update(cx, |s, cx| s.open_dialog(dialog.clone(), cx)));
         resize(cx, WINDOW_MIN_W, WINDOW_MIN_H);
@@ -557,4 +612,105 @@ fn side_panels_close_and_open(cx: &mut TestAppContext) {
     resize(cx, 1600., 1000.);
     assert!(bounds_of(cx, "left-panel").is_some() && bounds_of(cx, "inspector").is_none());
     assert_eq!(f.call("ui.state", json!({}))["layout"]["inspectorOpen"], true);
+}
+
+/// The editor's menu offers opening other editors' projects and writing one for each app.
+#[test]
+fn interop_menu_targets() {
+    let targets = crate::views::dialogs::interop::export_targets();
+    let names: Vec<&str> = targets.iter().map(|t| t.1).collect();
+    for app in ["Premiere Pro", "Final Cut Pro", "DaVinci Resolve", "Media Composer"] {
+        assert!(names.iter().any(|n| n.contains(app.split(' ').next().unwrap())), "{app} in {names:?}");
+    }
+    assert_eq!(crate::views::dialogs::interop::extension("xmeml"), "xml");
+    assert_eq!(crate::views::dialogs::interop::extension("fcpxml"), "fcpxml");
+}
+
+/// Settings › Agent draws every provider group and follows the chosen one; with the agent
+/// turned off, the panel stays closed.
+#[gpui::test]
+fn the_agent_settings_follow_the_provider_and_the_panel_can_be_turned_off(cx: &mut TestAppContext) {
+    let (f, _, cx) = setup(cx);
+    remote(&f, cx, "ui.showPanel", json!({ "panel": "settings", "section": "agent" }));
+    for provider in ["groq", "bedrock", "lmstudio", "openai-compatible"] {
+        remote(&f, cx, "agent.setProvider", json!({ "provider": provider }));
+        store_settles(cx, |s| s.settings.agent.provider == provider);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("settings-body").is_some(), "{provider}: the section is drawn");
+    }
+    f.call("app.setSetting", json!({ "key": "agent.enabled", "value": false }));
+    store_settles(cx, |s| !s.settings.agent.enabled);
+    cx.update(|_, cx| cx.store().update(cx, |s, cx| s.set_agent_open(true, cx)));
+    assert!(!cx.update(|_, cx| cx.store().read(cx).agent_open), "off keeps the Agent panel closed");
+    f.call("app.setSetting", json!({ "key": "agent.enabled", "value": true }));
+    store_settles(cx, |s| s.settings.agent.enabled);
+    cx.update(|_, cx| cx.store().update(cx, |s, cx| s.set_agent_open(true, cx)));
+    assert!(cx.update(|_, cx| cx.store().read(cx).agent_open));
+}
+
+/// The first start shows the setup (a settings file from before 0.9 doesn't); a person comes
+/// from Premiere Pro, says no to generation, and gets Premiere's keys in the window.
+#[gpui::test]
+fn the_first_run_setup_saves_the_answers_and_switches_the_keys(cx: &mut TestAppContext) {
+    use crate::views::onboarding::{Step, should_show};
+    let (f, view, cx) = setup(cx);
+    if std::env::var("KIMCHI_NO_ONBOARDING").is_err() {
+        assert!(should_show(&kimchi_control::Settings::default()), "a new install shows the setup");
+    }
+    let before_09: kimchi_control::Settings = serde_json::from_str(r#"{ "appearance": { "mode": "dark" } }"#).unwrap();
+    assert!(!should_show(&before_09), "people who used kimchi before aren't asked again");
+
+    remote(&f, cx, "ui.showPanel", json!({ "panel": "onboarding" }));
+    store_settles(cx, |s| s.setup.is_some());
+    let ob = cx.update(|_, cx| view.read(cx).onboarding());
+    let start = Instant::now();
+    while cx.update(|_, cx| ob.read(cx).info().is_none()) && start.elapsed() < Duration::from_secs(5) {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(cx.update(|_, cx| ob.read(cx).info().is_some()), "it reads this computer");
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::Welcome);
+    // Enter goes on.
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::ComingFrom);
+    cx.update(|_, cx| {
+        ob.update(cx, |o, cx| {
+            o.coming_from = Some("premiere".into());
+            o.next(cx);
+        })
+    });
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::Bring);
+    // Esc goes back, Enter on again.
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::ComingFrom);
+    cx.update(|_, cx| ob.update(cx, |o, cx| o.next(cx)));
+    cx.update(|_, cx| ob.update(cx, |o, cx| o.next(cx)));
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::Generative);
+    cx.update(|_, cx| {
+        ob.update(cx, |o, cx| {
+            o.generative = Some(false);
+            o.next(cx);
+        })
+    });
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::Agent, "no provider step after Not now");
+    cx.update(|_, cx| ob.update(cx, |o, cx| o.next(cx)));
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::Done);
+    cx.update(|_, cx| ob.update(cx, |o, cx| o.finish(false, false, cx)));
+    store_settles(cx, |s| s.setup.is_none() && s.settings.shortcuts.keymap == "premiere");
+    let st = f.session.settings();
+    assert!(st.onboarding.is_done());
+    assert_eq!(st.onboarding.coming_from, "premiere");
+    assert!(!st.generate.enabled);
+    assert_eq!(st.shortcuts.keymap, "premiere");
+    // The window binds Premiere's keys: ⌘K / Ctrl+K splits, S snaps.
+    cx.run_until_parked();
+    assert_eq!(crate::actions::binding("Split").unwrap().keys, ["M-k", "M-shift-k"]);
+    assert_eq!(crate::actions::layout().id, "premiere");
+    let snapping = cx.update(|_, cx| cx.store().read(cx).snapping);
+    cx.simulate_keystrokes("s");
+    cx.run_until_parked();
+    assert_ne!(cx.update(|_, cx| cx.store().read(cx).snapping), snapping, "S is Snapping in Premiere's keys");
+    assert_eq!(f.project().clips().count(), 1, "and no longer splits");
 }

@@ -54,6 +54,9 @@ pub enum Dialog {
     Shortcuts,
     /// Release notes: since a version (after an update) or this one; `all` for every release.
     WhatsNew { since: Option<String>, all: bool },
+    /// What came through opening or writing another editor's project (`project.importFrom` /
+    /// `project.exportTo`'s report).
+    Interop { title: String, report: serde_json::Value },
 }
 
 impl Dialog {
@@ -64,6 +67,7 @@ impl Dialog {
             Dialog::Palette => "palette",
             Dialog::Shortcuts => "shortcuts",
             Dialog::WhatsNew { .. } => "whatsNew",
+            Dialog::Interop { .. } => "interopReport",
         }
     }
 }
@@ -202,6 +206,8 @@ pub enum StoreEvent {
     AskRemoveAsset(kimchi_core::Id),
     /// Open this motion clip in the Studio.
     OpenStudio(kimchi_core::Id),
+    /// The first-run setup closed: the workspace takes the keyboard again.
+    SetupClosed,
 }
 
 pub struct Store {
@@ -237,6 +243,8 @@ pub struct Store {
     /// panel (or its drawer, in a narrow window) when it changes.
     pub left_reveal: u64,
     pub dialog: Option<Dialog>,
+    /// The first-run setup is shown over the whole window, at this step (`views::onboarding`).
+    pub setup: Option<String>,
     pub agent_open: bool,
     pub jobs_open: bool,
     pub menu: Option<ContextMenu>,
@@ -315,6 +323,7 @@ impl Store {
             left_tab: LeftTab::Media,
             left_reveal: 0,
             dialog: None,
+            setup: None,
             agent_open: false,
             jobs_open: false,
             menu: None,
@@ -436,7 +445,16 @@ impl Store {
                 }
             }
             Event::SettingsChanged => {
+                let keymap = self.settings.shortcuts.keymap.clone();
                 self.settings = self.session.settings();
+                if self.settings.shortcuts.keymap != keymap {
+                    // Another layout: bind its keys (after this update: binding reads the store).
+                    cx.defer(crate::actions::bind);
+                }
+                // The Agent panel was turned off (Settings › Agent, the first-run setup).
+                if !self.settings.agent.enabled {
+                    self.agent_open = false;
+                }
                 self.refresh_providers(cx);
                 // After this update: it reads the store.
                 cx.defer(crate::app::apply_theme_setting);
@@ -492,6 +510,9 @@ impl Store {
         }
         if let Some(d) = &self.dialog {
             open.push(d.name().to_string());
+        }
+        if self.setup.is_some() {
+            open.push("onboarding".to_string());
         }
         self.session.set_ui_state(UiState {
             screen: match (&self.project, &self.studio) {
@@ -687,6 +708,22 @@ impl Store {
         cx.notify();
     }
 
+    /// Shows the first-run setup over the window (at a step, or the first).
+    pub fn open_setup(&mut self, step: Option<String>, cx: &mut Context<Self>) {
+        self.setup = Some(step.unwrap_or_default());
+        self.dialog = None;
+        self.menu = None;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    pub fn close_setup(&mut self, cx: &mut Context<Self>) {
+        self.setup = None;
+        cx.emit(StoreEvent::SetupClosed);
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
     pub fn close_dialog(&mut self, cx: &mut Context<Self>) {
         self.dialog = None;
         self.sync_ui(cx);
@@ -694,7 +731,12 @@ impl Store {
     }
 
     /// The Agent panel, docked on the right.
+    /// Stays closed while `settings.agent.enabled` is off.
     pub fn set_agent_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if open && !self.settings.agent.enabled {
+            self.info("The Agent panel is off. Turn it on in Settings › Agent.", cx);
+            return;
+        }
         self.agent_open = open;
         self.sync_ui(cx);
         cx.notify();

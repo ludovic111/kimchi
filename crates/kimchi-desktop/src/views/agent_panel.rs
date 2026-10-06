@@ -1,5 +1,5 @@
 //! The agent panel, docked on the right. It runs the model the person already
-//! has (Claude Code, Codex, an API key, Ollama) through `kimchi-agent`, which
+//! has (Claude Code, Codex, Gemini CLI, an API key, a local server) through `kimchi-agent`, which
 //! acts only through the command registry, so permissions and the one undo
 //! history are the same as for MCP and the CLI. It shows one card per command
 //! (from its own runs, and from MCP clients and the CLI driving kimchi), the
@@ -290,9 +290,12 @@ impl AgentPanel {
     fn provider_menu(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         let current = self.provider(cx);
         let this = cx.entity().downgrade();
-        let mut entries: Vec<crate::store::MenuEntry> = ProviderKind::ALL
-            .iter()
-            .map(|&kind| {
+        let mut entries: Vec<crate::store::MenuEntry> = vec![];
+        for group in kimchi_agent::Group::ALL {
+            if !entries.is_empty() {
+                entries.push(crate::store::MenuEntry::Separator);
+            }
+            entries.extend(ProviderKind::ALL.into_iter().filter(|k| k.group() == group).map(|kind| {
                 let ready = self.status_of(kind).map(|s| s.ready);
                 let mut item = MenuItem::new(kind.label(), move |_, cx| {
                     cx.store().update(cx, |s, cx| s.run("agent.setProvider", json!({ "provider": kind.id() }), cx));
@@ -307,8 +310,8 @@ impl AgentPanel {
                     item = item.icon("check");
                 }
                 item.entry()
-            })
-            .collect();
+            }));
+        }
         entries.push(crate::store::MenuEntry::Separator);
         entries.push(
             MenuItem::new("Check again", move |_, cx| {

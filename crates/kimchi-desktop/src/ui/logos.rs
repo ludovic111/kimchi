@@ -40,6 +40,18 @@ pub const LOGOS: &[(&str, Option<LogoFile>)] = &[
     ("codex", themed("openai")),
     ("chatgpt", themed("openai")),
     ("ollama", themed("ollama")),
+    // Google's Gemini CLI: the Gemini mark.
+    ("gemini-cli", one("google")),
+    // Agent providers without a logo bundled yet: the generic icon.
+    ("groq", None),
+    ("mistral", None),
+    ("deepseek", None),
+    ("fireworks", None),
+    ("cerebras", None),
+    ("azure-openai", None),
+    ("bedrock", None),
+    ("lmstudio", None),
+    ("openai-compatible", None),
     // Generation providers.
     ("openrouter", one("openrouter")),
     ("fal", one("fal")),
@@ -132,7 +144,7 @@ mod tests {
     #[test]
     fn only_generic_services_go_without_a_logo() {
         let without: Vec<&str> = LOGOS.iter().filter(|(_, f)| f.is_none()).map(|(k, _)| *k).collect();
-        assert_eq!(without, ["a1111", "openai_compat"]);
+        assert_eq!(without, ["groq", "mistral", "deepseek", "fireworks", "cerebras", "azure-openai", "bedrock", "lmstudio", "openai-compatible", "a1111", "openai_compat"]);
         // The owner's mapping: Claude everywhere for Claude, the ChatGPT mark for OpenAI and Codex.
         assert_eq!(logo_file("Claude-Code").map(|f| f.file), Some("claude"));
         assert_eq!(logo_file("anthropic").map(|f| f.file), Some("claude"));

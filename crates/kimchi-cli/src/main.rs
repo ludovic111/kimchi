@@ -44,7 +44,7 @@ USAGE
                                      one JSON result per line; stops at the first error unless --continue
   kimchi-cli doctor [--json]          check ffmpeg, the running app, versions, folders and the lsuite entry
   kimchi-cli mcp-config [--json]      how to add kimchi-mcp to Claude Code, Codex, Cursor or Claude Desktop
-  kimchi-cli docs [--out PATH]        write the command reference (default docs/COMMANDS.md; - for stdout)
+  kimchi-cli docs [--out PATH]        write the command reference (default docs/COMMANDS.md; - for stdout) and COMPATIBILITY.md beside it
   kimchi-cli render <project.json> <output> [--format mp4|hevc|prores|webm|gif|audio] [--quality draft|standard|high]
                                      = --file <project.json> export.start path=<output> wait=true
   kimchi-cli generate <provider> <model> \"<prompt>\" [--video] [--image PATH] [--end PATH] [--aspect 16:9]
@@ -267,6 +267,10 @@ fn docs(inv: &Invocation) -> Res {
     }
     std::fs::write(&path, md).map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
     eprintln!("wrote {} ({} commands)", path.display(), registry::commands().len());
+    // The page on other apps sits next to it.
+    let compat = path.with_file_name("COMPATIBILITY.md");
+    std::fs::write(&compat, kimchi_control::compat::markdown()).map_err(|e| format!("Couldn't write {}: {e}", compat.display()))?;
+    eprintln!("wrote {}", compat.display());
     Ok(())
 }
 

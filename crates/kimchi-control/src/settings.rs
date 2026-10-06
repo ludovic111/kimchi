@@ -17,13 +17,83 @@ pub struct Settings {
     pub generate: GenerateDefaults,
     pub diagnostics: DiagnosticsSettings,
     pub audio: AudioSettings,
+    /// The first-run setup. A settings file written before 0.9 counts as set up already.
+    #[serde(default = "OnboardingSettings::set_up_before")]
+    pub onboarding: OnboardingSettings,
+    pub shortcuts: ShortcutSettings,
 }
+
+/// The first-run setup (`app.onboarding`, `app.finishOnboarding`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct OnboardingSettings {
+    /// The kimchi version the setup was finished or skipped in; empty: never (it shows at start).
+    pub completed: String,
+    /// The editor the person said they came from (`kimchi_interop::apps` id), or empty.
+    pub coming_from: String,
+}
+
+impl OnboardingSettings {
+    /// For a settings file from before the setup existed: the person has used kimchi already.
+    fn set_up_before() -> Self {
+        Self { completed: "0.8".into(), coming_from: String::new() }
+    }
+
+    pub fn is_done(&self) -> bool {
+        !self.completed.trim().is_empty()
+    }
+}
+
+/// Keyboard shortcuts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ShortcutSettings {
+    /// Which editor's keys kimchi uses ([`KEYMAPS`]): kimchi's own, or another editor's layout for
+    /// the commands they share.
+    pub keymap: String,
+}
+
+impl Default for ShortcutSettings {
+    fn default() -> Self {
+        Self { keymap: "kimchi".into() }
+    }
+}
+
+/// Keyboard layouts kimchi can take from other editors (`app.keymaps` describes them).
+pub const KEYMAPS: &[&str] = &["kimchi", "premiere", "finalcut", "resolve", "avid", "capcut", "kdenlive", "shotcut", "vegas", "imovie"];
+
+/// What can run the built-in agent (`settings.agent.provider`): the person's coding CLIs, model
+/// APIs, and local servers. `kimchi_agent::ProviderKind` has one variant per id.
+pub const AGENT_PROVIDERS: &[&str] = &[
+    "zenith",
+    "claude-code",
+    "codex",
+    "gemini-cli",
+    "anthropic",
+    "openai",
+    "gemini",
+    "openrouter",
+    "groq",
+    "mistral",
+    "deepseek",
+    "xai",
+    "together",
+    "fireworks",
+    "cerebras",
+    "azure-openai",
+    "bedrock",
+    "ollama",
+    "lmstudio",
+    "openai-compatible",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentSettings {
+    /// The Agent panel is offered (off hides it; MCP and the CLI still work).
+    pub enabled: bool,
     pub permissions: Permissions,
-    /// Which model runs the built-in agent: `claude-code`, `codex`, `anthropic`, `openai` or `ollama`.
+    /// Which model runs the built-in agent, one of [`AGENT_PROVIDERS`].
     pub provider: String,
     /// Model id for the API and local providers (empty: the provider's default).
     pub model: String,
@@ -33,7 +103,7 @@ pub struct AgentSettings {
 
 impl Default for AgentSettings {
     fn default() -> Self {
-        Self { permissions: Permissions::default(), provider: "claude-code".into(), model: String::new(), base_url: String::new() }
+        Self { enabled: true, permissions: Permissions::default(), provider: "claude-code".into(), model: String::new(), base_url: String::new() }
     }
 }
 
@@ -145,9 +215,12 @@ impl Default for Appearance {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GenerateDefaults {
+    /// Generative AI is offered in the window: the Generate tab and the AI actions on clips and
+    /// frames. Off hides them (the person chose not to use it); `generate.*` still works.
+    pub enabled: bool,
     /// `provider::model` used for images when a command names no model.
     pub image_model: String,
     /// `provider::model` used for video when a command names no model.
@@ -155,6 +228,13 @@ pub struct GenerateDefaults {
     pub audio_model: String,
     pub speech_model: String,
 }
+
+impl Default for GenerateDefaults {
+    fn default() -> Self {
+        Self { enabled: true, image_model: String::new(), video_model: String::new(), audio_model: String::new(), speech_model: String::new() }
+    }
+}
+
 
 impl Settings {
     /// Reads `settings.json`. A file that can't be read as settings is kept as
@@ -230,7 +310,8 @@ impl Settings {
 pub fn choices(key: &str) -> Option<&'static [&'static str]> {
     Some(match key {
         "appearance.mode" => &["system", "dark", "light"],
-        "agent.provider" => &["claude-code", "codex", "anthropic", "openai", "ollama", "zenith"],
+        "agent.provider" => AGENT_PROVIDERS,
+        "shortcuts.keymap" => KEYMAPS,
         "diagnostics.logLevel" => crate::diagnostics::LEVELS,
         _ => return None,
     })

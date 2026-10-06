@@ -390,7 +390,15 @@ impl Editor {
 
     /// The "more" menu: what the top bar has no room for, and the less used things.
     fn more_menu(&self, position: gpui::Point<Pixels>, bp: Breakpoint, cx: &mut Context<Self>) {
-        let entries = vec![
+        let mut entries = vec![
+            MenuItem::new("Open from another editor…", |_, cx| crate::views::dialogs::interop::open_from_other(cx)).icon("folder-open").entry(),
+        ];
+        for (app, name, format) in crate::views::dialogs::interop::export_targets() {
+            entries.push(MenuItem::new(format!("Export project for {name}…"), move |_, cx| crate::views::dialogs::interop::export_for(app, name, format, cx)).icon("share").entry());
+        }
+        entries.push(MenuItem::new("Find missing files…", |_, cx| crate::views::dialogs::interop::find_missing(cx)).icon("folder-search").entry());
+        entries.push(crate::store::MenuEntry::Separator);
+        entries.extend([
             MenuItem::new("Command palette", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Palette, cx))).icon("command").shortcut_of(&act::Palette).entry(),
             MenuItem::new("Keyboard shortcuts", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Shortcuts, cx))).icon("keyboard").shortcut_of(&act::ShowShortcuts).entry(),
             MenuItem::new("Settings", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: None }, cx))).icon("settings").shortcut_of(&act::OpenSettings).entry(),
@@ -398,7 +406,7 @@ impl Editor {
             MenuItem::new("What's new", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::WhatsNew { since: None, all: false }, cx))).icon("gift").entry(),
             MenuItem::new("Help", |_, cx| cx.open_url(crate::app::HELP_URL)).icon("info").entry(),
             MenuItem::new("Support kimchi", |_, cx| cx.open_url(crate::app::SUPPORT_URL)).icon("heart").entry(),
-        ];
+        ]);
         // Settings has its own button from the medium width up.
         let entries = entries.into_iter().filter(|e| !(bp > Breakpoint::Compact && matches!(e, crate::store::MenuEntry::Item(i) if i.label.as_ref() == "Settings"))).collect();
         self.store.update(cx, |s, cx| s.open_menu(position, entries, cx));
@@ -413,6 +421,7 @@ impl Editor {
         let active = s.jobs.iter().filter(|j| !j.status.is_done()).count();
         let jobs_open = s.jobs_open;
         let agent_open = s.agent_open;
+        let agent_enabled = s.settings.agent.enabled;
         let update = s.update.clone();
         let studio_open = self.studio.read(cx).is_open();
         let name: gpui::SharedString = p.as_ref().map(|p| p.name.clone()).unwrap_or_default().into();
@@ -529,17 +538,22 @@ impl Editor {
                             .relative()
                             .child(group(
                                 [
-                                    {
+                                    Some({
                                         let label = if active > 0 { format!("{active} generating") } else { "Generations".into() };
                                         let labelled = bp >= Breakpoint::Wide || active > 0 && bp > Breakpoint::Compact;
                                         let b = if labelled { Button::new("jobs", label).with_icon(if active > 0 { "loader-circle" } else { "sparkles" }) } else { Button::icon("jobs", if active > 0 { "loader-circle" } else { "sparkles" }, label) };
                                         b.small().flush().selected(jobs_open).tooltip(tip("Generations", &act::ToggleJobs)).on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_jobs_open(!s.jobs_open, cx))).into_any_element()
-                                    },
-                                    tool("agent", "bot", "Agent", bp > Breakpoint::Compact, tip("Agent", &act::ToggleAgent))
-                                        .selected(agent_open)
-                                        .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_agent_open(!s.agent_open, cx)))
-                                        .into_any_element(),
-                                ],
+                                    }),
+                                    // Hidden while the Agent panel is turned off (Settings › Agent).
+                                    agent_enabled.then(|| {
+                                        tool("agent", "bot", "Agent", bp > Breakpoint::Compact, tip("Agent", &act::ToggleAgent))
+                                            .selected(agent_open)
+                                            .on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.set_agent_open(!s.agent_open, cx)))
+                                            .into_any_element()
+                                    }),
+                                ]
+                                .into_iter()
+                                .flatten(),
                                 cx,
                             ))
                             .when(jobs_open, |d| d.child(self.jobs.clone())),
