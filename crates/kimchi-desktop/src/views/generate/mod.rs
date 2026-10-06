@@ -5,6 +5,7 @@
 pub mod params;
 pub mod picker;
 pub mod recent;
+pub mod voices;
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -19,10 +20,27 @@ use crate::theme::{ActiveTheme, MONO, size as sz};
 /// Ratios offered when the model takes any size.
 pub const COMMON_RATIOS: [&str; 6] = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"];
 
-/// What the composer holds besides the text fields (prompt, negative, seed).
+/// What the composer makes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Image,
+    Video,
+    Sound,
+}
+
+/// The kinds of sound the Sound mode makes, in the order its switch shows them.
+pub const SOUND_TASKS: [Task; 3] = [Task::TextToSpeech, Task::TextToMusic, Task::TextToSound];
+
+/// What the composer holds besides the text fields (prompt, negative, seed, lyrics).
 #[derive(Clone, Debug)]
 pub struct Draft {
-    pub video: bool,
+    pub mode: Mode,
+    /// Sound mode: speech, music or a sound effect.
+    pub sound: Task,
+    /// Speech: the voice id (`None`: the model's default).
+    pub voice: Option<String>,
+    /// Music: no singing.
+    pub instrumental: bool,
     /// `provider::model` the person chose for this mode (`None`: the default in settings).
     pub model: Option<String>,
     /// `None`: the project's ratio.
@@ -44,7 +62,10 @@ pub struct Draft {
 impl Default for Draft {
     fn default() -> Self {
         Self {
-            video: false,
+            mode: Mode::Image,
+            sound: Task::TextToSpeech,
+            voice: None,
+            instrumental: false,
             model: None,
             aspect: None,
             duration: None,
@@ -60,24 +81,68 @@ impl Default for Draft {
 }
 
 impl Draft {
+    pub fn video(&self) -> bool {
+        self.mode == Mode::Video
+    }
+
+    pub fn is_sound(&self) -> bool {
+        self.mode == Mode::Sound
+    }
+
     pub fn task(&self) -> Task {
-        task_for(self.video, !self.refs.is_empty())
+        match self.mode {
+            Mode::Sound => self.sound,
+            m => task_for(m == Mode::Video, !self.refs.is_empty()),
+        }
     }
 
     /// Switches image/video: start and end frames for video, references for images.
     pub fn set_video(&mut self, video: bool) {
-        if self.video == video {
+        self.set_mode(if video { Mode::Video } else { Mode::Image });
+    }
+
+    /// Switches what is made; sound takes no images.
+    pub fn set_mode(&mut self, mode: Mode) {
+        if self.mode == mode {
             return;
         }
-        self.video = video;
+        self.mode = mode;
         self.model = None;
         self.duration = None;
         self.resolution = None;
+        self.voice = None;
         self.params.clear();
+        let video = mode == Mode::Video;
         for r in &mut self.refs {
             r.role = if video { if r.role == "reference" { "start_frame" } else { r.role } } else { "reference" };
         }
-        self.refs.truncate(if video { 2 } else { 8 });
+        self.refs.truncate(match mode {
+            Mode::Video => 2,
+            Mode::Image => 8,
+            Mode::Sound => 0,
+        });
+    }
+
+    /// Switches speech / music / sound effect.
+    pub fn set_sound(&mut self, task: Task) {
+        self.set_mode(Mode::Sound);
+        if self.sound == task {
+            return;
+        }
+        self.sound = task;
+        self.model = None;
+        self.duration = None;
+        self.voice = None;
+        self.params.clear();
+    }
+
+    /// The setting that remembers the model chosen in this mode.
+    pub fn model_setting(&self) -> &'static str {
+        match self.mode {
+            Mode::Image => "generate.imageModel",
+            Mode::Video => "generate.videoModel",
+            Mode::Sound => "generate.audioModel",
+        }
     }
 
     /// Adds an input image; a start or end frame replaces the one there was.
@@ -90,7 +155,7 @@ impl Draft {
 
     /// The role the next added image takes.
     pub fn next_role(&self, model: Option<&ModelInfo>) -> &'static str {
-        if !self.video {
+        if !self.video() {
             return "reference";
         }
         if self.refs.iter().any(|r| r.role == "start_frame") && model.is_some_and(|m| m.end_frame) { "end_frame" } else { "start_frame" }
@@ -98,7 +163,10 @@ impl Draft {
 
     /// How many input images the model takes in this mode.
     pub fn max_refs(&self, model: Option<&ModelInfo>) -> usize {
-        if self.video {
+        if self.is_sound() {
+            return 0;
+        }
+        if self.video() {
             if model.is_some_and(|m| m.end_frame) { 2 } else { 1 }
         } else {
             model.map(|m| m.max_images.max(1) as usize).unwrap_or(1)

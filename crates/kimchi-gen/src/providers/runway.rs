@@ -433,6 +433,9 @@ impl Provider for Runway {
             default_base_url: "https://api.dev.runwayml.com/v1".into(),
             base_url_editable: false,
             tasks: vec![Task::TextToImage, Task::ImageToImage, Task::TextToVideo, Task::ImageToVideo],
+            group: ProviderGroup::Media,
+            quick_start: false,
+            base_url_presets: vec![],
         }
     }
 

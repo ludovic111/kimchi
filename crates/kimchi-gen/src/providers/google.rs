@@ -8,6 +8,12 @@
 //! * Veo 3.1 (shuts down 2026-10-22): `POST /models/{id}:predictLongRunning`,
 //!   poll the operation, download the sample URI with the key header.
 //!
+//! * Speech (Gemini 3.8 TTS) and music (Lyria 3.5): `generateContent` with
+//!   `responseModalities: ["AUDIO"]`; the audio comes back inline, WAV on the 3.8 models and
+//!   bare 24 kHz PCM (`audio/L16`) on older ones (the harness wraps those). Lyria takes length,
+//!   lyrics and "instrumental" in the prompt. (ai.google.dev speech-generation and
+//!   music-generation guides, read 2026-10-06.)
+//!
 //! Imagen was shut down on 2026-08-17 and isn't offered.
 
 use std::future::Future;
@@ -75,8 +81,44 @@ fn veo_model(id: &str, name: &str, lite: bool, price: &str) -> ModelInfo {
     }
 }
 
+fn tts_model(id: &str, name: &str, featured: bool, price: &str, description: &str) -> ModelInfo {
+    ModelInfo {
+        description: Some(description.into()),
+        price: Some(price.into()),
+        featured,
+        params: vec![ParamSpec {
+            key: "style".into(),
+            label: "How to say it".into(),
+            kind: ParamKind::Text { multiline: true },
+            default: json!(""),
+            help: Some("Delivery directions: \"cheerful\", \"slow and spooky whisper\". The text itself is read word for word.".into()),
+        }],
+        ..ModelInfo::speech(ID, id, name, "Kore")
+    }
+}
+
 fn catalog() -> Vec<ModelInfo> {
     vec![
+        tts_model("gemini-3.8-flash-tts", "Gemini 3.8 Flash TTS", true, "≈ $9 / 1M audio tokens", "30 voices in 130 languages, directed in plain words."),
+        tts_model("gemini-3.8-flash-lite-tts", "Gemini 3.8 Flash Lite TTS", false, "≈ $4.5 / 1M audio tokens", "Half the price, 101 languages."),
+        ModelInfo {
+            description: Some("Full songs of a couple of minutes, with vocals or instrumental. Needs billing.".into()),
+            lyrics: true,
+            instrumental: true,
+            // A wish written into the prompt: Lyria decides in the end.
+            duration_range: Some((10.0, 240.0)),
+            price: Some("$0.08 / song".into()),
+            featured: true,
+            ..ModelInfo::new(ID, "lyria-3.5", "Lyria 3.5", &[Task::TextToMusic])
+        },
+        ModelInfo {
+            description: Some("30-second clips: jingles, loops, beds. Needs billing.".into()),
+            lyrics: true,
+            instrumental: true,
+            durations: vec![30.0],
+            price: Some("$0.04 / clip".into()),
+            ..ModelInfo::new(ID, "lyria-3-clip-preview", "Lyria 3 Clip", &[Task::TextToMusic])
+        },
         image_model(
             "gemini-3.1-flash-image",
             "Nano Banana 2 (Gemini 3.1 Flash Image)",
@@ -208,6 +250,67 @@ fn keyed(url: String, key: &str) -> OutputItem {
 }
 
 impl Google {
+    /// Speech or music through `generateContent`; the sound comes back inline.
+    async fn audio(&self, cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput> {
+        let key = cx.key()?;
+        let id = model_id(req);
+        let speech = req.task == Task::TextToSpeech;
+        let mut part = json!({ "text": req.prompt.trim() });
+        let mut config = json!({ "responseModalities": if speech { json!(["AUDIO"]) } else { json!(["AUDIO", "TEXT"]) } });
+        if speech {
+            let voice = req.voice.as_deref().filter(|v| !v.is_empty()).unwrap_or("Kore");
+            let mut speech_config = json!({ "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": voice } } });
+            if let Some(l) = req.language.as_deref().filter(|l| !l.trim().is_empty()) {
+                speech_config["languageCode"] = json!(l.trim());
+            }
+            config["speechConfig"] = speech_config;
+            if let Some(style) = req.param("style").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+                part["speech_metadata"] = json!({ "style": style.trim() });
+            }
+        } else {
+            // Lyria reads everything from the prompt: length, lyrics, no vocals.
+            let mut text = req.prompt.trim().to_string();
+            if req.instrumental == Some(true) {
+                text.push_str("\n\nInstrumental only, no vocals.");
+            } else if let Some(l) = req.lyrics.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+                text = format!("{text}\n\nLyrics:\n{l}");
+            }
+            if let Some(d) = req.duration.filter(|_| !id.contains("clip")) {
+                text.push_str(&format!("\n\nAbout {} long.", crate::sound::spoken_length(d)));
+            }
+            part = json!({ "text": text });
+        }
+        let body = json!({ "contents": [{ "role": "user", "parts": [part] }], "generationConfig": config });
+        let call = cx.http.post(cx.url(&format!("/models/{id}:generateContent"))).header(KEY_HEADER, key).timeout(Duration::from_secs(600));
+        let expected = Duration::from_secs(if speech { (req.prompt.chars().count() as u64 / 200).clamp(3, 60) } else { 60 });
+        let v: Value = ticking(cx, expected, if speech { "Speaking" } else { "Composing" }, util::send_json(cx, call.json(&body))).await?;
+        if let Some(reason) = v.pointer("/promptFeedback/blockReason").and_then(Value::as_str) {
+            return Err(refusal(reason, None));
+        }
+        let mut items = vec![];
+        let mut finish = None;
+        for cand in v.get("candidates").and_then(Value::as_array).into_iter().flatten() {
+            finish = finish.or(cand.get("finishReason").and_then(Value::as_str));
+            for part in cand.pointer("/content/parts").and_then(Value::as_array).into_iter().flatten() {
+                let Some(blob) = part.get("inlineData").or_else(|| part.get("inline_data")) else { continue };
+                let data = blob.get("data").and_then(Value::as_str).unwrap_or_default();
+                let bytes = util::b64_decode(data).map_err(|e| util::decode_err(cx, format!("bad audio data: {e}")))?;
+                let mime = blob.get("mimeType").or_else(|| blob.get("mime_type")).and_then(Value::as_str).unwrap_or("audio/L16;codec=pcm;rate=24000");
+                // Bare samples need a WAV header; the harness adds it from the MIME parameters.
+                let mime = if util::pcm_params(mime).is_some() || util::sniff_mime(&bytes).is_none() { mime.to_string() } else { util::sniff_mime(&bytes).unwrap_or(mime).to_string() };
+                items.push(OutputItem::bytes(OutputKind::Audio, bytes, mime));
+            }
+        }
+        if items.is_empty() {
+            if let Some(reason) = finish.filter(|r| BLOCKED.contains(r)) {
+                return Err(refusal(reason, None));
+            }
+            return Err(GenError::Provider(format!("Gemini returned no audio (finish reason: {}).", finish.unwrap_or("unknown"))));
+        }
+        items.truncate(1);
+        Ok(GenOutput { items, ..Default::default() })
+    }
+
     async fn image(&self, cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput> {
         let key = cx.key()?;
         let id = model_id(req);
@@ -451,7 +554,7 @@ impl Provider for Google {
             id: ID.into(),
             name: "Google Gemini".into(),
             kind: ProviderKind::Cloud,
-            tagline: "Nano Banana images, Gemini Omni and Veo video".into(),
+            tagline: "Nano Banana images, Gemini Omni and Veo video, speech, Lyria music".into(),
             website: "https://ai.google.dev".into(),
             needs_key: true,
             key_env: vec!["GEMINI_API_KEY".into(), "GOOGLE_API_KEY".into()],
@@ -459,7 +562,10 @@ impl Provider for Google {
             key_hint: Some("AIza…".into()),
             default_base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
             base_url_editable: false,
-            tasks: vec![Task::TextToImage, Task::ImageToImage, Task::TextToVideo, Task::ImageToVideo],
+            tasks: vec![Task::TextToImage, Task::ImageToImage, Task::TextToVideo, Task::ImageToVideo, Task::TextToSpeech, Task::TextToMusic],
+            group: ProviderGroup::Media,
+            quick_start: false,
+            base_url_presets: vec![],
         }
     }
 
@@ -484,8 +590,14 @@ impl Provider for Google {
         Ok(format!("Key works · {ours} image/video models available"))
     }
 
+    async fn voices(&self, _cx: &Ctx, _model: &str) -> GenResult<Vec<Voice>> {
+        Ok(crate::voices::gemini())
+    }
+
     async fn generate(&self, cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput> {
         match req.task {
+            Task::TextToSpeech | Task::TextToMusic => self.audio(cx, req).await,
+            Task::TextToSound => Err(GenError::Unsupported("Gemini makes speech and music, not sound effects".into())),
             Task::TextToImage | Task::ImageToImage => self.image(cx, req).await,
             Task::TextToVideo | Task::ImageToVideo if model_id(req).starts_with("veo") => self.veo(cx, req).await,
             Task::TextToVideo | Task::ImageToVideo => self.omni(cx, req).await,

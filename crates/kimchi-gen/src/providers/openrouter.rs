@@ -501,6 +501,9 @@ impl Provider for OpenRouter {
             default_base_url: "https://openrouter.ai/api/v1".into(),
             base_url_editable: false,
             tasks: vec![Task::TextToImage, Task::ImageToImage, Task::TextToVideo, Task::ImageToVideo],
+            group: ProviderGroup::Gateway,
+            quick_start: true,
+            base_url_presets: vec![],
         }
     }
 

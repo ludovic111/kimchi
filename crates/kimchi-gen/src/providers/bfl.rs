@@ -333,6 +333,9 @@ impl Provider for Bfl {
             default_base_url: "https://api.bfl.ai/v1".into(),
             base_url_editable: false,
             tasks: vec![Task::TextToImage, Task::ImageToImage],
+            group: ProviderGroup::Media,
+            quick_start: false,
+            base_url_presets: vec![],
         }
     }
 

@@ -3,6 +3,12 @@
 //! The v2beta Stable Image endpoints are synchronous multipart calls that
 //! return one image each. We ask for JSON so the seed and finish reason come
 //! back alongside the base64 image.
+//!
+//! Stable Audio (music and sound effects), from the v2beta OpenAPI (read 2026-10-06):
+//! * Stable Audio 3: `POST /v2beta/audio/stable-audio/text-to-audio` (multipart, `model=stable-audio-3`)
+//!   answers 202 `{id}`; `GET /v2beta/audio/results/{id}` answers 202 while it runs, then the
+//!   result (`{audio, seed, finish_reason}` with `Accept: application/json`).
+//! * Stable Audio 2.5: `POST /v2beta/audio/stable-audio-2/text-to-audio` answers at once.
 
 use std::time::{Duration, Instant};
 
@@ -114,6 +120,79 @@ const STYLE_PRESETS: &[&str] = &[
     "pixel-art",
     "tile-texture",
 ];
+
+/// Stable Audio models: (id, name, description, longest seconds, credits, featured).
+const AUDIO: &[(&str, &str, &str, f64, f64, bool)] = &[
+    ("stable-audio-3", "Stable Audio 3", "Music, loops and sound effects up to six minutes, 44.1 kHz stereo.", 380.0, 26.0, true),
+    ("stable-audio-2.5", "Stable Audio 2.5", "Music and sound effects up to three minutes, quick.", 190.0, 20.0, false),
+];
+
+fn audio_info(&(id, name, description, max, credits, featured): &(&str, &str, &str, f64, f64, bool)) -> ModelInfo {
+    ModelInfo {
+        description: Some(description.into()),
+        duration_range: Some((1.0, max)),
+        seed: true,
+        price: Some(format!("≈ ${:.2} / track", credits / 100.0)),
+        featured,
+        ..ModelInfo::new(ID, id, name, &[Task::TextToMusic, Task::TextToSound])
+    }
+}
+
+/// Music or a sound effect: Stable Audio 3 runs in the background, 2.5 answers at once.
+async fn audio(cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput> {
+    let key = cx.key()?;
+    let v3 = req.model == "stable-audio-3";
+    let max = if v3 { 380.0 } else { 190.0 };
+    // Without a length the API makes 190 s; a sound effect wants a few.
+    let default = if req.task == Task::TextToSound { 6.0 } else { 30.0 };
+    let duration = req.duration.unwrap_or(default).clamp(1.0, max).round() as i64;
+    let mut text = req.prompt.trim().to_string();
+    if req.task == Task::TextToMusic && req.instrumental != Some(true)
+        && let Some(l) = req.lyrics.as_deref().map(str::trim).filter(|l| !l.is_empty())
+    {
+        text = format!("{text}. Lyrics: {l}");
+    }
+    let mut f = Form::new().text("prompt", text).text("duration", duration.to_string()).text("model", req.model.clone()).text("output_format", "mp3");
+    if let Some(s) = req.seed {
+        f = f.text("seed", s.rem_euclid(4_294_967_294).to_string());
+    }
+    for (k, v) in &req.params {
+        f = f.text(k.clone(), v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
+    }
+    let path = if v3 { "/v2beta/audio/stable-audio/text-to-audio" } else { "/v2beta/audio/stable-audio-2/text-to-audio" };
+    let call = cx.http.post(cx.url(path)).bearer_auth(key).header("Accept", "application/json").multipart(f).timeout(Duration::from_secs(600));
+    let text = util::with_estimate(cx, Duration::from_secs(20 + duration as u64 / 6), "Composing", send(cx, call)).await?;
+    let mut v: Value = serde_json::from_str(&text).map_err(|e| util::decode_err(cx, e.to_string()))?;
+    if v.get("audio").is_none()
+        && let Some(id) = v.get("id").and_then(Value::as_str).map(str::to_string)
+    {
+        let url = cx.url(&format!("/v2beta/audio/results/{id}"));
+        let started = Instant::now();
+        v = util::poll(Duration::from_secs(3), Duration::from_secs(60 * 20), || async {
+            let r = cx.http.get(&url).bearer_auth(key).header("Accept", "application/json").send().await.map_err(util::net_err(cx))?;
+            let status = r.status().as_u16();
+            let body = r.text().await.map_err(util::net_err(cx))?;
+            match status {
+                202 => {
+                    util::estimate(cx, started, Duration::from_secs(40), "Composing");
+                    Ok(None)
+                }
+                200..300 => serde_json::from_str::<Value>(&body).map(Some).map_err(|e| util::decode_err(cx, e.to_string())),
+                404 => Err(GenError::Provider("Stability lost track of this result (it may have expired). Try again.".into())),
+                _ => Err(GenError::Http { provider: cx.provider.clone(), status, message: stability_message(&body) }),
+            }
+        })
+        .await?;
+    }
+    if v.get("finish_reason").and_then(Value::as_str) == Some("CONTENT_FILTERED") {
+        return Err(GenError::Moderated("Stability filtered this sound".into()));
+    }
+    let data = v.get("audio").and_then(Value::as_str).and_then(|s| util::b64_decode(s).ok()).ok_or_else(|| util::decode_err(cx, "no audio in response"))?;
+    let mime = util::sniff_mime(&data).unwrap_or("audio/mpeg");
+    let seed = v.get("seed").and_then(|s| s.as_i64().or_else(|| s.as_str()?.parse().ok()));
+    let credits = AUDIO.iter().find(|a| a.0 == req.model).map_or(20.0, |a| a.4);
+    Ok(GenOutput { items: vec![OutputItem::bytes(OutputKind::Audio, data, mime)], seed, cost_usd: Some(credits / 100.0) })
+}
 
 fn find(id: &str) -> Option<&'static Model> {
     MODELS.iter().find(|m| m.id == id)
@@ -264,7 +343,7 @@ impl Provider for Stability {
             id: ID.into(),
             name: "Stability AI".into(),
             kind: ProviderKind::Cloud,
-            tagline: "Stable Diffusion 3.5 and Stable Image".into(),
+            tagline: "Stable Image, Stable Diffusion 3.5 and Stable Audio".into(),
             website: "https://platform.stability.ai".into(),
             needs_key: true,
             key_env: vec!["STABILITY_API_KEY".into()],
@@ -272,12 +351,15 @@ impl Provider for Stability {
             key_hint: Some("sk-…".into()),
             default_base_url: "https://api.stability.ai".into(),
             base_url_editable: false,
-            tasks: vec![Task::TextToImage, Task::ImageToImage],
+            tasks: vec![Task::TextToImage, Task::ImageToImage, Task::TextToMusic, Task::TextToSound],
+            group: ProviderGroup::Media,
+            quick_start: false,
+            base_url_presets: vec![],
         }
     }
 
     async fn models(&self, _cx: &Ctx) -> GenResult<Vec<ModelInfo>> {
-        Ok(MODELS.iter().map(model_info).collect())
+        Ok(MODELS.iter().map(model_info).chain(AUDIO.iter().map(audio_info)).collect())
     }
 
     async fn check(&self, cx: &Ctx) -> GenResult<String> {
@@ -290,6 +372,12 @@ impl Provider for Stability {
     }
 
     async fn generate(&self, cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput> {
+        if req.task.is_audio() {
+            if !AUDIO.iter().any(|a| a.0 == req.model) {
+                return Err(GenError::Unsupported(format!("`{}` doesn't make sound; use Stable Audio", req.model)));
+            }
+            return audio(cx, req).await;
+        }
         let m = find(&req.model).ok_or_else(|| GenError::Unsupported(format!("unknown Stability model `{}`", req.model)))?;
         if !matches!(req.task, Task::TextToImage | Task::ImageToImage) {
             return Err(GenError::Unsupported(format!("{} only makes images", m.name)));

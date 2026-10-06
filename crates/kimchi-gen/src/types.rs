@@ -17,13 +17,46 @@ pub enum Task {
     TextToVideo,
     /// Animate a start frame (optionally towards an end frame).
     ImageToVideo,
+    /// A voice reading the prompt.
+    TextToSpeech,
+    /// A piece of music described by the prompt (with lyrics, or instrumental).
+    TextToMusic,
+    /// A sound effect or ambience described by the prompt.
+    TextToSound,
 }
 
 impl Task {
+    pub const ALL: [Task; 7] =
+        [Task::TextToImage, Task::ImageToImage, Task::TextToVideo, Task::ImageToVideo, Task::TextToSpeech, Task::TextToMusic, Task::TextToSound];
+
     pub fn output(self) -> OutputKind {
         match self {
             Task::TextToImage | Task::ImageToImage => OutputKind::Image,
             Task::TextToVideo | Task::ImageToVideo => OutputKind::Video,
+            Task::TextToSpeech | Task::TextToMusic | Task::TextToSound => OutputKind::Audio,
+        }
+    }
+
+    pub fn is_audio(self) -> bool {
+        self.output() == OutputKind::Audio
+    }
+
+    /// Reads `text_to_speech` (or `textToSpeech`).
+    pub fn parse(s: &str) -> Option<Task> {
+        let flat: String = s.chars().filter(|c| *c != '_' && *c != '-').collect::<String>().to_ascii_lowercase();
+        Task::ALL.into_iter().find(|t| t.as_str().replace('_', "") == flat)
+    }
+
+    /// How people call it: `Text to speech`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Task::TextToImage => "Text to image",
+            Task::ImageToImage => "Image to image",
+            Task::TextToVideo => "Text to video",
+            Task::ImageToVideo => "Image to video",
+            Task::TextToSpeech => "Speech",
+            Task::TextToMusic => "Music",
+            Task::TextToSound => "Sound effects",
         }
     }
 
@@ -37,6 +70,9 @@ impl Task {
             Task::ImageToImage => "image_to_image",
             Task::TextToVideo => "text_to_video",
             Task::ImageToVideo => "image_to_video",
+            Task::TextToSpeech => "text_to_speech",
+            Task::TextToMusic => "text_to_music",
+            Task::TextToSound => "text_to_sound",
         }
     }
 }
@@ -56,6 +92,34 @@ pub enum ProviderKind {
     Cloud,
     /// Runs on this machine or the local network.
     Local,
+}
+
+/// How Settings and the first-run setup group providers.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderGroup {
+    /// One key, many companies' models (OpenRouter, fal, Replicate…).
+    Gateway,
+    /// A company's own image and video models.
+    #[default]
+    Media,
+    /// Voices, music and sound effects.
+    Sound,
+    /// Servers on this computer or the local network.
+    Local,
+}
+
+impl ProviderGroup {
+    pub const ALL: [ProviderGroup; 4] = [ProviderGroup::Gateway, ProviderGroup::Media, ProviderGroup::Sound, ProviderGroup::Local];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ProviderGroup::Gateway => "Gateways",
+            ProviderGroup::Media => "Images & video",
+            ProviderGroup::Sound => "Sound",
+            ProviderGroup::Local => "On this computer",
+        }
+    }
 }
 
 /// Static description of a provider, shown in settings.
@@ -81,6 +145,17 @@ pub struct ProviderInfo {
     /// Local servers and self-hosted gateways let users point elsewhere.
     pub base_url_editable: bool,
     pub tasks: Vec<Task>,
+    /// Where Settings lists it.
+    #[serde(default)]
+    pub group: ProviderGroup,
+    /// Quickest to start with: one key (or nothing to install) opens many models. The first-run
+    /// setup offers these first.
+    #[serde(default)]
+    pub quick_start: bool,
+    /// Other addresses the same kind of server usually answers on (local forks, regions), as
+    /// `(label, url)`; Settings offers them next to the address field.
+    #[serde(default)]
+    pub base_url_presets: Vec<(String, String)>,
 }
 
 /// Type of a model-specific knob.
@@ -147,6 +222,28 @@ pub struct ModelInfo {
     pub price: Option<String>,
     /// Shown first in pickers.
     pub featured: bool,
+    /// Speech: the model reads with one of [`Provider::voices`](crate::Provider::voices).
+    #[serde(default)]
+    pub voices: bool,
+    /// Speech: the voice used when none is chosen.
+    #[serde(default)]
+    pub default_voice: Option<String>,
+    /// Sound: shortest and longest result in seconds, when the length can be asked for
+    /// (music, sound effects). `durations` lists fixed choices instead.
+    #[serde(default)]
+    pub duration_range: Option<(f64, f64)>,
+    /// Music: takes lyrics ([`GenRequest::lyrics`]).
+    #[serde(default)]
+    pub lyrics: bool,
+    /// Music: can be asked for no singing ([`GenRequest::instrumental`]).
+    #[serde(default)]
+    pub instrumental: bool,
+    /// Speech: the longest text one request takes, in characters.
+    #[serde(default)]
+    pub max_chars: Option<u32>,
+    /// Languages it speaks or sings (`"en"`, `"fr"`…); empty: not said.
+    #[serde(default)]
+    pub languages: Vec<String>,
 }
 
 impl ModelInfo {
@@ -170,11 +267,84 @@ impl ModelInfo {
             params: vec![],
             price: None,
             featured: false,
+            voices: false,
+            default_voice: None,
+            duration_range: None,
+            lyrics: false,
+            instrumental: false,
+            max_chars: None,
+            languages: vec![],
         }
+    }
+
+    /// A speech model that reads with the provider's voices.
+    pub fn speech(provider: &str, id: impl Into<String>, name: impl Into<String>, default_voice: &str) -> Self {
+        Self { voices: true, default_voice: Some(default_voice.into()), ..Self::new(provider, id, name, &[Task::TextToSpeech]) }
+    }
+
+    /// A music or sound-effect model whose length can be asked for, `min`–`max` seconds.
+    pub fn sound(provider: &str, id: impl Into<String>, name: impl Into<String>, task: Task, min: f64, max: f64) -> Self {
+        Self { duration_range: Some((min, max)), ..Self::new(provider, id, name, &[task]) }
+    }
+
+    /// The length to ask for: `wanted` within the model's range or closest fixed choice, else
+    /// `default` (also kept within the range).
+    pub fn fit_duration(&self, wanted: Option<f64>, default: f64) -> f64 {
+        let d = wanted.filter(|d| d.is_finite() && *d > 0.0).unwrap_or(default);
+        if let Some((lo, hi)) = self.duration_range {
+            return d.clamp(lo, hi);
+        }
+        if !self.durations.is_empty() {
+            return crate::util::closest_duration(Some(d), &self.durations, d);
+        }
+        d
     }
 
     pub fn supports(&self, task: Task) -> bool {
         self.tasks.contains(&task)
+    }
+}
+
+/// A voice a speech model reads with.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Voice {
+    /// Sent back in [`GenRequest::voice`].
+    pub id: String,
+    pub name: String,
+    /// Language or accent, as the provider says it (`"en-US"`, `"British"`, `"multilingual"`).
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub gender: Option<String>,
+    /// A few words: `"Warm, calm narrator"`.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// A short sample to listen to, when the provider has one.
+    #[serde(default)]
+    pub preview_url: Option<String>,
+    /// The person's own voices (clones, designed) rather than the provider's.
+    #[serde(default)]
+    pub custom: bool,
+}
+
+impl Voice {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self { id: id.into(), name: name.into(), ..Default::default() }
+    }
+
+    pub fn described(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub fn gender(mut self, gender: impl Into<String>) -> Self {
+        self.gender = Some(gender.into());
+        self
+    }
+
+    pub fn language(mut self, language: impl Into<String>) -> Self {
+        self.language = Some(language.into());
+        self
     }
 }
 
@@ -237,9 +407,21 @@ pub struct GenRequest {
     pub width: Option<u32>,
     #[serde(default)]
     pub height: Option<u32>,
-    /// Seconds (video).
+    /// Seconds (video, music, sound effects).
     #[serde(default)]
     pub duration: Option<f64>,
+    /// Speech: the voice id ([`Voice::id`]).
+    #[serde(default)]
+    pub voice: Option<String>,
+    /// Speech and songs: the language (`"en"`, `"fr"`…) when the model takes one.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Music: the words to sing. Without them, models that need lyrics write their own.
+    #[serde(default)]
+    pub lyrics: Option<String>,
+    /// Music: no singing.
+    #[serde(default)]
+    pub instrumental: Option<bool>,
     #[serde(default)]
     pub resolution: Option<String>,
     #[serde(default)]
@@ -271,6 +453,10 @@ impl GenRequest {
             width: None,
             height: None,
             duration: None,
+            voice: None,
+            language: None,
+            lyrics: None,
+            instrumental: None,
             resolution: None,
             seed: None,
             count: 1,

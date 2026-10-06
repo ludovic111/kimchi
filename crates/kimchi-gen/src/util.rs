@@ -142,6 +142,19 @@ pub fn estimate(cx: &Ctx, started: Instant, expected: Duration, message: &str) {
     cx.report(Progress::fraction(eased, message));
 }
 
+/// Runs `fut` (one long request that answers when the result is made) while reporting an
+/// estimated progress every half second.
+pub async fn with_estimate<T>(cx: &Ctx, expected: Duration, label: &str, fut: impl Future<Output = T>) -> T {
+    let started = Instant::now();
+    tokio::pin!(fut);
+    loop {
+        tokio::select! {
+            r = &mut fut => return r,
+            _ = tokio::time::sleep(Duration::from_millis(500)) => estimate(cx, started, expected, label),
+        }
+    }
+}
+
 pub fn b64(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }
@@ -176,7 +189,9 @@ pub fn sniff_mime(data: &[u8]) -> Option<&'static str> {
         Some("image/gif")
     } else if data.len() > 12 && &data[4..8] == b"ftyp" {
         let brand = &data[8..12];
-        if brand == b"qt  " {
+        if brand == b"M4A " || brand == b"M4B " {
+            Some("audio/mp4")
+        } else if brand == b"qt  " {
             Some("video/quicktime")
         } else if brand.starts_with(b"avif") || brand == b"avis" {
             Some("image/avif")
@@ -187,10 +202,16 @@ pub fn sniff_mime(data: &[u8]) -> Option<&'static str> {
         }
     } else if starts(b"\x1A\x45\xDF\xA3") {
         Some("video/webm")
-    } else if starts(b"ID3") || starts(b"\xFF\xFB") {
+    } else if starts(b"ID3") || (data.len() > 1 && data[0] == 0xFF && matches!(data[1], 0xFB | 0xFA | 0xF3 | 0xF2 | 0xE3 | 0xE2)) {
         Some("audio/mpeg")
+    } else if data.len() > 1 && data[0] == 0xFF && matches!(data[1], 0xF1 | 0xF9) {
+        Some("audio/aac")
     } else if data.len() > 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WAVE" {
         Some("audio/wav")
+    } else if starts(b"fLaC") {
+        Some("audio/flac")
+    } else if starts(b"OggS") {
+        Some("audio/ogg")
     } else {
         None
     }
@@ -207,9 +228,12 @@ pub fn extension_for(mime: &str) -> &'static str {
         "video/mp4" => "mp4",
         "video/quicktime" => "mov",
         "video/webm" => "webm",
-        "audio/mpeg" => "mp3",
-        "audio/wav" | "audio/x-wav" => "wav",
-        "audio/ogg" => "ogg",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/wav" | "audio/x-wav" | "audio/wave" | "audio/vnd.wave" => "wav",
+        "audio/ogg" | "audio/opus" => "ogg",
+        "audio/flac" | "audio/x-flac" => "flac",
+        "audio/aac" => "aac",
+        "audio/mp4" | "audio/x-m4a" | "audio/m4a" => "m4a",
         _ => "bin",
     }
 }
@@ -221,6 +245,48 @@ pub fn kind_for_mime(mime: &str) -> Option<OutputKind> {
         "audio" => Some(OutputKind::Audio),
         _ => None,
     }
+}
+
+/// A WAV file around raw little-endian 16-bit PCM (Gemini speech and other APIs answer with
+/// bare samples).
+pub fn wav_from_pcm16(pcm: &[u8], sample_rate: u32, channels: u16) -> Vec<u8> {
+    let data_len = pcm.len() as u32;
+    let block = channels * 2;
+    let mut out = Vec::with_capacity(44 + pcm.len());
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&(sample_rate * block as u32).to_le_bytes());
+    out.extend_from_slice(&block.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    out.extend_from_slice(pcm);
+    out
+}
+
+/// Reads `audio/L16;codec=pcm;rate=24000` (and `channels=`) style MIME parameters.
+pub fn pcm_params(mime: &str) -> Option<(u32, u16)> {
+    let lower = mime.to_ascii_lowercase();
+    let base = lower.split(';').next().unwrap_or("").trim();
+    if !(base == "audio/l16" || base == "audio/pcm" || base.ends_with("/pcm") || base == "audio/raw") {
+        return None;
+    }
+    let param = |k: &str| lower.split(';').filter_map(|p| p.trim().strip_prefix(k)).find_map(|v| v.trim_start_matches('=').trim().parse::<u32>().ok());
+    Some((param("rate").unwrap_or(24_000), param("channels").unwrap_or(1) as u16))
+}
+
+/// Decodes a hex string (MiniMax returns audio as hex).
+pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim();
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
 /// Reduced ratio like `"16:9"`.
@@ -303,6 +369,10 @@ fn guess_from_url(url: &str) -> String {
         "webm" => "video/webm",
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "ogg" | "opus" => "audio/ogg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
         _ => "application/octet-stream",
     }
     .to_string()
@@ -365,6 +435,22 @@ mod tests {
         assert_eq!(closest_ratio("4:5", &["1:1", "16:9", "9:16"]), "1:1");
         assert_eq!(size_for_ratio("16:9", 1.0, 64), (1344, 768));
         assert_eq!(closest_duration(Some(7.0), &[5.0, 10.0], 5.0), 5.0);
+    }
+
+    #[test]
+    fn audio_helpers() {
+        let wav = wav_from_pcm16(&[0, 0, 1, 0], 24_000, 1);
+        assert_eq!(sniff_mime(&wav), Some("audio/wav"));
+        assert_eq!(wav.len(), 48);
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 24_000);
+        assert_eq!(pcm_params("audio/L16;codec=pcm;rate=24000"), Some((24_000, 1)));
+        assert_eq!(pcm_params("audio/mpeg"), None);
+        assert_eq!(hex_decode("49443304"), Some(b"ID3\x04".to_vec()));
+        assert_eq!(hex_decode("4"), None);
+        assert_eq!(sniff_mime(b"fLaC\0\0"), Some("audio/flac"));
+        assert_eq!(sniff_mime(b"\xFF\xF3\x00"), Some("audio/mpeg"));
+        assert_eq!(extension_for("audio/mpeg"), "mp3");
+        assert_eq!(extension_for("audio/flac"), "flac");
     }
 
     #[test]

@@ -6,8 +6,10 @@
 pub mod harness;
 pub mod provider;
 pub mod providers;
+pub(crate) mod sound;
 pub mod types;
 pub mod util;
+pub mod voices;
 
 pub use harness::{Harness, Job, JobStatus, KeySource, MemorySecrets, ProviderSettings, ProviderStatus, SecretStore};
 pub use provider::{Ctx, GenError, GenResult, Provider};

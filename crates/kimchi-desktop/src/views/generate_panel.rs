@@ -11,7 +11,7 @@ use gpui::{
     prelude::*, px,
 };
 use kimchi_core::{ClipContent, MediaKind, TrackKind};
-use kimchi_gen::{ModelInfo, ProviderKind};
+use kimchi_gen::{ModelInfo, ProviderKind, Task};
 use serde_json::{Value, json};
 
 use crate::playback::Playback;
@@ -20,11 +20,27 @@ use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::{Button, icon, segmented, switch, timecode};
 use crate::views::generate::params::ParamField;
-use crate::views::generate::{COMMON_RATIOS, Draft, chip, chip_base, eyebrow, model_key, ratio_parts, role_label};
+use crate::views::generate::voices::VoiceState;
+use crate::views::generate::{COMMON_RATIOS, Draft, Mode, SOUND_TASKS, chip, chip_base, eyebrow, model_key, ratio_parts, role_label};
 use crate::views::timeline::dnd::MediaDrag;
 
 const IMAGE_PLACEHOLDER: &str = "An overhead shot of a ceramic bowl of kimchi on linen, soft morning light…";
 const VIDEO_PLACEHOLDER: &str = "A slow dolly through a neon-lit market at night, rain on the lens…";
+const SPEECH_PLACEHOLDER: &str = "What the voice says: “Every great dish starts with patience…”";
+const MUSIC_PLACEHOLDER: &str = "Warm lo-fi hip hop with soft keys and vinyl crackle, 80 bpm…";
+const SOUND_PLACEHOLDER: &str = "Footsteps on gravel, then a wooden door creaks open…";
+
+/// The prompt's placeholder for what the draft makes.
+fn placeholder(d: &Draft) -> &'static str {
+    match (d.mode, d.sound) {
+        (Mode::Image, _) => IMAGE_PLACEHOLDER,
+        (Mode::Video, _) => VIDEO_PLACEHOLDER,
+        (Mode::Sound, Task::TextToSpeech) => SPEECH_PLACEHOLDER,
+        (Mode::Sound, Task::TextToMusic) => MUSIC_PLACEHOLDER,
+        (Mode::Sound, _) => SOUND_PLACEHOLDER,
+    }
+}
+
 const IMAGE_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "webp", "heic", "avif", "gif"];
 
 pub struct GeneratePanel {
@@ -35,6 +51,15 @@ pub struct GeneratePanel {
     pub(crate) prompt: Entity<TextInput>,
     pub(crate) negative: Entity<TextInput>,
     pub(crate) seed: Entity<TextInput>,
+    /// Music: the words to sing.
+    pub(crate) lyrics: Entity<TextInput>,
+    /// Voices by `provider::model`.
+    pub(crate) voices: std::collections::HashMap<String, VoiceState>,
+    pub(crate) voice_open: bool,
+    pub(crate) voice_query: Entity<TextInput>,
+    pub(crate) voice_anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The voice whose sample is playing (or loading).
+    pub(crate) sample: Option<String>,
     pub(crate) picker_open: bool,
     pub(crate) picker_query: Entity<TextInput>,
     pub(crate) picker_anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -71,6 +96,12 @@ impl GeneratePanel {
             i.bare = true;
             i
         });
+        let voice_query = cx.new(|cx| {
+            let mut i = TextInput::new(cx).placeholder("Search voices");
+            i.bare = true;
+            i
+        });
+        let lyrics = cx.new(|cx| TextInput::new(cx).multiline(4).placeholder("[Verse]\nWords to sing, one line each…\n[Chorus]\n…"));
         let playback = store.read(cx).playback.clone();
         let playhead = cx.new(|cx| PlayheadTime::new(playback, cx));
 
@@ -92,6 +123,18 @@ impl GeneratePanel {
                 InputEvent::Changed(_) => cx.notify(),
                 _ => {}
             }),
+            cx.subscribe(&voice_query, |this, _, e: &InputEvent, cx| match e {
+                InputEvent::Cancel => {
+                    this.voice_open = false;
+                    cx.notify();
+                }
+                InputEvent::Submit => {
+                    if let Some(v) = this.voice_matches(cx).into_iter().next() {
+                        this.pick_voice(Some(v.id), cx);
+                    }
+                }
+                _ => cx.notify(),
+            }),
             cx.subscribe(&picker_query, |this, _, e: &InputEvent, cx| match e {
                 InputEvent::Cancel => {
                     this.picker_open = false;
@@ -106,7 +149,7 @@ impl GeneratePanel {
                 _ => cx.notify(),
             }),
         ];
-        for input in [&negative, &seed] {
+        for input in [&negative, &seed, &lyrics] {
             subs.push(cx.subscribe(input, |_, _, e: &InputEvent, cx| {
                 if let InputEvent::Changed(_) = e {
                     cx.notify();
@@ -120,6 +163,12 @@ impl GeneratePanel {
             prompt,
             negative,
             seed,
+            lyrics,
+            voices: Default::default(),
+            voice_open: false,
+            voice_query,
+            voice_anchor: Rc::new(Cell::new(None)),
+            sample: None,
             picker_open: false,
             picker_query,
             picker_anchor: Rc::new(Cell::new(None)),
@@ -151,7 +200,11 @@ impl GeneratePanel {
     pub(crate) fn current_model(&self, cx: &App) -> Option<ModelInfo> {
         let s = self.store.read(cx);
         let task = self.draft.task();
-        let default = if self.draft.video { &s.settings.generate.video_model } else { &s.settings.generate.image_model };
+        let default = match self.draft.mode {
+            Mode::Image => &s.settings.generate.image_model,
+            Mode::Video => &s.settings.generate.video_model,
+            Mode::Sound => &s.settings.generate.audio_model,
+        };
         let wanted = self.draft.model.clone().or_else(|| Some(default.clone()).filter(|d| !d.is_empty()));
         let fits = || s.models.iter().filter(|m| m.supports(task));
         wanted
@@ -225,6 +278,14 @@ impl GeneratePanel {
             d.aspect = None;
         }
         d.count = d.count.clamp(1, m.max_outputs.max(1));
+        if d.duration.is_some_and(|x| m.duration_range.is_some_and(|(lo, hi)| x < lo || x > hi)) {
+            d.duration = None;
+        }
+        // Voices belong to a model family; another model starts from its own default.
+        d.voice = None;
+        if m.voices {
+            self.load_voices(&m, cx);
+        }
         for p in &m.params {
             d.params.insert(p.key.clone(), p.default.clone());
         }
@@ -232,8 +293,24 @@ impl GeneratePanel {
     }
 
     fn set_video(&mut self, video: bool, cx: &mut Context<Self>) {
-        self.draft.set_video(video);
-        self.prompt.update(cx, |i, cx| i.set_placeholder(if video { VIDEO_PLACEHOLDER } else { IMAGE_PLACEHOLDER }, cx));
+        self.set_mode(if video { Mode::Video } else { Mode::Image }, cx);
+    }
+
+    pub(crate) fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        self.draft.set_mode(mode);
+        self.after_mode_change(cx);
+    }
+
+    pub(crate) fn set_sound(&mut self, task: Task, cx: &mut Context<Self>) {
+        self.draft.set_sound(task);
+        self.after_mode_change(cx);
+    }
+
+    fn after_mode_change(&mut self, cx: &mut Context<Self>) {
+        let p = placeholder(&self.draft);
+        self.prompt.update(cx, |i, cx| i.set_placeholder(p, cx));
+        self.voice_open = false;
+        self.picker_open = false;
         self.sync_model(cx);
         cx.notify();
     }
@@ -246,7 +323,7 @@ impl GeneratePanel {
         self.params_for = None;
         self.sync_model(cx);
         // Remember it for this mode (it is also what the CLI and MCP use by default).
-        let setting = if self.draft.video { "generate.videoModel" } else { "generate.imageModel" };
+        let setting = self.draft.model_setting();
         let current = self.store.read(cx).settings.get(setting).and_then(|v| v.as_str().map(str::to_string));
         if current.as_deref() != Some(key.as_str()) {
             self.store.update(cx, |s, cx| s.run("app.setSetting", json!({ "key": setting, "value": key }), cx));
@@ -255,7 +332,10 @@ impl GeneratePanel {
     }
 
     fn apply_compose(&mut self, req: crate::store::ComposeRequest, cx: &mut Context<Self>) {
-        self.set_video(req.video, cx);
+        match req.sound {
+            Some(task) => self.set_sound(task, cx),
+            None => self.set_video(req.video, cx),
+        }
         if let Some(p) = req.prompt {
             self.prompt.update(cx, |i, cx| i.set_text(p, cx));
         }
@@ -275,13 +355,21 @@ impl GeneratePanel {
             self.draft.aspect = req.aspect;
         }
         self.draft.refs = req.refs;
-        self.draft.refs.truncate(if self.draft.video { 2 } else { 8 });
+        self.draft.refs.truncate(match self.draft.mode {
+            Mode::Video => 2,
+            Mode::Image => 8,
+            Mode::Sound => 0,
+        });
         if req.target.is_some() {
             self.draft.to_timeline = true;
         }
         self.draft.target = req.target;
         self.params_for = None;
         self.sync_model(cx);
+        // After the model is known: its voices are what the voice is checked against.
+        if req.voice.is_some() {
+            self.draft.voice = req.voice;
+        }
         if self.draft.negative_or_seed_set(&self.negative, &self.seed, cx) {
             self.show_advanced = true;
         }
@@ -395,22 +483,45 @@ impl GeneratePanel {
             "prompt": prompt,
             "provider": m.provider,
             "model": m.id,
-            "video": d.video,
+            "video": d.video(),
             "task": d.task().as_str(),
-            "images": images,
-            "aspectRatio": d.aspect.clone().unwrap_or_else(|| self.project_ratio(cx)),
             "params": Value::Object(d.params.clone()),
             "place": if d.to_timeline { "timeline" } else { "library" },
         });
         let o = p.as_object_mut().expect("object");
+        if !d.is_sound() {
+            o.insert("images".into(), json!(images));
+            o.insert("aspectRatio".into(), json!(d.aspect.clone().unwrap_or_else(|| self.project_ratio(cx))));
+        }
+        match d.task() {
+            Task::TextToSpeech => {
+                if let Some(v) = d.voice.clone().or_else(|| m.default_voice.clone()) {
+                    o.insert("voice".into(), json!(v));
+                }
+            }
+            Task::TextToMusic => {
+                let lyrics = self.lyrics.read(cx).text().trim().to_string();
+                if d.instrumental && m.instrumental {
+                    o.insert("instrumental".into(), json!(true));
+                } else if !lyrics.is_empty() {
+                    o.insert("lyrics".into(), json!(lyrics));
+                }
+            }
+            _ => {}
+        }
+        if d.is_sound()
+            && let Some(len) = d.duration
+        {
+            o.insert("duration".into(), json!(len));
+        }
         let negative = self.negative.read(cx).text().trim().to_string();
         if m.negative_prompt && !negative.is_empty() {
             o.insert("negativePrompt".into(), json!(negative));
         }
-        if d.video {
+        if d.video() {
             o.insert("duration".into(), json!(d.duration.or_else(|| m.durations.first().copied()).unwrap_or(5.0)));
         }
-        if let Some(r) = d.resolution.clone().or_else(|| m.resolutions.first().cloned()) {
+        if let Some(r) = d.resolution.clone().or_else(|| m.resolutions.first().cloned()).filter(|_| !d.is_sound()) {
             o.insert("resolution".into(), json!(r));
         }
         if m.seed
@@ -511,7 +622,7 @@ impl GeneratePanel {
     fn refs_row(&self, model: Option<&ModelInfo>, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let max = self.draft.max_refs(model);
-        let video = self.draft.video;
+        let video = self.draft.video();
         let n = self.draft.refs.len();
         let add_tip = if video { if n > 0 { "End frame from a file" } else { "Start frame from a file" } } else { "Reference image from a file" };
         let add_box = |id: &'static str, ic: &'static str, tip: &'static str| {
@@ -648,7 +759,7 @@ impl GeneratePanel {
                 )
             })
             .child(div().min_h(px(92.)).child(self.prompt.clone()))
-            .child(self.refs_row(model, cx))
+            .when(!self.draft.is_sound(), |d| d.child(self.refs_row(model, cx)))
             .child(
                 div()
                     .flex()
@@ -705,14 +816,16 @@ impl GeneratePanel {
                 }))
         }));
 
+        let sound = d.is_sound().then(|| self.sound_settings(m, cx));
         div()
             .flex()
             .flex_col()
             .gap(px(12.))
             .pt(px(16.))
             .px(px(2.))
-            .child(section("Aspect", aspect.into_any_element()))
-            .when(d.video && !m.durations.is_empty(), |el| {
+            .when(!d.is_sound(), |el| el.child(section("Aspect", aspect.into_any_element())))
+            .children(sound)
+            .when(d.video() && !m.durations.is_empty(), |el| {
                 let current = d.duration.or_else(|| m.durations.first().copied());
                 el.child(section(
                     "Length",
@@ -729,7 +842,7 @@ impl GeneratePanel {
                         .into_any_element(),
                 ))
             })
-            .when(m.resolutions.len() > 1, |el| {
+            .when(m.resolutions.len() > 1 && !d.is_sound(), |el| {
                 let current = d.resolution.clone().or_else(|| m.resolutions.first().cloned());
                 el.child(section(
                     "Quality",
@@ -762,7 +875,7 @@ impl GeneratePanel {
                         .into_any_element(),
                 ))
             })
-            .when(m.audio, |el| {
+            .when(m.audio && !d.is_sound(), |el| {
                 el.child(switch(
                     "gen-audio",
                     "Sound",
@@ -903,8 +1016,10 @@ impl Render for GeneratePanel {
         let model = self.current_model(cx);
         let loading = self.store.read(cx).models_loading;
         let show_connect = self.connected(cx) == 0 && !loading;
-        let video = self.draft.video;
+        let mode = self.draft.mode;
+        let sound_task = self.draft.sound;
         let this = cx.entity().downgrade();
+        let this2 = this.clone();
         let composer = self.composer(model.as_ref(), window, cx).into_any_element();
         let settings = model.as_ref().map(|m| self.settings(m, cx).into_any_element());
         let recent = self.recent(cx);
@@ -922,16 +1037,31 @@ impl Render for GeneratePanel {
                     .pt(px(12.))
                     .pb(px(10.))
                     .child(div().text_size(px(sz::BASE)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent_text).child("Generate"))
-                    .child(div().w(px(170.)).child(segmented(
+                    .child(div().w(px(216.)).child(segmented(
                         "gen-mode",
-                        vec![(false, "Image".into()), (true, "Video".into())],
-                        video,
+                        vec![(Mode::Image, "Image".into()), (Mode::Video, "Video".into()), (Mode::Sound, "Sound".into())],
+                        mode,
                         move |v, _, cx| {
-                            this.update(cx, |p, cx| p.set_video(*v, cx)).ok();
+                            this.update(cx, |p, cx| p.set_mode(*v, cx)).ok();
                         },
                         cx,
                     ))),
             )
+            .when(mode == Mode::Sound, |d| {
+                d.child(
+                    div().px(px(12.)).pb(px(10.)).child(
+                        segmented(
+                            "gen-sound",
+                            SOUND_TASKS.iter().map(|t| (*t, t.label().into())).collect(),
+                            sound_task,
+                            move |t, _, cx| {
+                                this2.update(cx, |p, cx| p.set_sound(*t, cx)).ok();
+                            },
+                            cx,
+                        ),
+                    ),
+                )
+            })
             .child(
                 div()
                     .id("gen-scroll")

@@ -155,6 +155,10 @@ pub struct ContextMenu {
 #[derive(Clone, Debug, Default)]
 pub struct ComposeRequest {
     pub video: bool,
+    /// Sound instead of a picture: speech, music or a sound effect (`video` is then ignored).
+    pub sound: Option<kimchi_gen::Task>,
+    /// Speech: the voice id.
+    pub voice: Option<String>,
     pub prompt: Option<String>,
     pub negative: Option<String>,
     /// `provider::model`.

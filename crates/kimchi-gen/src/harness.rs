@@ -134,6 +134,8 @@ pub struct Harness {
     settings: RwLock<HashMap<String, ProviderSettings>>,
     secrets: Arc<dyn SecretStore>,
     model_cache: Mutex<HashMap<String, (Instant, Vec<ModelInfo>)>>,
+    /// Voices by `provider::model`.
+    voice_cache: Mutex<HashMap<String, (Instant, Vec<Voice>)>>,
     jobs: Mutex<Vec<JobEntry>>,
     limits: HashMap<String, Arc<Semaphore>>,
     events: broadcast::Sender<Job>,
@@ -166,6 +168,7 @@ impl Harness {
             settings: RwLock::new(HashMap::new()),
             secrets,
             model_cache: Mutex::new(HashMap::new()),
+            voice_cache: Mutex::new(HashMap::new()),
             jobs: Mutex::new(vec![]),
             limits,
             events: broadcast::channel(256).0,
@@ -189,6 +192,7 @@ impl Harness {
     pub fn load_settings(&self, all: HashMap<String, ProviderSettings>) {
         *self.settings.write() = all;
         self.model_cache.lock().clear();
+        self.voice_cache.lock().clear();
     }
 
     pub fn settings(&self) -> HashMap<String, ProviderSettings> {
@@ -197,7 +201,14 @@ impl Harness {
 
     pub fn set_settings(&self, provider: &str, s: ProviderSettings) {
         self.settings.write().insert(provider.to_string(), s);
+        self.forget(provider);
+    }
+
+    /// Drops what was fetched with a provider's old key or address.
+    fn forget(&self, provider: &str) {
         self.model_cache.lock().remove(provider);
+        let prefix = format!("{provider}::");
+        self.voice_cache.lock().retain(|k, _| !k.starts_with(&prefix));
     }
 
     pub fn set_key(&self, provider: &str, key: Option<&str>) -> GenResult<()> {
@@ -210,7 +221,7 @@ impl Harness {
             Some(k) => self.secrets.set(provider, k),
             None => self.secrets.delete(provider),
         };
-        self.model_cache.lock().remove(provider);
+        self.forget(provider);
         r.map_err(GenError::Provider)
     }
 
@@ -280,6 +291,31 @@ impl Harness {
         Ok(models)
     }
 
+    /// The voices a speech model offers (cached like models; `refresh` asks again).
+    pub async fn voices(&self, provider: &str, model: &str, refresh: bool) -> GenResult<Vec<Voice>> {
+        let key = format!("{provider}::{model}");
+        if !refresh
+            && let Some((at, voices)) = self.voice_cache.lock().get(&key)
+            && at.elapsed() < MODEL_CACHE_TTL
+        {
+            return Ok(voices.clone());
+        }
+        let p = self.provider(provider)?;
+        let cx = self.ctx(p.as_ref());
+        let voices = p.voices(&cx, model).await?;
+        self.voice_cache.lock().insert(key, (Instant::now(), voices.clone()));
+        Ok(voices)
+    }
+
+    /// Downloads a provider's public file (a voice sample) with the harness's client.
+    pub async fn fetch(&self, url: &str) -> GenResult<(Bytes, String)> {
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            return Err(GenError::Provider(format!("not a web address: {url}")));
+        }
+        let cx = Ctx::new("sample", self.http.clone(), "");
+        util::download(&cx, url, &[]).await
+    }
+
     /// Models from every ready provider. Providers that fail are skipped.
     pub async fn all_models(&self) -> Vec<ModelInfo> {
         let ready: Vec<String> = self.statuses().into_iter().filter(|s| s.ready).map(|s| s.info.id).collect();
@@ -327,7 +363,8 @@ impl Harness {
             return Err(GenError::Unsupported(format!("{} doesn't do {}", info.name, req.task.as_str())));
         }
         if req.prompt.trim().is_empty() && !req.task.needs_image() {
-            return Err(GenError::Provider("Write a prompt first.".into()));
+            let what = if req.task == Task::TextToSpeech { "Write what the voice should say first." } else { "Write a prompt first." };
+            return Err(GenError::Provider(what.into()));
         }
         if req.task.needs_image() && req.images.is_empty() {
             return Err(GenError::Provider("This task needs an input image.".into()));
@@ -479,6 +516,11 @@ async fn save_outputs(cx: &Ctx, out: &GenOutput, dir: &Path, job_id: &str) -> Ge
             mime
         } else {
             util::sniff_mime(&data).unwrap_or("application/octet-stream").to_string()
+        };
+        // Bare PCM samples (Gemini speech) get a WAV header so every player and ffmpeg read them.
+        let (data, mime) = match util::pcm_params(&mime) {
+            Some((rate, channels)) => (Bytes::from(util::wav_from_pcm16(&data, rate, channels)), "audio/wav".to_string()),
+            None => (data, mime.split(';').next().unwrap_or(&mime).trim().to_string()),
         };
         let kind = util::kind_for_mime(&mime).unwrap_or(item.kind);
         let path = dir.join(format!("{short}-{}.{}", i + 1, util::extension_for(&mime)));

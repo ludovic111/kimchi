@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::provider::{Ctx, GenError, GenResult, Provider};
+use crate::sound::{self, Fixed, Lang, Len, Lyrics, Sound, VoiceField, VoiceList};
 use crate::types::*;
 use crate::util;
 
@@ -303,6 +304,134 @@ const SPECS: &[Spec] = &[
     },
 ];
 
+// ---- sound ------------------------------------------------------------------
+// Fields from each model's `/api/schema` (read 2026-10-06). Every one returns one file URI.
+
+/// ElevenLabs voices as Replicate's `voice` enum names them.
+const ELEVEN_VOICES: &[(&str, &str)] = &[
+    ("Rachel", "Calm, American"),
+    ("Aria", "Expressive, American"),
+    ("Sarah", "Soft, American"),
+    ("Roger", "Confident, American"),
+    ("Drew", "Well-rounded, American"),
+    ("Clyde", "War veteran, American"),
+    ("Paul", "Reporter, American"),
+    ("Domi", "Strong, American"),
+    ("Dave", "Conversational, British"),
+    ("Fin", "Sailor, Irish"),
+    ("James", "Calm, Australian"),
+    ("Jane", "Professional, British"),
+    ("Juniper", "Grounded, American"),
+    ("Arabella", "Young, mature narrator"),
+    ("Hope", "Upbeat, clear"),
+    ("Bradford", "Expressive, British"),
+    ("Reginald", "Dramatic villain"),
+    ("Gaming", "Energetic streamer"),
+    ("Austin", "Good ol' Texan"),
+    ("Kuon", "Cheerful, Japanese"),
+    ("Blondie", "Conversational, British"),
+    ("Priyanka", "Calm, Indian"),
+    ("Alexandra", "Chatty, American"),
+    ("Monika", "Warm, Indian"),
+    ("Mark", "Natural conversations"),
+    ("Grimblewood", "Fantasy narrator"),
+];
+
+const QWEN_SPEAKERS: &[(&str, &str)] = &[
+    ("Vivian", "Bright, Chinese and English"),
+    ("Serena", "Gentle, Chinese and English"),
+    ("Uncle_fu", "Seasoned, Chinese"),
+    ("Dylan", "Youthful, Beijing Chinese"),
+    ("Eric", "Lively, Sichuan Chinese"),
+    ("Ryan", "Dynamic, English"),
+    ("Aiden", "Sunny, American English"),
+    ("Ono_anna", "Playful, Japanese"),
+    ("Sohee", "Warm, Korean"),
+];
+
+const SOUNDS: &[Sound] = &[
+    Sound {
+        lang: Lang::Code("language_code"),
+        price: "$0.10 / 1k characters",
+        featured: true,
+        ..sound::speech("elevenlabs/v3", "ElevenLabs v3", "Expressive speech with audio tags like [whispers] and [laughs].", "prompt", VoiceList::Static(ELEVEN_VOICES), "Rachel")
+    },
+    Sound {
+        lang: Lang::Code("language_code"),
+        price: "$0.05 / 1k characters",
+        secs: 5,
+        ..sound::speech("elevenlabs/flash-v2.5", "ElevenLabs Flash v2.5", "Fast, cheap ElevenLabs speech.", "prompt", VoiceList::Static(ELEVEN_VOICES), "Rachel")
+    },
+    Sound {
+        voice: VoiceField::Flat("voice_id"),
+        lang: Lang::Name("language_boost"),
+        max_chars: Some(10_000),
+        fixed: &[("audio_format", Fixed::Str("mp3"))],
+        price: "$0.10 / 1k tokens",
+        ..sound::speech("minimax/speech-2.8-hd", "MiniMax Speech 2.8 HD", "MiniMax's studio-quality voices; pauses with <#0.5#>.", "text", VoiceList::MiniMax, "Wise_Woman")
+    },
+    Sound {
+        voice: VoiceField::Flat("voice_id"),
+        lang: Lang::Name("language_boost"),
+        max_chars: Some(10_000),
+        fixed: &[("audio_format", Fixed::Str("mp3"))],
+        price: "$0.06 / 1k tokens",
+        secs: 5,
+        ..sound::speech("minimax/speech-2.8-turbo", "MiniMax Speech 2.8 Turbo", "Faster, cheaper MiniMax speech.", "text", VoiceList::MiniMax, "Wise_Woman")
+    },
+    Sound {
+        lang: Lang::Tag("language_code"),
+        max_chars: Some(4000),
+        ..sound::speech("google/gemini-3.1-flash-tts", "Gemini 3.1 Flash TTS", "Google's speech: 30 voices, steerable with plain-language style.", "text", VoiceList::Gemini, "Kore")
+    },
+    Sound {
+        voice: VoiceField::Flat("speaker"),
+        lang: Lang::Name("language"),
+        fixed: &[("mode", Fixed::Str("custom_voice"))],
+        price: "$0.02 / 1k characters",
+        ..sound::speech("qwen/qwen3-tts", "Qwen3 TTS", "Alibaba's speech; strong in Chinese, Japanese and Korean.", "text", VoiceList::Static(QWEN_SPEAKERS), "Vivian")
+    },
+    Sound {
+        version: Some("f559560eb822dc509045f3921a1921234918b91739db4bf3daab2169b71c7a13"),
+        secs: 5,
+        ..sound::speech("jaaari/kokoro-82m", "Kokoro", "Small open model: quick voices in nine languages.", "text", VoiceList::KokoroAll, "af_bella")
+    },
+    Sound {
+        instrumental: Some("force_instrumental"),
+        fixed: &[("output_format", Fixed::Str("mp3_high_quality"))],
+        price: "$0.50 / minute",
+        featured: true,
+        ..sound::music("elevenlabs/music", "Eleven Music", "Songs with vocals or instrumentals, up to 5 minutes.", Len::Ms("music_length_ms", 5.0, 300.0, Some(30.0)))
+    },
+    Sound {
+        lyrics: Lyrics::Required("lyrics"),
+        instrumental: Some("is_instrumental"),
+        fixed: &[("audio_format", Fixed::Str("mp3"))],
+        price: "$0.15 / track",
+        ..sound::music("minimax/music-2.6", "MiniMax Music 2.6", "Songs from a style and lyrics, or instrumentals.", Len::None)
+    },
+    Sound {
+        seed: true,
+        price: "$0.20 / track",
+        ..sound::music("stability-ai/stable-audio-2.5", "Stable Audio 2.5", "Stability's music and loops, up to 3 minutes.", Len::Int("duration", 1.0, 190.0, Some(30.0)))
+    },
+    Sound { seed: true, price: "$0.08 / track", ..sound::music("google/lyria-3-pro", "Lyria 3 Pro", "Google DeepMind's music; write vocals and lyrics into the prompt.", Len::None) },
+    Sound {
+        version: Some("671ac645ce5e552cc63a54a2bbff63fcf798043055d2dac5fc9e36a837eedcfb"),
+        seed: true,
+        fixed: &[("model_version", Fixed::Str("stereo-large")), ("output_format", Fixed::Str("mp3"))],
+        price: "≈ $0.0014 / second of GPU",
+        ..sound::music("meta/musicgen", "MusicGen", "Meta's open music model: instrumentals from a description.", Len::Int("duration", 1.0, 30.0, Some(15.0)))
+    },
+    Sound {
+        version: Some("62871fb59889b2d7c13777f08deb3b36bdff88f7e1d53a50ad7694548a41b484"),
+        negative: true,
+        seed: true,
+        featured: true,
+        ..sound::effect("zsxkib/mmaudio", "MMAudio", "Open model for sound effects and ambiences.", Len::Secs("duration", 1.0, 30.0, Some(8.0)))
+    },
+];
+
 fn spec(id: &str) -> Option<&'static Spec> {
     SPECS.iter().find(|s| s.id == id)
 }
@@ -429,6 +558,8 @@ const COLLECTIONS: &[(&str, Task)] = &[
     ("image-editing", Task::ImageToImage),
     ("text-to-video", Task::TextToVideo),
     ("image-to-video", Task::ImageToVideo),
+    ("text-to-speech", Task::TextToSpeech),
+    ("ai-music-generation", Task::TextToMusic),
 ];
 
 #[derive(Deserialize)]
@@ -498,7 +629,18 @@ fn generic_input(props: &Map<String, Value>, req: &GenRequest) -> Map<String, Va
     let has = |k: &str| props.contains_key(k);
     let first = |keys: &[&'static str]| keys.iter().copied().find(|k| has(k));
     b.insert("prompt".into(), json!(req.prompt));
-    if let Some(p) = props.get("aspect_ratio") {
+    if req.task.is_audio() {
+        if has("text") {
+            b.insert("text".into(), json!(req.prompt));
+        }
+        if let (Some(f), Some(v)) = (first(&["voice", "voice_id", "speaker"]), &req.voice) {
+            b.insert(f.into(), json!(v));
+        }
+        if let (true, Some(l)) = (has("lyrics"), &req.lyrics) {
+            b.insert("lyrics".into(), json!(l));
+        }
+    }
+    if let Some(p) = props.get("aspect_ratio").filter(|_| !req.task.is_audio()) {
         let options = enum_strs(p);
         let refs: Vec<&str> = options.iter().map(String::as_str).filter(|o| util::parse_ratio(o).is_some()).collect();
         if refs.is_empty() {
@@ -693,12 +835,16 @@ impl Provider for Replicate {
             key_hint: Some("r8_…".into()),
             default_base_url: "https://api.replicate.com/v1".into(),
             base_url_editable: false,
-            tasks: vec![Task::TextToImage, Task::ImageToImage, Task::TextToVideo, Task::ImageToVideo],
+            tasks: Task::ALL.to_vec(),
+            group: ProviderGroup::Gateway,
+            quick_start: true,
+            base_url_presets: vec![],
         }
     }
 
     async fn models(&self, cx: &Ctx) -> GenResult<Vec<ModelInfo>> {
         let mut list: Vec<ModelInfo> = SPECS.iter().map(model_info).collect();
+        list.extend(SOUNDS.iter().map(|s| sound::model_info(ID, s)));
         let curated = |id: &str| SPECS.iter().any(|s| s.id == id || s.text == Some(id) || s.image == Some(id));
         // Merge official models from Replicate's collections; skip silently when offline.
         if cx.api_key.is_some() {
@@ -735,9 +881,24 @@ impl Provider for Replicate {
         })
     }
 
+    async fn voices(&self, _cx: &Ctx, model: &str) -> GenResult<Vec<Voice>> {
+        Ok(sound::voices_for(SOUNDS, model))
+    }
+
     async fn generate(&self, cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput> {
         let kind = req.task.output();
         let n = req.count.max(1);
+        if let Some(s) = sound::find(SOUNDS, &req.model) {
+            if s.task != req.task {
+                return Err(GenError::Unsupported(format!("{} doesn't do {}", s.name, req.task.label().to_lowercase())));
+            }
+            let target = match s.version {
+                Some(v) => Target::Version(v.into()),
+                None => Target::Model(s.id.into()),
+            };
+            let urls = predict(cx, &target, &sound::input_for(s, req)?, kind, sound::expected(s), "Generating").await?;
+            return Ok(GenOutput { items: urls.into_iter().take(1).map(|u| OutputItem::url(kind, u)).collect(), seed: req.seed, cost_usd: None });
+        }
         let (target, input, batch, expected) = match spec(&req.model) {
             Some(s) => {
                 if s.kind != kind {

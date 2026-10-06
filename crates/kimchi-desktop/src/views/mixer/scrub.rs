@@ -136,3 +136,66 @@ fn render_next(cx: &mut App) {
     })
     .detach();
 }
+
+/// Plays a sound file from the web (a voice's sample) through the speakers: fetched with the
+/// generation harness, decoded by ffmpeg, queued like a scrub. Ends when it has played.
+pub fn play_url(url: String, cx: &mut App) -> gpui::Task<Result<(), String>> {
+    const RATE: u32 = 48_000;
+    let s = cx.store().read(cx);
+    let session = s.session.clone();
+    let device = s.settings.audio.output_device.clone();
+    let task = gpui_tokio::Tokio::spawn(cx, async move {
+        let (data, mime) = session.harness.fetch(&url).await.map_err(|e| e.to_string())?;
+        let dir = std::env::temp_dir().join("kimchi-voice-samples");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let name: String = url.chars().filter(|c| c.is_ascii_alphanumeric()).rev().take(40).collect();
+        let path = dir.join(format!("{name}.{}", kimchi_gen::util::extension_for(&mime)));
+        std::fs::write(&path, &data).map_err(|e| e.to_string())?;
+        let tools = session.tools()?;
+        let probe = kimchi_media::probe(&tools, &path).await.map_err(|e| e.to_string())?;
+        let asset = kimchi_core::Asset {
+            id: kimchi_core::new_id(),
+            name: "sample".into(),
+            kind: probe.kind,
+            path: path.to_string_lossy().into_owned(),
+            meta: probe.meta,
+            origin: kimchi_core::AssetOrigin::Imported,
+            created_at: chrono::Utc::now(),
+            thumbnail: None,
+            filmstrip: None,
+            waveform: None,
+            proxy: None,
+            beats: None,
+        };
+        kimchi_media::audio::asset_samples(&tools, &asset, RATE).await.map_err(|e| e.to_string())
+    });
+    cx.spawn(async move |cx| {
+        let frames = task.await.map_err(|e| e.to_string())??;
+        let seconds = frames.len() as f64 / RATE as f64;
+        cx.update(|cx| {
+            let sc = cx.default_global::<Scrubber>();
+            if sc.out.as_ref().is_none_or(|o| o.rate != RATE) {
+                sc.out = Output::open(&device, RATE);
+            }
+            match &sc.out {
+                Some(o) => {
+                    let mut q = o.queue.lock();
+                    q.clear();
+                    q.extend(frames);
+                    Ok(())
+                }
+                None => Err("no speakers to play it on".to_string()),
+            }
+        })
+        .map_err(|e| e.to_string())??;
+        cx.background_executor().timer(std::time::Duration::from_secs_f64(seconds)).await;
+        Ok(())
+    })
+}
+
+/// Silences what [`play_url`] queued.
+pub fn stop(cx: &mut App) {
+    if let Some(o) = &cx.default_global::<Scrubber>().out {
+        o.queue.lock().clear();
+    }
+}

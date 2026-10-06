@@ -49,6 +49,9 @@ impl Provider for OpenAiCompat {
             default_base_url: "http://127.0.0.1:8080/v1".into(),
             base_url_editable: true,
             tasks: vec![Task::TextToImage, Task::ImageToImage],
+            group: ProviderGroup::Local,
+            quick_start: false,
+            base_url_presets: vec![],
         }
     }
 

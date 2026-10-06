@@ -86,6 +86,9 @@ impl Provider for ComfyUi {
             default_base_url: "http://127.0.0.1:8188".into(),
             base_url_editable: true,
             tasks: vec![Task::TextToImage, Task::ImageToImage, Task::TextToVideo, Task::ImageToVideo],
+            group: ProviderGroup::Local,
+            quick_start: false,
+            base_url_presets: vec![],
         }
     }
 

@@ -119,4 +119,10 @@ pub trait Provider: Send + Sync {
     /// future, so implementations don't need to watch `cx.cancel` unless they
     /// want to tell the remote service to stop.
     async fn generate(&self, cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput>;
+
+    /// The voices a speech model reads with (models with [`ModelInfo::voices`]). May hit the
+    /// network; providers without speech have none.
+    async fn voices(&self, _cx: &Ctx, _model: &str) -> GenResult<Vec<Voice>> {
+        Ok(vec![])
+    }
 }

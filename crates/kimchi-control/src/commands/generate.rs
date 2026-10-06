@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kimchi_core::{Asset, AssetOrigin, Clip, ClipContent, Edit, Generation, Id, MediaKind, new_id};
-use kimchi_gen::{GenRequest, ImageRole, InputImage, Job, JobStatus, ModelInfo, OutputKind, Task};
+use kimchi_gen::{GenRequest, ImageRole, InputImage, Job, JobStatus, ModelInfo, OutputKind, Task, Voice};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -54,6 +54,11 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 models.retain(|m| m.supports(task));
             }
             Ok(json!(models))
+        }
+        "generate.voices" => {
+            let (provider, model) = speech_model(s, a.opt_str("provider"), a.opt_str("model")).await?;
+            let voices = s.harness.voices(&provider, &model.id, a.bool_or("refresh", false)).await.map_err(err)?;
+            Ok(json!({ "provider": provider, "model": model.id, "modelName": model.name, "defaultVoice": model.default_voice, "voices": voices }))
         }
         "generate.check" => Ok(json!({ "message": s.harness.check(a.str("provider")?).await.map_err(err)? })),
         "generate.setKey" => {
@@ -195,13 +200,50 @@ fn image(role: ImageRole, path: String) -> InputImage {
 }
 
 pub fn task(t: &str) -> CmdResult<Task> {
-    Ok(match t {
-        "text_to_image" | "textToImage" => Task::TextToImage,
-        "image_to_image" | "imageToImage" => Task::ImageToImage,
-        "text_to_video" | "textToVideo" => Task::TextToVideo,
-        "image_to_video" | "imageToVideo" => Task::ImageToVideo,
-        other => return Err(format!("task is text_to_image, image_to_image, text_to_video or image_to_video, not \"{other}\"")),
+    // Short names people and agents reach for.
+    let alias = match t.trim().to_ascii_lowercase().as_str() {
+        "speech" | "tts" | "voice" | "voiceover" => Some(Task::TextToSpeech),
+        "music" | "song" => Some(Task::TextToMusic),
+        "sound" | "sfx" | "sound_effect" | "sound-effect" => Some(Task::TextToSound),
+        _ => None,
+    };
+    alias.or_else(|| Task::parse(t)).ok_or_else(|| {
+        let names: Vec<&str> = Task::ALL.iter().map(|t| t.as_str()).collect();
+        let hint = kimchi_core::closest(t, &names).map(|c| format!(" Did you mean {c}?")).unwrap_or_default();
+        format!("task is one of {}, not \"{t}\".{hint}", names.join(", "))
     })
+}
+
+/// The speech model `generate.voices` describes: the one named, else the default sound model
+/// when it speaks, else the first featured speech model of a ready provider.
+async fn speech_model(s: &Arc<Session>, provider: Option<&str>, model: Option<&str>) -> CmdResult<(String, ModelInfo)> {
+    let (provider, model) = pick_model(s, provider, model, Task::TextToSpeech).await?;
+    if !model.voices {
+        return Err(format!("{} reads with one voice; it has no voices to choose from.", model.name));
+    }
+    Ok((provider, model))
+}
+
+/// The voice id for what was asked (an id or a name, any case), checked against the model's
+/// voices when the provider lists them.
+async fn resolve_voice(s: &Arc<Session>, provider: &str, model: &ModelInfo, wanted: &str) -> CmdResult<String> {
+    let voices: Vec<Voice> = match s.harness.voices(provider, &model.id, false).await {
+        Ok(v) => v,
+        // A voice list that can't be fetched now doesn't stop a voice the person knows.
+        Err(e) => {
+            tracing::debug!("voices for {provider}::{}: {e}", model.id);
+            return Ok(wanted.to_string());
+        }
+    };
+    if voices.is_empty() {
+        return Ok(wanted.to_string());
+    }
+    if let Some(v) = voices.iter().find(|v| v.id == wanted).or_else(|| voices.iter().find(|v| v.id.eq_ignore_ascii_case(wanted) || v.name.eq_ignore_ascii_case(wanted))) {
+        return Ok(v.id.clone());
+    }
+    let names: Vec<&str> = voices.iter().map(|v| v.name.as_str()).collect();
+    let hint = kimchi_core::closest(wanted, &names).map(|c| format!(" Did you mean {c}?")).unwrap_or_default();
+    Err(format!("{} has no voice \"{wanted}\".{hint} generate.voices lists them.", model.name))
 }
 
 /// Waits for the job when asked to (and always without a window, where the
@@ -279,6 +321,8 @@ async fn request_from(s: &Arc<Session>, a: &Args) -> CmdResult<Submit> {
     let video = a.opt_bool("video").unwrap_or(false);
     let task = match a.opt_str("task") {
         Some(t) => task(t)?,
+        // A voice only means something to speech.
+        None if a.opt_str("voice").is_some() => Task::TextToSpeech,
         None => match (video, images.is_empty()) {
             (false, true) => Task::TextToImage,
             (false, false) => Task::ImageToImage,
@@ -299,6 +343,15 @@ async fn request_from(s: &Arc<Session>, a: &Args) -> CmdResult<Submit> {
     if let Some(o) = a.object("params") {
         r.params = o.clone();
     }
+    if task.is_audio() {
+        r.language = a.opt_str("language").map(str::to_string).filter(|l| !l.trim().is_empty());
+        r.lyrics = a.opt_str("lyrics").map(str::to_string).filter(|l| !l.trim().is_empty());
+        r.instrumental = a.opt_bool("instrumental");
+        // Sound has no picture: no ratio or size to send.
+        r.aspect_ratio = None;
+        r.width = None;
+        r.height = None;
+    }
     sub.input_assets = inputs;
     Ok(sub)
 }
@@ -310,7 +363,13 @@ fn placement_from(s: &Session, a: &Args, r: &GenRequest) -> CmdResult<Placement>
             let p = s.project()?;
             let track_id = a.opt_str("trackId").map(|k| resolve::track(&p, k)).transpose()?;
             let start = a.opt_f64("start").unwrap_or_else(|| s.ui_state().playhead);
-            let fallback = if r.task.output() == OutputKind::Video { r.duration.unwrap_or(5.0) } else { kimchi_core::DEFAULT_STILL_DURATION };
+            let fallback = match r.task {
+                t if t.output() == OutputKind::Video => r.duration.unwrap_or(5.0),
+                Task::TextToSpeech => speech_seconds(&r.prompt),
+                Task::TextToMusic => r.duration.unwrap_or(30.0),
+                Task::TextToSound => r.duration.unwrap_or(5.0),
+                _ => kimchi_core::DEFAULT_STILL_DURATION,
+            };
             Ok(Placement::Timeline { track_id, start, duration: a.opt_f64("length").unwrap_or(fallback) })
         }
         other => Err(format!("place is \"timeline\" or \"library\", not \"{other}\"")),
@@ -326,10 +385,34 @@ async fn model_request(s: &Arc<Session>, a: &Args, task: Task, prompt: &str) -> 
     r.width = Some(p.settings.width);
     r.height = Some(p.settings.height);
     r.seed = a.opt_i64("seed");
-    if task.output() == OutputKind::Video {
-        r.duration = a.opt_f64("duration").or_else(|| model.durations.first().copied());
+    match task {
+        t if t.output() == OutputKind::Video => r.duration = a.opt_f64("duration").or_else(|| model.durations.first().copied()),
+        Task::TextToMusic | Task::TextToSound => {
+            // Only send a length when the model takes one; else it decides.
+            if model.duration_range.is_some() || !model.durations.is_empty() {
+                let default = if task == Task::TextToMusic { 30.0 } else { 5.0 };
+                r.duration = Some(model.fit_duration(a.opt_f64("duration"), default));
+            }
+        }
+        Task::TextToSpeech => {
+            if let Some(max) = model.max_chars
+                && prompt.chars().count() > max as usize
+            {
+                return Err(format!("{} reads up to {max} characters at a time; this text has {}. Split it into several clips.", model.name, prompt.chars().count()));
+            }
+            r.voice = match a.opt_str("voice").filter(|v| !v.trim().is_empty()) {
+                Some(v) => Some(resolve_voice(s, &provider, &model, v.trim()).await?),
+                None => model.default_voice.clone(),
+            };
+        }
+        _ => {}
     }
     Ok(Submit { provider, request: r, placement: Placement::Library, input_assets: vec![] })
+}
+
+/// About how long a voice takes to read `text` (≈ 15 characters a second), for the placeholder.
+pub fn speech_seconds(text: &str) -> f64 {
+    (text.chars().count() as f64 / 15.0).clamp(1.5, 600.0)
 }
 
 /// Resolves the model a command should use: the one named, else the default
@@ -342,22 +425,44 @@ pub async fn pick_model(s: &Arc<Session>, provider: Option<&str>, model: Option<
         }
         (p, m) => (p.map(str::to_string), m.map(str::to_string)),
     };
-    let (provider, model) = match (provider, model) {
-        (p, None) => {
+    let fits = |m: &&ModelInfo| m.supports(task);
+    let given = provider.is_some();
+    let (model, candidates) = match model {
+        Some(m) => {
+            let candidates = match &provider {
+                Some(p) => s.harness.models(p, false).await.map_err(err)?,
+                None => s.harness.all_models().await,
+            };
+            (Some(m), candidates)
+        }
+        None => {
+            // The default in settings is for a kind (sound covers speech, music and effects):
+            // used when it can do this task, else the first model that can.
             let settings = s.settings().generate;
-            let default = if task.output() == OutputKind::Video { settings.video_model } else { settings.image_model };
-            match default.split_once("::") {
-                Some((dp, dm)) if p.as_deref().is_none_or(|p| p == dp) => (Some(dp.to_string()), Some(dm.to_string())),
-                _ => (p, None),
+            let default = match task.output() {
+                OutputKind::Video => settings.video_model,
+                OutputKind::Audio => settings.audio_model,
+                OutputKind::Image => settings.image_model,
+            };
+            let usable = match default.split_once("::") {
+                Some((dp, dm)) if provider.as_deref().is_none_or(|p| p == dp) && s.harness.statuses().iter().any(|st| st.info.id == dp && st.ready) => {
+                    let list = s.harness.models(dp, false).await.unwrap_or_default();
+                    list.iter().any(|m| m.id == dm && m.supports(task)).then(|| (dp.to_string(), dm.to_string(), list))
+                }
+                _ => None,
+            };
+            match usable {
+                Some((_, m, list)) => (Some(m), list),
+                None => {
+                    let candidates = match &provider {
+                        Some(p) if given => s.harness.models(p, false).await.map_err(err)?,
+                        _ => s.harness.all_models().await,
+                    };
+                    (None, candidates)
+                }
             }
         }
-        other => other,
     };
-    let candidates: Vec<ModelInfo> = match &provider {
-        Some(p) => s.harness.models(p, false).await.map_err(err)?,
-        None => s.harness.all_models().await,
-    };
-    let fits = |m: &&ModelInfo| m.supports(task);
     let found = match &model {
         Some(id) => candidates.iter().find(|m| &m.id == id || m.name.eq_ignore_ascii_case(id)).cloned().ok_or_else(|| {
             let list: Vec<&str> = candidates.iter().filter(fits).take(8).map(|m| m.id.as_str()).collect();

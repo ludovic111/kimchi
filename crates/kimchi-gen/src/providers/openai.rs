@@ -1,7 +1,12 @@
 //! OpenAI: GPT Image via `/images/generations` and `/images/edits`.
 //!
 //! Images come back synchronously as base64. The Sora Videos API was shut
-//! down on 2026-09-24 with no replacement, so this provider is image-only.
+//! down on 2026-09-24 with no replacement, so there is no video.
+//!
+//! Speech: `POST /audio/speech {model, input, voice, instructions?, speed?, response_format}`
+//! answers with the audio bytes (developers.openai.com, text-to-speech guide, read 2026-10-06).
+//! OpenAI deprecated these models on 2026-10-01; they stop on 2027-01-06 and their named
+//! successor only speaks over the Realtime API. There is no voice list endpoint.
 
 use async_trait::async_trait;
 use reqwest::multipart::{Form, Part};
@@ -76,8 +81,59 @@ fn image_model(id: &str, name: &str, price: &str, featured: bool, description: &
     }
 }
 
+/// OpenAI's voices: all 13 on GPT-4o mini TTS, the first 9 on TTS-1.
+const VOICES: &[(&str, &str)] = &[
+    ("marin", "Natural and warm; OpenAI's pick"),
+    ("cedar", "Natural and grounded; OpenAI's pick"),
+    ("alloy", "Neutral, balanced"),
+    ("ash", "Clear, direct"),
+    ("coral", "Bright, friendly"),
+    ("echo", "Soft, even"),
+    ("fable", "Storyteller, British lilt"),
+    ("onyx", "Deep, steady"),
+    ("nova", "Lively, youthful"),
+    ("sage", "Calm, thoughtful"),
+    ("shimmer", "Light, gentle"),
+    ("ballad", "Expressive, melodic"),
+    ("verse", "Versatile, animated"),
+];
+
+fn speech_model(id: &str, name: &str, description: &str, featured: bool) -> ModelInfo {
+    let instructions = id.starts_with("gpt-");
+    let mut params = vec![ParamSpec {
+        key: "speed".into(),
+        label: "Speed".into(),
+        kind: ParamKind::Float { min: 0.25, max: 4.0, step: 0.05 },
+        default: json!(1.0),
+        help: None,
+    }];
+    if instructions {
+        params.insert(
+            0,
+            ParamSpec {
+                key: "instructions".into(),
+                label: "How to say it".into(),
+                kind: ParamKind::Text { multiline: true },
+                default: json!(""),
+                help: Some("Tone, pace, accent, emotion: \"warm and slow, like a bedtime story\".".into()),
+            },
+        );
+    }
+    ModelInfo {
+        description: Some(description.into()),
+        max_chars: Some(4096),
+        params,
+        price: Some(if instructions { "≈ $0.015 / minute" } else { "$15–30 / 1M characters" }.into()),
+        featured,
+        ..ModelInfo::speech(ID, id, name, if instructions { "marin" } else { "alloy" })
+    }
+}
+
 fn catalog() -> Vec<ModelInfo> {
     vec![
+        speech_model("gpt-4o-mini-tts", "GPT-4o mini TTS", "13 voices you can direct (\"cheerful\", \"whispering\"). Stops 2027-01-06.", true),
+        speech_model("tts-1-hd", "TTS-1 HD", "Higher quality classic voices. Stops 2027-01-06.", false),
+        speech_model("tts-1", "TTS-1", "Fast classic voices. Stops 2027-01-06.", false),
         image_model(
             "gpt-image-2.5-sunburst",
             "GPT Image 2.5 Sunburst",
@@ -185,7 +241,7 @@ impl Provider for OpenAi {
             id: ID.into(),
             name: "OpenAI".into(),
             kind: ProviderKind::Cloud,
-            tagline: "GPT Image: precise edits and legible text".into(),
+            tagline: "GPT Image: precise edits and legible text; speech".into(),
             website: "https://platform.openai.com".into(),
             needs_key: true,
             key_env: vec!["OPENAI_API_KEY".into()],
@@ -193,7 +249,10 @@ impl Provider for OpenAi {
             key_hint: Some("sk-…".into()),
             default_base_url: "https://api.openai.com/v1".into(),
             base_url_editable: false,
-            tasks: vec![Task::TextToImage, Task::ImageToImage],
+            tasks: vec![Task::TextToImage, Task::ImageToImage, Task::TextToSpeech],
+            group: ProviderGroup::Media,
+            quick_start: false,
+            base_url_presets: vec![],
         }
     }
 
@@ -209,7 +268,24 @@ impl Provider for OpenAi {
         Ok(format!("Key works · {images} GPT Image models available"))
     }
 
+    async fn voices(&self, _cx: &Ctx, model: &str) -> GenResult<Vec<Voice>> {
+        let n = if model.starts_with("tts-1") { 9 } else { VOICES.len() };
+        let classic = ["alloy", "ash", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer"];
+        Ok(VOICES
+            .iter()
+            .filter(|(id, _)| n == VOICES.len() || classic.contains(id))
+            .map(|(id, d)| {
+                let mut c = id.chars();
+                let name = c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default();
+                Voice::new(*id, name).described(*d)
+            })
+            .collect())
+    }
+
     async fn generate(&self, cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput> {
+        if req.task == Task::TextToSpeech {
+            return speak(cx, req).await;
+        }
         if !matches!(req.task, Task::TextToImage | Task::ImageToImage) {
             return Err(GenError::Unsupported("OpenAI no longer offers video generation through its API".into()));
         }
@@ -246,4 +322,25 @@ impl Provider for OpenAi {
         let items = parse_images(cx, &resp, "image/png")?;
         Ok(GenOutput { items, ..Default::default() })
     }
+}
+
+/// `POST /audio/speech`: the audio comes back as the body.
+async fn speak(cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput> {
+    let voice = req.voice.as_deref().filter(|v| !v.is_empty()).unwrap_or(if req.model.starts_with("tts-1") { "alloy" } else { "marin" });
+    let mut body = json!({ "model": req.model, "input": req.prompt.trim(), "voice": voice, "response_format": "mp3" });
+    if let Some(i) = param_str(req, "instructions").filter(|_| !req.model.starts_with("tts-1")) {
+        body["instructions"] = json!(i);
+    }
+    if let Some(speed) = req.param("speed").and_then(Value::as_f64).filter(|s| (*s - 1.0).abs() > 1e-6) {
+        body["speed"] = json!(speed.clamp(0.25, 4.0));
+    }
+    let expected = std::time::Duration::from_secs((req.prompt.chars().count() as u64 / 300).clamp(2, 40));
+    let resp = util::with_estimate(cx, expected, "Speaking", util::send(cx, cx.http.post(cx.url("/audio/speech")).bearer_auth(cx.key()?).json(&body)))
+        .await
+        .map_err(moderation)?;
+    let data = resp.bytes().await.map_err(util::net_err(cx))?;
+    if data.is_empty() {
+        return Err(util::decode_err(cx, "empty audio"));
+    }
+    Ok(GenOutput { items: vec![OutputItem::bytes(OutputKind::Audio, data, "audio/mpeg")], ..Default::default() })
 }

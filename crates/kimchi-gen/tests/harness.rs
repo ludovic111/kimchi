@@ -25,7 +25,10 @@ impl Provider for Fake {
             key_hint: None,
             default_base_url: "http://localhost".into(),
             base_url_editable: false,
-            tasks: vec![Task::TextToImage, Task::ImageToVideo],
+            tasks: vec![Task::TextToImage, Task::ImageToVideo, Task::TextToSpeech],
+            group: ProviderGroup::Local,
+            quick_start: false,
+            base_url_presets: vec![],
         }
     }
     async fn models(&self, _: &Ctx) -> GenResult<Vec<ModelInfo>> {

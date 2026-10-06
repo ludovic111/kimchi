@@ -1,4 +1,4 @@
-//! fal: Hundreds of image and video models, fast queues.
+//! fal: Hundreds of image, video and sound models, fast queues.
 //!
 //! Every endpoint goes through the queue: `POST {base}/{endpoint}` →
 //! `{request_id, status_url, response_url}`, poll `status_url?logs=1` until
@@ -21,6 +21,8 @@ use serde_json::{Map, Value, json};
 use crate::provider::{Ctx, GenError, GenResult, Provider};
 use crate::types::*;
 use crate::util;
+
+mod audio;
 
 pub const ID: &str = "fal";
 
@@ -498,6 +500,12 @@ fn model_info(s: &Spec) -> ModelInfo {
 
 /// A model added by id through the `models` option, mapped generically.
 fn custom_info(id: &str) -> ModelInfo {
+    let sound = [("tts", Task::TextToSpeech), ("speech", Task::TextToSpeech), ("music", Task::TextToMusic), ("sound", Task::TextToSound), ("audio", Task::TextToSound), ("sfx", Task::TextToSound)]
+        .into_iter()
+        .find(|(k, _)| id.contains(k));
+    if let Some((_, task)) = sound {
+        return ModelInfo { description: Some("Custom fal endpoint (generic input mapping).".into()), seed: true, ..ModelInfo::new(ID, id, id, &[task]) };
+    }
     let video = ["video", "i2v", "t2v"].iter().any(|k| id.contains(k));
     let image_in = ["edit", "image-to", "i2v", "kontext", "img2img", "redux"].iter().any(|k| id.contains(k));
     let task = match (video, image_in) {
@@ -859,11 +867,18 @@ fn outputs(cx: &Ctx, v: &Value, kind: OutputKind) -> GenResult<GenOutput> {
     if let Some(list) = v.get("videos").and_then(Value::as_array) {
         list.iter().for_each(|f| push(f, OutputKind::Video));
     }
+    if kind == OutputKind::Audio {
+        items.extend(audio::audio_urls(v).into_iter().map(|u| OutputItem::url(OutputKind::Audio, u)));
+    }
     if items.is_empty() {
         if flagged.iter().any(|f| *f) {
             return Err(GenError::Moderated("fal's safety checker flagged the output".into()));
         }
-        let what = if kind == OutputKind::Video { "video" } else { "images" };
+        let what = match kind {
+            OutputKind::Video => "video",
+            OutputKind::Audio => "audio",
+            OutputKind::Image => "images",
+        };
         return Err(util::decode_err(cx, format!("no {what} in result: {}", util::truncate(&v.to_string(), 200))));
     }
     Ok(GenOutput { items, seed: v.get("seed").and_then(Value::as_i64), cost_usd: None })
@@ -876,7 +891,7 @@ impl Provider for Fal {
             id: ID.into(),
             name: "fal".into(),
             kind: ProviderKind::Cloud,
-            tagline: "Hundreds of image and video models, fast queues".into(),
+            tagline: "Hundreds of image, video and sound models, fast queues".into(),
             website: "https://fal.ai".into(),
             needs_key: true,
             key_env: vec!["FAL_KEY".into(), "FAL_API_KEY".into()],
@@ -884,12 +899,16 @@ impl Provider for Fal {
             key_hint: Some("key-id:key-secret".into()),
             default_base_url: "https://queue.fal.run".into(),
             base_url_editable: false,
-            tasks: vec![Task::TextToImage, Task::ImageToImage, Task::TextToVideo, Task::ImageToVideo],
+            tasks: Task::ALL.to_vec(),
+            group: ProviderGroup::Gateway,
+            quick_start: true,
+            base_url_presets: vec![],
         }
     }
 
     async fn models(&self, cx: &Ctx) -> GenResult<Vec<ModelInfo>> {
         let mut list: Vec<ModelInfo> = SPECS.iter().map(model_info).collect();
+        list.extend(audio::SOUNDS.iter().map(|s| crate::sound::model_info(ID, s)));
         for id in custom_ids(cx) {
             if !list.iter().any(|m| m.id == id) {
                 list.push(custom_info(&id));
@@ -906,8 +925,23 @@ impl Provider for Fal {
         Ok("Key works".into())
     }
 
+    async fn voices(&self, _cx: &Ctx, model: &str) -> GenResult<Vec<Voice>> {
+        Ok(crate::sound::voices_for(audio::SOUNDS, model))
+    }
+
     async fn generate(&self, cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput> {
         let kind = req.task.output();
+        if kind == OutputKind::Audio {
+            let (endpoint, input, expected) = match audio::sound(&req.model) {
+                Some(s) if s.task == req.task => (s.id, crate::sound::input_for(s, req)?, crate::sound::expected(s)),
+                Some(_) => return Err(GenError::Unsupported(format!("{} doesn't do {}", req.model, req.task.label().to_lowercase()))),
+                None => (req.model.as_str(), crate::sound::generic_input(req), Duration::from_secs(30)),
+            };
+            let v = run(cx, endpoint, &input, expected, "Generating").await?;
+            let mut out = outputs(cx, &v, kind)?;
+            out.items.truncate(req.count.max(1) as usize);
+            return Ok(out);
+        }
         let imgs = resolve_images(cx, req).await?;
         let n = req.count.max(1);
         let Some(s) = spec(&req.model) else {

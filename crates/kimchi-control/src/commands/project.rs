@@ -469,6 +469,12 @@ pub fn asset_summary(a: &kimchi_core::Asset) -> Value {
     });
     if let kimchi_core::AssetOrigin::Generated(g) = &a.origin {
         v["generated"] = json!({ "provider": g.provider, "model": g.model_name, "task": g.task, "prompt": g.prompt, "seed": g.seed });
+        // Sound: the voice that reads, or the lyrics sung.
+        for key in ["voice", "language", "lyrics", "instrumental"] {
+            if let Some(x) = g.params.get(key).filter(|x| !x.is_null()) {
+                v["generated"][key] = x.clone();
+            }
+        }
     }
     v
 }

@@ -48,7 +48,7 @@ const PROVIDER: crate::registry::Param = opt("provider", String, "Provider id (g
 const MODEL: crate::registry::Param = opt("model", String, "Model id from generate.models, or \"provider::model\". Defaults to the model set in settings.generate, else the first featured ready model.");
 const PROMPT: crate::registry::Param = req("prompt", String, "What to make, in words.");
 const OPT_PROMPT: crate::registry::Param = opt("prompt", String, "What to make, in words.");
-const DURATION: crate::registry::Param = opt("duration", Number, "Video length in seconds (the model picks the closest it supports).");
+const DURATION: crate::registry::Param = opt("duration", Number, "Length in seconds of a video, music or sound effect (the model picks the closest it supports).");
 const SEED: crate::registry::Param = opt("seed", Integer, "Seed, when the model takes one.");
 const WAIT: crate::registry::Param = opt("wait", Boolean, "Wait until the job finishes and return it (always true with --file).");
 
@@ -744,7 +744,11 @@ pub static SPECS: &[Spec] = &[
         opt("task", String, "Only models that can do text_to_image, image_to_image, text_to_video, image_to_video, text_to_speech, text_to_music or text_to_sound."),
         opt("refresh", Boolean, "Fetch the list again instead of using the cache."),
     ]),
-    query("generate.voices", "The voices a speech model offers (text_to_speech), with language and a description.", &[opt("provider", String, "Provider id."), opt("model", String, "Model id or provider::model.")]),
+    query("generate.voices", "The voices a speech model offers (text_to_speech), with language, a description and a sample to listen to when the provider has one.", &[
+        opt("provider", String, "Provider id."),
+        opt("model", String, "Model id or provider::model (default: the sound model in settings.generate, else the first featured speech model)."),
+        opt("refresh", Boolean, "Fetch the list again instead of using the cache."),
+    ]),
     query("generate.check", "Check that a provider answers with the saved key or address.", &[req("provider", String, "Provider id.")]),
     edit("generate.setKey", "Save (or with no key, remove) a provider's API key in the OS keychain.", &[req("provider", String, "Provider id."), opt("key", String, "The key; omit to remove it.")]).perm(Perm::PersonOnly),
     edit("generate.setProvider", "Turn a provider on or off, or point it at another address.", &[
@@ -758,7 +762,10 @@ pub static SPECS: &[Spec] = &[
         PROVIDER,
         MODEL,
         opt("task", String, "text_to_image, image_to_image, text_to_video, image_to_video, text_to_speech (a voice reading the prompt), text_to_music or text_to_sound (a sound effect). Defaults from video and the images given."),
-        opt("voice", String, "text_to_speech: a voice id or name from generate.voices."),
+        opt("voice", String, "text_to_speech: a voice id or name from generate.voices (default: the model's)."),
+        opt("language", String, "Speech and songs: the language (\"en\", \"fr\"…) when the model takes one."),
+        opt("lyrics", String, "text_to_music: the words to sing, for models that take lyrics."),
+        opt("instrumental", Boolean, "text_to_music: no singing."),
         opt("video", Boolean, "Make a video rather than an image (when task is omitted)."),
         opt("negativePrompt", String, "What to avoid, for models that take it."),
         opt("images", Array, "Input images: [{role: reference|start_frame|end_frame, path?, assetId?, clipId?, time?}]. A clip gives the frame it shows at time.").of(Object),
@@ -772,7 +779,7 @@ pub static SPECS: &[Spec] = &[
         opt("place", String, "\"timeline\" (default) or \"library\"."),
         OPT_TRACK,
         START,
-        opt("length", Number, "Placeholder length on the timeline in seconds (default: duration, or 5)."),
+        opt("length", Number, "Placeholder length on the timeline in seconds (default: duration, or 5; speech: from the text). The result's own length replaces it."),
         WAIT,
     ]).perm(Perm::Generate),
     edit("generate.animateFrame", "Turn the frame a clip shows at a time into a moving shot (image-to-video), placed right after the clip.", &[
