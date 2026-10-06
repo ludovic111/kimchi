@@ -207,13 +207,21 @@ architecture), #12 harness (`kimchi_control::vision`, `Part::Image`, `media.look
 block per request, MCP image content), #11 Studio/agent (two sidebars: everything left, agents right;
 conversations per project with memory, `agent.steer`, model selector, zenith provider in
 `kimchi-agent/src/zenith.rs` using zenith-cli `thread.new/send/get/interrupt/steer`, ElevenLabs and Stable
-Audio sound generation, Studio modelling workbench and animation tools). ryolune is private now: CI and
-releases fetch `ryolune-engine` over SSH with the `RYOLUNE_DEPLOY_KEY` deploy key.
+Audio sound generation, Studio modelling workbench and animation tools). CI and releases fetch
+`ryolune-engine` over SSH with the `RYOLUNE_DEPLOY_KEY` deploy key (ryolune was private for a day; it's public again).
 
-- [ ] Compatibility work (PR #9, branches `t3code/090-*`): interop (OTIO/FCPXML/EDL…), looks, onboarding,
-      more agent providers, video plugins (frei0r/OFX/SDK), more sound tasks (090-gen), and ryolune LV2/LADSPA
-      (`claude/lv2-ladspa`) — deferred to the next release; never fully built. Briefs in
-      `~/.local/share/kimchi-coordination/090-briefs`.
+## Compatibility with other editors, first-run setup, more agent providers (0.9.1, released 2026-10-06)
+
+`kimchi-interop` (apps people switch from, OTIO/FCPXML/xmeml/EDL readers and writers, look formats, `Report`),
+`project.formats/importFrom/exportTo`, `media.relink`, `looks.*` + `export.presets`, `app.onboarding/finishOnboarding/keymaps`
+(first-run setup, Settings › Keyboard), the OpenAI-compatible family, Gemini and Bedrock agent providers
+(`agent.models`), `docs/COMPATIBILITY.md` (generated, a test checks it), `docs/SWITCHING.md`. Plus #13's fixes.
+
+- [ ] Not shipped, on their branches: video plugins (`t3code/090-plugins` SDK + native host, `t3code/090-hosts`
+      frei0r/OpenFX — never built), ryolune LV2/LADSPA (`claude/lv2-ladspa`), extra sound tasks (`t3code/090-gen`,
+      fold onto #11's ElevenLabs), Kdenlive/Shotcut/OpenShot/CapCut/.prproj files, new export formats.
+- [ ] The new windows (setup, import/export, look picker) were only checked by headless UI tests; look at them.
+- [ ] Docs-found, still open: `kimchi-cli` bypasses agent permissions; no menu bar on Linux/Windows.
 
 ## Next session
 

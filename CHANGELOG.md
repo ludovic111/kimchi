@@ -3,6 +3,23 @@
 What changed in each kimchi release. The app shows the newest section in **What's new** after it
 updates, and the release workflow puts the section in the update's notes.
 
+## 0.9.1 — 2026-10-06
+
+### New
+- **Bring your projects from other editors.** kimchi opens and writes OpenTimelineIO (DaVinci Resolve, Nuke, Kdenlive), FCPXML (Final Cut Pro, Resolve), Premiere / Final Cut 7 XML (Premiere Pro, VEGAS) and EDL (Avid and every editor). Use Home › Open from another editor, and ⋯ › Export project for <app> to send the cut back. A summary shows what came through, and Find missing files points moved media at the right folder.
+- **Your looks come with you.** LUTs in .cube, .3dl, .csp, .spi and Hald formats, plus Lightroom / Camera Raw and Premiere Lumetri presets, go into a look library you apply from the inspector. Save your own grade as a look or a .cube, and pick export presets for YouTube, Shorts/Reels, Instagram and more.
+- **Keys you already know.** Settings › Keyboard switches to Premiere Pro, Final Cut Pro, DaVinci Resolve, Avid, CapCut, Kdenlive, Shotcut, VEGAS or iMovie shortcuts.
+- **A first-run setup** asks which editor you come from, whether you want generative AI (and connects a provider if so), and which assistant to use. Help › Set up kimchi brings it back.
+- **More models for the agent.** Gemini CLI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, LM Studio and any OpenAI-compatible server. Their models show in the Agent panel's model picker.
+
+### Fixed
+- Regenerate and Variation repeat the original request exactly, including the input pictures, resolution and model settings.
+- Plugin folders you add in Settings › Audio are searched when you rescan plugins.
+- Copies installed from the .deb or the portable Windows zip are pointed at the right download when an update is out.
+- A rendered motion clip that now shows a part of its scene the render doesn't have is marked "Out of date" instead of "Rendered".
+- Help opens the kimchi user guide.
+- Building kimchi from source asks for Rust 1.92 or later, which its Linux dependencies need.
+
 ## 0.9.0 — 2026-10-06
 
 ### New
