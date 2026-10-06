@@ -12,9 +12,12 @@ pub(super) fn tools(defs: &[ToolDef]) -> Vec<Value> {
     defs.iter().map(|t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.schema } })).collect()
 }
 
-pub(super) fn wire(messages: &[Message]) -> Vec<Value> {
+/// Tool messages carry text only: pictures follow them in a user message (the latest few;
+/// older ones, and all of them for a model that can't see, become a line of text).
+pub(super) fn wire(messages: &[Message], vision: bool) -> Vec<Value> {
+    let recent = super::recent_pictures(messages, vision);
     let mut out = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
-    for m in messages {
+    for (i, m) in messages.iter().enumerate() {
         let text = m.text();
         match m.role {
             Role::User => {
@@ -23,6 +26,12 @@ pub(super) fn wire(messages: &[Message]) -> Vec<Value> {
                     if let Part::ToolResult { id, output, .. } = p {
                         out.push(json!({ "role": "tool", "tool_call_id": id, "content": output }));
                     }
+                }
+                let (shown, older) = super::pictures_of(m, i, &recent);
+                if !shown.is_empty() || older > 0 {
+                    let mut content = vec![json!({ "type": "text", "text": super::pictures_note(shown.len(), older) })];
+                    content.extend(shown.iter().map(|(media_type, data)| json!({ "type": "image_url", "image_url": { "url": format!("data:{media_type};base64,{data}") } })));
+                    out.push(json!({ "role": "user", "content": content }));
                 }
                 if !text.is_empty() {
                     out.push(json!({ "role": "user", "content": text }));
@@ -53,7 +62,7 @@ pub(super) fn wire(messages: &[Message]) -> Vec<Value> {
 pub(super) async fn step(api: &Api, run: &Run, defs: &[ToolDef], messages: &[Message]) -> Result<Step, String> {
     let mut body = json!({
         "model": api.model,
-        "messages": wire(messages),
+        "messages": wire(messages, api.sees()),
         "tools": tools(defs),
         "tool_choice": "auto",
         "stream": true,

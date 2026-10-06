@@ -168,3 +168,27 @@ fn usage_errors_exit_with_2() {
     let out = Command::new(env!("CARGO_BIN_EXE_kimchi-mcp")).args(["--live", "--file", "x.json"]).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
     assert_eq!(out.code(), Some(2));
 }
+
+#[test]
+fn rendered_frames_come_back_as_pictures() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("cut.json");
+    let mut mcp = Mcp::start(dir.path(), &["--file", file.to_str().unwrap()]);
+    mcp.request(1, "initialize", json!({ "protocolVersion": "2025-06-18" }));
+    assert!(mcp.request(2, "initialize", json!({}))["result"]["instructions"].as_str().unwrap().contains("media_look"));
+    assert_eq!(mcp.tool(3, "project_create", json!({ "name": "Look" }))["isError"], false);
+    assert_eq!(mcp.tool(4, "clip_addSolid", json!({ "color": "#00ff00", "duration": 2 }))["isError"], false);
+    let frame = mcp.tool(5, "project_renderFrame", json!({ "time": 1, "width": 320 }));
+    if frame["isError"] == true && frame["content"][0]["text"].as_str().unwrap_or("").contains("ffmpeg") {
+        eprintln!("ffmpeg not found; skipping");
+        return;
+    }
+    assert_eq!(frame["isError"], false, "{frame}");
+    assert!(frame["structuredContent"]["path"].as_str().unwrap().ends_with(".png"));
+    let picture = &frame["content"][1];
+    assert_eq!(picture["type"], "image", "{frame}");
+    assert_eq!(picture["mimeType"], "image/png");
+    assert!(picture["data"].as_str().unwrap().starts_with("iVBORw0KGgo"), "base64 of a PNG");
+    // Other commands stay text only.
+    assert_eq!(mcp.tool(6, "project_overview", json!({}))["content"].as_array().unwrap().len(), 1);
+}

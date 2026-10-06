@@ -38,6 +38,16 @@ kimchi-cli project.overview
 Then drill down only where needed: `clip.get`, `media.get`, `track.list`, `timeline.markers`,
 `generate.jobs`, `ui.state` for the window and `ui.screenshot` to see it.
 
+## Seeing
+
+Agents can look. `project.renderFrame` draws the cut at a time (several `times` give one labelled
+sheet), `media.look` shows a media item without putting it on the timeline (a video as a sheet of
+frames across its length, to choose between takes or check a generation) and `media.frame` the frame
+one clip shows. Each answers with a PNG's `path`; over MCP the picture itself comes back too, as image
+content after the text, and the built-in agent hands it to its model (Anthropic and OpenAI, and
+Ollama models with vision). Pictures are scaled to at most 1568 px on their longest side. The Agent
+panel shows them in the command's card, so the person sees what the agent saw.
+
 ## Conventions
 
 - Times are **seconds on the timeline**. `start` is where a clip begins; `clip.trim` moves one
@@ -192,6 +202,11 @@ ran), `agent.stop` stops it, `agent.revert` puts the project back as it was befo
 undo step), and `agent.newConversation` starts afresh. A request sent from a terminal shows in the
 panel like one typed there. One run at a time; these commands need the running app.
 
+Each request reaches the model with a short `<context>` block in front of it: the project, the
+playhead and the clips under it, the selected clips (names, ids, times) or media, and the Studio when
+it is open. So "shorten this" or "a title here" needs no question back. The line above the panel's
+composer shows what it will say (hover for all of it).
+
 ```sh
 kimchi-cli agent.send --prompt "Add a title saying Hello at 0 s and fade it in" --wait
 kimchi-cli agent.status                     # the latest run, with its commands
@@ -295,7 +310,8 @@ writing a scene.
   properties of one layer: animated ones get a keyframe at that time) and `motion.setKeyframes` /
   `motion.addKeyframe` / `motion.removeKeyframe` for one property.
 - **Look at it**: `project.renderFrame {times: [...]}` returns a PNG (several times give one labelled
-  sheet). Check entrances, overlaps and legibility, then fix what you see.
+  sheet), and agents get the picture itself (see [Seeing](#seeing)). Check entrances, overlaps and
+  legibility, then fix what you see.
 
 ```sh
 kimchi-cli motion.addTemplate --template lowerThird --values '{"title": "Grace Hopper", "subtitle": "Rear admiral"}' --start 4

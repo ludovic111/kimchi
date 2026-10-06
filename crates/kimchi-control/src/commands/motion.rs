@@ -403,7 +403,7 @@ pub fn keyframes(a: &Args) -> CmdResult<Vec<Keyframe>> {
 /// Renders the timeline at `times` (one frame, or a labelled sheet) into the project's cache
 /// and returns the PNG's path.
 pub async fn render_png(s: &Arc<Session>, p: &Project, times: &[f64], width: Option<u32>) -> CmdResult<PathBuf> {
-    use kimchi_media::tiny_skia::{Color, IntSize, Pixmap, PixmapPaint, Transform};
+    use kimchi_media::tiny_skia::{IntSize, Pixmap};
     let tools = s.tools()?;
     let sheet = times.len() > 1;
     let w = width.unwrap_or(if sheet { 480 } else { 960 }).clamp(64, 3840);
@@ -414,47 +414,46 @@ pub async fn render_png(s: &Arc<Session>, p: &Project, times: &[f64], width: Opt
         let px = Pixmap::from_vec(f.rgba, IntSize::from_wh(f.width, f.height).ok_or("bad size")?).ok_or("bad frame")?;
         frames.push((t, px));
     }
-    let image = if !sheet {
-        frames.pop().map(|(_, p)| p).ok_or("nothing rendered")?
-    } else {
-        let cols = (times.len() as f64).sqrt().ceil().max(1.0) as u32;
-        let rows = (times.len() as u32).div_ceil(cols);
-        let (fw, fh) = (frames[0].1.width(), frames[0].1.height());
-        let (gap, label) = (8u32, 28u32);
-        let (sw, sh) = (cols * fw + (cols + 1) * gap, rows * (fh + label) + (rows + 1) * gap);
-        let mut sheet = Pixmap::new(sw, sh).ok_or("sheet too big")?;
-        sheet.fill(Color::from_rgba8(24, 24, 28, 255));
-        for (i, (t, f)) in frames.iter().enumerate() {
-            let (c, r) = (i as u32 % cols, i as u32 / cols);
-            let (x, y) = (gap + c * (fw + gap), gap + r * (fh + label + gap));
-            sheet.draw_pixmap(x as i32, (y + label) as i32, f.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
-            let style = kimchi_core::TextStyle {
-                content: format!("{t:.2} s"),
-                font_family: "IBM Plex Mono".into(),
-                font_size: 15.0,
-                font_weight: 500,
-                color: "#d0d0d8".into(),
-                shadow: false,
-                align: kimchi_core::TextAlign::Left,
-                ..Default::default()
-            };
-            let m = kimchi_media::text::measure(&style);
-            let tf = kimchi_core::Transform {
-                x: x as f64 + m.width / 2.0 - sw as f64 / 2.0,
-                y: y as f64 + label as f64 / 2.0 - sh as f64 / 2.0,
-                ..Default::default()
-            };
-            let text = kimchi_media::text::rasterize_text(&style, &tf, sw, sh);
-            sheet.draw_pixmap(0, 0, text.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
-        }
-        sheet
-    };
+    let image = if !sheet { frames.pop().map(|(_, p)| p).ok_or("nothing rendered")? } else { contact_sheet(&frames)? };
     let dir = s.cache_dir(p.id).join("renders");
     std::fs::create_dir_all(&dir).map_err(err)?;
     let name = format!("frame-{}.png", chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f"));
     let out = dir.join(name);
     image.save_png(&out).map_err(err)?;
     Ok(out)
+}
+
+/// Frames of the same size in a grid, each labelled with its time in seconds.
+pub fn contact_sheet(frames: &[(f64, kimchi_media::tiny_skia::Pixmap)]) -> CmdResult<kimchi_media::tiny_skia::Pixmap> {
+    use kimchi_media::tiny_skia::{Color, Pixmap, PixmapPaint, Transform};
+    let first = frames.first().map(|f| &f.1).ok_or("nothing rendered")?;
+    let cols = (frames.len() as f64).sqrt().ceil().max(1.0) as u32;
+    let rows = (frames.len() as u32).div_ceil(cols);
+    let (fw, fh) = (first.width(), first.height());
+    let (gap, label) = (8u32, 28u32);
+    let (sw, sh) = (cols * fw + (cols + 1) * gap, rows * (fh + label) + (rows + 1) * gap);
+    let mut sheet = Pixmap::new(sw, sh).ok_or("sheet too big")?;
+    sheet.fill(Color::from_rgba8(24, 24, 28, 255));
+    for (i, (t, f)) in frames.iter().enumerate() {
+        let (c, r) = (i as u32 % cols, i as u32 / cols);
+        let (x, y) = (gap + c * (fw + gap), gap + r * (fh + label + gap));
+        sheet.draw_pixmap(x as i32, (y + label) as i32, f.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        let style = kimchi_core::TextStyle {
+            content: format!("{t:.2} s"),
+            font_family: "IBM Plex Mono".into(),
+            font_size: 15.0,
+            font_weight: 500,
+            color: "#d0d0d8".into(),
+            shadow: false,
+            align: kimchi_core::TextAlign::Left,
+            ..Default::default()
+        };
+        let m = kimchi_media::text::measure(&style);
+        let tf = kimchi_core::Transform { x: x as f64 + m.width / 2.0 - sw as f64 / 2.0, y: y as f64 + label as f64 / 2.0 - sh as f64 / 2.0, ..Default::default() };
+        let text = kimchi_media::text::rasterize_text(&style, &tf, sw, sh);
+        sheet.draw_pixmap(0, 0, text.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+    }
+    Ok(sheet)
 }
 
 /// The value a clip property has at timeline time `t` (for keyframes set without a value).

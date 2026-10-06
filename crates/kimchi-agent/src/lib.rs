@@ -18,6 +18,7 @@
 
 mod api;
 mod cli;
+pub mod context;
 mod host;
 mod http;
 mod status;
@@ -40,6 +41,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 pub use cli::{cli_executable, mcp_executable};
+pub use context::{Glance, glance};
 pub use host::{Entry, Host, RunInfo, RunState, Snapshot};
 pub use status::{ProviderStatus, provider_status};
 pub use tools::{SYSTEM_PROMPT, TOOL_OUTPUT_LIMIT, ToolDef, tool_defs};
@@ -210,6 +212,9 @@ pub enum Part {
     ToolResult { id: String, name: String, output: String, is_error: bool },
     /// A provider block replayed verbatim to the same provider only (Anthropic thinking blocks).
     Opaque { provider: ProviderKind, block: Value },
+    /// A picture a command showed the model (`call`: the tool call whose result it belongs to),
+    /// base64-encoded. Kept after the results it belongs to, in the same message.
+    Image { call: Option<String>, media_type: String, data: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

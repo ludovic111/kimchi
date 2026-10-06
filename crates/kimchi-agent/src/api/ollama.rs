@@ -21,9 +21,19 @@ pub(crate) async fn models(http: &reqwest::Client, base: &str) -> Result<Vec<Str
     Ok(v["models"].as_array().into_iter().flatten().filter_map(|m| m["name"].as_str().map(str::to_string)).collect())
 }
 
-fn wire(messages: &[Message]) -> Vec<Value> {
+/// Whether `model` takes pictures (Ollama lists `vision` among its capabilities). Unknown: no.
+pub(crate) async fn sees(http: &reqwest::Client, base: &str, model: &str) -> bool {
+    let shown = http.post(format!("{base}/api/show")).json(&json!({ "model": model })).timeout(Duration::from_secs(5)).send().await;
+    let Ok(r) = shown else { return false };
+    let v: Value = r.json().await.unwrap_or_default();
+    v["capabilities"].as_array().is_some_and(|c| c.iter().any(|c| c == "vision"))
+}
+
+/// Pictures go in a user message after the tool answers (the latest few, as for OpenAI).
+fn wire(messages: &[Message], vision: bool) -> Vec<Value> {
+    let recent = super::recent_pictures(messages, vision);
     let mut out = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
-    for m in messages {
+    for (i, m) in messages.iter().enumerate() {
         let text = m.text();
         match m.role {
             Role::User => {
@@ -31,6 +41,11 @@ fn wire(messages: &[Message]) -> Vec<Value> {
                     if let Part::ToolResult { name, output, .. } = p {
                         out.push(json!({ "role": "tool", "tool_name": name, "content": output }));
                     }
+                }
+                let (shown, older) = super::pictures_of(m, i, &recent);
+                if !shown.is_empty() || older > 0 {
+                    let images: Vec<&str> = shown.iter().map(|(_, data)| *data).collect();
+                    out.push(json!({ "role": "user", "content": super::pictures_note(shown.len(), older), "images": images }));
                 }
                 if !text.is_empty() {
                     out.push(json!({ "role": "user", "content": text }));
@@ -57,7 +72,7 @@ fn wire(messages: &[Message]) -> Vec<Value> {
 }
 
 pub(super) async fn step(api: &Api, run: &Run, defs: &[ToolDef], messages: &[Message], round: usize) -> Result<Step, String> {
-    let body = json!({ "model": api.model, "messages": wire(messages), "tools": openai::tools(defs), "stream": true });
+    let body = json!({ "model": api.model, "messages": wire(messages, api.sees()), "tools": openai::tools(defs), "stream": true });
     let url = format!("{}/api/chat", api.base);
     let response = http::post(&run.cancel, &format!("Ollama at {}", api.base), || api.http.post(&url), &body).await?;
     let mut lines = Lines::new(response);

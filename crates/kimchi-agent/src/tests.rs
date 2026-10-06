@@ -148,7 +148,8 @@ async fn anthropic_tool_call_lands_in_the_project_and_the_run_reverts() {
     assert!(matches!(events.last(), Some(AgentEvent::Done { summary, checkpoint: None, changes: 0, .. }) if summary == "Sure."));
     let third: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[2].body).unwrap();
     assert_eq!(third["messages"].as_array().unwrap().len(), 5);
-    assert_eq!(third["messages"][4]["content"][0]["text"], "Thanks");
+    let followup = third["messages"][4]["content"][0]["text"].as_str().unwrap();
+    assert!(followup.starts_with("<context>\n") && followup.ends_with("\n</context>\n\nThanks"), "{followup}");
 
     // Revert this run.
     revert(&s, checkpoint).await.unwrap();
@@ -214,7 +215,11 @@ async fn ollama_runs_tools_locally() {
     let events = collect(&mut run).await;
     assert!(matches!(events.last(), Some(AgentEvent::Done { changes: 1, summary, .. }) if summary == "Marker added."), "{events:#?}");
     assert_eq!(s.project().unwrap().markers[0].label, "Drop");
-    let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[1].body).unwrap();
+    // The run first asks Ollama whether the model can see (`/api/show`).
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests[0].url.path(), "/api/show");
+    let chats: Vec<_> = requests.iter().filter(|r| r.url.path() == "/api/chat").collect();
+    let body: Value = serde_json::from_slice(&chats[1].body).unwrap();
     let tool = body["messages"].as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap();
     assert_eq!(tool["tool_name"], "timeline_addMarker");
 }
@@ -660,4 +665,125 @@ async fn switching_projects_starts_afresh() {
     .expect("the run stops");
     assert_eq!(runs["runs"], json!([]));
     assert_eq!(call(&s, Source::Cli, "agent.conversation", json!({})).await["entries"], json!([]));
+}
+
+/// A red solid from 0 to 2 s, selected, with the playhead on it.
+async fn red_and_selected(dir: &std::path::Path) -> (Arc<Session>, String) {
+    let s = with_project(dir).await;
+    let added = kimchi_control::call(&s, Source::Window, "clip.addSolid", json!({ "color": "#ff0000", "start": 0, "duration": 2 })).await.unwrap();
+    let id = kimchi_control::registry::created_clips(&added)[0];
+    s.set_ui_state(kimchi_control::UiState { screen: "editor".into(), playhead: 1.0, selection: vec![id], ..Default::default() });
+    (s, id.to_string())
+}
+
+#[test]
+fn the_context_block_frames_a_request_and_comes_off_again() {
+    let g = Glance { lines: vec!["What the person sees:".into(), "Playhead: 1.00 s.".into()], short: "Playhead 1.00 s".into() };
+    let framed = g.frame("Make it shorter");
+    assert_eq!(framed, "<context>\nWhat the person sees:\nPlayhead: 1.00 s.\n</context>\n\nMake it shorter");
+    assert_eq!(context::unframed(&framed), "Make it shorter");
+    assert_eq!(context::unframed("no block"), "no block");
+    assert_eq!(Glance::default().frame("as is"), "as is");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agent_is_told_what_the_person_sees() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, id) = red_and_selected(dir.path()).await;
+    let g = glance(&s);
+    let block = g.lines.join("\n");
+    assert!(block.contains("Project \"Test\": 1920×1080"), "{block}");
+    assert!(block.contains("Playhead: 1.00 s, paused. Under it: \"Solid"), "{block}");
+    assert!(block.contains("Selected clip: \"Solid") && block.contains(&format!("id {id}, solid #ff0000")), "{block}");
+    assert!(g.short.ends_with("selected · 1.00 s"), "{}", g.short);
+    kimchi_control::call(&s, Source::Window, "project.close", json!({})).await.unwrap();
+    assert_eq!(glance(&s).short, "No project open");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn anthropic_sees_the_frame_it_renders() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, id) = red_and_selected(dir.path()).await;
+    if s.tools().is_err() {
+        eprintln!("ffmpeg not found; skipping");
+        return;
+    }
+    s.set_secret("anthropic", Some("sk-ant-test")).unwrap();
+    let server = mock(
+        "/v1/messages",
+        "text/event-stream",
+        vec![anthropic_tool("toolu_1", "project_renderFrame", "{\"time\": 1, \"width\": 320}"), anthropic_text("It is a red frame.")],
+    )
+    .await;
+    let config = AgentConfig { base_url: server.uri(), ..AgentConfig::new(ProviderKind::Anthropic) };
+    let mut run = Agent::start(&s, config, "What colour is this?", Conversation::new());
+    let events = collect(&mut run).await;
+    assert!(matches!(events.last(), Some(AgentEvent::Done { .. })), "{events:#?}");
+
+    let requests = server.received_requests().await.unwrap();
+    let first: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let asked = first["messages"][0]["content"][0]["text"].as_str().unwrap();
+    assert!(asked.starts_with("<context>\n") && asked.contains(&id) && asked.ends_with("</context>\n\nWhat colour is this?"), "{asked}");
+    let second: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    let result = &second["messages"][2]["content"][0];
+    assert_eq!(result["type"], "tool_result");
+    assert!(result["content"][0]["text"].as_str().unwrap().ends_with("The picture is attached."), "{result}");
+    let image = &result["content"][1];
+    assert_eq!(image["type"], "image");
+    assert_eq!(image["source"]["media_type"], "image/png");
+    use base64::Engine;
+    let png = base64::engine::general_purpose::STANDARD.decode(image["source"]["data"].as_str().unwrap()).unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
+    // The picture stays in the thread, inside its result, for the next turn.
+    let conv = run.conversation();
+    assert!(conv.messages[2].parts.iter().any(|p| matches!(p, Part::Image { call: Some(c), .. } if c == "toolu_1")));
+}
+
+/// Answers in order with (status, body); the last one repeats.
+struct Replies(Vec<(u16, String)>, AtomicUsize);
+
+impl Respond for Replies {
+    fn respond(&self, _: &Request) -> ResponseTemplate {
+        let i = self.1.fetch_add(1, Ordering::SeqCst).min(self.0.len() - 1);
+        let (status, body) = &self.0[i];
+        ResponseTemplate::new(*status).insert_header("content-type", if *status == 200 { "text/event-stream" } else { "application/json" }).set_body_string(body.clone())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_openai_compatible_server_without_vision_gets_no_pictures() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _) = red_and_selected(dir.path()).await;
+    if s.tools().is_err() {
+        eprintln!("ffmpeg not found; skipping");
+        return;
+    }
+    let call = openai_sse(&[
+        json!({ "choices": [{ "index": 0, "delta": { "tool_calls": [{ "index": 0, "id": "call_1", "function": { "name": "project_renderFrame", "arguments": "{\"width\": 320}" } }] } }] }),
+        json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }] }),
+    ]);
+    let answer = openai_sse(&[
+        json!({ "choices": [{ "index": 0, "delta": { "content": "Red." } }] }),
+        json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }] }),
+    ]);
+    let refusal = json!({ "error": { "message": "This model does not support image input." } }).to_string();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(Replies(vec![(200, call), (400, refusal), (200, answer)], AtomicUsize::new(0)))
+        .mount(&server)
+        .await;
+    let config = AgentConfig { base_url: format!("{}/v1", server.uri()), ..AgentConfig::new(ProviderKind::OpenAi) };
+    let mut run = Agent::start(&s, config, "Look at it", Conversation::new());
+    let events = collect(&mut run).await;
+    assert!(matches!(events.last(), Some(AgentEvent::Done { summary, .. }) if summary == "Red."), "{events:#?}");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    let with: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    let pictures = with["messages"].as_array().unwrap().iter().find(|m| m["role"] == "user" && m["content"].is_array()).expect("the picture follows the tool answer");
+    assert!(pictures["content"][1]["image_url"]["url"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    let without: Value = serde_json::from_slice(&requests[2].body).unwrap();
+    assert!(!without.to_string().contains("image_url"), "sent again without the picture");
+    assert!(without.to_string().contains("earlier picture is not shown again"));
 }

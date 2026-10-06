@@ -523,12 +523,29 @@ impl AgentPanel {
         let focused = self.composer.read(cx).is_focused(window);
         let running = self.snap.running.is_some();
         let empty = self.composer.read(cx).text().trim().is_empty();
+        // What the agent is told about the window with the request.
+        let glance = kimchi_agent::glance(&self.store.read(cx).session);
+        let detail: gpui::SharedString = format!("The agent is told what you see as you send:\n{}", glance.lines.iter().skip(1).cloned().collect::<Vec<_>>().join("\n")).into();
         div().p(px(10.)).border_t_1().border_color(t.line).child(
             div()
                 .rounded(px(sz::R_LG))
                 .bg(t.bg_sunken.opacity(if t.is_dark() { 0.55 } else { 0.7 }))
                 .border_1()
                 .border_color(if focused { t.accent_ring } else { t.line_strong })
+                .child(
+                    div()
+                        .id("agent-glance")
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .px(px(10.))
+                        .pt(px(7.))
+                        .text_size(px(sz::XS))
+                        .text_color(t.text_2)
+                        .tooltip(move |_, cx| crate::ui::tooltip(detail.clone(), cx))
+                        .child(icon("scan-eye").size(px(12.)))
+                        .child(div().flex_1().min_w_0().truncate().child(glance.short)),
+                )
                 .child(div().max_h(px(200.)).child(self.composer.clone()))
                 .child(
                     div()

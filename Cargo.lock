@@ -3810,6 +3810,7 @@ dependencies = [
 name = "kimchi-agent"
 version = "0.8.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "futures",
  "kimchi-control",

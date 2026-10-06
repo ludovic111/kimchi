@@ -114,6 +114,21 @@ impl AgentPanel {
                     .child(icon(if open { "chevron-up" } else { "chevron-down" }).size(px(12.)).text_color(t.text_2)),
             )
             .when(!summary.is_empty() && !open, |d| d.child(div().pl(px(19.)).truncate().font_family(MONO).text_size(px(10.5)).text_color(t.text_2).child(summary)))
+            .when_some(seen_picture(record, result), |d, path| {
+                // What the agent looked at (a frame, a media look), as it saw it.
+                d.child(
+                    div()
+                        .mt(px(4.))
+                        .h(px(150.))
+                        .w_full()
+                        .rounded(px(sz::R_SM))
+                        .overflow_hidden()
+                        .bg(t.bg_sunken.opacity(0.8))
+                        .border_1()
+                        .border_color(t.line)
+                        .child(gpui::img(path).size_full().object_fit(gpui::ObjectFit::Contain)),
+                )
+            })
             .when_some(record.error.clone(), |d, e| d.child(div().pl(px(19.)).text_size(px(sz::XS)).text_color(t.danger).child(e)))
             .when(open, |d| {
                 let params = serde_json::to_string_pretty(&record.params).unwrap_or_default();
@@ -179,6 +194,15 @@ impl AgentPanel {
             .when_some(o.error.map(str::to_string), |d, m| d.child(div().text_size(px(sz::SM)).text_color(t.text).child(m)))
             .into_any_element()
     }
+}
+
+/// The picture a command answered with, when it is one the agent is shown and it is still there.
+fn seen_picture(record: &CommandRecord, result: Option<&Value>) -> Option<std::path::PathBuf> {
+    if !record.ok {
+        return None;
+    }
+    let answer = result.or(record.result.as_ref())?;
+    kimchi_control::vision::pictures_in(&record.command, answer).into_iter().next().filter(|p| p.is_file())
 }
 
 fn code_block(title: &str, body: String, cx: &gpui::App) -> AnyElement {

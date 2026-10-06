@@ -55,6 +55,11 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             let time = a.opt_f64("time");
             Ok(json!({ "path": clip_frame(s, clip, time).await? }))
         }
+        "media.look" => {
+            let p = s.project()?;
+            let asset = p.asset(resolve::asset(&p, a.str("assetId")?)?).cloned().ok_or("media not found")?;
+            look(s, p.id, &asset, a.opt_u32("frames"), a.opt_u32("width")).await
+        }
         _ => Err(crate::commands::unhandled(cx)),
     }
 }
@@ -201,6 +206,51 @@ pub fn absolute(path: &str) -> CmdResult<PathBuf> {
 /// Saves the frame a clip shows at timeline time `time` as a PNG and returns
 /// its path. Without a time: the playhead when it is inside the clip, else the
 /// clip's first frame.
+/// `media.look`: a still as a PNG, or a video as a labelled sheet of frames (source times), kept
+/// in the project's cache.
+async fn look(s: &Arc<Session>, project_id: Id, asset: &Asset, frames: Option<u32>, width: Option<u32>) -> CmdResult {
+    use kimchi_media::tiny_skia::Pixmap;
+    if asset.kind == MediaKind::Audio {
+        return Err(format!("\"{}\" is audio: it has no picture. media.get describes it.", asset.name));
+    }
+    if !Path::new(&asset.path).exists() {
+        return Err(format!("\"{}\" is missing on disk ({}).", asset.name, asset.path));
+    }
+    let tools = s.tools()?;
+    let duration = asset.meta.duration.unwrap_or(0.0);
+    let n = if asset.kind == MediaKind::Video && duration > 0.0 { frames.unwrap_or(6).clamp(1, 16) } else { 1 };
+    let w = width.unwrap_or(if n > 1 { 480 } else { 960 }).clamp(64, 3840);
+    let dir = s.cache_dir(project_id).join("looks");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let out = dir.join(format!("{}-{n}-{w}.png", asset.id));
+    let times: Vec<f64> = (0..n).map(|i| if n == 1 { duration * 0.1 } else { duration * (i as f64 + 0.5) / n as f64 }).collect();
+    if !out.exists() {
+        let mut shots = vec![];
+        for (i, &t) in times.iter().enumerate() {
+            let tmp = dir.join(format!("{}-{i}.tmp.png", asset.id));
+            let grabbed = kimchi_media::grab_frame(&tools, Path::new(&asset.path), t, &tmp).await.map_err(err);
+            let decoded = grabbed.and_then(|()| Pixmap::load_png(&tmp).map_err(err));
+            let _ = std::fs::remove_file(&tmp);
+            let px = decoded?;
+            let h = ((w as f64 * px.height() as f64 / px.width().max(1) as f64).round() as u32).max(2);
+            shots.push((t, scale_to(&px, w, h)));
+        }
+        let image = if n == 1 { shots.pop().map(|(_, p)| p).ok_or("nothing grabbed")? } else { crate::commands::motion::contact_sheet(&shots)? };
+        image.save_png(&out).map_err(err)?;
+    }
+    Ok(json!({ "path": path_str(&out), "kind": asset.kind, "times": if n > 1 { json!(times.iter().map(|t| (t * 100.0).round() / 100.0).collect::<Vec<_>>()) } else { json!(null) } }))
+}
+
+/// `p` drawn at exactly `w`×`h`.
+fn scale_to(p: &kimchi_media::tiny_skia::Pixmap, w: u32, h: u32) -> kimchi_media::tiny_skia::Pixmap {
+    use kimchi_media::tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
+    let fitted = crate::vision::fit(p, w.max(h));
+    let Some(mut out) = Pixmap::new(w, h) else { return fitted };
+    let paint = PixmapPaint { quality: FilterQuality::Bicubic, ..Default::default() };
+    out.draw_pixmap(0, 0, fitted.as_ref(), &paint, Transform::from_scale(w as f32 / fitted.width() as f32, h as f32 / fitted.height() as f32), None);
+    out
+}
+
 pub async fn clip_frame(s: &Arc<Session>, clip_id: Id, time: Option<f64>) -> CmdResult<String> {
     // Titles, solids and motion clips: what kimchi draws for the clip alone at that time.
     let drawn = s.read(|ed| {
