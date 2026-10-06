@@ -48,6 +48,9 @@ async fn main() {
     if let Some(code) = kimchi_audio::plugins::scan_child() {
         std::process::exit(code);
     }
+    if let Some(code) = kimchi_media::render::plugins::scan_child() {
+        std::process::exit(code);
+    }
     let mut file: Option<PathBuf> = None;
     let (mut live, mut headless) = (false, false);
     let mut args = std::env::args().skip(1);

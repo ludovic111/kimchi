@@ -306,6 +306,8 @@ pub static SPECS: &[Spec] = &[
         opt("kind", String, "dissolve (default), dipToBlack, dipToWhite, wipeLeft, wipeRight, wipeUp, wipeDown, slideLeft, slideRight, slideUp, slideDown, pushLeft, pushRight, pushUp, pushDown, zoom, iris or blur."),
         opt("duration", Number, "Seconds (default 0.8). On a cut it can't be longer than the shorter clip; otherwise than half the clip."),
         opt("easing", String, "How the progress moves (default easeInOutSine; any keyframe easing)."),
+        opt("plugin", String, "A transition plugin (plugins.list kind transition, e.g. Radial wipe) drawn instead of kind, which stays as the fallback on computers without it; \"\" removes it."),
+        opt("pluginParams", Object, "The transition plugin's values by parameter name (plugins.params)."),
         crate::registry::COALESCE,
     ]),
     edit("transition.remove", "Remove the transitions at the start of clips (or every one on a track). One undo step.", &[

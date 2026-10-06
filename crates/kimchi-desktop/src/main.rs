@@ -28,6 +28,9 @@ fn main() {
     if let Some(code) = kimchi_audio::plugins::scan_child() {
         std::process::exit(code);
     }
+    if let Some(code) = kimchi_media::render::plugins::scan_child() {
+        std::process::exit(code);
+    }
     // Logs to `<data>/logs/kimchi.log` (and stderr), crash reports, and the note of how the last
     // run ended: first, so everything after is recorded.
     let data_dir = kimchi_control::session::default_data_dir();
@@ -98,6 +101,8 @@ fn main() {
         cx.activate(true);
         // This copy started: an update's previous copy can go.
         kimchi_control::update::finish_pending();
+        // New or changed video plugins in the plugin folders (the others come from the cache).
+        kimchi_media::render::plugins::scan_in_background();
         welcome(&session, &started, cx);
 
         // Check for updates a few seconds after start and every few hours (unless turned off).

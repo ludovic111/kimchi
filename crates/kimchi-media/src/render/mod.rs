@@ -13,8 +13,8 @@
 //! visible video is decoded at that time, in parallel. Pictures are kept between frames, so a
 //! still image or a title that doesn't move is decoded or drawn once.
 //!
-//! Each clip's effects ([`grade`]) are applied to its picture (media) or its layer (titles,
-//! solids, scenes). A transition ([`kimchi_core::transition`]) draws the outgoing and incoming
+//! Each clip's effects ([`grade`]) and then its video plugins ([`plugins`]) are applied to its
+//! picture (media) or its layer (titles, solids, scenes). A transition ([`kimchi_core::transition`]) draws the outgoing and incoming
 //! clips into layers of their own and mixes them ([`mix`]).
 //!
 //! Timing matches the old ffmpeg graph: a clip shows from half a frame before its start to half a
@@ -78,6 +78,8 @@ pub struct Renderer {
     quality: Quality,
     /// Whether each rendered motion clip's file still matches its scene.
     current: HashMap<Id, bool>,
+    /// Video plugin instances, per clip slot.
+    plugins: plugins::Pool,
 }
 
 /// What one track shows at an instant.
@@ -177,6 +179,7 @@ impl Renderer {
             graded: HashMap::new(),
             quality: Quality::Preview,
             current: HashMap::new(),
+            plugins: plugins::Pool::default(),
         }
     }
 
@@ -380,7 +383,13 @@ impl Renderer {
         }
         let mut b = blank();
         self.draw_clip(&mut b, to, t, streaming, used)?;
-        mix::draw(canvas, &a, &b, kind, p, self.sx);
+        // A transition plugin draws it when it can; the transition's kind otherwise.
+        let plugin = to.transition.as_ref().and_then(|tr| tr.plugin.as_ref()).filter(|p| !p.bypass);
+        let (fps, sx, draft) = (self.fps, self.sx, self.draft());
+        match plugin.and_then(|slot| self.plugins.transition(to.id, slot, &a, &b, p, t - to.start, fps, sx, draft)) {
+            Some(mixed) => draw_picture(canvas, &mixed, Transform::identity(), 1.0),
+            None => mix::draw(canvas, &a, &b, kind, p, self.sx),
+        }
         Ok(())
     }
 
@@ -402,7 +411,7 @@ impl Renderer {
                 let path = paint::rect(w, h, 0.0).expect("non-empty");
                 let ts = center.pre_scale(pl.scale_x as f32, pl.scale_y as f32);
                 let spec = paint::FillSpec::Solid(paint::color(color));
-                self.layer(canvas, alpha, blur, &fx, |own, a| own.fill_path(&path, &spec.paint(a), FillRule::Winding, ts, None));
+                self.layer(canvas, clip, t, alpha, blur, &fx, |own, a| own.fill_path(&path, &spec.paint(a), FillRule::Winding, ts, None));
                 Ok(())
             }
             ClipContent::Media { asset_id } => {
@@ -432,17 +441,19 @@ impl Renderer {
                     }
                     _ => return Ok(()),
                 };
-                let pic = self.grade(clip, pic, &fx, asset.kind == MediaKind::Image);
                 let (fw, fh) = fitted(clip.transform.fit, mw, mh, w, h);
+                // Plugins measure in project pixels of the clip at scale 1 (they grow with it).
+                let scale = pic.width() as f32 * self.sx / fw.max(1.0);
+                let pic = self.grade(clip, pic, &fx, asset.kind == MediaKind::Image, t, scale);
                 let ts = center
                     .pre_scale((fw * pl.scale_x as f32) / pic.width() as f32, (fh * pl.scale_y as f32) / pic.height() as f32)
                     .pre_translate(-(pic.width() as f32) / 2.0, -(pic.height() as f32) / 2.0);
-                self.layer(canvas, alpha, blur, &Effects::default(), |own, a| draw_picture(own, &pic, ts, a));
+                self.layer(canvas, clip, t, alpha, blur, &Effects::default(), |own, a| draw_picture(own, &pic, ts, a));
                 Ok(())
             }
             ClipContent::Text { .. } => {
                 let title = self.title(clip, &pl, t);
-                self.layer(canvas, alpha, blur, &fx, |own, a| {
+                self.layer(canvas, clip, t, alpha, blur, &fx, |own, a| {
                     let at = Transform::from_translate(title.x as f32, title.y as f32);
                     par::draw_pixmap(own, title.pic.as_ref(), &PixmapPaint { opacity: a, ..PixmapPaint::default() }, at)
                 });
@@ -484,7 +495,11 @@ impl Renderer {
                     if blur > 0.0 {
                         paint::blur(&mut own, blur);
                     }
-                    grade::apply(&mut own, &fx, self.sx);
+                    if fx.grades() {
+                        grade::apply(&mut own, &fx, self.sx);
+                    }
+                    let (fps, sx, draft) = (self.fps, self.sx, self.draft());
+                    self.plugins.run(clip.id, &fx, &mut own, t - clip.start, fps, sx, draft);
                     let quality = if ts.is_identity() { tiny_skia::FilterQuality::Nearest } else { tiny_skia::FilterQuality::Bilinear };
                     par::draw_pixmap(canvas, own.as_ref(), &PixmapPaint { opacity: alpha, quality, ..PixmapPaint::default() }, ts);
                 }
@@ -493,8 +508,15 @@ impl Renderer {
         }
     }
 
-    /// Draws with `f` straight onto the canvas, or onto a layer that is blurred and graded first.
-    fn layer(&self, canvas: &mut Pixmap, alpha: f32, blur: f32, fx: &Effects, f: impl FnOnce(&mut Pixmap, f32)) {
+    /// Plugins may draw a quicker frame for the preview.
+    fn draft(&self) -> bool {
+        self.quality != Quality::Final
+    }
+
+    /// Draws with `f` straight onto the canvas, or onto a layer that is blurred, graded and run
+    /// through the clip's plugins first.
+    #[allow(clippy::too_many_arguments)]
+    fn layer(&mut self, canvas: &mut Pixmap, clip: &Clip, t: f64, alpha: f32, blur: f32, fx: &Effects, f: impl FnOnce(&mut Pixmap, f32)) {
         if blur <= 0.0 && !fx.is_active() {
             f(canvas, alpha);
             return;
@@ -502,16 +524,22 @@ impl Renderer {
         let mut own = Pixmap::new(self.width, self.height).expect("non-empty");
         f(&mut own, 1.0);
         paint::blur(&mut own, blur);
-        grade::apply(&mut own, fx, self.sx);
+        if fx.grades() {
+            grade::apply(&mut own, fx, self.sx);
+        }
+        let (fps, sx, draft) = (self.fps, self.sx, self.draft());
+        self.plugins.run(clip.id, fx, &mut own, t - clip.start, fps, sx, draft);
         par::draw_pixmap(canvas, own.as_ref(), &PixmapPaint { opacity: alpha, ..PixmapPaint::default() }, Transform::identity());
     }
 
-    /// A media picture with the clip's effects. Stills keep their graded copy while neither the
-    /// picture nor the effects change.
-    fn grade(&mut self, clip: &Clip, pic: Arc<Pixmap>, fx: &Effects, still: bool) -> Arc<Pixmap> {
+    /// A media picture with the clip's effects and plugins (`scale`: the picture's pixels per
+    /// project pixel). Stills keep their graded copy while neither the picture nor the effects
+    /// change, unless a plugin draws something new every frame.
+    fn grade(&mut self, clip: &Clip, pic: Arc<Pixmap>, fx: &Effects, still: bool, t: f64, scale: f32) -> Arc<Pixmap> {
         if !fx.is_active() {
             return pic;
         }
+        let still = still && self.plugins.timeless(fx);
         let made_from = Arc::as_ptr(&pic) as usize;
         let key = serde_json::to_string(fx).unwrap_or_default();
         if still
@@ -522,7 +550,11 @@ impl Renderer {
             return p.clone();
         }
         let mut out = (*pic).clone();
-        grade::apply(&mut out, fx, self.sx);
+        if fx.grades() {
+            grade::apply(&mut out, fx, self.sx);
+        }
+        let (fps, draft) = (self.fps, self.draft());
+        self.plugins.run(clip.id, fx, &mut out, t - clip.start, fps, scale, draft);
         let out = Arc::new(out);
         if still {
             self.graded.insert(clip.id, (made_from, key, out.clone()));

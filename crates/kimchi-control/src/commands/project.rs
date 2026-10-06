@@ -427,11 +427,18 @@ pub fn clip_summary(p: &Project, c: &kimchi_core::Clip) -> Value {
     if c.reverse {
         v["reverse"] = json!(true);
     }
-    if !c.effects.is_default() {
-        v["effects"] = json!(c.effects);
+    let plain = kimchi_core::Effects { plugins: vec![], last_plugin: 0, ..c.effects.clone() };
+    if !plain.is_default() {
+        v["effects"] = json!(plain);
+    }
+    if !c.effects.plugins.is_empty() {
+        v["plugins"] = json!(c.effects.plugins.iter().map(crate::commands::plugins::slot_summary).collect::<Vec<_>>());
     }
     if let Some(tr) = &c.transition {
         v["transition"] = json!({ "kind": tr.kind, "duration": round(tr.duration) });
+        if let Some(p) = &tr.plugin {
+            v["transition"]["plugin"] = crate::commands::plugins::slot_summary(p);
+        }
     }
     if c.volume != 1.0 {
         v["volume"] = json!(c.volume);

@@ -295,6 +295,7 @@ impl Session {
             harness.load_settings(s);
         }
         let settings = Settings::load(&config_dir);
+        kimchi_media::render::plugins::configure(&data_dir, &settings.plugins.video_folders);
         let (events, _) = broadcast::channel(512);
 
         let session = Arc::new(Self {

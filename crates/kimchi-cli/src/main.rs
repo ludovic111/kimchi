@@ -95,6 +95,9 @@ async fn main() -> ExitCode {
     if let Some(code) = kimchi_audio::plugins::scan_child() {
         std::process::exit(code);
     }
+    if let Some(code) = kimchi_media::render::plugins::scan_child() {
+        std::process::exit(code);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args).await {
         Ok(()) => ExitCode::SUCCESS,

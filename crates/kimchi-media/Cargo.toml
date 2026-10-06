@@ -22,6 +22,11 @@ lyon_tessellation = "1"
 pollster = "0.4"
 rayon = "1"
 wgpu = "29"
+# Video plugins: kimchi's own SDK (its C ABI) and the plugins built in with it; libloading opens
+# plugin libraries (kimchi, frei0r, OpenFX), all hosted in Rust.
+kimchi-plugin = { path = "../kimchi-plugin" }
+kimchi-plugin-examples = { path = "../../plugins/examples" }
+libloading = "0.8"
 
 [dev-dependencies]
 chrono.workspace = true
