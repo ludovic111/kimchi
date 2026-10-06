@@ -1706,6 +1706,16 @@ fn keyboard_retiming_previews_cancels_and_commits_atomically(cx: &mut TestAppCon
         cx.run_until_parked();
     };
     let start=|key:&str,cx:&mut VisualTestContext| {
+        // The key reaches the timeline only while the Studio holds the keyboard with its timeline
+        // the active area and keys selected: put focus there and wait for all of it before pressing
+        // (a key pressed while focus is elsewhere is simply lost).
+        cx.update(|w,cx| {let focus=st.read(cx).focus.clone(); w.focus(&focus,cx);});
+        let ready=|cx:&mut VisualTestContext| cx.update(|w,cx| {
+            let s=st.read(cx);
+            s.focus.contains_focused(w,cx) && s.area==super::Area::Timeline && !s.keys.is_empty()
+        });
+        wait(cx,ready);
+        assert!(ready(cx),"the Studio's timeline holds the keyboard with keys selected");
         cx.simulate_keystrokes(key);
         wait(cx,|cx| cx.update(|_,cx| timeline.read(cx).retiming_for_test()));
         assert!(cx.update(|_,cx| timeline.read(cx).retiming_for_test()));
@@ -1979,6 +1989,16 @@ fn graph_numeric_value_transforms_preserve_other_components_and_key_times(cx: &m
         cx.run_until_parked();
     };
     let start=|key:&str,cx:&mut VisualTestContext| {
+        // The key reaches the timeline only while the Studio holds the keyboard with its timeline
+        // the active area and keys selected: put focus there and wait for all of it before pressing
+        // (a key pressed while focus is elsewhere is simply lost).
+        cx.update(|w,cx| {let focus=st.read(cx).focus.clone(); w.focus(&focus,cx);});
+        let ready=|cx:&mut VisualTestContext| cx.update(|w,cx| {
+            let s=st.read(cx);
+            s.focus.contains_focused(w,cx) && s.area==super::Area::Timeline && !s.keys.is_empty()
+        });
+        wait(cx,ready);
+        assert!(ready(cx),"the Studio's timeline holds the keyboard with keys selected");
         cx.simulate_keystrokes(key);
         wait(cx,|cx| cx.update(|_,cx| timeline.read(cx).retiming_for_test()));
         assert!(cx.update(|_,cx| timeline.read(cx).retiming_for_test()));
