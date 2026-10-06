@@ -287,6 +287,11 @@ pub static SPECS: &[Spec] = &[
     // ---- captions ---------------------------------------------------------
     query("captions.list", "The captions, by time: clip, start, end and words. Captions are titles on the captions track; edit one like any title (clip.update style.content, clip.trim, clip.delete).", &[]),
     query("captions.models", "The speech models captions.transcribe can use, their download size and whether they are on this computer.", &[]),
+    edit("captions.downloadModel", "Download a speech model now, so captions.transcribe starts at once later (the first-run setup offers it). Runs in the background: call it again for its progress, or pass wait.", &[
+        opt("model", String, "tiny, base (default) or small (captions.models)."),
+        opt("wait", Boolean, "Answer when the model is there (default false)."),
+        opt("cancel", Boolean, "Stop the download running now."),
+    ]).perm(Perm::Files),
     query("captions.status", "The transcription running now, if any: stage (downloading the model, mixing, listening) and progress.", &[]),
     edit("captions.transcribe", "Caption the cut by listening to it: the mixed sound (or one clip's) is transcribed by Whisper on this computer, split into readable captions (two lines at most) and put on the captions track as titles (the track is made if needed), replacing the captions in that span. One undo step. The model is downloaded the first time (150 MB to 1 GB); then the base model takes about a tenth of the sound's length.", &[
         opt("clipId", String, "Only this clip's sound (default: the whole mix)."),
@@ -898,9 +903,9 @@ pub static SPECS: &[Spec] = &[
     // ---- ui ---------------------------------------------------------------
     query("ui.state", "What the window shows: home or editor, playhead, playing, selection, zoom, open panel and dialogs, theme.", &[]),
     edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears.").of(String), opt("assetId", String, "A media item to select instead.")]).window(),
-    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), inspector, agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics; or home. With open false, close it.", &[
+    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, captions (left panel), inspector, agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics, onboarding (the first-run setup); or home. With open false, close it.", &[
         req("panel", String, "Panel name."),
-        opt("section", String, "For settings: models, agent, appearance, audio, updates, diagnostics or about."),
+        opt("section", String, "For settings: models, agent, appearance, audio, keyboard, updates, diagnostics or about. For onboarding: the step to show (welcome, comingFrom, generativeAi, agent, sound, done)."),
         opt("open", Boolean, "false closes the panel or dialog instead (the left panel, inspector, agent, jobs or a dialog; default true)."),
         opt("all", Boolean, "For whatsNew: the notes of every release, not only this one's."),
     ]).window(),
