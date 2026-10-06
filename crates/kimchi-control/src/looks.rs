@@ -48,6 +48,8 @@ impl LibraryLook {
 }
 
 /// A look by id or name: built-in or from the library.
+// Found once per command and handed straight on: boxing the library look would only add noise.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Found {
     BuiltIn(&'static kimchi_core::effects::Look),

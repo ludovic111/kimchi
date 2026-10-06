@@ -226,8 +226,8 @@ fn is_lut_name(t: &str) -> bool {
 /// The text in a parameter blob: UTF-16 (with its byte-order mark) or UTF-8.
 fn blob_text(b: &[u8]) -> Option<String> {
     let s = match b {
-        [0xff, 0xfe, rest @ ..] => String::from_utf16_lossy(&rest.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()),
-        [0xfe, 0xff, rest @ ..] => String::from_utf16_lossy(&rest.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect::<Vec<_>>()),
+        [0xff, 0xfe, rest @ ..] => String::from_utf16_lossy(&rest.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()),
+        [0xfe, 0xff, rest @ ..] => String::from_utf16_lossy(&rest.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect::<Vec<_>>()),
         _ => String::from_utf8(b.to_vec()).ok()?,
     };
     let s = s.trim_matches(char::from(0)).trim().to_string();

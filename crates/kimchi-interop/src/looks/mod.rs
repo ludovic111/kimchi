@@ -63,9 +63,7 @@ pub fn format_of(path: &Path) -> Option<&'static LookFormat> {
 pub fn read(path: &Path) -> Result<Vec<LookFile>> {
     let fail = |e: String| format!("{}: {e}", path.display());
     let format = format_of(path).ok_or_else(|| {
-        fail(format!(
-            "kimchi doesn't read this kind of file as a look. Looks are LUTs (.cube, .3dl, .csp, .spi1d, .spi3d, Hald CLUT .png / .tif), Lightroom presets (.xmp, .lrtemplate) and Premiere Lumetri presets (.prfpset)"
-        ))
+        fail("kimchi doesn't read this kind of file as a look. Looks are LUTs (.cube, .3dl, .csp, .spi1d, .spi3d, Hald CLUT .png / .tif), Lightroom presets (.xmp, .lrtemplate) and Premiere Lumetri presets (.prfpset)".to_string())
     })?;
     let text = || -> Result<String> {
         let bytes = std::fs::read(path).map_err(|e| fail(e.to_string()))?;
@@ -75,8 +73,8 @@ pub fn read(path: &Path) -> Result<Vec<LookFile>> {
             Err(e) => {
                 let b = e.into_bytes();
                 match b.as_slice() {
-                    [0xff, 0xfe, rest @ ..] => String::from_utf16_lossy(&rest.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()),
-                    [0xfe, 0xff, rest @ ..] => String::from_utf16_lossy(&rest.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect::<Vec<_>>()),
+                    [0xff, 0xfe, rest @ ..] => String::from_utf16_lossy(&rest.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()),
+                    [0xfe, 0xff, rest @ ..] => String::from_utf16_lossy(&rest.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect::<Vec<_>>()),
                     _ => b.iter().map(|c| *c as char).collect(),
                 }
             }
