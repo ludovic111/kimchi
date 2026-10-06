@@ -22,6 +22,10 @@ lyon_tessellation = "1"
 pollster = "0.4"
 rayon = "1"
 wgpu = "29"
+# Hald CLUT pictures used as LUTs (8 and 16-bit), read in Rust: png is tiny-skia's own decoder,
+# tiff a small pure-Rust one.
+png = "0.17"
+tiff = "0.11"
 
 [dev-dependencies]
 chrono.workspace = true

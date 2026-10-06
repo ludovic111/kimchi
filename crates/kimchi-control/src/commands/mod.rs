@@ -233,9 +233,9 @@ pub static SPECS: &[Spec] = &[
         req("preset", String, "Preset name."),
         opt("length", Number, "Seconds the move takes (default 0.6; one cycle for repeating ones)."),
     ]),
-    edit("clip.setEffects", "Colour and picture effects on clips: a ready-made look, corrections (brightness, contrast, saturation, temperature, tint), vignette, sharpen, a chroma key (green or blue screen) and a .cube LUT. Drawn in the preview and the export. Only the given fields change; animate the numeric ones with clip.setKeyframes. One undo step.", &[
+    edit("clip.setEffects", "Colour and picture effects on clips: a ready-made look, corrections (brightness, contrast, saturation, temperature, tint), vignette, sharpen, a chroma key (green or blue screen) and a LUT. Drawn in the preview and the export. Only the given fields change; animate the numeric ones with clip.setKeyframes. One undo step.", &[
         req("clipIds", Array, "Clips to change (ids or names).").of(String),
-        opt("look", String, "Start from a look (clip.looks): none, punchy, warm, cool, mono, faded, vintage, noir, teal, dreamy. The other fields given go on top."),
+        opt("look", String, "Start from a look: a built-in one (none, punchy, warm, cool, mono, faded, vintage, noir, teal, dreamy) or one from the library (looks.list). The other fields given go on top."),
         opt("brightness", Number, "-1 to 1 (0 = unchanged)."),
         opt("contrast", Number, "-1 (flat grey) to 1 (twice the contrast)."),
         opt("saturation", Number, "-1 (black and white) to 1 (twice as colourful)."),
@@ -244,7 +244,7 @@ pub static SPECS: &[Spec] = &[
         opt("vignette", Number, "0-1: darker corners."),
         opt("sharpen", Number, "0-1."),
         opt("chromaKey", Any, "Key a colour out: true (a green screen), a colour #rrggbb (the screen's colour, best picked from the footage), {color, similarity, softness, spill} (0-1 each; similarity 0.5, softness 0.1, spill 0.5 by default), or false to remove it."),
-        opt("lut", Any, "Absolute path of a 3D .cube LUT, {path, strength}, or null to remove it."),
+        opt("lut", Any, "Absolute path of a LUT (.cube 1D or 3D, .3dl, .csp, .spi1d, .spi3d, or a Hald CLUT .png / .tif), {path, strength}, or null to remove it."),
         opt("lutStrength", Number, "0-1: how much of the LUT shows (default 1)."),
         opt("reset", Boolean, "Remove every effect first."),
         crate::registry::COALESCE,

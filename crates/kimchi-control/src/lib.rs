@@ -11,6 +11,7 @@ pub mod bridge;
 pub mod commands;
 pub mod diagnostics;
 pub mod discovery;
+pub mod looks;
 pub mod registry;
 pub mod release_notes;
 pub mod renders;
