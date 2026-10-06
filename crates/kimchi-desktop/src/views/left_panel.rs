@@ -16,14 +16,19 @@ pub struct LeftPanel {
     pub text: Entity<TextPanel>,
     pub motion: Entity<MotionPanel>,
     pub captions: Entity<CaptionsPanel>,
+    inspector: Entity<super::inspector::Inspector>,
+    studio: Entity<super::studio::Studio>,
+    _studio_sub: Subscription,
     _sub: Subscription,
 }
 
 impl LeftPanel {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(inspector: Entity<super::inspector::Inspector>, studio: Entity<super::studio::Studio>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
         let sub = cx.observe(&store, |_, _, cx| cx.notify());
+        let studio_sub = cx.observe(&studio, |_, _, cx| cx.notify());
         Self {
+            inspector, studio, _studio_sub: studio_sub,
             media: cx.new(|cx| MediaPanel::new(window, cx)),
             generate: cx.new(|cx| GeneratePanel::new(window, cx)),
             text: cx.new(|cx| TextPanel::new(window, cx)),
@@ -54,6 +59,8 @@ impl Render for LeftPanel {
                     LeftTab::Generate => self.generate.clone().into_any_element(),
                     LeftTab::Text => self.text.clone().into_any_element(),
                     LeftTab::Motion => self.motion.clone().into_any_element(),
+                    LeftTab::Inspector => if self.studio.read(cx).is_open() { self.studio.read(cx).properties.clone().into_any_element() } else { self.inspector.clone().into_any_element() },
+                    LeftTab::Studio => if self.studio.read(cx).is_open() { self.studio.read(cx).sidebar.clone().into_any_element() } else { self.motion.clone().into_any_element() },
                     LeftTab::Captions => self.captions.clone().into_any_element(),
                 }),
                 gpui::ElementId::Name(tab.as_str().into()),
@@ -131,7 +138,12 @@ pub fn rail(tab: LeftTab, shown: bool, badge: usize, on_pick: impl Fn(LeftTab, &
         .child(item("tab-media", "Media", "film", LeftTab::Media, 0, || Box::new(crate::actions::ShowMedia)))
         .child(item("tab-generate", "Generate", "sparkles", LeftTab::Generate, badge, || Box::new(crate::actions::ShowGenerate)))
         .child(item("tab-text", "Text", "type", LeftTab::Text, 0, || Box::new(crate::actions::ShowText)))
+        .child(item("tab-studio", "Studio", "box", LeftTab::Studio, 0, || Box::new(crate::actions::OpenStudio)))
+        .child(item("tab-inspector", "Inspect", "sliders-horizontal", LeftTab::Inspector, 0, || Box::new(crate::actions::ToggleInspector)))
         .child(item("tab-motion", "Motion", "shapes", LeftTab::Motion, 0, || Box::new(crate::actions::ShowMotion)))
         .child(item("tab-captions", "Captions", "captions", LeftTab::Captions, 0, || Box::new(crate::actions::ShowCaptions)))
+        .child(div().flex_1())
+        .child(crate::ui::Button::icon("nav-settings", "settings", "Settings").on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_dialog(crate::store::Dialog::Settings { section: None }, cx))))
+        .pb(px(8.))
         .into_any_element()
 }

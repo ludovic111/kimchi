@@ -61,6 +61,58 @@ fn close(a: f64, b: f64, tol: f64) -> bool {
 // ---- primitives -----------------------------------------------------------------------------
 
 #[test]
+fn face_tessellation_preserves_concavity_winding_and_relative_scale() {
+    let face = [[-2.,-2.,0.],[2.,-2.,0.],[2.,-1.,0.],[-1.,-1.,0.],[-1.,1.,0.],[2.,1.,0.],[2.,2.,0.],[-2.,2.,0.]];
+    for reverse in [false,true] {
+        let mut points = face.to_vec();
+        if reverse { points.reverse(); }
+        let expected = face_triangles(&points);
+        assert_eq!(expected.len(),points.len()-2);
+        for size in [1e-200,1e-8,1.,1e100,1e200] {
+            let scaled:Vec<_> = points.iter().map(|p|scale(*p,size)).collect();
+            assert_eq!(face_triangles(&scaled),expected,"scale {size}, reversed {reverse}");
+        }
+        let translated:Vec<_> = points.iter().map(|p|add(*p,[1e12,-1e12,1e12])).collect();
+        assert_eq!(face_triangles(&translated),expected,"distant origins keep the same face");
+    }
+    assert!(face_triangles(&[[0.;3];4]).is_empty());
+    assert!(face_triangles(&[[f64::NAN;3];4]).is_empty());
+}
+
+#[test]
+fn drawable_faces_and_smooth_normals_do_not_depend_on_scene_units() {
+    let mut smoothed = cube(1.0);
+    smoothed.smooth_angle = 180.0;
+    let concave = PolyMesh {
+        positions: vec![[0.,0.,0.],[0.,0.,2.],[1.,0.,2.],[1.,0.,1.],[2.,0.,1.],[2.,0.,0.]],
+        faces: vec![vec![0,1,2,3,4,5]],
+        ..Default::default()
+    };
+    for reference in [smoothed,concave] {
+        let tris = reference.triangulate();
+        assert!(!tris.indices.is_empty());
+        for size in [1e-20,1e-8,1.,1e8,1e20] {
+            let mut mesh = reference.clone();
+            mesh.positions.iter_mut().for_each(|p| *p=scale(*p,size));
+            let scaled = mesh.triangulate();
+            assert_eq!(scaled.indices.len(),tris.indices.len(),"scale {size}: faces must remain drawable");
+            for (actual,expected) in scaled.normals.iter().zip(&tris.normals) {
+                assert!(actual.iter().zip(expected).all(|(a,b)|(a-b).abs()<1e-6),"scale {size}: {actual:?} vs {expected:?}");
+            }
+            for face in 0..mesh.faces.len() {
+                assert!(dot(mesh.face_normal(face),reference.face_normal(face))>0.999999,"scale {size}: face {face} normal");
+            }
+        }
+    }
+    assert_eq!(try_norm([0.;3]),None);
+    assert_eq!(try_norm([f64::INFINITY,0.,0.]),None);
+    assert_eq!(try_norm([f64::NAN,0.,0.]),None);
+    for size in [1e-300,1e300] {
+        assert!(dot(try_norm([size,-size,size]).unwrap(),norm([1.,-1.,1.]))>0.999999);
+    }
+}
+
+#[test]
 fn primitives_are_closed_outward_and_sized() {
     let shapes = vec![
         (Shape3d::Box { size: Vec3([2.0, 1.0, 0.5]), bevel: 0.0 }, Some(1.0), [1.0, 0.5, 0.25]),
@@ -871,6 +923,42 @@ fn unwrap_methods() {
 }
 
 #[test]
+fn edge_paths_preserve_exact_edges_through_selection_and_extrusion() {
+    let positions=(0..3).flat_map(|z| (0..3).map(move |x| [x as f64,0.,z as f64])).collect();
+    let grid=PolyMesh::new(positions,vec![vec![0,1,4,3],vec![1,2,5,4],vec![3,4,7,6],vec![4,5,8,7]]);
+    let loop_selection=ops::edge_loop(&grid,1,4);
+    assert_eq!(loop_selection.edges,[(1,4),(4,7)]);
+    assert_eq!(loop_selection.vertices,[1,4,7]);
+    let ring=ops::edge_ring(&grid,1,4);
+    assert_eq!(ring.edges,[(0,3),(1,4),(2,5)]);
+    assert_eq!(ring.vertices,[0,1,2,3,4,5]);
+    assert!(ring.face_list(&grid).is_empty(),"touching every corner must not select faces");
+    assert_eq!(ring.edge_list(&grid).len(),3,"horizontal connectors are not part of the ring");
+    let spec:ops::Select=serde_json::from_value(json!({"edgeRing":[4,1]})).unwrap();
+    assert_eq!(spec.resolve(&grid).unwrap(),ring,"JSON uses the same canonical edge selection");
+    let mut extruded=grid.clone();
+    ops::extrude(&mut extruded,&ring,1.,Some([0.,1.,0.])).unwrap();
+    assert_eq!(extruded.faces.len(),grid.faces.len()+3,"one wall per selected ring edge");
+    assert_eq!(&extruded.positions[..grid.positions.len()],grid.positions.as_slice(),"original faces do not move");
+    well_formed(&extruded);
+    let cube=cube(1.);
+    let edge=&cube.edges()[0];
+    let ring=ops::edge_ring(&cube,edge.a,edge.b);
+    assert_eq!(ring.edges.len(),4);
+    assert_eq!(ring.vertices.len(),8);
+    assert!(ring.face_list(&cube).is_empty(),"a closed box ring is not the whole box");
+    let loop_selection=ops::edge_loop(&cube,edge.a,edge.b);
+    assert_eq!(loop_selection.edges.len(),1,"loops stop at three-valence corners");
+    let mut junction=grid;
+    junction.positions.extend([[0.5,1.,0.],[0.5,1.,1.]]);
+    junction.faces.push(vec![1,4,10,9]);
+    assert_eq!(ops::edge_ring(&junction,1,4).edges,[(1,4)],"a non-manifold seed does not choose an arbitrary branch");
+    assert_eq!(ops::edge_loop(&junction,1,4).edges,[(1,4)]);
+    assert!(ops::edge_ring(&junction,0,8).is_empty());
+    assert!(ops::edge_loop(&junction,u32::MAX,0).is_empty());
+}
+
+#[test]
 fn selection_helpers() {
     let c = cube(1.0);
     assert_eq!(ops::select_facing(&c, [0.0, 1.0, 0.0], 10.0).faces.len(), 1);
@@ -955,4 +1043,21 @@ fn bevel_of_some_edges_stays_watertight() {
     let border_after: f64 = g.edges().iter().filter(|e| e.faces.len() == 1).map(|e| dist(g.positions[e.a as usize], g.positions[e.b as usize])).sum();
     assert!(close(border_after, 16.0, 1e-9), "no cracks inside: {border_after} (was {border_before} edges)");
     assert!(close(g.area(), 16.0, 1e-9));
+}
+
+#[test]
+fn explicit_edges_do_not_expand_to_incidental_edges_or_faces() {
+    let mut mesh = PolyMesh::new(vec![[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]], vec![vec![0, 1, 2, 3]]);
+    let pick = ops::Select { edges: vec![(1, 0), (2, 3), (0, 1)], ..Default::default() };
+    let selection = pick.resolve(&mesh).unwrap();
+    assert_eq!(selection.edge_list(&mesh), [(0, 1), (2, 3)]);
+    assert!(selection.face_list(&mesh).is_empty(), "opposite edges must not select the face");
+    assert_eq!(selection.vertex_set(&mesh).len(), 4);
+    assert!(!selection.is_empty());
+    let original = mesh.faces[0].clone();
+    ops::extrude(&mut mesh, &selection, 1., Some([0., 0., 1.])).unwrap();
+    assert_eq!(mesh.faces.len(), 3, "only the two selected edges get new faces");
+    assert_eq!(mesh.faces[0], original, "the original face stays in place");
+    assert_eq!(&mesh.positions[..4], &[[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]]);
+    assert!(ops::Select { edges: vec![(0, 2)], ..Default::default() }.resolve(&mesh).is_err());
 }

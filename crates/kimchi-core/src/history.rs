@@ -135,8 +135,9 @@ impl Editor {
     }
 
     /// Applies an edit. Edits sharing a `coalesce` key within a short window
-    /// (e.g. dragging a slider) collapse into a single undo step. An edit that fails changes
-    /// nothing (multi-part edits are put back as they were).
+    /// (e.g. dragging a slider) collapse into a single undo step. A unique `gesture:` key
+    /// keeps consecutive edits from the same source together without a time limit.
+    /// An edit that fails changes nothing (multi-part edits are put back as they were).
     pub fn apply(&mut self, edit: &Edit, coalesce: Option<&str>) -> EditResult<EditOutcome> {
         if edit.is_background() {
             // They fail (if at all) before changing anything.
@@ -194,7 +195,11 @@ impl Editor {
         }
         let now = Instant::now();
         let merge = match (coalesce, &self.last_coalesce) {
-            (Some(key), Some((last, at))) => key == last && now.duration_since(*at) < COALESCE_WINDOW,
+            (Some(key), Some((last, at))) => {
+                let gesture=key.strip_prefix("gesture:").is_some_and(|id| !id.is_empty());
+                key==last && (gesture || now.duration_since(*at)<COALESCE_WINDOW)
+                    && self.undo.last().is_some_and(|step| step.info.source==self.current.source)
+            }
             _ => false,
         };
         if !merge {
@@ -318,5 +323,51 @@ impl Editor {
         self.last_coalesce = None;
         self.dirty = true;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Clip,ClipContent,ClipPatch,ProjectSettings};
+
+    #[test]
+    fn gesture_coalescing_survives_pauses_and_respects_history_boundaries() {
+        let mut project=Project::new("Gestures",ProjectSettings::default());
+        let clip=Clip::new("Solid",0.,4.,ClipContent::Solid {color:"#ffffff".into()});
+        let id=clip.id;
+        project.apply(&Edit::AddClip {track_id:None,clip}).unwrap();
+        let edit=|volume| Edit::UpdateClip {clip_id:id,patch:ClipPatch {volume:Some(volume),..Default::default()}};
+        let age=|ed:&mut Editor| ed.last_coalesce.as_mut().unwrap().1=Instant::now()-Duration::from_secs(5);
+
+        let mut timed=Editor::new(project.clone());
+        timed.apply(&edit(0.8),Some("volume")).unwrap();age(&mut timed);
+        timed.apply(&edit(0.6),Some("volume")).unwrap();
+        assert_eq!(timed.undo_steps().len(),2,"ordinary coalescing still expires");
+
+        let mut gesture=Editor::new(project.clone());
+        gesture.apply(&edit(0.8),Some("gesture:first")).unwrap();age(&mut gesture);
+        gesture.apply(&edit(0.6),Some("gesture:first")).unwrap();
+        assert_eq!(gesture.undo_steps().len(),1,"pauses do not split one gesture");
+        assert!(gesture.undo());assert_eq!(gesture.project().clip(id).unwrap().volume,1.);
+        assert!(gesture.redo());assert_eq!(gesture.project().clip(id).unwrap().volume,0.6);
+        gesture.apply(&edit(0.4),Some("gesture:first")).unwrap();
+        assert_eq!(gesture.undo_steps().len(),2,"redo ends the previous group");
+        assert!(gesture.undo());
+        gesture.apply(&edit(0.5),Some("gesture:first")).unwrap();
+        assert_eq!(gesture.undo_steps().len(),2,"undo also ends the previous group");
+
+        let mut separate=Editor::new(project);
+        separate.apply(&edit(0.8),Some("gesture:first")).unwrap();
+        separate.apply(&edit(0.7),Some("gesture:second")).unwrap();
+        assert_eq!(separate.undo_steps().len(),2,"a new gesture starts its own step");
+        separate.set_step_info("volume","mcp");
+        separate.apply(&edit(0.6),Some("gesture:second")).unwrap();
+        separate.set_step_info("volume","window");
+        separate.apply(&edit(0.5),Some("gesture:second")).unwrap();
+        assert_eq!(separate.undo_steps().len(),4,"other clients do not join the gesture");
+        separate.apply(&edit(0.4),None).unwrap();
+        separate.apply(&edit(0.3),Some("gesture:second")).unwrap();
+        assert_eq!(separate.undo_steps().len(),6,"intervening edits split a gesture");
     }
 }

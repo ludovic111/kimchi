@@ -187,8 +187,19 @@ pub fn spawn_previews(s: &Arc<Session>, project_id: Id, asset: Asset) {
 }
 
 fn publish(s: &Session, project_id: Id, asset: &Asset) {
-    let _ = s.with_project(project_id, |ed| ed.apply(&Edit::UpdateAsset { asset: asset.clone() }, None));
+    let _ = s.with_project(project_id, |ed| {
+        // Preview jobs hold an old snapshot while decoding. Merge only their
+        // cache fields into the current asset so beats, names and provenance
+        // saved meanwhile survive. Ignore results for a replaced source.
+        let Some(mut current) = ed.project().asset(asset.id).filter(|a| a.path == asset.path).cloned() else { return Ok(()) };
+        if asset.thumbnail.is_some() { current.thumbnail = asset.thumbnail.clone(); }
+        if asset.filmstrip.is_some() { current.filmstrip = asset.filmstrip.clone(); }
+        if asset.waveform.is_some() { current.waveform = asset.waveform.clone(); }
+        if asset.proxy.is_some() { current.proxy = asset.proxy.clone(); }
+        ed.apply(&Edit::UpdateAsset { asset: current }, None).map(|_| ())
+    });
 }
+
 
 pub fn path_str(p: &Path) -> String {
     p.to_string_lossy().into_owned()
@@ -292,5 +303,37 @@ pub async fn clip_frame(s: &Arc<Session>, clip_id: Id, time: Option<f64>) -> Cmd
             }
             Ok(path_str(&out))
         }
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use crate::{SessionOptions, Source};
+
+    #[tokio::test]
+    async fn a_late_preview_preserves_metadata_and_ignores_replaced_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Session::new(SessionOptions { data_dir: Some(dir.path().join("data")), config_dir: Some(dir.path().join("config")), headless: true, secrets: None }).unwrap();
+        crate::call(&s, Source::Window, "project.create", json!({})).await.unwrap();
+        let id = s.current_id().unwrap();
+        let asset = Asset { id: new_id(), name: "Sound".into(), kind: MediaKind::Audio, path: "/original.wav".into(), meta: Default::default(), origin: AssetOrigin::Imported,
+            created_at: chrono::Utc::now(), thumbnail: None, filmstrip: None, waveform: None, proxy: None, beats: None };
+        s.apply("test", Source::Window, &Edit::AddAsset { asset: asset.clone() }, None).unwrap();
+        let mut edited = asset.clone();
+        edited.name = "Named by the person".into();
+        edited.beats = Some(kimchi_core::Beats { tempo: 120., beats_per_bar: 4, times: vec![0., 0.5, 1.], first_downbeat: 0, source: "detected".into() });
+        s.apply("test", Source::Window, &Edit::UpdateAsset { asset: edited.clone() }, None).unwrap();
+        let mut preview = asset;
+        preview.waveform = Some(kimchi_core::Waveform { path: "/cached-wave.f32".into(), peaks_per_second: 100 });
+        publish(&s, id, &preview);
+        let current = s.project().unwrap().asset(preview.id).unwrap().clone();
+        assert_eq!(current.name, edited.name);
+        assert_eq!(current.beats, edited.beats);
+        assert_eq!(current.waveform, preview.waveform);
+        edited.path = "/replacement.wav".into();
+        s.apply("test", Source::Window, &Edit::UpdateAsset { asset: edited.clone() }, None).unwrap();
+        publish(&s, id, &preview);
+        assert_eq!(s.project().unwrap().asset(preview.id).unwrap(), &edited);
     }
 }

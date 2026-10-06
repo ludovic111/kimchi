@@ -486,6 +486,7 @@ impl Provider for Google {
 
     async fn generate(&self, cx: &Ctx, req: &GenRequest) -> GenResult<GenOutput> {
         match req.task {
+            Task::TextToAudio | Task::TextToSpeech => Err(GenError::Unsupported("This provider does not generate audio.".into())),
             Task::TextToImage | Task::ImageToImage => self.image(cx, req).await,
             Task::TextToVideo | Task::ImageToVideo if model_id(req).starts_with("veo") => self.veo(cx, req).await,
             Task::TextToVideo | Task::ImageToVideo => self.omni(cx, req).await,

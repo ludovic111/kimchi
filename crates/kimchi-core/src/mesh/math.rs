@@ -28,7 +28,7 @@ pub fn cross(a: V3, b: V3) -> V3 {
 }
 
 pub fn len(a: V3) -> f64 {
-    dot(a, a).sqrt()
+    a[0].hypot(a[1]).hypot(a[2])
 }
 
 pub fn dist(a: V3, b: V3) -> f64 {
@@ -39,10 +39,17 @@ pub fn lerp(a: V3, b: V3, t: f64) -> V3 {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
 }
 
-/// Unit length, or `None` for (near) zero vectors.
+/// Unit length, or `None` for zero or nonfinite vectors, independent of scene units.
 pub fn try_norm(a: V3) -> Option<V3> {
-    let l = len(a);
-    (l > 1e-12 && l.is_finite()).then(|| scale(a, 1.0 / l))
+    if !finite(a) {
+        return None;
+    }
+    let magnitude = a.iter().map(|v| v.abs()).fold(0.0, f64::max);
+    if magnitude == 0.0 {
+        return None;
+    }
+    let scaled = a.map(|v| v / magnitude);
+    Some(scale(scaled, 1.0 / len(scaled)))
 }
 
 /// Unit length; zero vectors stay zero.

@@ -21,6 +21,7 @@ pub fn render(this: &mut Studio, window: &mut Window, cx: &mut Context<Studio>) 
     let me = cx.entity();
     let Some((clip, scene)) = this.clip_scene(cx) else { return div().into_any_element() };
     let three = scene.is_3d();
+    let compact = f32::from(window.viewport_size().width) < 1100. || f32::from(window.viewport_size().height) < 600.;
     let tool_button = |tool: Tool, icon: &'static str, label: &str, action: &dyn gpui::Action| {
         let me = me.clone();
         Button::icon(SharedString::from(format!("tool-{}", tool.name())), icon, tip(label, action)).selected(this.tool == tool).on_click(move |_, _, cx| me.update(cx, |s, cx| s.set_tool(tool, cx)))
@@ -39,17 +40,13 @@ pub fn render(this: &mut Studio, window: &mut Window, cx: &mut Context<Studio>) 
         .overflow_hidden();
     {
         let me = me.clone();
-        bar = bar.child(Button::new("studio-back", "Back to the edit").small().with_icon("chevron-left").tooltip(tip("Back to the edit", &act::StudioEscape)).on_click(move |_, _, cx| me.update(cx, |s, cx| s.close(cx))));
+        bar = bar.child(Button::new("studio-back", if compact { "Back" } else { "Back to the edit" }).small().with_icon("chevron-left").tooltip(tip("Back to the edit", &act::StudioEscape)).on_click(move |_, _, cx| me.update(cx, |s, cx| s.close(cx))));
     }
-    for (right, label, limit) in [(false, "Objects", 1200.), (true, "Properties", 960.)] {
-        if this.available_width(window, cx) < limit {
-            let me = me.clone();
-            bar = bar.child(Button::new(if right { "studio-properties" } else { "studio-objects" }, label)
-                .small().selected(this.drawer == Some(right)).on_click(move |_, _, cx| me.update(cx, |s, cx| {
-                    s.drawer = if s.drawer == Some(right) { None } else { Some(right) };
-                    s.changed(cx);
-                })));
-        }
+    {
+        let store = this.store.clone();
+        bar = bar.child(Button::new("studio-controls", if compact { "Tools" } else { "Scene & tools" }).small().tooltip("Open the scene hierarchy and Studio tools").on_click(move |_, _, cx| {
+            store.update(cx, |s, cx| s.set_left_tab(crate::store::LeftTab::Studio, cx));
+        }));
     }
     bar = bar.child(
         div()
@@ -59,7 +56,7 @@ pub fn render(this: &mut Studio, window: &mut Window, cx: &mut Context<Studio>) 
             .px(px(6.))
             .min_w_0()
             .child(crate::ui::icon(if three { "box" } else { "shapes" }).text_color(t.accent_text))
-            .child(div().max_w(px(180.)).truncate().font_weight(FontWeight::SEMIBOLD).text_size(px(sz::BASE)).child(clip.name.clone()))
+            .child(div().max_w(px(if compact { 100. } else { 180. })).truncate().font_weight(FontWeight::SEMIBOLD).text_size(px(sz::BASE)).child(clip.name.clone()))
             .child(div().font_family(MONO).text_size(px(sz::XS)).text_color(t.text_3).child(if three { "3D" } else { "2D" })),
     );
     bar = bar.child(sep(cx));
@@ -90,8 +87,7 @@ pub fn render(this: &mut Studio, window: &mut Window, cx: &mut Context<Studio>) 
                 let me = me.clone();
                 bar = bar.child(Button::icon(SharedString::from(format!("selmode-{}", m.name())), icon, tip(label, a)).selected(this.select_mode == m).on_click(move |_, _, cx| {
                     me.update(cx, |s, cx| {
-                        s.select_mode = m;
-                        s.changed(cx);
+                        s.set_select_mode(m, cx);
                     })
                 }));
             }
@@ -100,7 +96,8 @@ pub fn render(this: &mut Studio, window: &mut Window, cx: &mut Context<Studio>) 
                 let entries = super::menus::mesh_menu(&me, cx);
                 super::menus::open_menu(e.position(), entries, cx);
             }));
-        } else {
+        }
+        {
             bar = bar
                 .child(tool_button(Tool::Select, "mouse-pointer-2", "Select", &act::StudioToolSelect))
                 .child(tool_button(Tool::Move, "move", "Move", &act::StudioGrab))
@@ -114,6 +111,35 @@ pub fn render(this: &mut Studio, window: &mut Window, cx: &mut Context<Studio>) 
                 })
             }));
         }
+        {
+            let selected = this.pivot;
+            let editing=this.mode==Mode::Edit;
+            let label=move |pivot:super::gizmo::Pivot| match (editing,pivot) {
+                (true,super::gizmo::Pivot::Individual)=>"Selection islands",
+                (true,super::gizmo::Pivot::Active)=>"Active component",
+                _=>pivot.label(),
+            };
+            let studio = me.clone();
+            bar = bar.child(Button::new("transform-pivot", label(selected)).small().ghost().with_icon("crosshair").icon_after("chevron-down")
+                .tooltip("The centre used when rotating or scaling the selection")
+                .on_click(move |e, _, cx| {
+                    let entries = super::gizmo::Pivot::ALL.into_iter().map(|pivot| {
+                        let studio = studio.clone();
+                        crate::store::MenuItem::new(label(pivot), move |_, cx| studio.update(cx, |s, cx| { s.pivot = pivot; s.changed(cx); }))
+                            .icon(if pivot == selected { "check" } else { "crosshair" }).entry()
+                    }).collect();
+                    super::menus::open_menu(e.position(), entries, cx);
+                }));
+        }
+        if this.mode==Mode::Object {
+            let studio = me.clone();
+            bar = bar.child(Button::new("arrange-objects", "Arrange").small().ghost().icon_after("chevron-down")
+                .tooltip("Align or evenly space object origins along a world axis")
+                .on_click(move |e, _, cx| {
+                    let entries = super::menus::arrange_menu(&studio, cx);
+                    super::menus::open_menu(e.position(), entries, cx);
+                }));
+        }
         let me_s = me.clone();
         bar = bar.child(Button::icon("snap", "magnet", "Snap: moves to the grid, turns to 15° (Ctrl while dragging)").selected(this.snapping).on_click(move |_, _, cx| {
             me_s.update(cx, |s, cx| {
@@ -123,7 +149,7 @@ pub fn render(this: &mut Studio, window: &mut Window, cx: &mut Context<Studio>) 
         }));
         bar = bar.child(sep(cx));
         let me_sh = me.clone();
-        bar = bar.child(div().flex_none().w(px(210.)).child(segmented(
+        bar = bar.child(div().flex_none().w(px(228.)).child(segmented(
             "studio-shading",
             vec![(Shading::Solid, "Solid".into()), (Shading::Material, "Material".into()), (Shading::Rendered, "Rendered".into())],
             this.shading,

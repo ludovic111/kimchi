@@ -159,7 +159,7 @@ impl Spec {
 
 /// Accepted by every command that edits the project: edits sharing a key within
 /// about a second fold into one undo step (sliders, drags).
-pub const COALESCE: Param = opt("coalesce", Kind::String, "Edits with the same key within ~1 s fold into one undo step (drags, sliders).");
+pub const COALESCE: Param = opt("coalesce", Kind::String, "Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group.");
 
 /// Every public command, in the order the docs list them.
 pub fn commands() -> &'static [Spec] {
@@ -541,7 +541,8 @@ pub fn markdown() -> String {
          Every command works the same from the window, the built-in agent, `kimchi-cli` and `kimchi-mcp` \
          (where `family.verb` becomes the tool `family_verb`). Times are seconds on the timeline; ids and unique \
          names are accepted wherever an id is expected. Commands that edit the project also accept `coalesce` \
-         (edits with the same key within about a second fold into one undo step). See [AI_CONTROL.md](AI_CONTROL.md).\n",
+         (consecutive edits from the same source and key fold into one undo step within about a second; \
+         a unique `gesture:` key keeps a gesture together across pauses). See [AI_CONTROL.md](AI_CONTROL.md).\n",
     );
     let mut family = "";
     for s in commands() {

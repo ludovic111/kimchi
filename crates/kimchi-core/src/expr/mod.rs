@@ -69,6 +69,11 @@ pub fn check(src: &str) -> Result<(), String> {
     compile(src).map(|_| ())
 }
 
+/// Rewrite literal `prop` targets without changing comments, other strings or formatting.
+pub fn rename_prop_reference(src: &str, from: &str, to: &str) -> Result<String, String> {
+    parse::rename_prop_reference(src, from, to)
+}
+
 /// Reads a formula, or takes it from the cache when the same text was read before.
 pub fn compile(src: &str) -> Result<Arc<Program>, String> {
     let cache = CACHE.get_or_init(|| Mutex::new(Cache::default()));

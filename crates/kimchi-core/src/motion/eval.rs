@@ -19,6 +19,9 @@ use crate::anim::Keyframe;
 use crate::expr;
 use crate::motion::curve::Polyline;
 
+mod arrange;
+pub use arrange::{ObjectArrangement, OriginEdit};
+
 /// How deep `prop()` may read through other things' formulas.
 pub const MAX_PROP_DEPTH: usize = 8;
 
@@ -225,8 +228,12 @@ impl Scene3d {
     /// The camera `id` (`"camera"` is the main one) at scene time `t`, solved like the one
     /// filming (keyframes, expressions, constraints); `None` when there is no such camera.
     pub fn camera_by_id_at(&self, id: &str, t: f64) -> Option<Camera> {
-        let opts = EvalOptions::default();
-        let mut s = Solver::new(self, t, &opts);
+        self.camera_by_id_at_with(id, t, &EvalOptions::default())
+    }
+
+    /// A named camera evaluated with the clip's frame rate and duration.
+    pub fn camera_by_id_at_with(&self, id: &str, t: f64, opts: &EvalOptions) -> Option<Camera> {
+        let mut s = Solver::new(self, t, opts);
         let i = s.camera_index(id)?;
         Some(s.camera(i))
     }
@@ -1152,11 +1159,15 @@ impl M4 {
 
     /// The point whose image is `p` (the inverse of the affine map), or `p` if it collapses.
     fn inverse_point(&self, p: V3) -> V3 {
+        self.try_inverse_point(p).unwrap_or(p)
+    }
+
+    fn try_inverse_point(&self, p: V3) -> Option<V3> {
         let a: R3 = std::array::from_fn(|r| std::array::from_fn(|c| self.0[c][r]));
         let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
             + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
         if det.abs() < 1e-15 {
-            return p;
+            return None;
         }
         let k = 1.0 / det;
         let inv = [
@@ -1165,7 +1176,7 @@ impl M4 {
             [(a[1][0] * a[2][1] - a[1][1] * a[2][0]) * k, (a[0][1] * a[2][0] - a[0][0] * a[2][1]) * k, (a[0][0] * a[1][1] - a[0][1] * a[1][0]) * k],
         ];
         let d = sub(p, [self.0[3][0], self.0[3][1], self.0[3][2]]);
-        std::array::from_fn(|r| inv[r][0] * d[0] + inv[r][1] * d[1] + inv[r][2] * d[2])
+        Some(std::array::from_fn(|r| inv[r][0] * d[0] + inv[r][1] * d[1] + inv[r][2] * d[2]))
     }
 }
 

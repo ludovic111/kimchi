@@ -76,11 +76,21 @@ impl Playback {
         self.set_time(t, cx);
     }
 
+    /// Motion keys can fall between project frames after trimming or changing clip speed.
+    pub fn seek_exact(&mut self, t: f64, cx: &mut Context<Self>) {
+        self.stop_shuttle();
+        self.apply_time(t.max(0.),cx);
+    }
+
     fn set_time(&mut self, t: f64, cx: &mut Context<Self>) {
         let snapped = ((t.max(0.0)) * self.fps).round() / self.fps;
-        self.playhead = snapped;
+        self.apply_time(snapped,cx);
+    }
+
+    fn apply_time(&mut self, time: f64, cx: &mut Context<Self>) {
+        self.playhead = time;
         if self.playing {
-            self.clock = Some((Instant::now(), snapped));
+            self.clock = Some((Instant::now(), time));
         }
         self.generation += 1;
         self.publish();

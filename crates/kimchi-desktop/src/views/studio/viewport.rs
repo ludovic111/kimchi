@@ -7,21 +7,24 @@
 //! pen (paths and masks), shape and text tools.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, Context, Entity, FontWeight, Hsla, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, Pixels, Point,
-    Render, RenderImage, ScrollWheelEvent, Subscription, Task, Window, canvas, div, img, point, prelude::*, px,
+    App, Bounds, Context, Entity, FontWeight, Hsla, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, Point,
+    Render, RenderImage, ScrollWheelEvent, Subscription, Task, Window, canvas, div, img, prelude::*, px,
 };
 use kimchi_core::motion::{Scene2d, Scene3d};
 use kimchi_core::{Id, Project, Scene};
 use kimchi_media::render::space::viewport::{ViewCamera, ViewOptions};
+use kimchi_media::render::CanvasView;
 use serde_json::{Value, json};
 
 use super::gizmo::{self, Handle, Kind, Session, View3};
 use super::math::{self, V3};
+use super::selection::SelectionOp;
 use super::{Mode, Nav, SelectMode, Studio, Tool, model};
 use crate::store::{MenuEntry, MenuItem, Store, StoreExt};
 use crate::theme::{ActiveTheme, MONO, size as sz};
@@ -31,6 +34,16 @@ use crate::ui::{GlassExt, drag, icon};
 const MAX_RENDER: f64 = 1600.0;
 /// The mesh engine's name for moving a selection.
 const MESH_MOVE: &str = "translate";
+
+mod layer_transform;
+mod mesh_transform;
+mod component_transform;
+use component_transform::MeshTarget;
+mod overlay;
+use overlay::paint_marks;
+
+#[cfg(test)]
+mod tests;
 
 /// A modal operation started from the keyboard (or a menu): it follows the mouse until a click
 /// or Enter confirms it, and Esc or a right click cancels it.
@@ -50,17 +63,34 @@ pub enum ModalKind {
 struct MeshModal {
     kind: ModalKind,
     mouse0: [f64; 2],
+    /// Local mesh displacement for one world unit along the displayed face normal.
     normal: V3,
     /// World units per pixel at the pivot.
     unit: f64,
     typed: String,
+    valid: bool,
     amount: f64,
     /// Extrude: how far the new faces have been moved so far, and the drag's undo key.
     applied: f64,
-    /// G in edit mode: only moving the selection along its normal (no extrude first).
-    moving: bool,
     busy: bool,
     key: String,
+    clip: Id,
+    id: String,
+    selection: super::EditSel,
+    origin: Option<MeshOrigin>,
+    finish: Option<MeshFinish>,
+}
+
+#[derive(Clone, Debug)]
+struct MeshOrigin {
+    vertex_count: usize,
+    positions: Vec<(u32, V3)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MeshFinish {
+    Confirm,
+    Cancel,
 }
 
 /// What the pointer does while a button is held.
@@ -75,7 +105,7 @@ enum Drag {
     /// is let go.
     Right { start: Point<Pixels>, last: Point<Pixels>, moved: bool },
     /// A press that becomes a box selection if it moves, a pick if it doesn't.
-    Press { start: Point<Pixels>, now: Point<Pixels>, additive: bool, moved: bool, boxing: bool },
+    Press { start: Point<Pixels>, now: Point<Pixels>, selection: SelectionOp, moved: bool, boxing: bool },
     Gizmo,
     /// 2D: moving, scaling, turning layers or their anchor.
     Layer(LayerDrag),
@@ -107,10 +137,16 @@ struct LayerStart {
     /// The layer's own pixels → canvas, and the parent's space → canvas.
     world: math::Affine,
     parent: math::Affine,
+    base: serde_json::Map<String, Value>,
+    keys: kimchi_core::Keyframes,
+    touched: serde_json::Map<String, Value>,
 }
 
 struct LayerDrag {
     op: LayerOp,
+    typed: String,
+    axis: Option<usize>,
+    valid: bool,
     mouse0: [f64; 2],
     starts: Vec<LayerStart>,
     key: String,
@@ -127,14 +163,31 @@ struct PenPoint {
 
 #[derive(Clone, PartialEq)]
 struct Request {
-    project: usize,
+    project: model::SnapshotIdentity,
+    project_id: Id,
     clip: Id,
+    three: bool,
     t: f64,
     w: u32,
     h: u32,
     view: Option<ViewCamera>,
+    canvas: Option<CanvasView>,
     opts: ViewOptions,
     comp: Option<String>,
+}
+
+impl Request {
+    fn same_scene(&self, other: &Self) -> bool {
+        self.project_id==other.project_id && self.clip==other.clip && self.three==other.three && self.comp==other.comp
+    }
+}
+
+struct CameraPath {
+    project: model::SnapshotIdentity,
+    clip: Id,
+    id: String,
+    points: Vec<V3>,
+    keys: Vec<V3>,
 }
 
 /// Fly mode: keys held move the view, the mouse turns it, the wheel sets the speed.
@@ -162,15 +215,21 @@ enum Armed {
     LoopCut,
 }
 
+#[derive(Clone,Copy)]
+enum FrameRequest {
+    Canvas {preview:super::Canvas2d,bounds:[[f64;2];2]},
+    Space {preview:ViewCamera,bounds:[V3;2]},
+}
+
 pub struct Viewport {
     studio: Entity<Studio>,
     store: Entity<Store>,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     image: Option<Arc<RenderImage>>,
+    image_canvas: Option<(CanvasView,u32,u32)>,
     garbage: Vec<Arc<RenderImage>>,
     shown: Option<Request>,
     rendering: Option<Task<()>>,
-    stale: bool,
     error: Option<String>,
     /// Interacting: render at half size until things settle.
     fast: bool,
@@ -178,6 +237,7 @@ pub struct Viewport {
     drag: Option<Drag>,
     /// A transform in progress (gizmo drag or G / R / S).
     pub session: Option<Session>,
+    mesh_target: Option<MeshTarget>,
     modal_key: Option<String>,
     /// A gizmo drag's undo key.
     gizmo_key: Option<String>,
@@ -188,6 +248,8 @@ pub struct Viewport {
     hover_edge: Option<(u32, u32)>,
     pen: Vec<PenPoint>,
     mouse: [f64; 2],
+    /// Invalidates completions from tools that belonged to an earlier scene.
+    scene_generation: u64,
     /// A path-traced picture refining: its stop flag and the task showing its pictures.
     refiner: Option<(Arc<std::sync::atomic::AtomicBool>, Task<()>)>,
     /// Samples per pixel so far, of how many (the Rendered view of the path tracer).
@@ -197,8 +259,10 @@ pub struct Viewport {
     fly: Option<Fly>,
     /// The fitted 2D canvas's zoom, as last drawn (the Studio reads it).
     pub fit_zoom: Cell<f64>,
+    /// A frame request may precede the first layout of a newly opened Studio or sidebar.
+    frame_request: Cell<Option<FrameRequest>>,
     /// The selected camera's path over the clip, kept while the scene is the same.
-    cam_path: Option<(usize, String, Vec<V3>, Vec<V3>)>,
+    cam_path: Option<CameraPath>,
     _subs: Vec<Subscription>,
 }
 
@@ -216,15 +280,16 @@ impl Viewport {
             store,
             bounds: Rc::new(Cell::new(Bounds::default())),
             image: None,
+            image_canvas: None,
             garbage: vec![],
             shown: None,
             rendering: None,
-            stale: false,
             error: None,
             fast: false,
             _settle: None,
             drag: None,
             session: None,
+            mesh_target: None,
             modal_key: None,
             gizmo_key: None,
             mesh_modal: None,
@@ -234,11 +299,13 @@ impl Viewport {
             hover_edge: None,
             pen: vec![],
             mouse: [0.0; 2],
+            scene_generation: 0,
             refiner: None,
             samples: None,
             scale: 2.0,
             fly: None,
             fit_zoom: Cell::new(0.5),
+            frame_request: Cell::new(None),
             cam_path: None,
             _subs: subs,
         }
@@ -246,7 +313,29 @@ impl Viewport {
 
     /// A tool or modal operation has the keyboard (the Studio's single keys are off).
     pub fn busy(&self) -> bool {
-        self.modal_key.is_some() || self.mesh_modal.is_some() || !self.pen.is_empty() || self.fly.is_some()
+        self.modal_key.is_some() || self.gizmo_key.is_some() || self.mesh_modal.is_some() || matches!(self.drag, Some(Drag::Layer(_))) || !self.pen.is_empty() || self.fly.is_some()
+    }
+
+    /// A new scene keeps completed edits in the old one and drops its transient tools.
+    /// Do not restore through the Studio here: it may already point at another document.
+    pub fn leave_scene(&mut self, cx: &mut Context<Self>) {
+        self.scene_generation=self.scene_generation.wrapping_add(1);
+        self.frame_request.set(None);
+        self.session=None;
+        self.mesh_target=None;
+        self.mesh_modal=None;
+        self.modal_key=None;
+        self.gizmo_key=None;
+        self.drag=None;
+        self.fly=None;
+        self.pen.clear();
+        self.armed=None;
+        self.hover=None;
+        self.hover_edge=None;
+        self._intercept=None;
+        self.fast=false;
+        self._settle=None;
+        cx.notify();
     }
 
     /// Where the viewport is in the window (tests aim the pointer at its parts).
@@ -276,6 +365,21 @@ impl Viewport {
         self.bounds.get()
     }
 
+    pub fn size(&self)->[f64;2] {
+        let size=self.bounds.get().size;
+        [f32::from(size.width) as f64,f32::from(size.height) as f64]
+    }
+
+    pub fn frame_canvas(&self,lo:[f64;2],hi:[f64;2])->super::Canvas2d {
+        let preview=super::Canvas2d::framed(lo,hi,self.size());
+        self.frame_request.set(Some(FrameRequest::Canvas {preview,bounds:[lo,hi]}));
+        preview
+    }
+
+    pub fn frame_view(&self,lo:V3,hi:V3,preview:ViewCamera) {
+        self.frame_request.set(Some(FrameRequest::Space {preview,bounds:[lo,hi]}));
+    }
+
     /// The 3D view on screen: the editor camera over the whole viewport, or the scene's camera
     /// in a frame of the project's shape.
     fn view3(&self, s: &Scene3d, t: f64, project: &Project, cx: &App) -> View3 {
@@ -283,7 +387,7 @@ impl Viewport {
         let b = self.sizes();
         let (bx, by, bw, bh) = (f32::from(b.origin.x) as f64, f32::from(b.origin.y) as f64, f32::from(b.size.width) as f64, f32::from(b.size.height) as f64);
         if st.through_camera {
-            let c = s.camera_at(t);
+            let c = s.camera_at_with(t,&st.evaluation_options(cx));
             let cam = ViewCamera { position: c.position.0, target: c.target.0, fov: c.fov, ortho: c.orthographic(), ortho_size: c.ortho_size };
             let aspect = project.settings.width as f64 / project.settings.height.max(1) as f64;
             let (w, h) = if bw / bh.max(1.0) > aspect { (bh * aspect, bh) } else { (bw, bw / aspect) };
@@ -306,13 +410,26 @@ impl Viewport {
             self.fit_zoom.set(zoom);
         }
         let pan = if st.canvas.fit { [0.0, 0.0] } else { st.canvas.pan };
-        View2 { cx: bx + bw / 2.0 + pan[0], cy: by + bh / 2.0 + pan[1], zoom, canvas, project: pr }
+        View2 { cx: bx + bw / 2.0 + pan[0], cy: by + bh / 2.0 + pan[1], zoom, canvas }
     }
 
     /// Asks for the picture the Studio needs, unless it is shown or on its way.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         cx.notify();
-        let Some(req) = self.request(cx) else { return };
+        let request=self.request(cx);
+        // Keep the previous frame during edits to this scene, but never put another scene's
+        // picture under the new scene's picking, selection and transform controls.
+        if self.shown.as_ref().is_some_and(|shown| request.as_ref().is_none_or(|req| !shown.same_scene(req))) {
+            if let Some(old)=self.image.take() {self.garbage.push(old);}
+            self.image_canvas=None;
+            self.shown=None;
+            self.error=None;
+            self.samples=None;
+        }
+        let Some(req)=request else {
+            if let Some((cancel,_))=self.refiner.take() {cancel.store(true,std::sync::atomic::Ordering::Relaxed);}
+            return;
+        };
         if self.shown.as_ref() == Some(&req) {
             return;
         }
@@ -321,7 +438,6 @@ impl Viewport {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         if self.rendering.is_some() {
-            self.stale = true;
             return;
         }
         self.render_picture(req, cx);
@@ -347,11 +463,16 @@ impl Viewport {
                 w *= cap;
                 h *= cap;
                 let edit = (st.mode == Mode::Edit).then(|| st.active().map(str::to_string)).flatten();
-                let mesh_faces = edit.as_ref().and_then(|id| model::edit_mesh(s, &model::worlds(s, t), id)).map(|(_, f)| f).unwrap_or_default();
+                let mesh_faces = edit.as_ref().and_then(|id| model::edit_mesh(s, &self.studio.read(cx).worlds(s,t,cx), id)).map(|(_, f)| f).unwrap_or_default();
                 let (edit_vertices, edit_faces) = match st.select_mode {
                     SelectMode::Face => (st.edit_sel.all_vertices(&mesh_faces), st.edit_sel.faces.clone()),
                     _ => (st.edit_sel.all_vertices(&mesh_faces), vec![]),
                 };
+                let edit_edges = (st.select_mode == SelectMode::Edge).then(|| {
+                    if !st.edit_sel.edges.is_empty() { return st.edit_sel.edges.clone(); }
+                    let selected: HashSet<_> = edit_vertices.iter().copied().collect();
+                    model::mesh_edges(&mesh_faces).into_iter().filter(|(a, b)| selected.contains(a) && selected.contains(b)).collect()
+                });
                 let opts = ViewOptions {
                     through_camera: st.through_camera,
                     shading: st.shading,
@@ -359,21 +480,27 @@ impl Viewport {
                     selected: st.selection.clone(),
                     edit,
                     edit_vertices,
+                    edit_edges,
                     edit_faces,
                     helpers: st.helpers && !st.through_camera,
                 };
-                Some(Request { project: Arc::as_ptr(&project) as usize, clip, t, w: (w as u32).max(16), h: (h as u32).max(16), view: (!st.through_camera).then_some(st.view), opts, comp: None })
+                Some(Request { project: model::SnapshotIdentity::new(&project), project_id:project.id, clip, three:true, t, w: (w as u32).max(16), h: (h as u32).max(16), view: (!st.through_camera).then_some(st.view), canvas:None, opts, comp: None })
             }
             Scene::Flat(s) => {
                 let v = self.view2(s, &project, cx);
-                // The whole project-sized frame around the canvas centre, at the zoom shown.
-                let (pw, ph) = v.project;
-                let mut w = pw * v.zoom * scale * k;
-                let mut h = ph * v.zoom * scale * k;
+                // Render only what the viewport sees, keeping vectors sharp at high zoom.
+                let [bw,bh]=self.size();
+                let mut w = bw * scale * k;
+                let mut h = bh * scale * k;
                 let cap = ((2048.0 * k) / w.max(h)).min(1.0);
                 w *= cap;
                 h *= cap;
-                Some(Request { project: Arc::as_ptr(&project) as usize, clip, t, w: (w as u32).max(16), h: (h as u32).max(16), view: None, opts: ViewOptions::default(), comp: st.composition.clone() })
+                // Renderer rounds its output down to even pixels; crop coordinates must
+                // describe that same image so panning never acquires a one-pixel offset.
+                let (w,h)=(((w as u32)/2*2).max(16),((h as u32)/2*2).max(16));
+                let centre=b.center();
+                let canvas=CanvasView {centre:v.to_canvas([f32::from(centre.x) as f64,f32::from(centre.y) as f64]),scale:[v.zoom*w as f64/bw.max(1.),v.zoom*h as f64/bh.max(1.)]};
+                Some(Request { project: model::SnapshotIdentity::new(&project), project_id:project.id, clip, three:false, t, w, h, view: None, canvas:Some(canvas), opts: ViewOptions::default(), comp: st.composition.clone() })
             }
         }
     }
@@ -390,25 +517,30 @@ impl Viewport {
         let fps = project.settings.fps;
         let r = req.clone();
         let task = cx.background_spawn(async move { draw(&tools, &project, &r, fps) });
-        self.stale = false;
         self.rendering = Some(cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
                 this.rendering = None;
-                match result {
-                    Ok(img) => {
-                        if let Some(old) = this.image.replace(img) {
-                            this.garbage.push(old);
-                        }
-                        this.error = None;
-                    }
-                    Err(e) => this.error = Some(e),
-                }
-                this.shown = if this.stale { None } else { Some(req) };
+                this.accept_picture(req,result,cx);
                 this.refresh(cx);
             })
             .ok();
         }));
+    }
+
+    fn accept_picture(&mut self, req: Request, result: Result<Arc<RenderImage>,String>, cx: &App) -> bool {
+        if self.request(cx).as_ref().is_none_or(|current| !req.same_scene(current)) {return false;}
+        match result {
+            Ok(img) => {
+                if let Some(old)=self.image.replace(img) {self.garbage.push(old);}
+                self.image_canvas=req.canvas.map(|view|(view,req.w,req.h));
+                self.error=None;
+            }
+            Err(e)=>self.error=Some(e),
+        }
+        // Record exactly what finished; refresh can then request newer changes in this scene.
+        self.shown=Some(req);
+        true
     }
 
     /// The "Rendered" view of a path-traced scene: a first picture with a few samples, better
@@ -423,7 +555,7 @@ impl Viewport {
         cx.background_spawn(async move {
             // Half the view's pixels: the path tracer is slow, and the picture refines anyway.
             let mut renderer = kimchi_media::render::Renderer::new(&tools, &project, (r.w / 2).max(16), (r.h / 2).max(16), fps);
-            let mut p = match renderer.refining_view(r.clip, r.t, r.view.as_ref()) {
+            let mut p = match renderer.refining_studio_view(r.clip, r.t, r.view.as_ref(), &r.opts) {
                 Ok(Some(p)) => p,
                 Ok(None) => return,
                 Err(e) => {
@@ -442,12 +574,14 @@ impl Viewport {
             }
         })
         .detach();
-        self.shown = Some(req);
+        self.shown = Some(req.clone());
+        self.samples = None;
         let task = cx.spawn(async move |this, cx| {
             use futures::StreamExt;
             while let Some(r) = rx.next().await {
                 let ok = this
                     .update(cx, |this, cx| {
+                        if this.request(cx).as_ref()!=Some(&req) {return false;}
                         match r {
                             Ok((img, n, of)) => {
                                 if let Some(old) = this.image.replace(img) {
@@ -459,8 +593,9 @@ impl Viewport {
                             Err(e) => this.error = Some(e),
                         }
                         cx.notify();
+                        true
                     })
-                    .is_ok();
+                    .unwrap_or(false);
                 if !ok {
                     break;
                 }
@@ -499,15 +634,14 @@ impl Viewport {
     /// The gizmo's frame for the selection (following a transform in progress).
     fn gizmo_frame(&self, s: &Scene3d, scene: &Scene, t: f64, cx: &App) -> Option<gizmo::Frame> {
         if let Some(sess) = &self.session {
-            return Some(gizmo::Frame { pivot: sess.live_pivot(), axes: sess.frame.axes });
+            return Some(gizmo::Frame { pivot: sess.live_pivot(), ..sess.frame });
         }
         let st = self.studio.read(cx);
-        if st.mode != Mode::Object || !matches!(st.tool, Tool::Move | Tool::Rotate | Tool::Scale) {
+        if !matches!(st.tool, Tool::Move | Tool::Rotate | Tool::Scale) {
             return None;
         }
-        let w = model::worlds(s, t);
-        let starts = gizmo::starts(s, scene, &st.selection, t, &w);
-        gizmo::frame(&starts, st.local)
+        let (starts,target)=self.transform_starts(s,scene,t,cx)?;
+        self.transform_frame(&starts,target.as_ref(),cx)
     }
 
     fn gizmo_kind(&self, cx: &App) -> Kind {
@@ -544,11 +678,10 @@ impl Viewport {
         let Some((p, _, scene, t)) = self.scene(cx) else { return };
         let mode = self.studio.read(cx).mode;
         match (&scene, kind) {
-            (Scene::Space(s), ModalKind::Grab | ModalKind::Rotate | ModalKind::Scale) if mode == Mode::Object => {
+            (Scene::Space(s), ModalKind::Grab | ModalKind::Rotate | ModalKind::Scale) => {
                 let st = self.studio.read(cx);
-                let w = model::worlds(s, t);
-                let starts = gizmo::starts(s, &scene, &st.selection, t, &w);
-                let Some(frame) = gizmo::frame(&starts, st.local) else { return };
+                let Some((starts,target))=self.transform_starts(s,&scene,t,cx) else {return};
+                let Some(frame)=self.transform_frame(&starts,target.as_ref(),cx) else {return};
                 let view = self.view3(s, t, &p, cx);
                 let gk = match kind {
                     ModalKind::Rotate => Kind::Rotate,
@@ -558,12 +691,12 @@ impl Viewport {
                 let mut sess = Session::new(gk, Handle::Free, frame, starts, self.mouse, &view);
                 sess.snap = st.snapping;
                 self.session = Some(sess);
+                self.mesh_target=target;
                 let key = self.studio.update(cx, |s, _| s.drag_key());
                 self.modal_key = Some(key);
                 self.intercept(cx);
             }
-            (Scene::Space(_), ModalKind::Grab) if mode == Mode::Edit => self.start_mesh_modal(ModalKind::Extrude, false, cx),
-            (Scene::Space(_), ModalKind::Extrude | ModalKind::Inset | ModalKind::Bevel) if mode == Mode::Edit => self.start_mesh_modal(kind, true, cx),
+            (Scene::Space(_), ModalKind::Extrude | ModalKind::Inset | ModalKind::Bevel) if mode == Mode::Edit => self.start_mesh_modal(kind, cx),
             (Scene::Flat(_), ModalKind::Rotate | ModalKind::Scale) => {
                 let op = if kind == ModalKind::Rotate { LayerOp::Rotate } else { LayerOp::Scale(1, 1) };
                 if self.start_layer_drag(op, self.mouse, cx) {
@@ -616,6 +749,13 @@ impl Viewport {
             return true;
         }
         let key = k.key.as_str();
+        if matches!(&self.drag, Some(Drag::Layer(d)) if matches!(d.op, LayerOp::Move | LayerOp::Anchor))
+            && !matches!(key, "escape" | "enter" | "space") { return true; }
+        if self.mesh_modal.as_ref().is_some_and(|m| m.finish.is_some()) {
+            if key=="escape" {self.cancel_modal(cx);}
+            return true;
+        }
+        if let Some(s)=self.session.as_mut() {s.snap=self.studio.read(cx).snapping || k.modifiers.control;}
         match key {
             "escape" => self.cancel_modal(cx),
             "enter" | "space" => self.confirm_modal(cx),
@@ -629,19 +769,12 @@ impl Viewport {
                     let view = self.view3(&s, t, &p, cx);
                     let local = self.studio.read(cx).local;
                     let sess = self.session.as_mut().expect("checked");
-                    // Pressed again on the same axis: the object's own axis, like Blender.
-                    let same = sess.handle == Handle::Axis(axis) || sess.handle == Handle::Plane(axis);
-                    if same && !local && sess.starts.len() == 1 {
-                        let [x, y, z] = math::axes(&sess.starts[0].world);
-                        sess.frame.axes = [math::norm(x), math::norm(y), math::norm(z)];
-                        sess.handle = if k.modifiers.shift { Handle::Plane(axis) } else { Handle::Axis(axis) };
-                    } else {
-                        if !same {
-                            sess.frame.axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-                        }
-                        sess.lock(axis, k.modifiers.shift, &view);
-                    }
+                    sess.lock(axis, k.modifiers.shift, local, &view);
                     self.apply_session(cx);
+                } else if axis<2 && let Some(Drag::Layer(d))=self.drag.as_mut() && matches!(d.op,LayerOp::Scale(..)) {
+                    let axis=if k.modifiers.shift {1-axis} else {axis};
+                    d.axis=if d.axis==Some(axis) {None} else {Some(axis)};
+                    self.apply_any(cx);
                 }
             }
             "backspace" => {
@@ -651,17 +784,19 @@ impl Viewport {
                 if let Some(m) = self.mesh_modal.as_mut() {
                     m.typed.pop();
                 }
+                if let Some(Drag::Layer(d))=self.drag.as_mut() {d.typed.pop();}
                 self.apply_any(cx);
             }
             _ => {
                 let ch = k.key_char.clone().unwrap_or_else(|| key.to_string());
-                if ch.len() == 1 && (ch.chars().all(|c| c.is_ascii_digit()) || ch == "." || ch == "-") {
+                if ch.len() == 1 && (ch.chars().all(|c| c.is_ascii_digit()) || matches!(ch.as_str(), "." | "-" | "+" | "e" | "E")) {
                     if let Some(s) = self.session.as_mut() {
                         s.typed.push_str(&ch);
                     }
                     if let Some(m) = self.mesh_modal.as_mut() {
                         m.typed.push_str(&ch);
                     }
+                    if let Some(Drag::Layer(d))=self.drag.as_mut() {d.typed.push_str(&ch);}
                     self.apply_any(cx);
                 } else if !matches!(key, "shift" | "control" | "alt" | "platform" | "function") {
                     // Anything else is swallowed while the tool runs.
@@ -691,48 +826,58 @@ impl Viewport {
         let m = self.mouse;
         let Some(sess) = self.session.as_mut() else { return };
         sess.update(&view, m);
-        let key = self.modal_key.clone().unwrap_or_default();
+        let key = self.modal_key.clone().or_else(||self.gizmo_key.clone()).unwrap_or_default();
         let time = self.studio.read(cx).playhead(cx);
-        let cmds = sess.commands(c.id, time, &key, false);
+        let cmds = match &self.mesh_target {
+            Some(target)=>target.commands(sess,&key,false),
+            None=>sess.commands(c.id,time,&key,false),
+        };
         self.studio.update(cx, |s, cx| s.send(cmds, cx));
         self.interacting(cx);
     }
 
     fn confirm_modal(&mut self, cx: &mut Context<Self>) {
+        if self.session.as_ref().is_some_and(|s| !s.valid) || self.mesh_modal.as_ref().is_some_and(|m| !m.valid) {cx.notify();return;}
+        if matches!(&self.drag,Some(Drag::Layer(d)) if !d.valid) {cx.notify();return;}
+        if self.mesh_modal.is_some() {
+            self.finish_mesh_modal(MeshFinish::Confirm,cx);
+            return;
+        }
         if self.session.take().is_some() || matches!(self.drag, Some(Drag::Layer(_))) {
             self.drag = None;
         }
-        if let Some(m) = self.mesh_modal.take() {
-            self.finish_mesh_modal(m, cx);
-        }
+        self.mesh_target=None;
         self.modal_key = None;
+        self.gizmo_key=None;
         self._intercept = None;
         cx.notify();
     }
 
     /// Puts everything back as it was before the operation.
     pub fn cancel_modal(&mut self, cx: &mut Context<Self>) {
+        if self.mesh_modal.is_some() {
+            self.finish_mesh_modal(MeshFinish::Cancel,cx);
+            return;
+        }
         if self.fly.is_some() {
             self.end_fly(false, cx);
         }
         let time = self.studio.read(cx).playhead(cx);
-        if let (Some(sess), Some(key)) = (self.session.take(), self.modal_key.clone())
+        if let (Some(sess), Some(key)) = (self.session.take(), self.modal_key.clone().or_else(||self.gizmo_key.clone()))
             && let Some(clip) = self.studio.read(cx).clip
         {
-            let cmds = sess.commands(clip, time, &key, true);
+            let cmds = match &self.mesh_target {
+                Some(target)=>target.commands(&sess,&key,true),
+                None=>sess.commands(clip,time,&key,true),
+            };
             self.studio.update(cx, |s, cx| s.send(cmds, cx));
         }
         if let Some(Drag::Layer(d)) = self.drag.take() {
             self.send_layer(&d, true, cx);
         }
-        if let Some(m) = self.mesh_modal.take()
-            && m.kind == ModalKind::Extrude
-            && m.applied.abs() > 1e-9
-        {
-            let off = math::scale(m.normal, -m.applied);
-            self.studio.update(cx, |s, cx| s.mesh_op(MESH_MOVE, json!({ "offset": off }), cx));
-        }
         self.modal_key = None;
+        self.gizmo_key=None;
+        self.mesh_target=None;
         self._intercept = None;
         cx.notify();
     }
@@ -748,7 +893,10 @@ impl Viewport {
             self.pen.clear();
             return true;
         }
-        if self.armed.take().is_some() || self.drag.take().is_some() {
+        let armed=self.armed.take().is_some();
+        let dragging=self.drag.take().is_some();
+        if armed || dragging {
+            self.hover_edge=None;
             cx.notify();
             return true;
         }
@@ -770,6 +918,10 @@ impl Viewport {
     pub fn arm_box_select(&mut self, cx: &mut Context<Self>) {
         self.armed = Some(Armed::BoxSelect);
         cx.notify();
+    }
+
+    pub fn disarm(&mut self,cx:&mut Context<Self>) {
+        if self.armed.take().is_some() {self.hover_edge=None;cx.notify();}
     }
 
     pub fn arm_loop_cut(&mut self, cx: &mut Context<Self>) {
@@ -904,24 +1056,8 @@ impl Viewport {
         let (p, _, scene, t) = self.scene(cx)?;
         let Scene::Space(s) = &scene else { return None };
         let id = self.studio.read(cx).active()?.to_string();
-        let (v, f) = model::edit_mesh(s, &model::worlds(s, t), &id)?;
+        let (v, f) = model::edit_mesh(s, &self.studio.read(cx).worlds(s,t,cx), &id)?;
         Some((v, f, self.view3(s, t, &p, cx)))
-    }
-
-    pub fn toggle_all_mesh(&mut self, cx: &mut Context<Self>) {
-        let Some((v, f, _)) = self.mesh(cx) else { return };
-        self.studio.update(cx, |s, cx| {
-            if s.edit_sel.is_empty() {
-                s.edit_sel = match s.select_mode {
-                    SelectMode::Face => super::EditSel { faces: (0..f.len() as u32).collect(), ..Default::default() },
-                    SelectMode::Edge => super::EditSel { edges: model::mesh_edges(&f), ..Default::default() },
-                    SelectMode::Vertex => super::EditSel { vertices: (0..v.len() as u32).collect(), ..Default::default() },
-                };
-            } else {
-                s.edit_sel = super::EditSel::default();
-            }
-            s.changed(cx);
-        });
     }
 
     /// The vertex, edge or face under the pointer.
@@ -929,26 +1065,27 @@ impl Viewport {
         let (verts, faces, view) = self.mesh(cx)?;
         match self.studio.read(cx).select_mode {
             SelectMode::Vertex => {
-                let mut best: Option<(f64, u32)> = None;
+                let mut best: Option<(f64, f64, u32)> = None;
                 for (i, v) in verts.iter().enumerate() {
-                    if let Some(q) = view.project(*v) {
+                    if let Some(q) = view.project(*v)
+                        && let Some(depth) = component_depth(&view,*v).filter(|depth|*depth>0.) {
                         let d = ((q[0] - m[0]).powi(2) + (q[1] - m[1]).powi(2)).sqrt();
-                        if d < 12.0 && best.is_none_or(|(bd, _)| d < bd) {
-                            best = Some((d, i as u32));
+                        if d < 12.0 && best.is_none_or(|(bd,bz,_)| component_nearer(d,depth,bd,bz)) {
+                            best = Some((d,depth,i as u32));
                         }
                     }
                 }
-                best.map(|(_, i)| MeshPick::Vertex(i))
+                best.map(|(_,_,i)| MeshPick::Vertex(i))
             }
             SelectMode::Edge => nearest_edge(&verts, &faces, &view, m).map(|(a, b)| MeshPick::Edge(a, b)),
             SelectMode::Face => {
                 let (o, d) = view.ray(m);
                 let mut best: Option<(f64, u32)> = None;
                 for (i, f) in faces.iter().enumerate() {
-                    for k in 1..f.len().saturating_sub(1) {
-                        let (a, b, c) = (verts.get(f[0] as usize), verts.get(f[k] as usize), verts.get(f[k + 1] as usize));
-                        if let (Some(a), Some(b), Some(c)) = (a, b, c)
-                            && let Some(hit) = math::ray_triangle(o, d, *a, *b, *c)
+                    let points: Vec<_> = f.iter().filter_map(|&v|verts.get(v as usize).copied()).collect();
+                    if points.len()!=f.len() { continue; }
+                    for [a,b,c] in kimchi_core::mesh::face_triangles(&points) {
+                        if let Some(hit) = math::ray_triangle(o, d, points[a], points[b], points[c])
                             && best.is_none_or(|(bt, _)| hit < bt)
                         {
                             best = Some((hit, i as u32));
@@ -977,11 +1114,11 @@ impl Viewport {
         });
     }
 
-    fn mesh_box(&mut self, a: [f64; 2], b: [f64; 2], additive: bool, cx: &mut Context<Self>) {
+    fn mesh_box(&mut self, a: [f64; 2], b: [f64; 2], operation: SelectionOp, cx: &mut Context<Self>) {
         let Some((verts, faces, view)) = self.mesh(cx) else { return };
         let inside = |p: V3| view.project(p).is_some_and(|q| q[0] >= a[0].min(b[0]) && q[0] <= a[0].max(b[0]) && q[1] >= a[1].min(b[1]) && q[1] <= a[1].max(b[1]));
         self.studio.update(cx, |s, cx| {
-            let mut sel = if additive { s.edit_sel.clone() } else { super::EditSel::default() };
+            let mut sel = super::EditSel::default();
             match s.select_mode {
                 SelectMode::Vertex => {
                     for (i, v) in verts.iter().enumerate() {
@@ -1007,134 +1144,13 @@ impl Viewport {
                     }
                 }
             }
-            s.edit_sel = sel;
+            s.edit_sel = super::EditSel {
+                vertices:operation.apply(&s.edit_sel.vertices,sel.vertices),
+                edges:operation.apply(&s.edit_sel.edges,sel.edges),
+                faces:operation.apply(&s.edit_sel.faces,sel.faces),
+            };
             s.changed(cx);
         });
-    }
-
-    /// E, I, Ctrl+B: the operation's amount follows the mouse (extrude pulls the new faces out
-    /// at once; inset and bevel apply when confirmed).
-    fn start_mesh_modal(&mut self, kind: ModalKind, extrude_first: bool, cx: &mut Context<Self>) {
-        let Some((verts, faces, view)) = self.mesh(cx) else { return };
-        let sel = self.studio.read(cx).edit_sel.clone();
-        if sel.is_empty() {
-            super::flash("Select some faces, edges or vertices first.", cx);
-            return;
-        }
-        let picked = sel.all_vertices(&faces);
-        let pivot = math::scale(picked.iter().fold([0.0; 3], |a, v| math::add(a, verts.get(*v as usize).copied().unwrap_or_default())), 1.0 / picked.len().max(1) as f64);
-        // The selection's normal: the faces' (or those around the vertices).
-        let mut n = [0.0; 3];
-        for (i, f) in faces.iter().enumerate() {
-            let chosen = sel.faces.contains(&(i as u32)) || (sel.faces.is_empty() && f.iter().all(|v| picked.contains(v)));
-            if chosen && f.len() >= 3 {
-                let (a, b, c) = (verts[f[0] as usize], verts[f[1] as usize], verts[f[2] as usize]);
-                n = math::add(n, math::cross(math::sub(b, a), math::sub(c, a)));
-            }
-        }
-        let normal = if math::len(n) < 1e-9 { view.toward_viewer(pivot) } else { math::norm(n) };
-        let key = self.studio.update(cx, |s, _| s.drag_key());
-        let unit = view.units_per_pixel(pivot);
-        self.mesh_modal = Some(MeshModal { kind, mouse0: self.mouse, normal, unit, typed: String::new(), amount: 0.0, applied: 0.0, moving: !extrude_first, busy: kind == ModalKind::Extrude, key });
-        if kind == ModalKind::Extrude && extrude_first {
-            // Extrude in place, then pull the new faces out.
-            let st = self.studio.read(cx);
-            let clip = st.clip;
-            let id = st.active().map(str::to_string);
-            // The same undo key as the pull that follows: one step for the whole extrude.
-            let key = self.mesh_modal.as_ref().map(|m| m.key.clone()).unwrap_or_default();
-            let mut p = json!({ "clipId": clip, "id": id, "op": "extrude", "params": { "distance": 0 }, "coalesce": key });
-            let s = sel.params();
-            p["vertices"] = s["vertices"].clone();
-            p["faces"] = s["faces"].clone();
-            let task = super::call("motion.editMesh", p, cx);
-            cx.spawn(async move |this, cx| {
-                let r = task.await;
-                this.update(cx, |this, cx| match r {
-                    Ok(v) => {
-                        this.studio.update(cx, |s, cx| {
-                            s.edit_sel = super::selection_from(&v);
-                            s.changed(cx);
-                        });
-                        if let Some(m) = this.mesh_modal.as_mut() {
-                            m.busy = false;
-                        }
-                        let mouse = this.mouse;
-                        this.mesh_modal_to(mouse, cx);
-                    }
-                    Err(e) => {
-                        this.mesh_modal = None;
-                        this._intercept = None;
-                        this.store.update(cx, |s, cx| s.error(e, cx));
-                        cx.notify();
-                    }
-                })
-                .ok();
-            })
-            .detach();
-        } else if let Some(m) = self.mesh_modal.as_mut() {
-            m.busy = false;
-        }
-        self.intercept(cx);
-        cx.notify();
-    }
-
-    fn mesh_modal_to(&mut self, mouse: [f64; 2], cx: &mut Context<Self>) {
-        let snap = self.studio.read(cx).snapping;
-        let Some(m) = self.mesh_modal.as_mut() else { return };
-        let moved = ((mouse[0] - m.mouse0[0]).powi(2) + (mouse[1] - m.mouse0[1]).powi(2)).sqrt();
-        m.amount = match m.typed.parse::<f64>() {
-            Ok(v) => v,
-            Err(_) => {
-                let v = match m.kind {
-                    // Up the screen is out along the normal.
-                    ModalKind::Extrude => (m.mouse0[1] - mouse[1]) * m.unit,
-                    _ => moved * m.unit * 0.5,
-                };
-                if snap { math::snap(v, 0.05) } else { v }
-            }
-        };
-        if m.kind != ModalKind::Extrude || m.busy || (m.amount - m.applied).abs() < 1e-6 {
-            cx.notify();
-            return;
-        }
-        // Extrude: move the new faces by what is still missing (one step at a time, never lost).
-        let delta = m.amount - m.applied;
-        m.applied = m.amount;
-        m.busy = true;
-        let off = math::scale(m.normal, delta);
-        let key = m.key.clone();
-        let st = self.studio.read(cx);
-        let mut p = json!({ "clipId": st.clip, "id": st.active(), "op": MESH_MOVE, "params": { "offset": off }, "coalesce": key });
-        let s = st.edit_sel.params();
-        p["vertices"] = s["vertices"].clone();
-        p["faces"] = s["faces"].clone();
-        let task = super::call("motion.editMesh", p, cx);
-        cx.spawn(async move |this, cx| {
-            let r = task.await;
-            this.update(cx, |this, cx| {
-                if let Err(e) = r {
-                    this.store.update(cx, |s, cx| s.error(e, cx));
-                }
-                if let Some(m) = this.mesh_modal.as_mut() {
-                    m.busy = false;
-                    let mouse = this.mouse;
-                    this.mesh_modal_to(mouse, cx);
-                }
-            })
-            .ok();
-        })
-        .detach();
-        self.interacting(cx);
-        cx.notify();
-    }
-
-    fn finish_mesh_modal(&mut self, m: MeshModal, cx: &mut Context<Self>) {
-        match m.kind {
-            ModalKind::Inset => self.studio.update(cx, |s, cx| s.mesh_op("inset", json!({ "thickness": m.amount.abs().max(0.001) }), cx)),
-            ModalKind::Bevel => self.studio.update(cx, |s, cx| s.mesh_op("bevel", json!({ "width": m.amount.abs().max(0.001), "segments": 1 }), cx)),
-            _ => {}
-        }
     }
 
     // ---- 2D --------------------------------------------------------------------------------------
@@ -1144,19 +1160,22 @@ impl Viewport {
     fn start_layer_drag(&mut self, op: LayerOp, mouse: [f64; 2], cx: &mut Context<Self>) -> bool {
         let Some((p, _, Scene::Flat(s), t)) = self.scene(cx) else { return false };
         let st = self.studio.read(cx);
-        let comp = st.composition.clone();
+        let Some(geometry)=st.canvas_geometry(&s,t,&p) else {return false};
         let mut starts = vec![];
         for id in &st.selection {
-            let Some((l, world)) = model::layer_world(&s, comp.as_deref(), t, id) else { continue };
-            let parent = math::aff_mul(&world, &math::aff_invert(&model::own_affine(&l)).unwrap_or(math::AFFINE_ID));
-            starts.push(LayerStart { id: id.clone(), x: l.x, y: l.y, rotation: l.rotation, scale: l.scale, scale_x: l.scale_x, scale_y: l.scale_y, anchor: [l.anchor_x, l.anchor_y], world, parent });
+            let (Some(l),Some(world))=(geometry.layer(id),geometry.transform(id)) else {continue};
+            let parent = math::aff_mul(&world, &math::aff_invert(&model::own_affine(l)).unwrap_or(math::AFFINE_ID));
+            let Some(original) = s.find_layer(id) else { continue };
+            let base = model::base_props(&["x", "y", "rotation", "scale", "scaleX", "scaleY", "anchorX", "anchorY"], |n| original.get(n));
+            starts.push(LayerStart { id: id.clone(), x: l.x, y: l.y, rotation: l.rotation, scale: l.scale, scale_x: l.scale_x, scale_y: l.scale_y, anchor: [l.anchor_x, l.anchor_y], world, parent, base, keys: original.keyframes.clone(), touched: Default::default() });
         }
         if starts.is_empty() {
             return false;
         }
         let v = self.view2(&s, &p, cx);
         let key = self.studio.update(cx, |s, _| s.drag_key());
-        self.drag = Some(Drag::Layer(LayerDrag { op, mouse0: v.to_canvas(mouse), starts, key, reached: vec![] }));
+        self.drag = Some(Drag::Layer(LayerDrag { op, typed: String::new(), axis: None, valid: true, mouse0: v.to_canvas(mouse), starts, key, reached: vec![] }));
+        self.intercept(cx);
         true
     }
 
@@ -1164,69 +1183,10 @@ impl Viewport {
         let Some((p, _, Scene::Flat(s), _)) = self.scene(cx) else { return };
         let v = self.view2(&s, &p, cx);
         let m = v.to_canvas(mouse);
-        let shift = self.store.read(cx).playback.read(cx).playing && false;
-        let _ = shift;
         let mods = SHIFT.with(|c| c.get());
         let Some(Drag::Layer(d)) = self.drag.as_mut() else { return };
-        d.reached.clear();
-        for st in &d.starts {
-            let mut props = serde_json::Map::new();
-            let anchor_world = math::aff_apply(&st.world, st.anchor);
-            match d.op {
-                LayerOp::Move => {
-                    let mut delta = [m[0] - d.mouse0[0], m[1] - d.mouse0[1]];
-                    if mods {
-                        // Shift: only along the bigger direction.
-                        if delta[0].abs() > delta[1].abs() { delta[1] = 0.0 } else { delta[0] = 0.0 }
-                    }
-                    let local = math::aff_invert(&st.parent).map(|inv| math::aff_dir(&inv, delta)).unwrap_or(delta);
-                    props.insert("x".into(), json!(round2(st.x + local[0])));
-                    props.insert("y".into(), json!(round2(st.y + local[1])));
-                }
-                LayerOp::Rotate => {
-                    let a0 = (d.mouse0[1] - anchor_world[1]).atan2(d.mouse0[0] - anchor_world[0]);
-                    let a1 = (m[1] - anchor_world[1]).atan2(m[0] - anchor_world[0]);
-                    let mut deg = (a1 - a0).to_degrees();
-                    if mods {
-                        deg = math::snap(deg, 15.0);
-                    }
-                    props.insert("rotation".into(), json!(round2(st.rotation + deg)));
-                }
-                LayerOp::Scale(hx, hy) => {
-                    // In the layer's own axes, relative to its anchor.
-                    let Some(inv) = math::aff_invert(&st.world) else { continue };
-                    let v0 = math::aff_apply(&inv, d.mouse0);
-                    let v1 = math::aff_apply(&inv, m);
-                    let (r0, r1) = ([v0[0] - st.anchor[0], v0[1] - st.anchor[1]], [v1[0] - st.anchor[0], v1[1] - st.anchor[1]]);
-                    let f = |a: f64, b: f64| if a.abs() < 1e-6 { 1.0 } else { b / a };
-                    let (mut fx, mut fy) = (if hx != 0 { f(r0[0], r1[0]) } else { 1.0 }, if hy != 0 { f(r0[1], r1[1]) } else { 1.0 });
-                    if mods || (hx != 0 && hy != 0 && st.scale_x == st.scale_y && !mods && false) {
-                        let k = if hx != 0 && hy != 0 { (fx + fy) / 2.0 } else if hx != 0 { fx } else { fy };
-                        fx = k;
-                        fy = k;
-                    }
-                    if (fx - fy).abs() < 1e-9 && st.scale_x == st.scale_y {
-                        props.insert("scale".into(), json!(round3(st.scale * fx)));
-                    } else {
-                        props.insert("scaleX".into(), json!(round3(st.scale_x * fx)));
-                        props.insert("scaleY".into(), json!(round3(st.scale_y * fy)));
-                    }
-                }
-                LayerOp::Anchor => {
-                    // The anchor moves; the layer stays where it is (its position follows).
-                    let Some(inv) = math::aff_invert(&st.world) else { continue };
-                    let a = math::aff_apply(&inv, m);
-                    let own = math::layer_affine(0.0, 0.0, st.rotation, 0.0, st.scale * st.scale_x, st.scale * st.scale_y, 0.0, 0.0);
-                    let shift = math::aff_dir(&own, [a[0] - st.anchor[0], a[1] - st.anchor[1]]);
-                    props.insert("anchorX".into(), json!(round2(a[0])));
-                    props.insert("anchorY".into(), json!(round2(a[1])));
-                    props.insert("x".into(), json!(round2(st.x + shift[0])));
-                    props.insert("y".into(), json!(round2(st.y + shift[1])));
-                }
-            }
-            d.reached.push((st.id.clone(), props));
-        }
-        let snapshot = LayerDrag { op: d.op, mouse0: d.mouse0, starts: vec![], key: d.key.clone(), reached: d.reached.clone() };
+        if !d.update(m,mods) {cx.notify();return;}
+        let snapshot = LayerDrag { op: d.op, typed: String::new(), axis: None, valid: true, mouse0: d.mouse0, starts: vec![], key: d.key.clone(), reached: d.reached.clone() };
         self.send_layer(&snapshot, false, cx);
         self.interacting(cx);
         cx.notify();
@@ -1234,13 +1194,15 @@ impl Viewport {
 
     /// Sends a layer drag's values (or puts the starting ones back).
     fn send_layer(&self, d: &LayerDrag, cancel: bool, cx: &mut Context<Self>) {
+        if cancel && d.reached.is_empty() { return; }
         let Some(clip) = self.studio.read(cx).clip else { return };
         let time = self.studio.read(cx).playhead(cx);
         let cmds: Vec<(String, Value)> = if cancel {
             d.starts
                 .iter()
                 .map(|s| {
-                    let props = json!({ "x": s.x, "y": s.y, "rotation": s.rotation, "scale": s.scale, "scaleX": s.scale_x, "scaleY": s.scale_y, "anchorX": s.anchor[0], "anchorY": s.anchor[1] });
+                    // Only restore properties this tool changed, preserving unrelated animation.
+                    let props = model::restore_props(&s.base, &s.keys, &s.touched);
                     ("motion.updateLayer".to_string(), json!({ "clipId": clip, "id": s.id, "props": props, "time": time, "coalesce": d.key }))
                 })
                 .collect()
@@ -1258,15 +1220,16 @@ impl Viewport {
             cx.notify();
             return;
         }
-        let Some((_, _, scene, t)) = self.scene(cx) else { return };
+        let Some((project, _, scene, t)) = self.scene(cx) else { return };
         let Scene::Flat(s) = &scene else { return };
         let st = self.studio.read(cx);
         let clip = st.clip;
+        let Some(geometry)=st.canvas_geometry(s,t,&project) else {return};
         let comp = st.composition.clone();
         let mask_on = st.mask_mode.then(|| st.active().map(str::to_string)).flatten().filter(|id| s.find_layer(id).is_some());
         let to_layer = |p: [f64; 2]| -> [f64; 2] {
             match &mask_on {
-                Some(id) => model::layer_world(s, comp.as_deref(), t, id).and_then(|(_, w)| math::aff_invert(&w)).map(|inv| math::aff_apply(&inv, p)).unwrap_or(p),
+                Some(id) => geometry.transform(id).and_then(|w| math::aff_invert(&w)).map(|inv| math::aff_apply(&inv, p)).unwrap_or(p),
                 None => p,
             }
         };
@@ -1343,10 +1306,10 @@ impl Viewport {
     }
 
     /// The selected layer's box handles on screen: (handle, position).
-    fn handles2(&self, s: &Scene2d, v: &View2, t: f64, cx: &App) -> Option<Handles2> {
+    fn handles2(&self, geometry: &kimchi_media::render::CanvasGeometry, v: &View2, cx: &App) -> Option<Handles2> {
         let st = self.studio.read(cx);
         let id = st.active()?;
-        let corners = model::layer_corners(s, st.composition.as_deref(), t, id, v.project)?;
+        let corners = geometry.bounds(id)?;
         let sc: Vec<[f64; 2]> = corners.iter().map(|c| v.to_screen(*c)).collect();
         let mid = |a: [f64; 2], b: [f64; 2]| [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
         let handles = vec![
@@ -1359,7 +1322,7 @@ impl Viewport {
             (LayerOp::Scale(0, 1), mid(sc[2], sc[3])),
             (LayerOp::Scale(-1, 0), mid(sc[3], sc[0])),
         ];
-        let (l, world) = model::layer_world(s, st.composition.as_deref(), t, id)?;
+        let (l,world)=(geometry.layer(id)?,geometry.transform(id)?);
         let anchor = v.to_screen(math::aff_apply(&world, [l.anchor_x, l.anchor_y]));
         Some((sc, handles, anchor))
     }
@@ -1370,7 +1333,7 @@ impl Viewport {
         let m = [f32::from(e.position.x) as f64, f32::from(e.position.y) as f64];
         self.mouse = m;
         SHIFT.with(|c| c.set(e.modifiers.shift));
-        self.studio.update(cx, |s, _| s.area = super::Area::Viewport);
+        self.studio.update(cx, |s, cx| s.focus_area(super::Area::Viewport,cx));
         if self.studio.read(cx).popover.is_some() {
             self.studio.update(cx, |s, cx| {
                 s.popover = None;
@@ -1385,7 +1348,7 @@ impl Viewport {
             return;
         }
         // A modal operation: a click confirms it.
-        if self.modal_key.is_some() || self.mesh_modal.is_some() {
+        if self.modal_key.is_some() || self.mesh_modal.is_some() || self.gizmo_key.is_some() || matches!(self.drag, Some(Drag::Layer(_))) {
             if e.button == MouseButton::Right {
                 self.cancel_modal(cx);
             } else if e.button == MouseButton::Left {
@@ -1414,6 +1377,12 @@ impl Viewport {
                     self.finish_pen(false, cx);
                     return;
                 }
+                let selecting=matches!(self.drag,Some(Drag::Press {..}));
+                if self.armed.is_some() || selecting {
+                    self.disarm(cx);
+                    if selecting {self.drag=None;}
+                    cx.notify();return;
+                }
                 if three {
                     // A click opens the menu (when let go); a drag looks around and flies.
                     self.drag = Some(Drag::Right { start: e.position, last: e.position, moved: false });
@@ -1441,6 +1410,7 @@ impl Viewport {
             return;
         }
         let additive = e.modifiers.shift || e.modifiers.platform || e.modifiers.control;
+        let selection = SelectionOp::from_modifiers(e.modifiers);
         match self.armed.take() {
             Some(Armed::LoopCut) => {
                 if let Some((verts, faces, view)) = self.mesh(cx)
@@ -1459,7 +1429,7 @@ impl Viewport {
                 return;
             }
             Some(Armed::BoxSelect) => {
-                self.drag = Some(Drag::Press { start: e.position, now: e.position, additive, moved: true, boxing: true });
+                self.drag = Some(Drag::Press { start: e.position, now: e.position, selection, moved: true, boxing: true });
                 cx.notify();
                 return;
             }
@@ -1474,23 +1444,25 @@ impl Viewport {
                     let kind = self.gizmo_kind(cx);
                     if let Some(h) = gizmo::hit(&gizmo::parts(&frame, kind, &view), m) {
                         let st = self.studio.read(cx);
-                        let w = model::worlds(s, t);
-                        let starts = gizmo::starts(s, &scene, &st.selection, t, &w);
+                        let Some((starts,target))=self.transform_starts(s,&scene,t,cx) else {return};
                         let mut sess = Session::new(kind, h, frame, starts, m, &view);
                         sess.snap = st.snapping || e.modifiers.control;
                         self.session = Some(sess);
+                        self.mesh_target=target;
                         self.modal_key = None;
                         let key = self.studio.update(cx, |s, _| s.drag_key());
                         self.gizmo_key = Some(key);
                         self.drag = Some(Drag::Gizmo);
+                        self.intercept(cx);
                         cx.notify();
                         return;
                     }
                 }
-                self.drag = Some(Drag::Press { start: e.position, now: e.position, additive, moved: false, boxing: false });
+                self.drag = Some(Drag::Press { start: e.position, now: e.position, selection, moved: false, boxing: false });
             }
             Scene::Flat(s) => {
                 let v = self.view2(s, &p, cx);
+                let Some(geometry)=self.studio.read(cx).canvas_geometry(s,t,&p) else {return};
                 let c = v.to_canvas(m);
                 let tool = self.studio.read(cx).tool;
                 match tool {
@@ -1513,7 +1485,7 @@ impl Viewport {
                     Tool::Text => self.add_text(c, cx),
                     Tool::Anchor => {
                         if self.studio.read(cx).selection.is_empty()
-                            && let Some(id) = model::hit2d(s, self.studio.read(cx).composition.as_deref(), t, c, v.project)
+                            && let Some(id) = geometry.hit_test(c)
                         {
                             self.studio.update(cx, |st, cx| st.select(&id, false, cx));
                         }
@@ -1521,7 +1493,7 @@ impl Viewport {
                     }
                     _ => {
                         // Handles of the selected layer first.
-                        if let Some((corners, handles, _)) = self.handles2(s, &v, t, cx) {
+                        if let Some((corners, handles, _)) = self.handles2(&geometry, &v, cx) {
                             if let Some((op, _)) = handles.iter().find(|(_, h)| (h[0] - m[0]).hypot(h[1] - m[1]) < 7.0) {
                                 self.start_layer_drag(*op, m, cx);
                                 cx.notify();
@@ -1534,8 +1506,7 @@ impl Viewport {
                                 return;
                             }
                         }
-                        let comp = self.studio.read(cx).composition.clone();
-                        match model::hit2d(s, comp.as_deref(), t, c, v.project) {
+                        match geometry.hit_test(c) {
                             Some(id) => {
                                 let selected = self.studio.read(cx).selection.contains(&id);
                                 if !selected || additive {
@@ -1545,7 +1516,7 @@ impl Viewport {
                                     self.start_layer_drag(LayerOp::Move, m, cx);
                                 }
                             }
-                            None => self.drag = Some(Drag::Press { start: e.position, now: e.position, additive, moved: false, boxing: false }),
+                            None => self.drag = Some(Drag::Press { start: e.position, now: e.position, selection, moved: false, boxing: false }),
                         }
                     }
                 }
@@ -1564,7 +1535,7 @@ impl Viewport {
         }
         if self.modal_key.is_some() && self.drag.is_none() {
             if let Some(s) = self.session.as_mut() {
-                s.snap = s.snap || e.modifiers.control;
+                s.snap = self.studio.read(cx).snapping || e.modifiers.control;
             }
             self.apply_any(cx);
             return;
@@ -1707,6 +1678,8 @@ impl Viewport {
     }
 
     fn drag_end(&mut self, e: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // A modal tool owns its click-to-confirm. Invalid input must survive the release too.
+        if self.modal_key.is_some() || self.mesh_modal.is_some() {return;}
         let m = [f32::from(e.position.x) as f64, f32::from(e.position.y) as f64];
         match self.drag.take() {
             Some(Drag::Orbit { .. } | Drag::Pan { .. } | Drag::Zoom { .. }) => self.studio.update(cx, |s, cx| s.nav_end(cx)),
@@ -1730,20 +1703,33 @@ impl Viewport {
                     self.context_menu(start, window, cx);
                 }
             }
-            Some(Drag::Press { start, now, additive, moved, boxing }) => {
+            Some(Drag::Press { start, now, selection, moved, boxing }) => {
                 let a = [f32::from(start.x) as f64, f32::from(start.y) as f64];
                 let b = [f32::from(now.x) as f64, f32::from(now.y) as f64];
                 if boxing && moved {
-                    self.box_select(a, b, additive, cx);
+                    self.box_select(a, b, selection, cx);
                 } else {
-                    self.click(m, additive, cx);
+                    self.click(m, selection!=SelectionOp::Replace, cx);
                 }
             }
             Some(Drag::Gizmo) => {
-                self.session = None;
-                self.gizmo_key = None;
+                if self.session.as_ref().is_some_and(|s|!s.valid) {
+                    self.modal_key=self.gizmo_key.take();
+                } else {
+                    self.session = None;
+                    self.mesh_target=None;
+                    self.gizmo_key = None;
+                    self._intercept=None;
+                }
             }
-            Some(Drag::Layer(_)) => {}
+            Some(Drag::Layer(d)) => {
+                if d.valid {
+                    self._intercept = None;
+                } else {
+                    self.modal_key = Some(d.key.clone());
+                    self.drag = Some(Drag::Layer(d));
+                }
+            }
             Some(Drag::Shape { from, to, square }) => self.add_shape(from, to, square, cx),
             Some(other) => {
                 if matches!(other, Drag::Pen { .. }) {
@@ -1764,16 +1750,14 @@ impl Viewport {
         let picked = match &scene {
             Scene::Space(s) => {
                 let view = self.view3(s, t, &p, cx);
-                let w = model::worlds(s, t);
+                let w = self.studio.read(cx).worlds(s,t,cx);
                 // Lights and cameras are picked by their icon (they have no surface).
                 let helpers = self.studio.read(cx).helpers;
                 let mut icon_hit = None;
                 if helpers {
-                    let mut ids: Vec<String> = s.lights.iter().map(|l| l.id.clone()).collect();
-                    ids.push("camera".into());
-                    ids.extend(s.cameras.iter().map(|c| c.id.clone()));
-                    for id in ids {
+                    for id in helper_ids(s,t,self.studio.read(cx).through_camera,&self.studio.read(cx).evaluation_options(cx)) {
                         if let Some(q) = w.get(&id).and_then(|mm| view.project(math::origin(mm)))
+                            && w.get(&id).and_then(|mm|component_depth(&view,math::origin(mm))).is_some_and(|depth|depth>0.)
                             && (q[0] - m[0]).hypot(q[1] - m[1]) < 14.0
                         {
                             icon_hit = Some(id);
@@ -1781,11 +1765,11 @@ impl Viewport {
                     }
                 }
                 let (o, d) = view.ray(m);
-                icon_hit.or_else(|| engine_pick(s, &w, t, o, d))
+                icon_hit.or_else(|| engine_pick(s,t,o,d,&self.studio.read(cx).evaluation_options(cx)))
             }
             Scene::Flat(s) => {
                 let v = self.view2(s, &p, cx);
-                model::hit2d(s, self.studio.read(cx).composition.as_deref(), t, v.to_canvas(m), v.project)
+                self.studio.read(cx).canvas_geometry(s,t,&p).and_then(|g|g.hit_test(v.to_canvas(m)))
             }
         };
         self.studio.update(cx, |s, cx| match picked {
@@ -1795,9 +1779,9 @@ impl Viewport {
         });
     }
 
-    fn box_select(&mut self, a: [f64; 2], b: [f64; 2], additive: bool, cx: &mut Context<Self>) {
+    fn box_select(&mut self, a: [f64; 2], b: [f64; 2], operation: SelectionOp, cx: &mut Context<Self>) {
         if self.studio.read(cx).mode == Mode::Edit {
-            self.mesh_box(a, b, additive, cx);
+            self.mesh_box(a, b, operation, cx);
             return;
         }
         let Some((p, _, scene, t)) = self.scene(cx) else { return };
@@ -1807,50 +1791,47 @@ impl Viewport {
         match &scene {
             Scene::Space(s) => {
                 let view = self.view3(s, t, &p, cx);
-                let w = model::worlds(s, t);
-                for id in model::thing_ids(&scene) {
-                    let at = match model::world_bounds(s, &w, t, &id) {
+                let w = self.studio.read(cx).worlds(s,t,cx);
+                let mut candidates=vec![];
+                fn shown(objects:&[kimchi_core::motion::Object3d],t:f64,ids:&mut Vec<String>) {
+                    for o in objects.iter().filter(|o|o.visible_at(t)) {ids.push(o.id.clone());shown(&o.children,t,ids);}
+                }
+                shown(&s.objects_at_with(t,&self.studio.read(cx).evaluation_options(cx)),t,&mut candidates);
+                let studio=self.studio.read(cx);
+                if studio.helpers {candidates.extend(helper_ids(s,t,studio.through_camera,&studio.evaluation_options(cx)));}
+                for id in candidates {
+                    let at = match self.studio.read(cx).world_bounds(s,&w,t,&id,cx) {
                         Some((lo, hi)) if model::item(&scene, &id).is_some_and(|i| matches!(i, model::Item::Object(_))) => math::lerp(lo, hi, 0.5),
                         _ => match w.get(&id) {
                             Some(mm) => math::origin(mm),
                             None => continue,
                         },
                     };
-                    if view.project(at).is_some_and(inside) {
+                    if component_depth(&view,at).is_some_and(|depth|depth>0.) && view.project(at).is_some_and(inside) {
                         ids.push(id);
                     }
                 }
             }
             Scene::Flat(s) => {
                 let v = self.view2(s, &p, cx);
-                let comp = self.studio.read(cx).composition.clone();
-                let mut all = vec![];
-                kimchi_core::motion::walk_layers(model::view_layers(s, comp.as_deref()), &mut |l| all.push(l.id.clone()));
-                for id in all {
-                    if let Some(c) = model::layer_corners(s, comp.as_deref(), t, &id, v.project) {
-                        let sc: Vec<[f64; 2]> = c.iter().map(|q| v.to_screen(*q)).collect();
-                        let centre = [(sc[0][0] + sc[2][0]) / 2.0, (sc[0][1] + sc[2][1]) / 2.0];
-                        if sc.iter().any(|q| inside(*q)) || inside(centre) {
-                            ids.push(id);
-                        }
+                let Some(geometry)=self.studio.read(cx).canvas_geometry(s,t,&p) else {return};
+                for (id,c) in geometry.selection_bounds() {
+                    let sc=c.map(|q|v.to_screen(q));
+                    if math::convex_intersects_rect(&sc,a,b) {
+                        ids.push(id);
                     }
                 }
             }
         }
         self.studio.update(cx, |s, cx| {
-            let mut sel = if additive { s.selection.clone() } else { vec![] };
-            for id in ids {
-                if !sel.contains(&id) {
-                    sel.push(id);
-                }
-            }
+            let sel=operation.apply(&s.selection,ids);
             s.set_selection(sel, cx);
         });
     }
 
     /// Starts a drag that moves the view (one undo step when it moves a locked camera).
     fn begin_nav(&mut self, d: Drag, cx: &mut Context<Self>) {
-        self.studio.update(cx, |s, _| s.nav_begin());
+        self.studio.update(cx, |s, cx| {s.focus_area(super::Area::Viewport,cx);s.nav_begin();});
         self.drag = Some(d);
         cx.notify();
     }
@@ -1963,8 +1944,16 @@ impl Viewport {
 }
 
 /// Click picking through the 3D engine's `pick` when it has one, or by boxes.
-fn engine_pick(s: &Scene3d, _w: &std::collections::HashMap<String, math::M4>, t: f64, o: V3, d: V3) -> Option<String> {
-    kimchi_media::render::space::viewport::pick(s, t, (o, d))
+fn engine_pick(s: &Scene3d, t: f64, o: V3, d: V3, opts:&kimchi_core::motion::EvalOptions) -> Option<String> {
+    kimchi_media::render::space::viewport::pick_with(s,t,(o,d),opts)
+}
+
+/// Only the light and camera helpers the renderer displays can intercept a selection.
+fn helper_ids(scene:&Scene3d,t:f64,through:bool,opts:&kimchi_core::motion::EvalOptions)->Vec<String> {
+    let mut ids:Vec<_>=scene.lights_at_with(t,opts).into_iter().map(|l|l.id).collect();
+    let active=scene.active_camera_at(t);
+    ids.extend(std::iter::once("camera".to_string()).chain(scene.cameras.iter().map(|c|c.id.clone())).filter(|id|!through || *id!=active));
+    ids
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1986,15 +1975,45 @@ fn toggle<T: PartialEq>(list: &mut Vec<T>, v: T, additive: bool) {
 
 /// The mesh edge nearest the pointer on screen (within 8 px).
 fn nearest_edge(verts: &[V3], faces: &[Vec<u32>], view: &View3, m: [f64; 2]) -> Option<(u32, u32)> {
-    let mut best: Option<(f64, (u32, u32))> = None;
+    let mut best: Option<(f64, f64, (u32, u32))> = None;
     for (a, b) in model::mesh_edges(faces) {
-        let (Some(pa), Some(pb)) = (verts.get(a as usize).and_then(|v| view.project(*v)), verts.get(b as usize).and_then(|v| view.project(*v))) else { continue };
+        let (Some(&va),Some(&vb)) = (verts.get(a as usize),verts.get(b as usize)) else {continue};
+        let Some((pa,pb,za,zb))=view.segment(va,vb) else {continue};
         let d = math::seg_dist(m, pa, pb);
-        if d < 8.0 && best.is_none_or(|(bd, _)| d < bd) {
-            best = Some((d, (a, b)));
+        if d >= 8.0 || !d.is_finite() {continue;}
+        let (dx,dy) = (pb[0]-pa[0],pb[1]-pa[1]);
+        let length = dx*dx+dy*dy;
+        let depth = if length < 1e-12 {za.min(zb)} else {
+            let t = (((m[0]-pa[0])*dx+(m[1]-pa[1])*dy)/length).clamp(0.,1.);
+            if view.cam.ortho {za+(zb-za)*t} else {1./((1.-t)/za+t/zb)}
+        };
+        if depth>0. && depth.is_finite() && best.is_none_or(|(bd,bz,_)| component_nearer(d,depth,bd,bz)) {
+            best = Some((d,depth,(a,b)));
         }
     }
-    best.map(|(_, e)| e)
+    best.map(|(_,_,e)| e)
+}
+
+/// Screen distance wins; coincident components are picked from front to back, independent
+/// of their order in the mesh. The tolerance only absorbs projection roundoff in pixels.
+fn component_nearer(distance:f64,depth:f64,best_distance:f64,best_depth:f64)->bool {
+    distance < best_distance-1e-6 || ((distance-best_distance).abs()<=1e-6 && depth<best_depth)
+}
+
+fn component_depth(view:&View3,p:V3)->Option<f64> {
+    let forward=math::norm(math::sub(view.cam.target,view.cam.position));
+    let depth=math::dot(math::sub(p,view.cam.position),forward);
+    depth.is_finite().then_some(depth)
+}
+
+fn transform_readout(property:&str,value:&Value)->String {
+    let label=match property {
+        "x"=>"X","y"=>"Y","rotation"=>"Rotation","scale"=>"Scale",
+        "scaleX"=>"Scale X","scaleY"=>"Scale Y","anchorX"=>"Anchor X","anchorY"=>"Anchor Y",
+        _=>property,
+    };
+    let number=value.as_f64().map(math::compact_number).unwrap_or_else(||value.to_string());
+    format!("{label} {number}")
 }
 
 /// SVG path data through pen points (curves where a handle was pulled).
@@ -2039,9 +2058,6 @@ fn opposite(name: &'static str) -> &'static str {
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
-fn round3(v: f64) -> f64 {
-    (v * 1000.0).round() / 1000.0
-}
 
 thread_local! {
     /// Shift during the current pointer gesture (constrains and keeps proportions).
@@ -2060,7 +2076,6 @@ struct View2 {
     cy: f64,
     zoom: f64,
     canvas: (f64, f64),
-    project: (f64, f64),
 }
 
 impl View2 {
@@ -2070,12 +2085,20 @@ impl View2 {
     fn to_canvas(self, s: [f64; 2]) -> [f64; 2] {
         [(s[0] - self.cx) / self.zoom, (s[1] - self.cy) / self.zoom]
     }
+    fn picture_box(self,view:CanvasView,w:u32,h:u32)->[f64;4] {
+        let size=[w as f64/view.scale[0],h as f64/view.scale[1]];
+        let tl=self.to_screen([view.centre[0]-size[0]/2.,view.centre[1]-size[1]/2.]);
+        [tl[0],tl[1],size[0]*self.zoom,size[1]*self.zoom]
+    }
 }
 
 /// Renders one picture of the scene (on a background thread).
 fn draw(tools: &kimchi_media::Tools, project: &Project, req: &Request, fps: f64) -> Result<Arc<RenderImage>, String> {
     let mut r = kimchi_media::render::Renderer::new(tools, project, req.w, req.h, fps);
-    let pix = r.scene_view(req.clip, req.t, req.view.as_ref(), &req.opts, req.comp.as_deref()).map_err(|e| e.to_string())?;
+    let pix=match &req.canvas {
+        Some(view)=>r.scene_canvas(req.clip,req.t,req.comp.as_deref(),view),
+        None=>r.scene_view(req.clip,req.t,req.view.as_ref(),&req.opts,req.comp.as_deref()),
+    }.map_err(|e|e.to_string())?;
     to_image(pix)
 }
 
@@ -2106,58 +2129,6 @@ enum Mark {
     Dot([f64; 2], f64, Hsla),
 }
 
-fn paint_marks(marks: Vec<Mark>, window: &mut Window) {
-    let pt = |p: [f64; 2]| point(px(p[0] as f32), px(p[1] as f32));
-    for m in marks {
-        match m {
-            Mark::Line(pts, closed, color, width) => {
-                if pts.len() < 2 {
-                    continue;
-                }
-                let mut b = PathBuilder::stroke(px(width));
-                b.move_to(pt(pts[0]));
-                for p in &pts[1..] {
-                    b.line_to(pt(*p));
-                }
-                if closed {
-                    b.close();
-                }
-                if let Ok(path) = b.build() {
-                    window.paint_path(path, color);
-                }
-            }
-            Mark::Fill(pts, color) => {
-                if pts.len() < 3 {
-                    continue;
-                }
-                let mut b = PathBuilder::fill();
-                b.move_to(pt(pts[0]));
-                for p in &pts[1..] {
-                    b.line_to(pt(*p));
-                }
-                b.close();
-                if let Ok(path) = b.build() {
-                    window.paint_path(path, color);
-                }
-            }
-            Mark::Dot(c, r, color) => {
-                let pts: Vec<[f64; 2]> = (0..16).map(|k| {
-                    let a = k as f64 / 16.0 * std::f64::consts::TAU;
-                    [c[0] + a.cos() * r, c[1] + a.sin() * r]
-                }).collect();
-                let mut b = PathBuilder::fill();
-                b.move_to(pt(pts[0]));
-                for p in &pts[1..] {
-                    b.line_to(pt(*p));
-                }
-                b.close();
-                if let Ok(path) = b.build() {
-                    window.paint_path(path, color);
-                }
-            }
-        }
-    }
-}
 
 fn hex(c: u32) -> Hsla {
     gpui::rgb(c).into()
@@ -2199,7 +2170,7 @@ impl Viewport {
             }
         }
         // Selected lights and cameras: a ring around their icon.
-        let w = model::worlds(s, t);
+        let w = self.studio.read(cx).worlds(s,t,cx);
         let st = self.studio.read(cx);
         for id in &st.selection {
             if matches!(model::item(scene, id), Some(model::Item::Light | model::Item::Camera))
@@ -2213,15 +2184,15 @@ impl Viewport {
             }
         }
         if let (Some(Armed::LoopCut), Some((a, b)), Some((v, _, view))) = (self.armed, self.hover_edge, self.mesh(cx))
-            && let (Some(pa), Some(pb)) = (view.project(v[a as usize]), view.project(v[b as usize]))
+            && let Some((pa,pb,..)) = view.segment(v[a as usize],v[b as usize])
         {
             out.push(Mark::Line(vec![pa, pb], false, hex(0xffd84d), 3.0));
         }
         // The selected camera's path over the clip, its keyframes as dots.
-        if let Some((_, _, path, keys)) = &self.cam_path {
+        if let Some(path) = &self.cam_path {
             let col = t2.accent;
             let mut run: Vec<[f64; 2]> = vec![];
-            for p in path {
+            for p in &path.points {
                 match view.project(*p) {
                     Some(q) => run.push(q),
                     None => {
@@ -2235,7 +2206,7 @@ impl Viewport {
             if run.len() > 1 {
                 out.push(Mark::Line(run, false, col.opacity(0.85), 1.5));
             }
-            for k in keys {
+            for k in &path.keys {
                 if let Some(q) = view.project(*k) {
                     out.push(Mark::Dot(q, 4.5, col));
                     out.push(Mark::Dot(q, 2.5, gpui::white()));
@@ -2257,13 +2228,37 @@ impl Viewport {
         let edge = [[-w / 2.0, -h / 2.0], [w / 2.0, -h / 2.0], [w / 2.0, h / 2.0], [-w / 2.0, h / 2.0]].map(|p| v.to_screen(p));
         out.push(Mark::Line(edge.to_vec(), true, th.line_strong, 1.0));
         let st = self.studio.read(cx);
+        let Some(geometry)=st.canvas_geometry(s,t,project) else {return out};
+        // A repeated group's child is edited through its source handles. Outline its visible
+        // instances as well, so picking a copy also highlights the shape under the pointer.
+        if !st.selection.is_empty() {
+            fn repeated_children(list:&[kimchi_core::motion::Layer],repeated:bool,selected:&HashSet<&str>,ids:&mut HashSet<String>) {
+                for layer in list {
+                    if repeated && selected.contains(layer.id.as_str()) {ids.insert(layer.id.clone());}
+                    if let kimchi_core::motion::LayerKind::Group {layers}=&layer.kind {
+                        let repeated=repeated || layer.operators.iter().any(|o|o.enabled && o.kind=="repeater");
+                        repeated_children(layers,repeated,selected,ids);
+                    }
+                }
+            }
+            let selected=st.selection.iter().map(String::as_str).collect();let mut repeated=HashSet::new();
+            repeated_children(model::view_layers(s,st.composition.as_deref()),false,&selected,&mut repeated);
+            if !repeated.is_empty() {
+                for (id,corners) in geometry.selection_bounds() {
+                    if repeated.contains(&id) {
+                        let active=st.active()==Some(id.as_str());
+                        out.push(Mark::Line(corners.map(|p|v.to_screen(p)).to_vec(),true,th.accent.opacity(if active {1.} else {0.7}),if active {1.5} else {1.}));
+                    }
+                }
+            }
+        }
         // Every other selected layer: its outline.
         for id in st.selection.iter().rev().skip(1) {
-            if let Some(c) = model::layer_corners(s, st.composition.as_deref(), t, id, v.project) {
+            if let Some(c) = geometry.bounds(id) {
                 out.push(Mark::Line(c.iter().map(|q| v.to_screen(*q)).collect(), true, th.accent.opacity(0.7), 1.0));
             }
         }
-        if let Some((corners, handles, anchor)) = self.handles2(s, &v, t, cx) {
+        if let Some((corners, handles, anchor)) = self.handles2(&geometry, &v, cx) {
             out.push(Mark::Line(corners, true, th.accent, 1.5));
             if matches!(st.tool, Tool::Select | Tool::Anchor) {
                 for (_, hp) in &handles {
@@ -2350,7 +2345,7 @@ impl Render for Viewport {
         let bounds = self.bounds.clone();
         let entity = cx.entity();
         let scene = self.scene(cx);
-        let (marks, picture_box, label) = match &scene {
+        let (marks, picture_box, canvas_box, label) = match &scene {
             Some((p, _, sc @ Scene::Space(s), tt)) => {
                 let v = self.view3(s, *tt, p, cx);
                 let b = self.sizes();
@@ -2364,24 +2359,30 @@ impl Render for Viewport {
                 if let (Some((n, of)), true) = (self.samples, self.refiner.is_some()) {
                     label.push_str(&format!(" · path traced {n}/{of}"));
                 }
-                (self.marks3(s, sc, *tt, p, cx), Some((v.x - bx, v.y - by, v.w, v.h)), label)
+                (self.marks3(s, sc, *tt, p, cx), Some((v.x - bx, v.y - by, v.w, v.h)), None, label)
             }
             Some((p, _, Scene::Flat(s), tt)) => {
                 let v = self.view2(s, p, cx);
                 let b = self.sizes();
                 let (bx, by) = (f32::from(b.origin.x) as f64, f32::from(b.origin.y) as f64);
-                let (pw, ph) = v.project;
+                let (pw, ph) = v.canvas;
                 let tl = v.to_screen([-pw / 2.0, -ph / 2.0]);
+                let background=(tl[0]-bx,tl[1]-by,pw*v.zoom,ph*v.zoom);
+                // Move the last finished crop with the canvas while its replacement renders.
+                let picture=self.image_canvas.map(|(view,w,h)| {
+                    let [x,y,width,height]=v.picture_box(view,w,h);(x-bx,y-by,width,height)
+                }).unwrap_or((0.,0.,f32::from(b.size.width) as f64,f32::from(b.size.height) as f64));
                 let st = self.studio.read(cx);
                 let label = match &st.composition {
                     Some(c) => format!("Composition · {c} · {:.0}%", v.zoom * 100.0),
                     None => format!("Canvas · {:.0}%", v.zoom * 100.0),
                 };
-                (self.marks2(s, *tt, p, cx), Some((tl[0] - bx, tl[1] - by, pw * v.zoom, ph * v.zoom)), label)
+                (self.marks2(s, *tt, p, cx), Some(picture), Some(background), label)
             }
-            None => (vec![], None, String::new()),
+            None => (vec![], None, None, String::new()),
         };
         let three = matches!(scene, Some((_, _, Scene::Space(_), _)));
+        let awaiting_picture=picture_box.is_some() && self.image.is_none() && self.error.is_none();
         let status = self.status_line(cx);
         let busy_drag = self.drag.is_some() || self.modal_key.is_some() || self.mesh_modal.is_some() || !self.pen.is_empty();
         let cursor = match (&self.armed, self.studio.read(cx).tool, three) {
@@ -2423,22 +2424,44 @@ impl Render for Viewport {
                             bounds.set(b);
                             entity.update(cx, |this, cx| this.refresh(cx));
                         }
+                        if let Some(request)=entity.read(cx).frame_request.take() {
+                            let viewport=entity.read(cx);
+                            let (studio,size)=(viewport.studio.clone(),viewport.size());
+                            studio.update(cx,|s,cx| {
+                                // Explicit navigation after framing wins over the queued request.
+                                match request {
+                                    FrameRequest::Canvas {preview,bounds:[lo,hi]} if s.canvas==preview=>{
+                                        let framed=super::Canvas2d::framed(lo,hi,size);
+                                        if s.canvas!=framed {s.canvas=framed;s.changed(cx);}
+                                    },
+                                    FrameRequest::Space {preview,bounds:[lo,hi]} if s.view_shown()==(preview,false)=>{
+                                        let framed=s.framed(lo,hi,cx);
+                                        if framed!=preview {
+                                            if s.view_goal.is_some() {s.go_to(framed,false,cx);}
+                                            else {s.view=framed;s.changed(cx);}
+                                        }
+                                    },
+                                    _=>{},
+                                }
+                            });
+                        }
                     },
                     |_, _, _, _| {},
                 )
                 .absolute()
                 .size_full(),
             )
+            .when_some(canvas_box,|d,(x,y,w,h)| {
+                let bg=self.store.read(cx).project.as_ref().map(|p|crate::theme::parse_color(&p.settings.background)).unwrap_or(t.bg_sunken);
+                d.child(div().absolute().left(px(x as f32)).top(px(y as f32)).w(px(w as f32)).h(px(h as f32)).bg(bg).shadow(t.glass_shadow()))
+            })
             .when_some(picture_box, |d, (x, y, w, h)| {
-                let mut frame = div().absolute().left(px(x as f32)).top(px(y as f32)).w(px(w as f32)).h(px(h as f32));
-                if !three {
-                    // A checkerboard-free canvas: the project's background shows under a transparent scene.
-                    let bg = self.store.read(cx).project.as_ref().map(|p| crate::theme::parse_color(&p.settings.background)).unwrap_or(t.bg_sunken);
-                    frame = frame.bg(bg).shadow(t.glass_shadow());
-                }
+                let frame = div().absolute().left(px(x as f32)).top(px(y as f32)).w(px(w as f32)).h(px(h as f32));
                 d.child(frame.when_some(self.image.clone(), |f, img_| f.child(img(img_).size_full().object_fit(ObjectFit::Fill))))
             })
-            .child(canvas(|_, _, _| (), move |_, _, window, _| paint_marks(marks, window)).absolute().size_full())
+            .when(awaiting_picture,|d| d.child(div().absolute().top(px(34.)).left(px(10.))
+                .text_size(px(sz::SM)).text_color(t.text_3).child("Rendering scene…")))
+            .child(canvas(|_, _, _| (), move |bounds, _, window, _| paint_marks(marks, bounds, window)).absolute().size_full())
             .when_some(box_rect, |d, (a, b)| {
                 let (x0, y0) = (a.x.min(b.x), a.y.min(b.y));
                 let (w, h) = ((a.x - b.x).abs(), (a.y - b.y).abs());
@@ -2466,10 +2489,10 @@ impl Render for Viewport {
                         .absolute()
                         .bottom(px(8.))
                         .left(px(10.))
-                        .right(px(10.))
+                        .right(px(if three {104.} else {176.}))
                         .flex()
                         .justify_center()
-                        .child(div().px(px(10.)).py(px(4.)).rounded(px(sz::R_SM)).bg(gpui::black().opacity(0.6)).text_size(px(sz::XS)).text_color(gpui::white()).child(s)),
+                        .child(div().min_w_0().max_w_full().whitespace_normal().text_center().px(px(10.)).py(px(4.)).rounded(px(sz::R_SM)).bg(gpui::black().opacity(0.6)).text_size(px(sz::XS)).text_color(gpui::white()).child(s)),
                 )
             })
             .when_some(self.error.clone(), |d, e| d.child(div().absolute().top(px(32.)).left(px(10.)).right(px(10.)).text_size(px(sz::XS)).text_color(t.danger).child(format!("Couldn't draw the scene: {e}"))))
@@ -2492,21 +2515,21 @@ impl Viewport {
             self.cam_path = None;
             return;
         };
-        let key = Arc::as_ptr(&p) as usize;
-        if self.cam_path.as_ref().is_some_and(|(k, i, ..)| *k == key && *i == id) {
+        let key = model::SnapshotIdentity::new(&p);
+        if self.cam_path.as_ref().is_some_and(|path| path.project==key && path.clip==c.id && path.id==id) {
             return;
         }
         let (a, b) = (model::scene_time(&c, c.start), model::scene_time(&c, c.end()));
         let (lo, hi) = (a.min(b), a.max(b));
         const N: usize = 96;
-        let path: Vec<V3> = (0..=N).filter_map(|i| s.camera_by_id_at(&id, lo + (hi - lo) * i as f64 / N as f64).map(|c| c.position.0)).collect();
+        let path: Vec<V3> = (0..=N).filter_map(|i| s.camera_by_id_at_with(&id, lo + (hi - lo) * i as f64 / N as f64,&self.studio.read(cx).evaluation_options(cx)).map(|c| c.position.0)).collect();
         // Still: no path to draw.
         let moves = path.windows(2).any(|w| math::len(math::sub(w[0], w[1])) > 1e-6);
         let mut times: Vec<f64> = s.camera_by_id(&id).map(|cam| cam.keyframes.iter().filter(|(n, _)| n.starts_with("position") || n.ends_with(".progress")).flat_map(|(_, l)| l.iter().map(|k| k.time)).collect()).unwrap_or_default();
         times.sort_by(f64::total_cmp);
         times.dedup_by(|x, y| (*x - *y).abs() < 1e-6);
-        let keys: Vec<V3> = times.into_iter().filter_map(|t| s.camera_by_id_at(&id, t).map(|c| c.position.0)).collect();
-        self.cam_path = Some((key, id, if moves { path } else { vec![] }, if moves { keys } else { vec![] }));
+        let keys: Vec<V3> = times.into_iter().filter_map(|t| s.camera_by_id_at_with(&id,t,&self.studio.read(cx).evaluation_options(cx)).map(|c| c.position.0)).collect();
+        self.cam_path = Some(CameraPath {project:key,clip:c.id,id,points:if moves {path} else {vec![]},keys:if moves {keys} else {vec![]}});
     }
 
     fn status_line(&self, cx: &App) -> Option<String> {
@@ -2515,38 +2538,66 @@ impl Viewport {
             return Some(format!("Flying · W A S D move · Q E down and up · Shift faster · the mouse looks · the wheel sets the speed ({:.1} units/s) · {how}", f.speed));
         }
         if let Some(s) = &self.session
-            && self.modal_key.is_some()
+            && (self.modal_key.is_some() || self.gizmo_key.is_some())
         {
             return Some(s.status());
         }
         if let Some(m) = &self.mesh_modal {
             let what = match m.kind {
-                ModalKind::Extrude if m.moving => "Move along the normal",
                 ModalKind::Extrude => "Extrude",
                 ModalKind::Inset => "Inset",
                 ModalKind::Bevel => "Bevel",
                 _ => "",
             };
             let typed = if m.typed.is_empty() { String::new() } else { format!(" [{}]", m.typed) };
-            return Some(format!("{what}: {:.3}{typed} · move the mouse or type a number · Enter or click to confirm · Esc to cancel", m.amount));
+            if let Some(finish)=m.finish {
+                return Some(match finish {
+                    MeshFinish::Confirm=>format!("{what}: {}{typed} · Finishing mesh edit{}",math::compact_number(m.amount),if m.kind==ModalKind::Extrude {" · Esc cancels"} else {""}),
+                    MeshFinish::Cancel=>format!("{what} · Restoring the previous position…"),
+                });
+            }
+            if !m.valid {return Some(format!("{what}{typed} · Enter a finite number within the tool's range · Backspace corrects · Esc cancels"));}
+            return Some(format!("{what}: {}{typed} · move the mouse or type a number · Enter or click to confirm · Esc to cancel", math::compact_number(m.amount)));
         }
         if !self.pen.is_empty() {
             return Some("Pen: click for corners, drag for curves · click the first point to close · Enter to finish · Backspace removes the last point".into());
         }
+        if let Some(Drag::Press {boxing:true,selection,..})=&self.drag {
+            let operation=match selection {SelectionOp::Replace=>"Replace selection",SelectionOp::Add=>"Add to selection",SelectionOp::Subtract=>"Remove from selection"};
+            return Some(format!("Box select · {operation} · Release to finish · Esc or right-click cancels"));
+        }
         match self.armed {
-            Some(Armed::BoxSelect) => return Some("Box select: drag a rectangle (Shift adds)".into()),
+            Some(Armed::BoxSelect) => return Some(if cfg!(target_os="macos") {"Box select: drag a rectangle · Shift adds · Cmd+Shift removes · Esc or right-click cancels"} else {"Box select: drag a rectangle · Shift adds · Ctrl+Shift removes · Esc or right-click cancels"}.into()),
             Some(Armed::LoopCut) => return Some("Loop cut: click an edge to cut across its ring".into()),
             None => {}
         }
         if let Some(Drag::Layer(d)) = &self.drag
-            && let Some((_, p)) = d.reached.first()
         {
-            let s: Vec<String> = p.iter().map(|(k, v)| format!("{k} {v}")).collect();
-            return Some(s.join(" · "));
+            if matches!(d.op, LayerOp::Rotate | LayerOp::Scale(..)) {
+                let what=if d.op==LayerOp::Rotate {"Rotate"} else {"Scale"};
+                let axis=d.axis.map(|i| format!(" along {}",["X","Y"][i])).unwrap_or_default();
+                let typed=if d.typed.is_empty() {
+                    d.reached.first().map(|(_,p)| format!(": {}",p.iter().filter(|(_,v)| v.is_number()).map(|(k,v)|transform_readout(k,v)).collect::<Vec<_>>().join(" · "))).unwrap_or_default()
+                } else {format!(" [{}]",d.typed)};
+                let input=if d.op==LayerOp::Rotate {"type degrees"} else {"type a factor · X/Y constrains scale"};
+                return Some(if d.valid {format!("{what}{axis}{typed} · {input} · Enter or click confirms · Esc cancels")}
+                    else {format!("{what}{axis}{typed} · Enter a finite number within the transform's range · Backspace corrects · Esc cancels")});
+            }
+            let (_,p)=d.reached.first()?;
+            let s: Vec<String> = p.iter().map(|(k,v)|transform_readout(k,v)).collect();
+            return Some(format!("{} · Release or Enter confirms · Esc cancels", s.join(" · ")));
         }
         let st = self.studio.read(cx);
         if st.mode == Mode::Edit {
-            return Some(format!("Edit mode · {} · 1/2/3 vertex/edge/face · E extrude · I inset · Ctrl+B bevel · Ctrl+R loop cut · right-click for more · Tab to leave", st.select_mode.name()));
+            use crate::actions::{self as act,hint};
+            let leave=hint(&act::StudioToggleEdit).unwrap_or_default();
+            if self.sizes().size.width<px(800.) {
+                return Some(format!("Edit · {} · {}/{}/{} transform · 1/2/3 components · right-click for tools · {leave} to leave",st.select_mode.name(),
+                    hint(&act::StudioGrab).unwrap_or_default(),hint(&act::StudioRotate).unwrap_or_default(),hint(&act::StudioScale).unwrap_or_default()));
+            }
+            return Some(format!("Edit mode · {} · {}/{}/{} transform · X/Y/Z constrains · 1/2/3 components · {} extrude · {} inset · right-click for more · {leave} to leave", st.select_mode.name(),
+                hint(&act::StudioGrab).unwrap_or_default(),hint(&act::StudioRotate).unwrap_or_default(),hint(&act::StudioScale).unwrap_or_default(),
+                hint(&act::StudioExtrude).unwrap_or_default(),hint(&act::StudioInsert).unwrap_or_default()));
         }
         None
     }
@@ -2602,7 +2653,7 @@ impl Viewport {
                         other => other,
                     })
                     .collect();
-                paint_marks(shifted, window)
+                paint_marks(shifted, b, window)
             }).absolute().size_full())
             .children(dots.into_iter().map(|(i, neg, x, y, _)| {
                 let name = if neg { names[i].1 } else { names[i].0 };
@@ -2637,6 +2688,7 @@ impl Viewport {
             div()
                 .id(id)
                 .size(px(30.))
+                .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -2653,8 +2705,11 @@ impl Viewport {
             }))
         };
         let studio = self.studio.clone();
-        let sep = div().mx(px(7.)).my(px(2.)).h(px(1.)).bg(t.line);
+        let sep = div().flex_none().mx(px(7.)).my(px(2.)).h(px(1.)).bg(t.line);
         let column = div()
+            .id("studio-nav-controls")
+            .max_h((self.sizes().size.height-px(108.)).max(px(36.)))
+            .overflow_y_scroll()
             .flex()
             .flex_col()
             .items_center()
@@ -2662,7 +2717,11 @@ impl Viewport {
             .p(px(3.))
             .glass(t.glass2)
             .shadow(t.glass_shadow())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Left, cx.listener(|this,_,_,cx| {
+                this.studio.update(cx,|s,cx| s.focus_area(super::Area::Viewport,cx));
+                cx.stop_propagation();
+            }))
+            .on_scroll_wheel(|_,_,cx| cx.stop_propagation())
             .child(drag_button("nav-orbit", "orbit", "Orbit: drag here · in the view: middle-drag or Alt+drag, or scroll with two fingers on a trackpad".into(), |p| Drag::Orbit { last: p }, cx))
             .child(drag_button("nav-pan", "hand", "Pan: drag here · in the view: Shift+middle-drag, Shift+scroll, or Space+drag".into(), |p| Drag::Pan { last: p }, cx))
             .child(drag_button("nav-zoom", "zoom-in", "Zoom: drag up and down here · the wheel zooms to the pointer, Ctrl+scroll, a pinch, + and −".into(), |p| Drag::Zoom { last: p }, cx))

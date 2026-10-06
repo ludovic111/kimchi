@@ -28,7 +28,7 @@ fn with_sound(cx: &mut TestAppContext) -> Option<(Fixture, Entity<Workspace>, &m
 
 fn wait(cx: &mut VisualTestContext, done: impl Fn(&mut VisualTestContext) -> bool) {
     let start = Instant::now();
-    while !done(cx) && start.elapsed() < Duration::from_secs(4) {
+    while !done(cx) && start.elapsed() < crate::tests::PATIENCE {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(10));
     }

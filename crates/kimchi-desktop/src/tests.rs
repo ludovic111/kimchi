@@ -28,13 +28,13 @@ impl Fixture {
         self.session.read(|ed| ed.project().clone()).unwrap()
     }
 
-    /// Lets the window and Tokio work until `done` holds (or 3 s pass).
+    /// Lets the window and Tokio work until `done` holds (or `PATIENCE` passes).
     pub fn settle(&self, cx: &mut VisualTestContext, done: impl Fn(&Project) -> bool) -> Project {
         let start = Instant::now();
         loop {
             cx.run_until_parked();
             let p = self.project();
-            if done(&p) || start.elapsed() > Duration::from_secs(3) {
+            if done(&p) || start.elapsed() > PATIENCE {
                 return p;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -42,17 +42,21 @@ impl Fixture {
     }
 }
 
+/// How long UI tests wait for work to finish: generous, as tests share a busy machine,
+/// and a wait ends as soon as its condition holds.
+pub(crate) const PATIENCE: Duration = Duration::from_secs(20);
+
 /// The platform's command key, as the shortcuts are bound (`actions.rs`).
 #[cfg(target_os = "macos")]
 const M: &str = "cmd";
 #[cfg(not(target_os = "macos"))]
 const M: &str = "ctrl";
 
-/// Lets the window catch up until its store satisfies `done` (or 3 s pass): the store hears
+/// Lets the window catch up until its store satisfies `done` (or `PATIENCE` passes): the store hears
 /// about changes through the session's events, a moment after the session has them.
 pub(crate) fn store_settles(cx: &mut VisualTestContext, done: impl Fn(&crate::store::Store) -> bool) {
     let start = Instant::now();
-    while !cx.update(|_, cx| done(cx.store().read(cx))) && start.elapsed() < Duration::from_secs(3) {
+    while !cx.update(|_, cx| done(cx.store().read(cx))) && start.elapsed() < PATIENCE {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -127,7 +131,12 @@ fn typing_in_a_field_never_triggers_shortcuts(cx: &mut TestAppContext) {
     let palette = cx.update(|_, cx| view.read(cx).dialogs().read(cx).palette());
     assert_eq!(cx.update(|_, cx| palette.read(cx).query().to_string()), "t s");
     std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(texts(&f.settle(cx, |_| false)), 0);
+    let start = Instant::now();
+    while start.elapsed() < PATIENCE {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(texts(&f.project()), 0);
     assert!(!cx.update(|_, cx| cx.store().read(cx).playback.read(cx).playing));
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
@@ -140,7 +149,7 @@ fn window_commands_from_other_clients_reach_the_window(cx: &mut TestAppContext) 
     let s = f.session.clone();
     let task = f.rt.spawn(async move { kimchi_control::call(&s, Source::Mcp, "ui.showPanel", json!({ "panel": "settings", "section": "agent" })).await });
     let start = Instant::now();
-    while !task.is_finished() && start.elapsed() < Duration::from_secs(3) {
+    while !task.is_finished() && start.elapsed() < PATIENCE {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -165,6 +174,7 @@ fn people_edit_motion_scenes_in_the_inspector(cx: &mut TestAppContext) {
     store_settles(cx, |s| s.studio.is_some());
     let studio = cx.update(|_, cx| view.read(cx).editor().read(cx).studio.clone());
     cx.update(|_, cx| studio.update(cx, |s, cx| s.close(cx)));
+    cx.update(|_, cx| cx.store().update(cx, |s, cx| s.set_left_tab(crate::store::LeftTab::Inspector, cx)));
     cx.run_until_parked();
     // Pick its text layer, then type in the words field.
     let inspector = cx.update(|_, cx| view.read(cx).editor().read(cx).inspector.clone());
@@ -175,7 +185,7 @@ fn people_edit_motion_scenes_in_the_inspector(cx: &mut TestAppContext) {
         if let Some(f) = cx.update(|_, cx| inspector.read(cx).words_field()) {
             break f;
         }
-        assert!(start.elapsed() < Duration::from_secs(3), "the words field shows");
+        assert!(start.elapsed() < PATIENCE, "the words field shows");
         std::thread::sleep(Duration::from_millis(10));
     };
     cx.update(|_, cx| field.update(cx, |_, cx| cx.emit(crate::ui::input::InputEvent::Changed("Bonjour".into()))));
@@ -350,7 +360,7 @@ fn remote(f: &Fixture, cx: &mut VisualTestContext, name: &str, params: Value) ->
     let (s, name_owned) = (f.session.clone(), name.to_string());
     let task = f.rt.spawn(async move { kimchi_control::call(&s, Source::Cli, &name_owned, params).await });
     let start = Instant::now();
-    while !task.is_finished() && start.elapsed() < Duration::from_secs(3) {
+    while !task.is_finished() && start.elapsed() < PATIENCE {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -400,7 +410,7 @@ fn scripts_reach_what_the_window_does(cx: &mut TestAppContext) {
         })
     };
     let start = Instant::now();
-    while !has_card(cx) && start.elapsed() < Duration::from_secs(3) {
+    while !has_card(cx) && start.elapsed() < PATIENCE {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -529,7 +539,12 @@ fn side_panels_close_and_open(cx: &mut TestAppContext) {
     let before = preview_w(cx);
     cx.simulate_keystrokes(&format!("{M}-alt-i"));
     resize(cx, 1600., 1000.);
-    assert!(bounds_of(cx, "inspector").is_none(), "the shortcut hides the inspector");
+    assert!(bounds_of(cx, "left-panel").is_some(), "the inspector occupies the left sidebar");
+    assert!(bounds_of(cx, "inspector").is_none(), "there is no separate inspector dock");
+    assert!((preview_w(cx) - before).abs() < 1., "switching a left tab keeps the viewport width");
+    assert_eq!(f.call("ui.state", json!({}))["layout"]["inspectorOpen"], true);
+    cx.simulate_keystrokes(&format!("{M}-alt-i"));
+    resize(cx, 1600., 1000.);
     assert!(preview_w(cx) > before + 200.);
     remote(&f, cx, "ui.setLayout", json!({ "leftOpen": false }));
     resize(cx, 1600., 1000.);
@@ -540,5 +555,6 @@ fn side_panels_close_and_open(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(&format!("{M}-3"));
     cx.simulate_keystrokes(&format!("{M}-alt-i"));
     resize(cx, 1600., 1000.);
-    assert!(bounds_of(cx, "left-panel").is_some() && bounds_of(cx, "inspector").is_some());
+    assert!(bounds_of(cx, "left-panel").is_some() && bounds_of(cx, "inspector").is_none());
+    assert_eq!(f.call("ui.state", json!({}))["layout"]["inspectorOpen"], true);
 }

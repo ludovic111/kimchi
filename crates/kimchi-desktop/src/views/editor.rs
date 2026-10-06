@@ -22,7 +22,6 @@ pub const TOPBAR_H: f32 = layout::TOPBAR_H;
 #[derive(Clone, Copy, PartialEq)]
 enum Splitter {
     Left,
-    Right,
     Timeline,
     Agent,
 }
@@ -75,12 +74,14 @@ impl Editor {
         let prefs = Prefs::load(&store.read(cx).session.config_dir);
         let reveal_seen = store.read(cx).left_reveal;
         let solved = layout::solve(window.viewport_size(), &prefs, Open::default());
+        let inspector = cx.new(|cx| Inspector::new(window, cx));
+        let left = cx.new(|cx| LeftPanel::new(inspector.clone(), studio.clone(), window, cx));
         let this = Self {
             studio,
             _studio_subs: vec![open, watch],
-            left: cx.new(|cx| LeftPanel::new(window, cx)),
+            left,
             preview: cx.new(|cx| PreviewView::new(window, cx)),
-            inspector: cx.new(|cx| Inspector::new(window, cx)),
+            inspector,
             timeline: cx.new(|cx| Timeline::new(window, cx)),
             agent: cx.new(|cx| AgentPanel::new(window, cx)),
             jobs: cx.new(|cx| JobsPopover::new(window, cx)),
@@ -99,7 +100,7 @@ impl Editor {
     }
 
     /// The layout as `ui.state` and `ui.setLayout` report it.
-    fn ui_layout(&self) -> kimchi_control::session::UiLayout {
+    fn ui_layout(&self, cx: &App) -> kimchi_control::session::UiLayout {
         let s = &self.solved;
         let overlays = [("left", s.left), ("inspector", s.inspector), ("agent", s.agent)].into_iter().filter(|(_, d)| d.is_drawer()).map(|(n, _)| n.to_string()).collect();
         kimchi_control::session::UiLayout {
@@ -108,7 +109,7 @@ impl Editor {
             timeline: s.timeline_h.round(),
             agent: if s.agent == Dock::Hidden { self.prefs.agent } else { s.agent.width() }.round(),
             left_open: s.left != Dock::Hidden,
-            inspector_open: s.inspector != Dock::Hidden,
+            inspector_open: s.left != Dock::Hidden && self.store.read(cx).left_tab == LeftTab::Inspector,
             overlays,
             window: [s.window.0.round(), s.window.1.round()],
         }
@@ -116,7 +117,7 @@ impl Editor {
 
     /// Tells `ui.state` the panel sizes.
     fn publish_layout(&self, cx: &App) {
-        let layout = self.ui_layout();
+        let layout = self.ui_layout(cx);
         let session = self.store.read(cx).session.clone();
         if session.ui_state().layout != layout {
             session.update_ui_state(|s| s.layout = layout);
@@ -163,7 +164,7 @@ impl Editor {
         self.save_prefs(cx);
         self.publish_layout(cx);
         cx.notify();
-        self.ui_layout()
+        self.ui_layout(cx)
     }
 
     /// Width the timeline's tracks have (for zoom to fit).
@@ -185,6 +186,8 @@ impl Editor {
     }
 
     pub fn set_left_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        // An explicit visibility change wins over a tab reveal queued earlier in this update.
+        self.reveal_seen=self.store.read(cx).left_reveal;
         if open {
             if self.solved.left_fits {
                 self.prefs.left_open = true;
@@ -203,19 +206,11 @@ impl Editor {
 
     pub fn set_inspector_open(&mut self, open: bool, cx: &mut Context<Self>) {
         if open {
-            if self.solved.inspector_fits {
-                self.prefs.inspector_open = true;
-                self.inspector_drawer = false;
-            } else {
-                self.inspector_drawer = true;
-                self.left_drawer = false;
-            }
-        } else if self.inspector_drawer {
-            self.inspector_drawer = false;
-        } else {
-            self.prefs.inspector_open = false;
+            self.store.update(cx, |s, cx| s.set_left_tab(LeftTab::Inspector, cx));
+            self.set_left_open(true, cx);
+        } else if self.store.read(cx).left_tab == LeftTab::Inspector {
+            self.set_left_open(false, cx);
         }
-        self.after_toggle(cx);
     }
 
     fn after_toggle(&mut self, cx: &mut Context<Self>) {
@@ -233,12 +228,20 @@ impl Editor {
 
     /// The inspector's button and shortcut.
     pub fn toggle_inspector(&mut self, cx: &mut Context<Self>) {
-        let shown = self.solved.inspector != Dock::Hidden;
+        let shown = self.left_shown() && self.store.read(cx).left_tab == LeftTab::Inspector;
         self.set_inspector_open(!shown, cx);
     }
 
     /// A click on a tab of the rail: shows it, or closes the panel when it is the one showing.
     fn pick_tab(&mut self, tab: LeftTab, cx: &mut Context<Self>) {
+        if tab == LeftTab::Studio && !self.studio.read(cx).is_open() {
+            let store = self.store.read(cx);
+            let clip = store.project.as_ref().and_then(|p| {
+                p.clips().find(|(_, c)| store.selection.contains(&c.id) && matches!(c.content, kimchi_core::ClipContent::Motion { .. }))
+                    .or_else(|| p.clips().find(|(_, c)| matches!(c.content, kimchi_core::ClipContent::Motion { .. }))).map(|(_, c)| c.id)
+            });
+            if let Some(clip) = clip { self.store.update(cx, |s, cx| s.open_studio(clip, cx)); return; }
+        }
         if self.store.read(cx).left_tab == tab && self.left_shown() {
             self.set_left_open(false, cx);
         } else {
@@ -268,7 +271,6 @@ impl Editor {
         let (pos, value) = match which {
             Splitter::Timeline => (e.position.y, s.timeline_h),
             Splitter::Left => (e.position.x, s.left.width()),
-            Splitter::Right => (e.position.x, s.inspector.width()),
             Splitter::Agent => (e.position.x, s.agent.width()),
         };
         self.resizing = Some((which, pos, value));
@@ -287,10 +289,6 @@ impl Editor {
             Splitter::Left => {
                 let max = layout::max_side(&s, s.inspector.row_width(), layout::LEFT_MAX).max(layout::LEFT_MIN);
                 self.prefs.left = (value + delta).clamp(layout::LEFT_MIN, max);
-            }
-            Splitter::Right => {
-                let max = layout::max_side(&s, s.left.row_width(), layout::INSPECTOR_MAX).max(layout::INSPECTOR_MIN);
-                self.prefs.inspector = (value - delta).clamp(layout::INSPECTOR_MIN, max);
             }
             Splitter::Timeline => {
                 let body = s.window.1 - layout::TOPBAR_H;
@@ -319,7 +317,6 @@ impl Editor {
         let active = self.resizing.is_some_and(|(w, _, _)| w == which);
         let name = match which {
             Splitter::Left => "split-left",
-            Splitter::Right => "split-right",
             Splitter::Timeline => "split-timeline",
             Splitter::Agent => "split-agent",
         };
@@ -354,7 +351,6 @@ impl Editor {
         let d = Prefs::default();
         match which {
             Splitter::Left => self.prefs.left = d.left,
-            Splitter::Right => self.prefs.inspector = d.inspector,
             Splitter::Timeline => self.prefs.timeline = d.timeline,
             Splitter::Agent => self.prefs.agent = d.agent,
         }
@@ -422,7 +418,7 @@ impl Editor {
         let name: gpui::SharedString = p.as_ref().map(|p| p.name.clone()).unwrap_or_default().into();
         let fullscreen = window.is_fullscreen();
         let controls = crate::ui::window_controls(window, cx);
-        let (left_on, insp_on) = (self.left_shown(), self.solved.inspector != Dock::Hidden);
+        let (left_on, insp_on) = (self.left_shown(), self.left_shown() && self.store.read(cx).left_tab == LeftTab::Inspector);
         let this = cx.entity();
         let name_tip = name.clone();
         div()
@@ -560,7 +556,7 @@ impl Editor {
                                     .color(if left_on { t.text } else { t.text_3 })
                                     .on_click(move |_, _, cx| e1.update(cx, |e, cx| e.toggle_left(cx)))
                                     .into_any_element(),
-                                Button::icon("toggle-inspector", "panel-right", tip(if insp_on { "Hide the inspector" } else { "Show the inspector" }, &act::ToggleInspector))
+                                Button::icon("toggle-inspector", "sliders-horizontal", tip(if insp_on { "Hide the inspector" } else { "Show the inspector" }, &act::ToggleInspector))
                                     .small()
                                     .flush()
                                     .color(if insp_on { t.text } else { t.text_3 })
@@ -699,23 +695,20 @@ impl Render for Editor {
                         Dock::Docked(w) => Some(w),
                         _ => None,
                     }, |d, w| d.child(div().w(px(w)).flex_none().h_full().debug_selector(|| "left-panel".into()).child(self.left.clone().cached(full()))).child(self.splitter(Splitter::Left, cx)))
-                    // The work: solid, never glass.
-                    .child(div().flex_1().min_w_0().h_full().bg(t.bg_sunken).debug_selector(|| "preview".into()).child(self.preview.clone()))
-                    .when_some(match s.inspector {
-                        Dock::Docked(w) => Some(w),
-                        _ => None,
-                    }, |d, w| d.child(self.splitter(Splitter::Right, cx)).child(div().w(px(w)).flex_none().h_full().debug_selector(|| "inspector".into()).child(self.inspector.clone().cached(full())))),
+                    // Studio and the timeline share the same two outer sidebars.
+                    .child(div().flex_1().min_w_0().h_full().bg(t.bg_sunken).debug_selector(|| "preview".into())
+                        .when(studio_open, |d| d.child(self.studio.clone()))
+                        .when(!studio_open, |d| d.child(self.preview.clone()))),
             )
-            .child(self.splitter(Splitter::Timeline, cx))
-            .child(div().h(px(s.timeline_h)).flex_none().w_full().bg(t.bg_raised).debug_selector(|| "timeline".into()).child(self.timeline.clone()));
+            .when(!studio_open, |d| d.child(self.splitter(Splitter::Timeline, cx))
+                .child(div().h(px(s.timeline_h)).flex_none().w_full().bg(t.bg_raised).debug_selector(|| "timeline".into()).child(self.timeline.clone())));
 
         let body = div()
             .flex_1()
             .min_h_0()
             .relative()
             .flex()
-            .when(studio_open, |d| d.child(div().flex_1().min_w_0().h_full().child(self.studio.clone())))
-            .when(!studio_open, |d| d.child(rail).child(work))
+            .child(rail).child(work)
             .when_some(match s.agent {
                 Dock::Docked(w) => Some(w),
                 _ => None,
@@ -728,7 +721,7 @@ impl Render for Editor {
                 ))
             })
             // Panels the window is too narrow to dock, over the work.
-            .when(!studio_open, |d| {
+            .map(|d| {
                 d.when_some(match s.left {
                     Dock::Drawer(w) => Some(w),
                     _ => None,

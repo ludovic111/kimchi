@@ -35,7 +35,7 @@ pub(crate) mod source;
 pub mod space;
 pub(crate) mod textfx;
 
-pub use flat::{hit_test, layer_bounds, layer_transform};
+pub use flat::{CanvasGeometry, hit_test, layer_bounds, layer_selection_bounds, layer_transform};
 pub use space::Quality;
 
 use std::collections::{HashMap, HashSet};
@@ -53,6 +53,15 @@ use crate::{MediaResult, Tools};
 const PREFETCH: f64 = 0.75;
 /// Largest side stills and image layers are decoded at.
 const MAX_STILL: f64 = 4096.0;
+
+/// A 2D Studio view, rendered directly at the output resolution instead of enlarging a
+/// full-scene thumbnail. The centre is in canvas-centred project pixels; scale is output
+/// pixels per project pixel on each axis (separate axes account for rounded output sizes).
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct CanvasView {
+    pub centre:[f64;2],
+    pub scale:[f64;2],
+}
 
 /// Puts frames of a project together at one output size.
 pub struct Renderer {
@@ -257,39 +266,105 @@ impl Renderer {
         let ClipContent::Motion { scene, .. } = &clip.content else {
             return Err(crate::MediaError::Unsupported("not a motion clip".into()));
         };
-        let (w, h) = (self.width as f32, self.height as f32);
         let mut canvas = Pixmap::new(self.width, self.height).expect("non-empty canvas");
         let mut used = HashSet::new();
         match scene {
-            Scene::Flat(s) => {
-                let base = Transform::from_translate(w / 2.0, h / 2.0).pre_scale(self.sx, self.sy);
-                // One output frame lasts `speed` frames of scene time (motion blur spans it).
-                let (sx, quality, frame) = (self.sx, self.quality, clip.speed.abs().max(1e-6) / self.fps);
-                let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(&clip)) };
-                // A composition is shown the way a comp layer shows it, at time `t`, centred and
-                // at the scene's scale (where the Studio puts its layers): on its own canvas, with
-                // its background inside that frame only and its layers cut at its edges.
-                let shown = match comp.and_then(|c| s.composition(c)) {
-                    Some(c) => {
-                        let viewer = serde_json::from_value(serde_json::json!({"id": "\u{1}composition", "type": "comp", "comp": c.id, "time": t}))
-                            .map_err(|e| crate::MediaError::Unsupported(format!("composition view: {e}")))?;
-                        kimchi_core::Scene2d { background: None, layers: vec![viewer], keyframes: Default::default(), ..s.clone() }
-                    }
-                    None => s.clone(),
-                };
-                let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
-                let mut fx = flat::Flat { pictures: &mut pics, scale: sx, quality, frame, eval };
-                flat::draw(&mut canvas, &shown, t, base, &mut fx);
-            }
+            Scene::Flat(_) => self.draw_canvas_view(&mut canvas,&clip,t,comp,None)?,
             Scene::Space(s) => {
                 let (width, height) = (self.width, self.height);
                 let frame = clip.speed.abs().max(1e-6) / self.fps;
+                let eval=kimchi_core::motion::EvalOptions {fps:self.fps,duration:Some(scene_length(&clip))};
                 let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
-                let img = space::viewport::render_view(&mut lock(space::shared()), s, t, frame, width, height, &mut pics, view, opts)?;
+                let img = space::viewport::render_view(&mut lock(space::shared()), s, t, frame, width, height, &mut pics, view, opts,eval)?;
                 draw_picture(&mut canvas, &img, Transform::identity(), 1.0);
             }
         }
         Ok(canvas)
+    }
+
+    /// A zoomed/panned 2D Studio viewport. It uses the same layer compositor and project
+    /// coordinates as final frames, with transparency outside the scene/composition canvas.
+    pub fn scene_canvas(&mut self,clip_id:Id,t:f64,comp:Option<&str>,view:&CanvasView)->MediaResult<Pixmap> {
+        let clip=self.project.clip(clip_id).cloned().ok_or_else(||crate::MediaError::Unsupported(format!("no clip {clip_id}")))?;
+        let mut canvas=Pixmap::new(self.width,self.height).expect("non-empty canvas");
+        // Distortions and adjustment effects can sample far outside the visible crop.
+        // Preserve their full-canvas context and the previous bounded memory budget.
+        if let ClipContent::Motion {scene:Scene::Flat(scene),..}=&clip.content {
+            let needs_context=|layers:&[kimchi_core::motion::Layer]| {
+                let mut needs=false;
+                kimchi_core::motion::walk_layers(layers,&mut |l|needs|=
+                    !l.effects.is_empty() || l.blur>0. || l.shadow.is_some() || l.glow.is_some()
+                        || l.keyframes.keys().chain(l.expressions.keys()).any(|key|key=="blur" || key.starts_with("shadow.") || key.starts_with("glow.")));
+                needs
+            };
+            if needs_context(&scene.layers) || scene.compositions.iter().any(|c|needs_context(&c.layers)) {
+                if view.centre.iter().any(|v|!v.is_finite()) || view.scale.iter().any(|v|!v.is_finite() || *v<=0.) {
+                    return Err(crate::MediaError::Unsupported("canvas view needs a finite centre and positive finite scales".into()));
+                }
+                let project=(self.project.settings.width as f64,self.project.settings.height as f64);
+                let extent=comp.and_then(|id|scene.composition(id)).map_or(project,|c|(c.width.unwrap_or(project.0),c.height.unwrap_or(project.1)));
+                let scale=view.scale[0].max(view.scale[1]).min(2048./extent.0.max(extent.1));
+                let (w,h)=(((extent.0*scale).ceil() as u32).max(1),((extent.1*scale).ceil() as u32).max(1));
+                let mut full=Self::with_project(&self.tools,(*self.project).clone(),w,h,self.fps,self.strict);full.quality=self.quality;
+                let mut image=Pixmap::new(w,h).expect("non-empty canvas");
+                let full_view=CanvasView {centre:[0.,0.],scale:[w as f64/extent.0,h as f64/extent.1]};
+                full.draw_canvas_view(&mut image,&clip,t,comp,Some(&full_view))?;
+                let [sx,sy]=view.scale;
+                let transform=Transform::from_translate((self.width as f64/2.-(view.centre[0]+extent.0/2.)*sx) as f32,(self.height as f64/2.-(view.centre[1]+extent.1/2.)*sy) as f32)
+                    .pre_scale((extent.0*sx/w as f64) as f32,(extent.1*sy/h as f64) as f32);
+                if !transform.is_valid() {return Err(crate::MediaError::Unsupported("canvas view transform exceeds the renderable range".into()));}
+                canvas.draw_pixmap(0,0,image.as_ref(),&PixmapPaint {quality:tiny_skia::FilterQuality::Bilinear,..Default::default()},transform,None);
+                return Ok(canvas);
+            }
+        }
+        self.draw_canvas_view(&mut canvas,&clip,t,comp,Some(view))?;
+        Ok(canvas)
+    }
+
+    fn draw_canvas_view(&mut self,canvas:&mut Pixmap,clip:&Clip,t:f64,comp:Option<&str>,view:Option<&CanvasView>)->MediaResult<()> {
+        let ClipContent::Motion {scene:Scene::Flat(s),..}=&clip.content else {
+            return Err(crate::MediaError::Unsupported("a canvas view needs a 2D motion clip".into()));
+        };
+        let project=(self.project.settings.width as f64,self.project.settings.height as f64);
+        let composition=comp.and_then(|id|s.composition(id));
+        let extent=composition.map_or(project,|c|(c.width.unwrap_or(project.0),c.height.unwrap_or(project.1)));
+        let (w,h)=(canvas.width() as f32,canvas.height() as f32);
+        let (base,scale)=if let Some(view)=view {
+            if view.centre.iter().any(|v|!v.is_finite()) || view.scale.iter().any(|v|!v.is_finite() || *v<=0.) {
+                return Err(crate::MediaError::Unsupported("canvas view needs a finite centre and positive finite scales".into()));
+            }
+            let [sx,sy]=view.scale.map(|v|v as f32);
+            let base=Transform::from_translate(w/2.-(view.centre[0]*view.scale[0]) as f32,h/2.-(view.centre[1]*view.scale[1]) as f32).pre_scale(sx,sy);
+            if !base.is_valid() {return Err(crate::MediaError::Unsupported("canvas view transform exceeds the renderable range".into()));}
+            (base,sx)
+        } else {(Transform::from_translate(w/2.,h/2.).pre_scale(self.sx,self.sy),self.sx)};
+        // A composition is displayed through an ordinary comp layer, retaining its masks,
+        // time, background and clipping, including when it is larger than the project.
+        let shown=match composition {
+            Some(c)=>{
+                let viewer=serde_json::from_value(serde_json::json!({"id":"\u{1}composition","type":"comp","comp":c.id,"time":t}))
+                    .map_err(|e|crate::MediaError::Unsupported(format!("composition view: {e}")))?;
+                kimchi_core::Scene2d {background:None,layers:vec![viewer],keyframes:Default::default(),..s.clone()}
+            },
+            None=>s.clone(),
+        };
+        let (quality,frame)=(self.quality,clip.speed.abs().max(1e-6)/self.fps);
+        let eval=kimchi_core::motion::EvalOptions {fps:self.fps,duration:Some(scene_length(clip))};
+        let mut used=HashSet::new();
+        let mut pics=ScenePictures {r:self,clip:clip.id,streaming:false,used:&mut used};
+        let mut fx=flat::Flat {pictures:&mut pics,scale,quality,frame,eval};
+        if view.is_some() {
+            if let Some(c)=composition {flat::draw_composition_view(canvas,s,t,&c.id,base,project,&mut fx);}
+            else {flat::draw_on_canvas(canvas,&shown,t,base,project,&mut fx);}
+        } else {flat::draw(canvas,&shown,t,base,&mut fx);}
+        if view.is_some() {
+            let mut mask=tiny_skia::Mask::new(canvas.width(),canvas.height()).expect("non-empty canvas");
+            if let Some(rect)=tiny_skia::Rect::from_xywh((-extent.0/2.) as f32,(-extent.1/2.) as f32,extent.0 as f32,extent.1 as f32) {
+                mask.fill_path(&tiny_skia::PathBuilder::from_rect(rect),FillRule::Winding,true,base);
+            }
+            canvas.apply_mask(&mask);
+        }
+        Ok(())
     }
 
     /// The Studio's "Rendered" view of a path-traced 3D scene: a picture that gets better with
@@ -306,10 +381,25 @@ impl Renderer {
             None => s.clone(),
         };
         let (width, height) = (self.width, self.height);
+        let eval=kimchi_core::motion::EvalOptions {fps:self.fps,duration:Some(scene_length(&clip))};
         let mut used = HashSet::new();
         let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
         // Only building the frame holds the 3D renderer; the samples are traced without it.
-        let p = lock(space::shared()).progressive(&shown, t, width, height, &mut pics);
+        let p = lock(space::shared()).progressive(&shown, t, width, height, &mut pics,eval);
+        Ok(Some(p))
+    }
+
+    /// A path-traced Studio view with selection, mesh, grid and helper overlays preserved
+    /// throughout refinement. Scene-camera mode takes precedence over an editor camera.
+    pub fn refining_studio_view(&mut self, clip_id: Id, t: f64, view: Option<&space::viewport::ViewCamera>, opts: &space::viewport::ViewOptions) -> MediaResult<Option<space::viewport::RefiningView>> {
+        let clip = self.project.clip(clip_id).cloned().ok_or_else(|| crate::MediaError::Unsupported(format!("no clip {clip_id}")))?;
+        let ClipContent::Motion { scene: Scene::Space(s), .. } = &clip.content else { return Ok(None) };
+        if !s.render.path_traced() { return Ok(None); }
+        let (width, height) = (self.width, self.height);
+        let eval = kimchi_core::motion::EvalOptions { fps: self.fps, duration: Some(scene_length(&clip)) };
+        let mut used = HashSet::new();
+        let mut pics = ScenePictures { r: self, clip: clip.id, streaming: false, used: &mut used };
+        let p = space::viewport::refining_view(&mut lock(space::shared()), s, t, width, height, &mut pics, view, opts, eval);
         Ok(Some(p))
     }
 
@@ -473,8 +563,9 @@ impl Renderer {
                             let (width, height, quality) = (self.width, self.height, self.quality);
                             // Scene seconds one output frame lasts (for motion blur).
                             let frame = clip.scene_time(t + 1.0 / self.fps) - st;
+                            let eval=kimchi_core::motion::EvalOptions {fps:self.fps,duration:Some(scene_length(clip))};
                             let mut pics = ScenePictures { r: self, clip: clip.id, streaming, used };
-                            let img = lock(space::shared()).render_frame(s, st, frame, width, height, &mut pics, quality)?;
+                            let img = lock(space::shared()).render_frame(s, st, frame, width, height, &mut pics, quality,eval)?;
                             draw_picture(target, &img, Transform::identity(), 1.0);
                         }
                     }

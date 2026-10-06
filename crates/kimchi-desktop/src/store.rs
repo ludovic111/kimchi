@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global, Pixels, Point, SharedString, Task, Window};
+use gpui::{App, Context, Entity, EventEmitter, Global, Pixels, Point, SharedString, Task, Window};
 use kimchi_control::{CmdResult, CommandRecord, Event, ExportStatus, Session, Settings, Source, ToastKind, UiState};
 use kimchi_core::{Asset, Clip, Id, Project, ProjectSummary, Track};
 use kimchi_gen::{Job, ModelInfo, ProviderStatus};
@@ -27,6 +27,8 @@ pub enum LeftTab {
     Generate,
     Text,
     Motion,
+    Studio,
+    Inspector,
     Captions,
 }
 
@@ -37,6 +39,8 @@ impl LeftTab {
             LeftTab::Generate => "generate",
             LeftTab::Text => "text",
             LeftTab::Motion => "motion",
+            LeftTab::Studio => "studio",
+            LeftTab::Inspector => "inspector",
             LeftTab::Captions => "captions",
         }
     }
@@ -155,6 +159,8 @@ pub struct ContextMenu {
 #[derive(Clone, Debug, Default)]
 pub struct ComposeRequest {
     pub video: bool,
+    pub audio_task: Option<kimchi_gen::Task>,
+    pub params: serde_json::Map<String, Value>,
     pub prompt: Option<String>,
     pub negative: Option<String>,
     /// `provider::model`.
@@ -365,12 +371,25 @@ impl Store {
         .detach();
     }
 
-    /// Runs a command and returns its result.
+    /// Runs a command and returns its result with the edited project available to its caller.
     pub fn call(&self, name: &str, params: Value, cx: &mut Context<Self>) -> Task<CmdResult> {
         let session = self.session.clone();
+        let refresh = kimchi_control::registry::spec(name).is_some_and(|spec| spec.mutates && !spec.needs_window && spec.perm == kimchi_control::Perm::Edit);
+        let project=self.project.as_ref().map(|p|p.id);
         let name = name.to_string();
-        let task = gpui_tokio::Tokio::spawn(cx, async move { kimchi_control::call(&session, Source::Window, &name, params).await });
-        cx.background_spawn(async move { task.await.unwrap_or_else(|e| Err(format!("the command stopped: {e}"))) })
+        let task = gpui_tokio::Tokio::spawn(cx, async move {
+            let command=kimchi_control::call(&session,Source::Window,&name,params);
+            if refresh {session.guard_project(project,command).await} else {command.await}
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await.unwrap_or_else(|e| Err(format!("the command stopped: {e}")));
+            // The event stream and command answer arrive independently. A caller may select
+            // newly created objects and start a tool immediately after awaiting this result.
+            if refresh {
+                this.update(cx, |s, cx| { s.refresh_project(); cx.notify(); }).ok();
+            }
+            result
+        })
     }
 
     // ---- events -----------------------------------------------------------
@@ -447,7 +466,9 @@ impl Store {
                 if self.selected_asset.is_some_and(|a| p.asset(a).is_none()) {
                     self.selected_asset = None;
                 }
-                self.project = Some(Arc::new(p));
+                // The command result can refresh before its matching event arrives. Keep the
+                // same snapshot identity when the project is unchanged so previews stay cached.
+                if self.project.as_deref() != Some(&p) { self.project = Some(Arc::new(p)); }
                 self.can_undo = u;
                 self.can_redo = r;
             }
@@ -724,6 +745,7 @@ impl Store {
             return;
         }
         self.menu = None;
+        self.set_left_tab(LeftTab::Studio, cx);
         cx.emit(StoreEvent::OpenStudio(clip));
         cx.notify();
     }

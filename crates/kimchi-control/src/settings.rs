@@ -152,6 +152,8 @@ pub struct GenerateDefaults {
     pub image_model: String,
     /// `provider::model` used for video when a command names no model.
     pub video_model: String,
+    pub audio_model: String,
+    pub speech_model: String,
 }
 
 impl Settings {
@@ -228,7 +230,7 @@ impl Settings {
 pub fn choices(key: &str) -> Option<&'static [&'static str]> {
     Some(match key {
         "appearance.mode" => &["system", "dark", "light"],
-        "agent.provider" => &["claude-code", "codex", "anthropic", "openai", "ollama"],
+        "agent.provider" => &["claude-code", "codex", "anthropic", "openai", "ollama", "zenith"],
         "diagnostics.logLevel" => crate::diagnostics::LEVELS,
         _ => return None,
     })

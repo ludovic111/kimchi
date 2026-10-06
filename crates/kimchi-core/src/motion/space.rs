@@ -822,6 +822,12 @@ impl Shape3d {
     pub(super) fn check(&self, id: &str) -> Result<(), String> {
         match self {
             Shape3d::Mesh { vertices, faces, uvs, .. } => {
+                if let Some((i,_))=vertices.iter().enumerate().find(|(_,p)| p.iter().any(|n| !n.is_finite())) {
+                    return Err(format!("mesh \"{id}\": vertex {i} exceeds the numeric range; use a smaller transform"));
+                }
+                if uvs.iter().flatten().flatten().any(|n| !n.is_finite()) {
+                    return Err(format!("mesh \"{id}\": texture coordinates must be finite"));
+                }
                 for (i, f) in faces.iter().enumerate() {
                     if f.len() < 3 {
                         return Err(format!("mesh \"{id}\": face {i} has {} vertices; a face needs 3 or more", f.len()));

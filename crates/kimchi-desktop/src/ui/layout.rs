@@ -218,59 +218,19 @@ pub fn solve(window: Size<Pixels>, prefs: &Prefs, open: Open) -> Solved {
         if w >= AGENT_MIN { Dock::Docked(w) } else { Dock::Drawer(prefs.agent.min(ww - DRAWER_GUTTER).max(AGENT_MIN.min(ww))) }
     };
 
-    // Left panel and inspector share what the rail, the agent and the preview leave.
+    // The inspector lives in the left sidebar. The only right dock is Agents.
     let agent_row = if agent.row_width() > 0. { agent.row_width() + SPLITTER_W } else { 0. };
-    // Each docked side panel brings a splitter: counted in the room it needs.
-    let room = ww - RAIL_W - agent_row - PREVIEW_MIN_W - 2. * SPLITTER_W;
-    let mut left = if prefs.left_open { prefs.left } else { 0. };
-    let mut insp = if prefs.inspector_open { prefs.inspector } else { 0. };
-    let left_min = if prefs.left_open { LEFT_MIN } else { 0. };
-    let insp_min = if prefs.inspector_open { INSPECTOR_MIN } else { 0. };
-    let (mut left_fits, mut inspector_fits) = (true, true);
-    if left + insp > room {
-        // First shrink both toward their minimums, in proportion to what each has to give.
-        let give = (left - left_min) + (insp - insp_min);
-        let over = left + insp - room;
-        if give > 0. {
-            let k = (over / give).min(1.);
-            left -= (left - left_min) * k;
-            insp -= (insp - insp_min) * k;
-        }
-        // Still too wide: the left panel leaves the row first (its rail stays), then the inspector.
-        if left + insp > room + 0.5 && prefs.left_open {
-            left = 0.;
-            left_fits = false;
-            insp = if prefs.inspector_open { prefs.inspector.min(room) } else { 0. };
-        }
-        if prefs.inspector_open && (left + insp > room + 0.5 || insp < INSPECTOR_MIN - 0.5) {
-            insp = 0.;
-            inspector_fits = false;
-        }
-    }
-    // Whether a closed panel would dock if opened now (else it opens as a drawer).
-    if !prefs.left_open {
-        left_fits = room - insp >= LEFT_MIN;
-    }
-    if !prefs.inspector_open {
-        inspector_fits = room - left >= INSPECTOR_MIN;
-    }
-    let drawer_w = |want: f32, min: f32| want.min(ww - DRAWER_GUTTER).max(min.min(ww - DRAWER_GUTTER));
+    let room = ww - RAIL_W - agent_row - PREVIEW_MIN_W - SPLITTER_W;
+    let left_fits = room >= LEFT_MIN && ww >= 960.;
     let left = if prefs.left_open && left_fits {
-        Dock::Docked(left)
-    } else if open.left_drawer {
-        Dock::Drawer(drawer_w(prefs.left, LEFT_MIN))
-    } else {
-        Dock::Hidden
-    };
-    let inspector = if prefs.inspector_open && inspector_fits {
-        Dock::Docked(insp)
-    } else if open.inspector_drawer {
-        Dock::Drawer(drawer_w(prefs.inspector, INSPECTOR_MIN))
-    } else {
-        Dock::Hidden
-    };
-    let splitters = [left, inspector].iter().filter(|d| d.row_width() > 0.).count() as f32 * SPLITTER_W;
-    let center_w = (ww - RAIL_W - agent_row - left.row_width() - inspector.row_width() - splitters).max(0.);
+        Dock::Docked(prefs.left.min(room))
+    } else if open.left_drawer || open.inspector_drawer {
+        Dock::Drawer(prefs.left.min(ww - DRAWER_GUTTER).max(LEFT_MIN.min(ww - DRAWER_GUTTER)))
+    } else { Dock::Hidden };
+    let inspector = Dock::Hidden;
+    let inspector_fits = left_fits;
+    let splitters = if left.row_width() > 0. { SPLITTER_W } else { 0. };
+    let center_w = (ww - RAIL_W - agent_row - left.row_width() - splitters).max(0.);
 
     // The timeline: its share of the height, within its limits and the preview's minimum.
     let body = (wh - TOPBAR_H).max(0.);
@@ -334,10 +294,10 @@ mod tests {
     fn narrow_windows_turn_panels_into_drawers_and_wide_ones_dock_them() {
         let prefs = Prefs::default();
         let wide = solve(win(1480., 920.), &prefs, Open::default());
-        assert_eq!((wide.left, wide.inspector), (Dock::Docked(LEFT_W), Dock::Docked(INSPECTOR_W)));
+        assert_eq!((wide.left, wide.inspector), (Dock::Docked(LEFT_W), Dock::Hidden));
         let small = solve(win(720., 480.), &prefs, Open::default());
-        assert_eq!((small.left, small.inspector), (Dock::Hidden, Dock::Docked(INSPECTOR_W)));
-        assert!(!small.left_fits && small.inspector_fits);
+        assert_eq!((small.left, small.inspector), (Dock::Hidden, Dock::Hidden));
+        assert!(!small.left_fits && !small.inspector_fits);
         // With the agent docked beside nothing else fits: both side panels are drawers.
         let busy = solve(win(1180., 800.), &prefs, Open { agent: true, ..Default::default() });
         assert!(busy.agent.row_width() > 0. && busy.center_w >= PREVIEW_MIN_W);
@@ -352,9 +312,9 @@ mod tests {
     fn shrinking_then_growing_gives_back_the_chosen_sizes() {
         let prefs = Prefs { left: 480., inspector: 420., ..Default::default() };
         let small = solve(win(1100., 700.), &prefs, Open::default());
-        assert!(small.left.row_width() < 480.);
+        assert!(small.left.row_width() <= 480.);
         let big = solve(win(2560., 1440.), &prefs, Open::default());
-        assert_eq!((big.left, big.inspector), (Dock::Docked(480.), Dock::Docked(420.)));
+        assert_eq!((big.left, big.inspector), (Dock::Docked(480.), Dock::Hidden));
         // The timeline keeps its share.
         assert!((big.timeline_h - prefs.timeline * (1440. - TOPBAR_H)).abs() < 1.);
     }

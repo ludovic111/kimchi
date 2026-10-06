@@ -34,7 +34,7 @@ use crate::motion::stack::Modifier;
 use self::math::*;
 
 pub use self::csg::{BoolOp, boolean};
-pub use self::triangulate::{ear_clip, ear_clip_with_holes};
+pub use self::triangulate::{ear_clip, ear_clip_with_holes, face_triangles};
 
 /// The most faces a modifier may make; past it the step is skipped (and logged) so a scene
 /// can't freeze the app with, say, subdivision level 4 on a million faces.
@@ -129,14 +129,23 @@ impl PolyMesh {
         PolyMesh { positions, faces, uvs: has_uv.then_some(uvs), smooth_angle: DEFAULT_SMOOTH_ANGLE }
     }
 
-    /// This mesh as an editable `mesh` shape (what `motion.editMesh` stores).
+    /// A compact, rounded shape for generated geometry.
     pub fn to_shape(&self) -> Shape3d {
+        let mut shape = self.to_shape_exact();
+        if let Shape3d::Mesh { vertices, .. } = &mut shape {
+            for p in vertices { *p = p.map(round_coord); }
+        }
+        shape
+    }
+
+    /// Store an edited mesh without quantizing existing vertices or small typed offsets.
+    pub fn to_shape_exact(&self) -> Shape3d {
         let mut m = self.clone();
         m.sanitize();
         Shape3d::Mesh {
-            vertices: m.positions.iter().map(|p| p.map(round_coord)).collect(),
-            faces: m.faces.clone(),
-            uvs: m.uvs.clone().unwrap_or_default(),
+            vertices: m.positions,
+            faces: m.faces,
+            uvs: m.uvs.unwrap_or_default(),
             auto_smooth: m.smooth_angle,
         }
     }
@@ -576,6 +585,9 @@ impl PolyMesh {
 
 fn round_coord(v: f64) -> f64 {
     // Keeps stored JSON short (1e-9 is far below anything visible) and turns -0 into 0.
+    // Above this magnitude the stored float already has less than nanounit precision.
+    // Multiplying still larger coordinates by 1e9 can turn a finite mesh into infinities.
+    if v.abs() >= (1_u64 << 53) as f64 / 1e9 { return v; }
     let r = (v * 1e9).round() / 1e9;
     if r == 0.0 { 0.0 } else { r }
 }

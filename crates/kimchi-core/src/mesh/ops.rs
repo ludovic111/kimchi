@@ -4,8 +4,8 @@
 //! back the new selection (what Blender would leave selected: the extruded faces, the new
 //! loop…), with indices valid in the changed mesh.
 //!
-//! A selection is vertex indices and/or face indices. Faces count as selected when listed, or
-//! when all their vertices are; edges when both their ends are. [`Select`] describes one in JSON
+//! A selection is vertex indices, explicit edge pairs and/or face indices. Faces count as selected when listed, or
+//! when all their vertices are and no explicit edges were supplied; edges when both their ends are. [`Select`] describes one in JSON
 //! (all, ids, faces facing a direction, inside a box, an edge loop or ring, grown to linked).
 //! [`EDIT_OPS`] describes every operation and its parameters for the command, the guide and
 //! the window, and [`apply`] runs one ([`EditOp`] in JSON: `{"type": "extrude", "distance": 1}`).
@@ -23,10 +23,14 @@ use super::modifiers;
 use super::primitives::{mend_seam, sphere_uvs};
 use super::triangulate::face_triangles;
 
-/// Selected vertices and faces (indices into the mesh).
+/// Selected vertices, explicit edges and faces (indices into the mesh).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Selection {
+    /// Explicit edges override inference from vertex endpoints. They do not implicitly
+    /// select faces, even when together they touch every vertex of a face.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<(u32, u32)>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub vertices: Vec<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -40,19 +44,19 @@ impl Selection {
 
     /// Every vertex and face.
     pub fn all(m: &PolyMesh) -> Selection {
-        Selection { vertices: (0..m.positions.len() as u32).collect(), faces: (0..m.faces.len() as u32).collect() }
+        Selection { edges: vec![], vertices: (0..m.positions.len() as u32).collect(), faces: (0..m.faces.len() as u32).collect() }
     }
 
     pub fn of_vertices(v: impl IntoIterator<Item = u32>) -> Selection {
-        Selection { vertices: v.into_iter().collect(), faces: vec![] }
+        Selection { edges: vec![], vertices: v.into_iter().collect(), faces: vec![] }
     }
 
     pub fn of_faces(f: impl IntoIterator<Item = u32>) -> Selection {
-        Selection { vertices: vec![], faces: f.into_iter().collect() }
+        Selection { edges: vec![], vertices: vec![], faces: f.into_iter().collect() }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.vertices.is_empty() && self.faces.is_empty()
+        self.vertices.is_empty() && self.edges.is_empty() && self.faces.is_empty()
     }
 
     /// The selected faces: those listed, or (when none are) those whose vertices are all selected.
@@ -63,6 +67,7 @@ impl Selection {
             f.dedup();
             return f;
         }
+        if !self.edges.is_empty() { return vec![]; }
         let vs: HashSet<u32> = self.vertices.iter().copied().collect();
         if vs.is_empty() {
             return vec![];
@@ -70,9 +75,10 @@ impl Selection {
         (0..m.faces.len()).filter(|&f| m.faces[f].iter().all(|v| vs.contains(v))).collect()
     }
 
-    /// The selected vertices: those listed and those of listed faces.
+    /// The selected vertices: those listed and those of listed edges and faces.
     pub fn vertex_set(&self, m: &PolyMesh) -> HashSet<u32> {
         let mut s: HashSet<u32> = self.vertices.iter().copied().filter(|&v| (v as usize) < m.positions.len()).collect();
+        s.extend(self.edges.iter().flat_map(|&(a, b)| [a, b]).filter(|&v| (v as usize) < m.positions.len()));
         for &f in &self.faces {
             if let Some(face) = m.faces.get(f as usize) {
                 s.extend(face.iter().copied());
@@ -81,13 +87,20 @@ impl Selection {
         s
     }
 
-    /// The selected edges (both ends selected), `a < b`, in a stable order.
+    /// The explicit edges, or those with both ends selected, `a < b`, in a stable order.
     pub fn edge_list(&self, m: &PolyMesh) -> Vec<(u32, u32)> {
+        if !self.edges.is_empty() {
+            let selected: HashSet<_> = self.edges.iter().map(|&(a, b)| (a.min(b), a.max(b))).collect();
+            return m.edges().into_iter().filter(|e| selected.contains(&(e.a, e.b))).map(|e| (e.a, e.b)).collect();
+        }
         let vs = self.vertex_set(m);
         m.edges().into_iter().filter(|e| vs.contains(&e.a) && vs.contains(&e.b)).map(|e| (e.a, e.b)).collect()
     }
 
     fn normalized(mut self) -> Selection {
+        for e in &mut self.edges { *e = (e.0.min(e.1), e.0.max(e.1)); }
+        self.edges.sort_unstable();
+        self.edges.dedup();
         self.vertices.sort_unstable();
         self.vertices.dedup();
         self.faces.sort_unstable();
@@ -112,7 +125,7 @@ pub fn select_inside(m: &PolyMesh, min: [f64; 3], max: [f64; 3]) -> Selection {
     let vertices: Vec<u32> = (0..m.positions.len() as u32).filter(|&v| inside(&m.positions[v as usize])).collect();
     let vs: HashSet<u32> = vertices.iter().copied().collect();
     let faces = (0..m.faces.len() as u32).filter(|&f| m.faces[f as usize].iter().all(|v| vs.contains(v))).collect();
-    Selection { vertices, faces }
+    Selection { edges: vec![], vertices, faces }
 }
 
 /// The faces using vertex `v` (and their vertices).
@@ -150,11 +163,12 @@ fn with_vertices(m: &PolyMesh, faces: Vec<u32>) -> Selection {
     let mut vertices: Vec<u32> = faces.iter().flat_map(|&f| m.faces[f as usize].iter().copied()).collect();
     vertices.sort_unstable();
     vertices.dedup();
-    Selection { vertices, faces }
+    Selection { edges: vec![], vertices, faces }
 }
 
 /// The loop of edges through the edge `a`–`b`, continuing straight across vertices with four
-/// edges (on quad meshes: a ring around a cylinder, a line across a grid). Its vertices.
+/// edges (on quad meshes: a ring around a cylinder, a line across a grid). Exact edges and
+/// their vertices; touching every corner does not implicitly select intervening faces.
 pub fn edge_loop(m: &PolyMesh, a: u32, b: u32) -> Selection {
     let ef = m.edge_faces();
     let nb = m.neighbours();
@@ -175,7 +189,7 @@ pub fn edge_loop(m: &PolyMesh, a: u32, b: u32) -> Selection {
             v = next;
         }
     }
-    Selection::of_vertices(verts).normalized()
+    Selection {edges:seen.into_iter().collect(),vertices:verts,faces:vec![]}.normalized()
 }
 
 /// The edge after p→v in a loop: the one at `v` sharing no face with p–v (when `v` has four).
@@ -185,7 +199,9 @@ fn loop_next(m: &PolyMesh, ef: &HashMap<(u32, u32), Vec<usize>>, nb: &[Vec<u32>]
         return None;
     }
     let faces = ef.get(&(p.min(v), p.max(v)))?;
-    let mut options = around.iter().copied().filter(|&c| c != p && !faces.iter().any(|&f| m.faces[f].contains(&c)));
+    if faces.len()!=2 {return None;}
+    let mut options = around.iter().copied().filter(|&c| c != p && ef.get(&(v.min(c),v.max(c))).is_some_and(|fs| fs.len()==2)
+        && !faces.iter().any(|&f| m.faces[f].contains(&c)));
     let first = options.next()?;
     options.next().is_none().then_some(first)
 }
@@ -196,6 +212,8 @@ pub fn edge_ring_edges(m: &PolyMesh, a: u32, b: u32) -> (Vec<(u32, u32)>, Vec<us
     let ef = m.edge_faces();
     let start = (a.min(b), a.max(b));
     let Some(start_faces) = ef.get(&start) else { return (vec![], vec![]) };
+    // There is no unique pair of directions through a non-manifold seed edge.
+    if start_faces.len()>2 {return (vec![(a,b)],vec![]);}
     // Walks across quads from the start edge into face f0: the exit edges and the faces crossed,
     // and whether it came back round to the start.
     let walk = |f0: usize| -> (Vec<(u32, u32)>, Vec<usize>, bool) {
@@ -241,16 +259,19 @@ pub fn edge_ring_edges(m: &PolyMesh, a: u32, b: u32) -> (Vec<(u32, u32)>, Vec<us
     (edges, faces)
 }
 
-/// The vertices of the ring of edges across quads through `a`–`b` (see [`edge_ring_edges`]).
+/// Exact ring edges and their vertices across quads through `a`–`b` (see [`edge_ring_edges`]).
 pub fn edge_ring(m: &PolyMesh, a: u32, b: u32) -> Selection {
     let (edges, _) = edge_ring_edges(m, a, b);
-    Selection::of_vertices(edges.iter().flat_map(|&(s, e)| [s, e])).normalized()
+    let vertices=edges.iter().flat_map(|&(s,e)| [s,e]).collect();
+    Selection {edges,vertices,faces:vec![]}.normalized()
 }
 
 /// A selection described in JSON (fields combine: everything they pick is selected).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct Select {
+    /// Exact pairs of connected vertex indices.
+    pub edges: Vec<(u32, u32)>,
     /// Everything.
     pub all: bool,
     pub vertices: Vec<u32>,
@@ -285,8 +306,15 @@ impl Select {
         if let Some(f) = self.faces.iter().find(|&&f| f >= nf) {
             return Err(format!("no face {f}: the mesh has {nf} (0–{})", nf.saturating_sub(1)));
         }
-        let mut s = Selection { vertices: self.vertices.clone(), faces: self.faces.clone() };
+        if !self.edges.is_empty() {
+            let edges = m.edge_faces();
+            if let Some(&(a, b)) = self.edges.iter().find(|&&(a, b)| !edges.contains_key(&(a.min(b), a.max(b)))) {
+                return Err(format!("{a}–{b} is not an edge of the mesh"));
+            }
+        }
+        let mut s = Selection { edges: self.edges.clone(), vertices: self.vertices.clone(), faces: self.faces.clone() };
         let mut add = |o: Selection| {
+            s.edges.extend(o.edges);
             s.vertices.extend(o.vertices);
             s.faces.extend(o.faces);
         };
@@ -317,6 +345,7 @@ impl Select {
         if op == "loopCut"
             && let Some([a, b]) = self.edge_ring
             && self.vertices.is_empty()
+            && self.edges.is_empty()
             && self.faces.is_empty()
         {
             let nv = m.positions.len() as u32;
@@ -337,7 +366,7 @@ fn tidy(m: &mut PolyMesh, verts: impl IntoIterator<Item = u32>, faces: impl Into
     let map = m.compact();
     let faces = faces.into_iter().filter_map(|f| moved.get(f).copied().flatten()).map(|f| f as u32).collect();
     let vertices = verts.into_iter().filter_map(|v| map.get(v as usize).copied()).filter(|&v| v != u32::MAX).collect();
-    Selection { vertices, faces }.normalized()
+    Selection { edges: vec![], vertices, faces }.normalized()
 }
 
 fn push(m: &mut PolyMesh, p: V3) -> u32 {

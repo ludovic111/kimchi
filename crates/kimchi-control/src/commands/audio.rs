@@ -1468,9 +1468,12 @@ async fn detect_beats(s: &Arc<Session>, p: &Project, asset: Id) -> CmdResult<Bea
     if beats.source.is_empty() {
         beats.source = "detected".into();
     }
-    let mut updated = a.clone();
-    updated.beats = Some(beats.clone());
-    s.with_project(p.id, |ed| ed.apply(&Edit::UpdateAsset { asset: updated }, None).map(|_| ()))?.map_err(err)?;
+    s.with_project(p.id, |ed| {
+        let mut updated = ed.project().asset(asset).filter(|current| current.path == a.path).cloned()
+            .ok_or_else(|| "The audio source changed while detecting beats; try again.".to_string())?;
+        updated.beats = Some(beats.clone());
+        ed.apply(&Edit::UpdateAsset { asset: updated }, None).map(|_| ()).map_err(err)
+    })??;
     Ok(beats)
 }
 

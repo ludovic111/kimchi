@@ -335,6 +335,8 @@ pub fn regenerate(clip: &Clip, variation: bool, cx: &mut App) {
     let AssetOrigin::Generated(g) = &asset.origin else { return };
     let req = ComposeRequest {
         video: g.task.contains("video"),
+        audio_task: match g.task.as_str() { "text_to_audio" => Some(kimchi_gen::Task::TextToAudio), "text_to_speech" => Some(kimchi_gen::Task::TextToSpeech), _ => None },
+        params: g.params.get("params").and_then(|v| v.as_object()).cloned().unwrap_or_default(),
         prompt: Some(g.prompt.clone()),
         negative: Some(g.negative_prompt.clone().unwrap_or_default()),
         model: Some(format!("{}::{}", g.provider, g.model)),

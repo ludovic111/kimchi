@@ -11,6 +11,8 @@ use serde_json::{Map, Value};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Task {
+    TextToAudio,
+    TextToSpeech,
     TextToImage,
     /// Edit or restyle one or more reference images.
     ImageToImage,
@@ -22,6 +24,7 @@ pub enum Task {
 impl Task {
     pub fn output(self) -> OutputKind {
         match self {
+            Task::TextToAudio | Task::TextToSpeech => OutputKind::Audio,
             Task::TextToImage | Task::ImageToImage => OutputKind::Image,
             Task::TextToVideo | Task::ImageToVideo => OutputKind::Video,
         }
@@ -33,6 +36,8 @@ impl Task {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Task::TextToAudio => "text_to_audio",
+            Task::TextToSpeech => "text_to_speech",
             Task::TextToImage => "text_to_image",
             Task::ImageToImage => "image_to_image",
             Task::TextToVideo => "text_to_video",

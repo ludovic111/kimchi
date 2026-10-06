@@ -375,6 +375,20 @@ fn reads_other_things() {
 }
 
 #[test]
+fn renaming_prop_references_respects_tokens_escapes_and_formatting() {
+    let src = "let text = \"prop('ball', 'x')\"; /* prop('ball','x') */ prop /* target */ ( 'ball', 'x') + prop(\"ball\", 'y') + prop(`ball`, 'z') // ball\n";
+    let expected = "let text = \"prop('ball', 'x')\"; /* prop('ball','x') */ prop /* target */ ( 'sun', 'x') + prop(\"sun\", 'y') + prop(`sun`, 'z') // ball\n";
+    let renamed = rename_prop_reference(src, "ball", "sun").unwrap();
+    assert_eq!(renamed, expected);
+    check(&renamed).unwrap();
+    assert_eq!(rename_prop_reference("prop('ba' + 'll', 'x')", "ba", "sun").unwrap(), "prop('ba' + 'll', 'x')", "computed targets stay expressions");
+    let escaped = rename_prop_reference(r#"prop('b\'all', 'x') + prop("b'all", 'y')"#, "b'all", "s'un\\light").unwrap();
+    assert_eq!(escaped, r#"prop('s\'un\\light', 'x') + prop("s'un\\light", 'y')"#);
+    check(&escaped).unwrap();
+    assert_eq!(rename_prop_reference("prop('球', 'x')", "球", "光").unwrap(), "prop('光', 'x')");
+}
+
+#[test]
 fn compiled_once() {
     let a = compile("time * 3 + 1").unwrap();
     let b = compile("time * 3 + 1").unwrap();

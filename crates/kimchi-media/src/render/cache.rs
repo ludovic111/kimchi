@@ -15,14 +15,16 @@ use super::{Quality, Renderer};
 use crate::{MediaError, MediaResult, Tools, process};
 
 /// Changes when anything the rendered frames depend on changes: the scene, the project's size
-/// and frame rate, and the files of the pictures and models it uses.
+/// and frame rate, the clip's expression duration and shutter timing, and its media files.
 pub fn key(project: &Project, clip: &Clip) -> Option<String> {
     let ClipContent::Motion { scene, .. } = &clip.content else { return None };
     let mut h = Fnv::new();
-    h.write(b"kimchi-render-1");
+    h.write(b"kimchi-render-2");
     h.write(serde_json::to_string(scene).ok()?.as_bytes());
     let ps = &project.settings;
     h.write(format!("{}x{}@{:.4}", ps.width, ps.height, ps.fps).as_bytes());
+    h.write(&super::scene_length(clip).to_bits().to_le_bytes());
+    h.write(&clip.speed.abs().to_bits().to_le_bytes());
     for r in scene.media_refs() {
         h.write(r.as_bytes());
         if let Some(path) = media_path(project, &r)

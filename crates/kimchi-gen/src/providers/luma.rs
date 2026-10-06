@@ -80,6 +80,7 @@ fn body(req: &GenRequest) -> GenResult<Map<String, Value>> {
     b.insert("model".into(), json!(req.model));
     b.insert("prompt".into(), json!(req.prompt));
     match req.task {
+        Task::TextToAudio | Task::TextToSpeech => return Err(GenError::Unsupported("Luma does not generate audio.".into())),
         Task::TextToVideo | Task::ImageToVideo => {
             if req.model != "ray-3.2" {
                 return Err(GenError::Unsupported(format!("{} only makes images", req.model)));

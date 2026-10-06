@@ -18,7 +18,10 @@ use kimchi_control::session::{AgentHost, Event};
 use kimchi_control::{CmdResult, CommandRecord, Session, Source};
 use kimchi_core::Id;
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
+
+mod storage;
+pub use storage::ConversationInfo;
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
@@ -30,7 +33,7 @@ const MAX_ENTRIES: usize = 2000;
 /// How long `wait` waits by default.
 const DEFAULT_WAIT: f64 = 900.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunState {
     Running,
@@ -40,10 +43,10 @@ pub enum RunState {
 }
 
 /// One request to the agent and what came of it.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunInfo {
-    /// Counts up for as long as the app runs.
+    /// Persistent run sequence shared by all saved conversations.
     pub id: u64,
     pub prompt: String,
     pub provider: ProviderKind,
@@ -93,7 +96,7 @@ impl RunInfo {
 }
 
 /// One thing the conversation shows, in the order it happened.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Entry {
     /// A request, from the panel or another client (`source`).
@@ -111,6 +114,10 @@ pub enum Entry {
 /// What the panel draws.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
+    pub conversation: ConversationInfo,
+    pub conversations: Vec<ConversationInfo>,
+    pub memory: String,
+    pub storage_error: Option<String>,
     pub entries: Vec<Entry>,
     pub runs: Vec<RunInfo>,
     /// The run in progress.
@@ -125,6 +132,10 @@ impl Snapshot {
 
 #[derive(Default)]
 struct State {
+    thread: ConversationInfo,
+    memory: String,
+    archive: storage::Archive,
+    storage_error: Option<String>,
     /// The project the conversation is about.
     project: Option<Id>,
     conversation: Conversation,
@@ -223,6 +234,8 @@ impl State {
 pub struct Host {
     state: Mutex<State>,
     changed: watch::Sender<u64>,
+    storage_path: std::path::PathBuf,
+    storage_read_error: Option<String>,
 }
 
 impl Host {
@@ -230,10 +243,14 @@ impl Host {
     /// inside the session's runtime or not.
     pub fn install(session: &Arc<Session>) -> Arc<Self> {
         let (changed, _) = watch::channel(0);
-        let host = Arc::new(Self {
-            state: Mutex::new(State { project: session.current_id(), next_run: 1, ..Default::default() }),
-            changed,
-        });
+        let storage_path = session.data_dir.join("agent-conversations.json");
+        let (archive, storage_read_error) = match storage::read(&storage_path) {
+            Ok(archive) => (archive, None),
+            Err(error) => (storage::Archive::default(), Some(error)),
+        };
+        let mut state = State { project: session.current_id(), next_run: archive.next_run.max(1), archive, storage_error: storage_read_error.clone(), ..Default::default() };
+        state.load_project();
+        let host = Arc::new(Self { state: Mutex::new(state), changed, storage_path, storage_read_error });
         let mut events = session.subscribe();
         let (weak, weak_session) = (Arc::downgrade(&host), Arc::downgrade(session));
         session.runtime().spawn(async move {
@@ -258,12 +275,22 @@ impl Host {
 
     pub fn snapshot(&self) -> Snapshot {
         let st = self.state.lock();
-        Snapshot { entries: st.entries.clone(), runs: st.runs.clone(), running: st.active.as_ref().map(|(id, _)| *id) }
+        Snapshot { entries: st.entries.clone(), runs: st.runs.clone(), running: st.active.as_ref().map(|(id, _)| *id), conversation: st.thread.clone(), conversations: st.conversations(), memory: st.memory.clone(), storage_error: st.storage_error.clone() }
     }
 
     /// The run in progress, if any.
     pub fn running(&self) -> Option<u64> {
         self.state.lock().active.as_ref().map(|(id, _)| *id)
+    }
+
+    fn persist(&self) {
+        let mut st = self.state.lock();
+        st.save_current();
+        if self.storage_read_error.is_some() { return; }
+        if let Err(e) = storage::write(&self.storage_path, &st.archive) {
+            tracing::error!(error = %e, "Agent history could not be saved");
+            st.storage_error = Some(e);
+        } else { st.storage_error = None; }
     }
 
     fn notify(&self) {
@@ -288,22 +315,26 @@ impl Host {
                 drop(st);
                 self.notify();
             }
-            Event::ProjectSwitched { project_id } => {
+            Event::ProjectSwitched { .. } => {
+                // Events are asynchronous; use the live document, even if a
+                // later command has already observed another project switch.
+                let project_id = session.current_id();
                 let mut st = self.state.lock();
                 if st.project != project_id {
-                    // Another project: a run still going would edit it, and "Revert this run"
-                    // would apply to it. Stop, and start the conversation afresh.
-                    if st.project.is_some() {
-                        if let Some((_, handle)) = st.active.take() {
-                            handle.cancel();
-                        }
-                        st.runs.clear();
-                        st.reverts.clear();
-                        st.unreverts.clear();
-                        st.clear_thread();
+                    if let Some((id, handle)) = st.active.take() {
+                        handle.cancel();
+                        st.conversation = handle.conversation();
+                        finish(&mut st, id, RunState::Cancelled, None, handle.checkpoint(), handle.changes());
+                    }
+                    st.save_current();
+                    // Opening another document replaces the editor's undo stack.
+                    for p in st.archive.projects.values_mut() {
+                        for t in &mut p.threads { for r in &mut t.runs { r.checkpoint = None; } }
                     }
                     st.project = project_id;
+                    st.load_project();
                     drop(st);
+                    self.persist();
                     self.notify();
                 }
             }
@@ -315,6 +346,7 @@ impl Host {
 
     /// Starts a run with the provider in `settings.agent`, continuing the conversation.
     pub fn send(self: &Arc<Self>, session: &Arc<Session>, source: Source, prompt: &str) -> CmdResult<RunInfo> {
+        self.on_session_event(session, Event::ProjectSwitched { project_id: session.current_id() });
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {
             return Err("Write a request for the agent first.".into());
@@ -325,6 +357,10 @@ impl Host {
             return Err(format!("The agent is still working on run {id}{what}. Wait for it (agent.status wait=true) or stop it (agent.stop)."));
         }
         let config = AgentConfig::from_settings(&session.settings().agent);
+        if st.thread.title == "New conversation" && !st.entries.iter().any(|e| matches!(e, Entry::User { .. })) {
+            st.thread.title = crate::tools::bounded(&prompt, 60);
+        }
+        st.thread.updated_at = Utc::now();
         let id = st.next_run;
         st.next_run += 1;
         let info = RunInfo {
@@ -350,9 +386,13 @@ impl Host {
         st.push(Entry::User { text: prompt.clone(), run: id, source });
         st.streamed = false;
         // The run lives on the session's runtime; this task only reads its events.
-        let mut run = Agent::start(session, config, prompt, st.conversation.clone());
+        let request = if st.memory.is_empty() { prompt } else {
+            format!("Project memory (user-maintained context):\n{}\n\nCurrent request:\n{}", st.memory, prompt)
+        };
+        let mut run = Agent::start(session, config, request, st.conversation.clone());
         st.active = Some((id, run.handle()));
         drop(st);
+        self.persist();
         self.notify();
         let Some(mut events) = run.take_events() else { return Ok(info) };
         let host = self.clone();
@@ -365,6 +405,7 @@ impl Host {
     }
 
     fn on_run_event(&self, id: u64, ev: AgentEvent) {
+        let terminal = ev.is_terminal();
         let mut st = self.state.lock();
         // A run stopped by a project switch still reports its end: it belongs to no conversation.
         let current = st.active.as_ref().is_some_and(|(a, _)| *a == id);
@@ -416,6 +457,7 @@ impl Host {
             _ => return,
         }
         drop(st);
+        if terminal { self.persist(); }
         self.notify();
     }
 
@@ -460,16 +502,44 @@ impl Host {
         Ok(json!({ "run": id, "checkpoint": checkpoint, "result": result }))
     }
 
-    /// A fresh thread (runs stay, and can still be reverted).
+    /// Saves this thread and opens a separate conversation in the same project.
     pub fn new_conversation(&self) -> CmdResult<()> {
         let mut st = self.state.lock();
         if let Some((id, _)) = &st.active {
             return Err(format!("The agent is working on run {id}: stop it first (agent.stop)."));
         }
-        st.clear_thread();
+        st.save_current();
+        st.fresh_thread();
         drop(st);
+        self.persist();
         self.notify();
         Ok(())
+    }
+
+    pub fn select_conversation(&self, id: Id) -> CmdResult<()> {
+        let mut st = self.state.lock();
+        if st.active.is_some() { return Err("Stop the current run before switching conversations.".into()); }
+        st.save_current();
+        let saved = st.archive.projects.get(&st.project_key()).and_then(|p| p.threads.iter().find(|t| t.info.id == id)).cloned()
+            .ok_or("This conversation does not belong to the current project.")?;
+        st.load_thread(saved);
+        drop(st);
+        self.persist();
+        self.notify();
+        Ok(())
+    }
+
+    pub fn steer(&self, source: Source, prompt: &str) -> CmdResult<u64> {
+        let prompt = prompt.trim();
+        if prompt.is_empty() { return Err("Write a steering message first.".into()); }
+        let mut st = self.state.lock();
+        let (id, handle) = st.active.clone().ok_or("The agent is not running. Send a new message instead.")?;
+        handle.steer(prompt.to_string())?;
+        st.push(Entry::User { text: prompt.to_string(), run: id, source });
+        drop(st);
+        self.persist();
+        self.notify();
+        Ok(id)
     }
 
     /// The run once it has ended, or as it is when `timeout` passes.
@@ -524,6 +594,7 @@ impl Host {
     }
 
     async fn command(self: Arc<Self>, session: Arc<Session>, source: Source, command: &'static str, a: Args) -> CmdResult {
+        self.on_session_event(&session, Event::ProjectSwitched { project_id: session.current_id() });
         let timeout = Duration::from_secs_f64(a.opt_f64("timeout").unwrap_or(DEFAULT_WAIT).clamp(0.1, 86_400.0));
         match command {
             "agent.providers" => {
@@ -551,6 +622,31 @@ impl Host {
                 })?;
                 Ok(json!({ "provider": s.agent.provider, "model": s.agent.model, "baseUrl": s.agent.base_url }))
             }
+            "agent.conversations" => {
+                let snap = self.snapshot();
+                Ok(json!({ "current": snap.conversation.id, "conversations": snap.conversations }))
+            }
+            "agent.selectConversation" => {
+                let id = a.str("id")?.parse::<Id>().map_err(|e| e.to_string())?;
+                self.select_conversation(id)?;
+                Ok(json!(self.snapshot().conversation))
+            }
+            "agent.renameConversation" => {
+                let title = a.str("title")?.trim();
+                if title.is_empty() || title.chars().count() > 120 { return Err("Use a conversation title between 1 and 120 characters.".into()); }
+                self.state.lock().thread.title = title.into();
+                self.persist(); self.notify();
+                Ok(json!(self.snapshot().conversation))
+            }
+            "agent.memory" => Ok(json!({ "memory": self.state.lock().memory })),
+            "agent.setMemory" => {
+                let text = a.str("text")?;
+                if text.len() > 32_000 { return Err("Keep project memory under 32,000 bytes.".into()); }
+                self.state.lock().memory = text.into();
+                self.persist(); self.notify();
+                Ok(json!({ "memory": text }))
+            }
+            "agent.steer" => Ok(json!({ "run": self.steer(source, a.str("prompt")?)?, "accepted": true })),
             "agent.send" => {
                 let info = self.send(&session, source, a.str("prompt")?)?;
                 if !a.bool_or("wait", false) {
@@ -586,7 +682,7 @@ impl Host {
             "agent.revert" => self.revert(&session, source, a.opt_i64("run").map(|v| v.max(0) as u64)).await,
             "agent.newConversation" => {
                 self.new_conversation()?;
-                Ok(json!({ "conversation": "new" }))
+                Ok(json!({ "conversation": self.snapshot().conversation }))
             }
             other => Err(format!("`{other}` is not implemented")),
         }

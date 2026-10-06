@@ -17,6 +17,9 @@ use super::mesh::{self, Mesh};
 use super::{Frame3d, LightKind, LightRes, Mat, Pictures, Quality, Space, shapes};
 use crate::MediaResult;
 
+/// Keep the projection finite while allowing detailed work on sub-millimetre geometry.
+pub const MIN_ORTHO_SIZE: f64 = 1e-12;
+
 /// Where the editor looks from (not part of the scene).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +66,9 @@ pub struct ViewOptions {
     pub edit: Option<String>,
     /// In edit mode: selected vertices (indices into the evaluated mesh).
     pub edit_vertices: Vec<u32>,
+    /// Exact highlighted edges in edge mode; None infers them from selected vertices.
+    #[serde(default)]
+    pub edit_edges: Option<Vec<(u32, u32)>>,
     /// In edit mode: selected faces.
     pub edit_faces: Vec<u32>,
     /// Draw lights and cameras as small icons/wires.
@@ -77,7 +83,7 @@ impl ViewCamera {
         c.target = Vec3(self.target);
         c.fov = self.fov;
         c.projection = if self.ortho { "orthographic".into() } else { "perspective".into() };
-        c.ortho_size = self.ortho_size;
+        c.ortho_size = self.ortho_size.max(MIN_ORTHO_SIZE);
         c.roll = 0.0;
         c.f_stop = 0.0;
         c.constraints.clear();
@@ -110,7 +116,7 @@ impl ViewCamera {
         let z = dot(d, f);
         let (x, y) = (dot(d, r), dot(d, u));
         let half_h = if self.ortho {
-            self.ortho_size / 2.0
+            self.ortho_size.max(MIN_ORTHO_SIZE) / 2.0
         } else {
             if z <= 1e-6 {
                 return None;
@@ -128,7 +134,8 @@ impl ViewCamera {
         let ny = 1.0 - (y / h.max(1.0)) * 2.0;
         let aspect = w / h.max(1.0);
         if self.ortho {
-            let (hh, hw) = (self.ortho_size / 2.0, self.ortho_size / 2.0 * aspect);
+            let size = self.ortho_size.max(MIN_ORTHO_SIZE);
+            let (hh, hw) = (size / 2.0, size / 2.0 * aspect);
             let o = add(self.position, add(scale(r, nx * hw), scale(u, ny * hh)));
             return (o, f);
         }
@@ -161,7 +168,7 @@ impl ViewCamera {
     pub fn zoom(&mut self, factor: f64) {
         let factor = factor.clamp(0.05, 20.0);
         if self.ortho {
-            self.ortho_size = (self.ortho_size * factor).max(0.01);
+            self.ortho_size = (self.ortho_size * factor).max(MIN_ORTHO_SIZE);
             return;
         }
         let d = sub(self.position, self.target);
@@ -248,12 +255,15 @@ impl ViewCamera {
         let (_, r, u) = self.basis();
         if self.ortho {
             // The picture scales around the point: slide the view by what it no longer covers.
+            let size = self.ortho_size.max(MIN_ORTHO_SIZE);
+            let next = (size * factor).max(MIN_ORTHO_SIZE);
+            let factor = next / size;
             let off = sub(point, self.target);
             let (x, y) = (dot(off, r), dot(off, u));
             let shift = add(scale(r, x * (1.0 - factor)), scale(u, y * (1.0 - factor)));
             self.position = add(self.position, shift);
             self.target = add(self.target, shift);
-            self.ortho_size = (self.ortho_size * factor).max(0.01);
+            self.ortho_size = next;
             return;
         }
         // Everything scales around the point: the ray to it keeps its direction.
@@ -269,6 +279,8 @@ impl ViewCamera {
     /// straight lines, the direction turns around (a smooth move between two views).
     pub fn blend(&self, other: &ViewCamera, k: f64) -> ViewCamera {
         let k = k.clamp(0.0, 1.0);
+        if k == 0. { return *self; }
+        if k == 1. { return *other; }
         let lerp3 = |a: [f64; 3], b: [f64; 3]| add(a, scale(sub(b, a), k));
         let (d0, d1) = (sub(self.position, self.target), sub(other.position, other.target));
         let (l0, l1) = (len(d0).max(1e-6), len(d1).max(1e-6));
@@ -281,7 +293,7 @@ impl ViewCamera {
             target,
             fov: self.fov + (other.fov - self.fov) * k,
             ortho: if k < 0.5 { self.ortho } else { other.ortho },
-            ortho_size: self.ortho_size * (other.ortho_size.max(1e-6) / self.ortho_size.max(1e-6)).powf(k),
+            ortho_size: (self.ortho_size.max(MIN_ORTHO_SIZE).ln() * (1.-k) + other.ortho_size.max(MIN_ORTHO_SIZE).ln() * k).exp(),
         }
     }
 }
@@ -317,20 +329,20 @@ const CAMERA: [u8; 3] = [210, 210, 214];
 /// (floor grid, selection outlines, the edited mesh's edges and vertices, light and camera icons).
 #[allow(clippy::too_many_arguments)]
 ///
-/// `frame` is how many scene seconds one output frame lasts (motion blur in rendered shading,
-/// the frame rate expressions see).
-pub(crate) fn render_view(space: &mut Space, scene: &Scene3d, t: f64, frame: f64, width: u32, height: u32, pics: &mut dyn Pictures, view: Option<&ViewCamera>, opts: &ViewOptions) -> MediaResult<Pixmap> {
-    space.set_frame(frame);
+/// `frame` is how many scene seconds one output frame lasts, for motion blur. `eval` supplies
+/// expression frame rate and duration independently of clip speed.
+pub(crate) fn render_view(space: &mut Space, scene: &Scene3d, t: f64, frame: f64, width: u32, height: u32, pics: &mut dyn Pictures, view: Option<&ViewCamera>, opts: &ViewOptions, eval:kimchi_core::motion::EvalOptions) -> MediaResult<Pixmap> {
+    space.eval=eval;
     let shown = match view {
         Some(v) if !opts.through_camera => v.apply(scene),
         _ => scene.clone(),
     };
-    let overlays = opts.grid || opts.helpers || !opts.selected.is_empty() || opts.edit.is_some();
+    let overlays = has_overlays(opts);
     let (mut img, frame, depth) = match opts.shading {
         Shading::Rendered => {
             // The final engine (the path tracer when the scene uses it); depth for the overlays
             // from a quick pass.
-            let img = space.render_frame(&shown, t, frame, width, height, pics, Quality::Final)?;
+            let img = space.render_frame(&shown, t, frame, width, height, pics, Quality::Final,eval)?;
             let frame = space.frame(&shown, t, width, height, pics, Quality::Preview);
             let depth = if overlays { super::cpu::depth(&frame) } else { vec![] };
             (img, frame, depth)
@@ -348,13 +360,23 @@ pub(crate) fn render_view(space: &mut Space, scene: &Scene3d, t: f64, frame: f64
         return Ok(img);
     }
     let depth = if depth.len() == (width * height) as usize { depth } else { super::cpu::depth(&frame) };
+    draw_overlays(&mut img, &frame, &depth, &shown, t, opts, &eval);
+    Ok(img)
+}
+
+fn has_overlays(opts: &ViewOptions) -> bool {
+    opts.grid || opts.helpers || !opts.selected.is_empty() || opts.edit.is_some()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_overlays(img: &mut Pixmap, frame: &Frame3d, depth: &[f32], shown: &Scene3d, t: f64, opts: &ViewOptions, eval: &kimchi_core::motion::EvalOptions) {
     if opts.grid {
-        grid(&mut img, &frame, &depth);
+        grid(img, frame, depth);
     }
-    let objects = shown.objects_at(t);
+    let objects = shown.objects_at_with(t,eval);
     let world = super::world_matrices(&objects);
     if opts.helpers {
-        helpers(&mut img, &frame, &shown, t, opts.through_camera);
+        helpers(img, frame, shown, t, opts.through_camera,eval);
     }
     if !opts.selected.is_empty() {
         let mut ids: HashSet<String> = HashSet::new();
@@ -365,7 +387,7 @@ pub(crate) fn render_view(space: &mut Space, scene: &Scene3d, t: f64, frame: f64
                 });
             }
         }
-        outline(&mut img, &frame, &depth, &ids);
+        outline(img, frame, depth, &ids);
     }
     if let Some(id) = &opts.edit
         && let Some(o) = find_object(&objects, id)
@@ -373,10 +395,49 @@ pub(crate) fn render_view(space: &mut Space, scene: &Scene3d, t: f64, frame: f64
         let ctx = shapes::Ctx { t, objects: &objects, world: &world };
         if let Some(poly) = shapes::edit_poly(o, &ctx) {
             let m = world.get(id).copied().unwrap_or(M4::I);
-            edit_overlay(&mut img, &frame, &depth, &poly, &m, opts);
+            edit_overlay(img, frame, depth, &poly, &m, opts);
         }
     }
-    Ok(img)
+}
+
+/// A refining Studio picture with its grid, helpers and edit highlights kept above every
+/// sample, including the final denoised picture. The overlay is prepared once per view.
+pub struct RefiningView {
+    progressive: super::trace::Progressive,
+    overlay: Option<Pixmap>,
+}
+
+impl RefiningView {
+    pub fn samples(&self) -> u32 { self.progressive.samples() }
+    pub fn target(&self) -> u32 { self.progressive.target() }
+    pub fn done(&self) -> bool { self.progressive.done() }
+    pub fn add(&mut self, n: u32) { self.progressive.add(n); }
+
+    pub fn picture(&self) -> Pixmap {
+        let mut image = self.progressive.picture();
+        if let Some(overlay) = &self.overlay {
+            crate::render::par::draw_pixmap(&mut image, overlay.as_ref(), &Default::default(), tiny_skia::Transform::identity());
+        }
+        image
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn refining_view(space: &mut Space, scene: &Scene3d, t: f64, width: u32, height: u32, pics: &mut dyn Pictures, view: Option<&ViewCamera>, opts: &ViewOptions, eval: kimchi_core::motion::EvalOptions) -> RefiningView {
+    space.eval = eval;
+    let shown = match view {
+        Some(v) if !opts.through_camera => v.apply(scene),
+        _ => scene.clone(),
+    };
+    let frame = space.frame(&shown, t, width, height, pics, Quality::Final);
+    let progressive = super::trace::Progressive::new(&frame, super::trace::Settings::of(&shown.render));
+    let overlay = if has_overlays(opts) {
+        let mut image = Pixmap::new(width, height).expect("non-empty view");
+        let depth = super::cpu::depth(&frame);
+        draw_overlays(&mut image, &frame, &depth, &shown, t, opts, &eval);
+        Some(image)
+    } else { None };
+    RefiningView { progressive, overlay }
 }
 
 /// Plain grey shapes lit from the view: materials, the scene's lights and its world ignored.
@@ -570,21 +631,106 @@ fn outline(img: &mut Pixmap, f: &Frame3d, depth: &[f32], ids: &HashSet<String>) 
     }
 }
 
+/// Homogeneous coordinates plus distance along the viewing direction. Orthographic w is
+/// always one, so it cannot tell us whether an overlay is behind the eye.
+fn overlay_vertex(f: &Frame3d, p: V3) -> Option<[f64; 5]> {
+    let c = f.viewproj.point(p).map(f64::from);
+    let depth = if f.camera.ortho {
+        let (eye, forward) = (f.camera.eye, f.camera.forward);
+        (p.0 as f64 - eye.0 as f64) * forward.0 as f64 + (p.1 as f64 - eye.1 as f64) * forward.1 as f64 + (p.2 as f64 - eye.2 as f64) * forward.2 as f64
+    } else {
+        c[3]
+    };
+    let vertex = [c[0], c[1], c[2], c[3], depth];
+    vertex.iter().all(|v| v.is_finite()).then_some(vertex)
+}
+
+fn overlay_near(f: &Frame3d, max_depth: f64) -> f64 {
+    if f.camera.ortho { (max_depth * f64::EPSILON).max(f64::MIN_POSITIVE) } else { 1e-4 }
+}
+
+fn overlay_lerp(a: [f64; 5], b: [f64; 5], t: f64) -> [f64; 5] {
+    std::array::from_fn(|i| a[i] * (1. - t) + b[i] * t)
+}
+
+fn overlay_screen(f: &Frame3d, p: [f64; 5]) -> [f32; 2] {
+    [
+        ((p[0] / p[3] * 0.5 + 0.5) * f.width as f64) as f32,
+        ((0.5 - p[1] / p[3] * 0.5) * f.height as f64) as f32,
+    ]
+}
+
 /// A segment's ends on screen (cut where it passes behind the camera), with their distances.
 fn segment(f: &Frame3d, a: V3, b: V3) -> Option<([f32; 2], [f32; 2], f32, f32)> {
-    let (ca, cb) = (f.viewproj.point(a), f.viewproj.point(b));
-    let eps = 1e-4;
-    if ca[3] < eps && cb[3] < eps {
+    let (mut a, mut b) = (overlay_vertex(f, a)?, overlay_vertex(f, b)?);
+    let near = overlay_near(f, a[4].max(b[4]));
+    if a[4] <= near && b[4] <= near {
         return None;
     }
-    let cut = |p: [f32; 4], q: [f32; 4]| -> [f32; 4] {
-        let t = (eps - p[3]) / (q[3] - p[3]);
-        std::array::from_fn(|k| p[k] + (q[k] - p[k]) * t)
+    let cut = |p: [f64; 5], q: [f64; 5]| {
+        let t = ((near - p[4]) / (q[4] - p[4])).clamp(0., 1.);
+        let mut out = overlay_lerp(p, q, t);
+        out[4] = near;
+        out
     };
-    let (ca, cb) = if ca[3] < eps { (cut(ca, cb), cb) } else if cb[3] < eps { (ca, cut(cb, ca)) } else { (ca, cb) };
-    let screen = |c: [f32; 4]| [(c[0] / c[3] * 0.5 + 0.5) * f.width as f32, (0.5 - c[1] / c[3] * 0.5) * f.height as f32];
-    let dist = |c: [f32; 4]| f.camera.distance((c[2] / c[3]).clamp(0.0, 1.0));
-    Some((screen(ca), screen(cb), dist(ca), dist(cb)))
+    if a[4] <= near {
+        a = cut(a, b);
+    } else if b[4] <= near {
+        b = cut(b, a);
+    }
+    if a[3] <= 0. || b[3] <= 0. {
+        return None;
+    }
+    Some((overlay_screen(f, a), overlay_screen(f, b), a[4] as f32, b[4] as f32))
+}
+
+/// Clip a selected triangle before dividing by w. Keeping the polygon inside the image also
+/// prevents very distant projected corners from losing precision in the path rasteriser.
+fn face_polygon(f: &Frame3d, triangle: [V3; 3]) -> Vec<[f32; 2]> {
+    let Some(mut poly) = triangle.into_iter().map(|p| overlay_vertex(f, p)).collect::<Option<Vec<_>>>() else {
+        return vec![];
+    };
+    let near = overlay_near(f, poly.iter().map(|p| p[4]).fold(0., f64::max));
+    for plane in 0..5 {
+        if poly.len() < 3 {
+            return vec![];
+        }
+        let distance = |p: [f64; 5]| match plane {
+            0 => p[4] - near,
+            1 => p[3] + p[0],
+            2 => p[3] - p[0],
+            3 => p[3] + p[1],
+            _ => p[3] - p[1],
+        };
+        let mut clipped = Vec::with_capacity(poly.len() + 2);
+        for i in 0..poly.len() {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            let (da, db) = (distance(a), distance(b));
+            if da >= 0. {
+                clipped.push(a);
+            }
+            if (da >= 0.) != (db >= 0.) {
+                clipped.push(overlay_lerp(a, b, (da / (da - db)).clamp(0., 1.)));
+            }
+        }
+        poly = clipped;
+    }
+    if poly.iter().any(|p| p[3] <= 0. || p.iter().any(|v| !v.is_finite())) {
+        return vec![];
+    }
+    let mut screen: Vec<_> = poly.into_iter().map(|p| overlay_screen(f, p)).collect();
+    // All subpaths use the same winding, so adjacent or overlapping selected faces form a
+    // single tint without cancelling each other or leaving triangulation seams.
+    let area: f64 = (0..screen.len())
+        .map(|i| {
+            let (a, b) = (screen[i], screen[(i + 1) % screen.len()]);
+            a[0] as f64 * b[1] as f64 - b[0] as f64 * a[1] as f64
+        })
+        .sum();
+    if area < 0. {
+        screen.reverse();
+    }
+    screen
 }
 
 fn stroke(img: &mut Pixmap, lines: &[([f32; 2], [f32; 2])], color: [u8; 3], alpha: f32, width: f32) {
@@ -593,7 +739,7 @@ fn stroke(img: &mut Pixmap, lines: &[([f32; 2], [f32; 2])], color: [u8; 3], alph
     }
     let mut pb = tiny_skia::PathBuilder::new();
     for (a, b) in lines {
-        if a.iter().chain(b).all(|v| v.is_finite() && v.abs() < 1e6) {
+        if let Some((a,b))=clip_screen_segment(*a,*b,img.width(),img.height(),width+1.) {
             pb.move_to(a[0], a[1]);
             pb.line_to(b[0], b[1]);
         }
@@ -603,6 +749,29 @@ fn stroke(img: &mut Pixmap, lines: &[([f32; 2], [f32; 2])], color: [u8; 3], alph
     paint.set_color_rgba8(color[0], color[1], color[2], (alpha.clamp(0.0, 1.0) * 255.0) as u8);
     paint.anti_alias = true;
     img.stroke_path(&path, &paint, &tiny_skia::Stroke { width, ..Default::default() }, tiny_skia::Transform::identity(), None);
+}
+
+/// Perspective endpoints near the eye can land millions of pixels away. Keep the part
+/// inside the image instead of dropping the whole wire. f32 inputs have exact products in
+/// f64, so the implicit line also retains small intersections between very distant ends.
+fn clip_screen_segment(a:[f32;2],b:[f32;2],w:u32,h:u32,margin:f32)->Option<([f32;2],[f32;2])> {
+    if a.iter().chain(&b).any(|v|!v.is_finite()) {return None;}
+    let (mut a,mut b)=(a.map(f64::from),b.map(f64::from));
+    let (dx,dy)=(b[0]-a[0],b[1]-a[1]);
+    let cross=a[1]*b[0]-a[0]*b[1];
+    for (axis,extent) in [w,h].into_iter().enumerate() {
+        for (bound,lower) in [(-(margin as f64),true),(extent as f64+margin as f64,false)] {
+            let outside=|p:[f64;2]|if lower {p[axis]<bound} else {p[axis]>bound};
+            let cut=||if axis==0 {[bound,dy.mul_add(bound,cross)/dx]} else {[(dx.mul_add(bound,-cross))/dy,bound]};
+            match (outside(a),outside(b)) {
+                (true,true)=>return None,
+                (true,false)=>a=cut(),
+                (false,true)=>b=cut(),
+                _=>{},
+            }
+        }
+    }
+    a.iter().chain(&b).all(|v|v.is_finite()).then_some((a.map(|v|v as f32),b.map(|v|v as f32)))
 }
 
 fn dots(img: &mut Pixmap, points: &[[f32; 2]], color: [u8; 3], radius: f32) {
@@ -635,12 +804,12 @@ fn edit_overlay(img: &mut Pixmap, f: &Frame3d, depth: &[f32], poly: &PolyMesh, m
     let mut pb = tiny_skia::PathBuilder::new();
     for &fi in &opts.edit_faces {
         let Some(face) = poly.faces.get(fi as usize) else { continue };
-        let screen: Vec<[f32; 2]> = face.iter().filter_map(|&v| pts.get(v as usize)).filter_map(|&p| segment(f, p, p).map(|s| s.0)).collect();
-        if screen.len() >= 3 {
-            pb.move_to(screen[0][0], screen[0][1]);
-            for s in &screen[1..] {
-                pb.line_to(s[0], s[1]);
-            }
+        let Some(local)=face.iter().map(|&v|poly.positions.get(v as usize).copied()).collect::<Option<Vec<_>>>() else {continue};
+        for triangle in kimchi_core::mesh::face_triangles(&local) {
+            let screen=face_polygon(f,triangle.map(|i|pts[face[i] as usize]));
+            if screen.len()<3 {continue;}
+            pb.move_to(screen[0][0],screen[0][1]);
+            for s in &screen[1..] {pb.line_to(s[0],s[1]);}
             pb.close();
         }
     }
@@ -652,6 +821,7 @@ fn edit_overlay(img: &mut Pixmap, f: &Frame3d, depth: &[f32], poly: &PolyMesh, m
     }
     // Edges, each once.
     let selected: HashSet<u32> = opts.edit_vertices.iter().copied().collect();
+    let explicit_edges: Option<HashSet<_>> = opts.edit_edges.as_ref().map(|edges| edges.iter().map(|&(a, b)| (a.min(b), a.max(b))).collect());
     let mut seen = HashSet::new();
     let (mut front, mut back, mut chosen) = (vec![], vec![], vec![]);
     for face in &poly.faces {
@@ -663,7 +833,7 @@ fn edit_overlay(img: &mut Pixmap, f: &Frame3d, depth: &[f32], poly: &PolyMesh, m
             let (Some(&pa), Some(&pb)) = (pts.get(a as usize), pts.get(b as usize)) else { continue };
             let Some((sa, sb, da, db)) = segment(f, pa, pb) else { continue };
             let mid = [(sa[0] + sb[0]) / 2.0, (sa[1] + sb[1]) / 2.0];
-            if selected.contains(&a) && selected.contains(&b) {
+            if explicit_edges.as_ref().map_or_else(|| selected.contains(&a) && selected.contains(&b), |edges| edges.contains(&(a.min(b), a.max(b)))) {
                 chosen.push((sa, sb));
             } else if visible(mid, (da + db) / 2.0) || visible(sa, da) && visible(sb, db) {
                 front.push((sa, sb));
@@ -690,7 +860,7 @@ fn edit_overlay(img: &mut Pixmap, f: &Frame3d, depth: &[f32], poly: &PolyMesh, m
 }
 
 /// Lights and cameras as small wire icons.
-fn helpers(img: &mut Pixmap, f: &Frame3d, scene: &Scene3d, t: f64, through: bool) {
+fn helpers(img: &mut Pixmap, f: &Frame3d, scene: &Scene3d, t: f64, through: bool,eval:&kimchi_core::motion::EvalOptions) {
     type Lines = Vec<([f32; 2], [f32; 2])>;
     let mut light_lines = vec![];
     let mut push = |lines: &mut Lines, a: V3, b: V3| {
@@ -706,7 +876,7 @@ fn helpers(img: &mut Pixmap, f: &Frame3d, scene: &Scene3d, t: f64, through: bool
             push(lines, c + x * a0.cos() + y * a0.sin(), c + x * a1.cos() + y * a1.sin());
         }
     };
-    for l in scene.lights_at(t) {
+    for l in scene.lights_at_with(t,eval) {
         let p = V3::from(l.position.0);
         let dir = V3::from(l.direction.0).norm();
         let size = ((p - f.camera.eye).len() * 0.03).clamp(0.05, 2.0);
@@ -764,7 +934,7 @@ fn helpers(img: &mut Pixmap, f: &Frame3d, scene: &Scene3d, t: f64, through: bool
         if through && id == active {
             continue;
         }
-        let c = cam.at(t);
+        let Some(c)=scene.camera_by_id_at_with(id,t,eval) else {continue};
         let eye = V3::from(c.position.0);
         let fwd = (V3::from(c.target.0) - eye).norm();
         let up0 = if fwd.1.abs() > 0.999 { V3(0.0, 0.0, -1.0) } else { V3(0.0, 1.0, 0.0) };
@@ -791,8 +961,8 @@ fn helpers(img: &mut Pixmap, f: &Frame3d, scene: &Scene3d, t: f64, through: bool
 // Aiming tools at objects
 
 /// The evaluated objects at `t` and their world matrices.
-fn evaluated(scene: &Scene3d, t: f64) -> (Vec<Object3d>, HashMap<String, M4>) {
-    let objects = scene.objects_at(t);
+fn evaluated(scene: &Scene3d, t: f64, opts:&kimchi_core::motion::EvalOptions) -> (Vec<Object3d>, HashMap<String, M4>) {
+    let objects = scene.objects_at_with(t,opts);
     let world = super::world_matrices(&objects);
     (objects, world)
 }
@@ -815,14 +985,25 @@ fn pick_mesh(o: &Object3d, ctx: &shapes::Ctx) -> Option<Arc<Mesh>> {
 
 /// Nearest hit of a ray with a triangle (Möller–Trumbore), as the ray's parameter.
 fn ray_triangle(o: V3, d: V3, a: V3, b: V3, c: V3) -> Option<f32> {
+    if ![o,d,a,b,c].into_iter().all(V3::finite) {
+        return None;
+    }
     let (e1, e2) = (b - a, c - a);
+    let extent = e1.arr().into_iter().chain(e2.arr()).map(f32::abs).fold(0.,f32::max);
+    let direction = d.0.hypot(d.1).hypot(d.2);
+    if extent == 0. || !extent.is_finite() || direction == 0. || !direction.is_finite() {
+        return None;
+    }
+    // Work in triangle units so the determinant measures direction, not scene size.
+    let divide = |v: V3, k| V3(v.0/k,v.1/k,v.2/k);
+    let (e1,e2,d) = (divide(e1,extent),divide(e2,extent),divide(d,direction));
     let p = d.cross(e2);
     let det = e1.dot(p);
     if det.abs() < 1e-12 {
         return None;
     }
     let inv = 1.0 / det;
-    let s = o - a;
+    let s = divide(o - a,extent);
     let u = s.dot(p) * inv;
     if !(0.0..=1.0).contains(&u) {
         return None;
@@ -832,15 +1013,21 @@ fn ray_triangle(o: V3, d: V3, a: V3, b: V3, c: V3) -> Option<f32> {
     if v < 0.0 || u + v > 1.0 {
         return None;
     }
-    let t = e2.dot(q) * inv;
-    (t > 1e-6).then_some(t)
+    let t = (e2.dot(q) * inv) as f64 * extent as f64 / direction as f64;
+    let t = t as f32;
+    (t > 0. && t.is_finite()).then_some(t)
 }
 
 /// The id of the nearest object a ray (origin, unit direction; world space, e.g. from
 /// [`ViewCamera::ray`]) hits at scene time `t`, tested against the drawn meshes (modifiers
 /// applied). Lights, cameras, particles and groups themselves aren't hit.
 pub fn pick(scene: &Scene3d, t: f64, ray: ([f64; 3], [f64; 3])) -> Option<String> {
-    let (objects, world) = evaluated(scene, t);
+    pick_with(scene,t,ray,&Default::default())
+}
+
+/// Pick with the clip's expression context, matching Studio and the compositor.
+pub fn pick_with(scene: &Scene3d, t: f64, ray: ([f64; 3], [f64; 3]), opts:&kimchi_core::motion::EvalOptions) -> Option<String> {
+    let (objects, world) = evaluated(scene, t, opts);
     let ctx = shapes::Ctx { t, objects: &objects, world: &world };
     let (o, d) = (V3::from(ray.0), V3::from(ray.1));
     let mut best: Option<(f32, String)> = None;
@@ -883,7 +1070,12 @@ pub fn pick(scene: &Scene3d, t: f64, ray: ([f64; 3], [f64; 3])) -> Option<String
 /// An object's box in world space at scene time `t` (lowest and highest corner): its own mesh,
 /// or for groups and empties everything under them, or just its position.
 pub fn object_bounds(scene: &Scene3d, t: f64, id: &str) -> Option<([f64; 3], [f64; 3])> {
-    let (objects, world) = evaluated(scene, t);
+    object_bounds_with(scene,t,id,&Default::default())
+}
+
+/// World bounds with the clip's frame rate and duration.
+pub fn object_bounds_with(scene: &Scene3d, t: f64, id: &str, opts:&kimchi_core::motion::EvalOptions) -> Option<([f64; 3], [f64; 3])> {
+    let (objects, world) = evaluated(scene, t, opts);
     let ctx = shapes::Ctx { t, objects: &objects, world: &world };
     let obj = find_object(&objects, id)?;
     let mut b = (V3(f32::MAX, f32::MAX, f32::MAX), V3(f32::MIN, f32::MIN, f32::MIN));
@@ -916,7 +1108,7 @@ pub fn object_bounds(scene: &Scene3d, t: f64, id: &str) -> Option<([f64; 3], [f6
 /// An object's world matrix at scene time `t` (column-major: `m[column][row]`, translation in
 /// `m[3]`; through its parents, constraints applied).
 pub fn world_matrix(scene: &Scene3d, t: f64, id: &str) -> Option<[[f64; 4]; 4]> {
-    let (_, world) = evaluated(scene, t);
+    let (_, world) = evaluated(scene, t, &Default::default());
     world.get(id).map(|m| m.to_f64())
 }
 
@@ -946,6 +1138,36 @@ fn norm(a: [f64; 3]) -> [f64; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn very_long_viewport_edges_are_clipped_before_stroking() {
+        for extent in [1e7_f32,1e20,f32::MAX] {
+            assert_eq!(clip_screen_segment([-extent,-extent],[extent,extent],64,64,0.),Some(([0.,0.],[64.,64.])));
+            assert_eq!(clip_screen_segment([-extent,32.5],[extent,32.5],64,64,0.),Some(([0.,32.5],[64.,32.5])));
+            let mut image=Pixmap::new(64,64).unwrap();
+            stroke(&mut image,&[([-extent,32.5],[extent,32.5])],[255,255,255],1.,1.);
+            assert_eq!(image.pixel(32,32).unwrap().alpha(),255,"visible wire survives far endpoints {extent}");
+        }
+        assert!(clip_screen_segment([-100.,-100.],[-20.,-20.],64,64,0.).is_none());
+        assert!(clip_screen_segment([f32::INFINITY,0.],[1.,1.],64,64,0.).is_none());
+    }
+
+    #[test]
+    fn small_orthographic_views_zoom_and_blend_without_jumping() {
+        for size in [1e-8,MIN_ORTHO_SIZE*1.1,MIN_ORTHO_SIZE] {
+            let mut view=ViewCamera {position:[0.,0.,8.],target:[0.;3],ortho:true,ortho_size:size,..Default::default()};
+            let pixel=[105.,30.];let point=view.point_under(160.,90.,pixel[0],pixel[1]);
+            view.zoom_toward(0.5,point);
+            assert_eq!(view.ortho_size,(size*0.5).max(MIN_ORTHO_SIZE));
+            let after=view.project(160.,90.,point).unwrap();
+            assert!((after[0]-pixel[0]).abs()<1e-9 && (after[1]-pixel[1]).abs()<1e-9,"zoom keeps its anchor: {after:?}");
+        }
+        let mut from=ViewCamera {ortho:true,ortho_size:1e-8,..Default::default()};
+        let to=ViewCamera {ortho_size:1e-10,..from};
+        assert_eq!(from.blend(&to,0.),from);assert_eq!(from.blend(&to,1.),to);
+        assert!((from.blend(&to,0.5).ortho_size/1e-9-1.).abs()<1e-12);
+        from.zoom(0.5);assert_eq!(from.ortho_size,5e-9);
+    }
 
     #[test]
     fn rays_go_back_through_projected_points() {
