@@ -9,7 +9,7 @@
 
 <h1 align="center">kimchi</h1>
 
-<p align="center"><strong>An open-source video editor where generative models are part of the cut.</strong><br/>
+<p align="center"><strong>An open-source video editor where generative models are part of the cut.</strong> (beta)<br/>
 Native Rust app (GPUI) · drivable by your AI (MCP, CLI, built-in agent) · bring your own keys, or run everything locally.<br/>
 Part of <a href="https://lsuite.xyz">lsuite</a>, the free, open-source creative suite your AI can drive.</p>
 
@@ -19,6 +19,10 @@ kimchi is a desktop video editor with a built-in harness for image and video
 generation models. Prompt a shot straight onto the timeline, animate a frame you
 like, extend a clip from its last frame, or bridge two shots with a generated
 transition, then cut, trim and export it like any other footage.
+
+Coming from another editor? kimchi opens your Final Cut, Premiere, Resolve (OpenTimelineIO) and EDL timelines,
+brings your LUTs and presets, and can use the shortcuts you already know. The look is lsuite's design
+system v2: black and white, square, with film grain behind the chrome.
 
 It started as a fork of [OpenCut](https://github.com/OpenCut-app/OpenCut) and was
 rewritten from the ground up in Rust.
@@ -32,11 +36,17 @@ rewritten from the ground up in Rust.
 - The shortcuts editors expect: J / K / L shuttle, ↑ / ↓ to the previous / next cut, Q / W trim to the playhead; press ? for all of them
 - Per-clip transform (position, scale, rotation, opacity, blur, fit), speed (pitch kept), reverse, freeze frames, fades, volume
 - **Transitions** on cuts: dissolve, dip to black / white, wipes, slides, pushes, zoom, iris, blur; centred on the cut with the clips' media past it, the sound crossfading. Click the + on a cut, drag the badge's edges for the length
-- **Colour**: looks (punchy, warm, cool, mono, faded, vintage, noir, teal & orange, dreamy), brightness, contrast, saturation, warmth, tint, vignette, sharpen (all keyframable), green-screen chroma key, `.cube` LUTs
+- **Colour**: looks (punchy, warm, cool, mono, faded, vintage, noir, teal & orange, dreamy), brightness, contrast, saturation, warmth, tint, vignette, sharpen (all keyframable), green-screen chroma key
+- **A look library**: LUTs (.cube, .3dl, .csp, .spi1d / .spi3d, Hald images), Lightroom / Camera Raw and Premiere Lumetri presets, applied from the inspector; save your own grade as a look or a `.cube`
 - **Captions**: transcribe the cut on your computer (Whisper, nothing sent anywhere; the model downloads once), import and export SRT / WebVTT, edit them as titles, style them all at once; burned in or as an `.srt` beside the export
 - Live preview compositor, on-canvas move/scale handles
 - Snapshot undo/redo for every edit, autosave
-- Export to MP4 (H.264), HEVC, ProRes, WebM, GIF or audio-only
+- Export to MP4 (H.264), HEVC, ProRes, WebM, GIF or audio-only, with presets for YouTube, Shorts / Reels, Instagram and more
+
+**Coming from another editor**
+- Open and write OpenTimelineIO (DaVinci Resolve, Nuke, Kdenlive), FCPXML (Final Cut Pro, Resolve), Premiere / Final Cut 7 XML (Premiere Pro, VEGAS) and EDL; a report says what came across, and **Find missing files** relinks moved media. See [docs/SWITCHING.md](docs/SWITCHING.md) and [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)
+- Keyboard layouts of Premiere Pro, Final Cut Pro, DaVinci Resolve, Avid, CapCut, Kdenlive, Shotcut, VEGAS and iMovie (Settings › Keyboard)
+- A first-run setup asks where you come from, whether you want generative AI, and which agent to use (Help › Set up kimchi brings it back)
 
 **Sound and Ryolune**
 - A Rust mixer shared by playback, exports and speech transcription: clip and track gain/pan, editable fade shapes, buses, sends, automation, ducking, meters and a master true-peak limiter
@@ -62,7 +72,7 @@ rewritten from the ground up in Rust.
 - **Camera navigation**: drag the visible orbit, pan and zoom controls, use the axis ball, or fly with WASD/QE. The Camera menu can lock the scene camera to your view, align it, add cameras and apply editable camera moves. The 2D canvas has visible pan, zoom and fit controls.
 - **Render now or at export**: a motion clip is drawn live (quick in the preview, full quality in the export), or rendered ahead into a file the timeline plays smoothly; edit the scene and it goes back to live until you render it again
 - **Templates**: lower third, title card, kinetic type, counter, bar chart, logo reveal, callout, quote, subscribe button, aurora background, wipe transition, glitch title, particle burst, kinetic sweep, radial burst, liquid background, 3D title, 3D logo spin, turntable, floating shapes, product shot, extruded logo, particle field, morphing blob; change their words and colours in the inspector
-- **Ask the agent**: it writes the scene (`motion.guide` explains every feature), models meshes, then looks at the frames it made from any angle
+- **Ask the agent**: it writes the scene (`motion.guide` explains every feature), models meshes, then looks at the frames it made from any angle and fixes what looks wrong
 - Hardware encoding where the computer has it (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API), checked with a test encode and redone on the CPU if it fails; 4K, HEVC and ProRes sources decode in hardware
 
 **Generation, woven into the edit**
@@ -133,8 +143,12 @@ kimchi-cli project.overview                                                     
 kimchi-cli --file cut.json clip.addText text="Opening title"                           # a project file
 ```
 
-The **Agent** panel (⌘J) runs the model you already have (Claude Code, Codex, an Anthropic or OpenAI key, or a
-local Ollama model, or **Zenith**), shows one card per command and lets you revert a whole run. Choose
+The **Agent** panel (⌘J) runs the model you already have: Claude Code, Codex, Gemini CLI, an Anthropic, OpenAI,
+Google Gemini or Amazon Bedrock key, any OpenAI-compatible service (OpenRouter, Groq, Mistral, DeepSeek, xAI,
+Together, Fireworks, Cerebras, Azure OpenAI, LM Studio…), a local Ollama model, or **Zenith**. It shows one card per
+command and lets you revert a whole run. **It can see**: it looks at the frames it renders and at your media, and every
+picture it looked at shows in its card. Each request carries what you're looking at (selection, playhead, the clip open
+in the Studio), so "make this shorter" just works. Choose
 the provider and model in the panel, send a steering message during a run, and keep multiple named
 conversations per project. Conversations and editable project memory survive restarts. Zenith uses
 its own provider accounts and threads through the lsuite command interface; install Zenith and run
@@ -150,6 +164,7 @@ kimchi hands cuts to [ryolune](https://lsuite.xyz/ryolune) to score them and tak
 - [Controlling kimchi from AI and scripts](docs/AI_CONTROL.md) and the [command reference](docs/COMMANDS.md)
 - [Configuration](docs/CONFIGURATION.md): settings, environment variables, files and folders
 - [The project file](docs/PROJECT_FORMAT.md)
+- [Switching from another editor](docs/SWITCHING.md) and [what kimchi reads and writes](docs/COMPATIBILITY.md)
 - [Architecture](docs/ARCHITECTURE.md) and [development](docs/DEVELOPMENT.md), for working on kimchi itself
 
 ## Architecture
@@ -163,7 +178,9 @@ crates/
   kimchi-captions  SRT / WebVTT, and speech to text with Whisper (candle, on the CPU)
   kimchi-gen       the generation harness: Provider trait, 16 providers, keys, job queue
   kimchi-control   the command registry, session, permissions, loopback bridge, lsuite discovery, updater
-  kimchi-agent     the built-in agent (Claude Code, Codex, Anthropic, OpenAI, Ollama)
+  kimchi-agent     the built-in agent (Claude Code, Codex, Gemini, Anthropic, OpenAI and compatible, Bedrock, Ollama,
+                   Zenith), pictures and the context block
+  kimchi-interop   other editors: OTIO, FCPXML, Premiere XML and EDL, LUT and preset formats, keyboard layouts
   kimchi-desktop   the window (GPUI), binary `kimchi`
   kimchi-cli       `kimchi-cli`: any command, on the running app or a project file
   kimchi-mcp       `kimchi-mcp`: the registry as MCP tools (`--live`, `--file`)
