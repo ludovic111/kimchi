@@ -21,7 +21,8 @@
 //!   installer is downloaded and verified, then run passively once kimchi has exited, when it
 //!   restarts ([`restart`]) or quits ([`apply_on_quit`]).
 //! * **Portable Windows copies, Linux packages, development builds**: the update is announced with
-//!   `can_install: false` and the file to download by hand (`download_url`).
+//!   `can_install: false` and the file to download by hand (`download_url`): the portable zip
+//!   (`windows-x86_64-portable`) or the `.deb` (`linux-x86_64-deb`), else the release page.
 //!
 //! `KIMCHI_NO_UPDATE=1` or `settings.updates.checkOnStart = false` turn off the checks at start and
 //! every [`RECHECK`] ([`run_in_background`], which also installs by itself with
@@ -130,7 +131,11 @@ pub enum Install {
     AppImage(PathBuf),
     /// Windows, installed by the installer into this folder; the next installer runs over it.
     WindowsInstalled(PathBuf),
-    /// Windows, a Linux package, a portable folder or `cargo run`: updated by hand.
+    /// Windows, unpacked from the portable zip into this folder: updated by hand with the next zip.
+    WindowsPortable(PathBuf),
+    /// Linux, installed from the `.deb` package (`/usr/lib/kimchi`): updated by hand with the next one.
+    DebPackage,
+    /// Anything else (a build run from the source tree, another package): updated by hand.
     Other,
 }
 
@@ -283,14 +288,21 @@ fn platform_keys_for(install: &Install) -> Vec<String> {
         "macos" => "darwin",
         os => os,
     };
-    let installer = match install {
-        Install::MacBundle(_) => Some("app"),
-        Install::AppImage(_) => Some("appimage"),
-        Install::WindowsInstalled(_) => Some("nsis"),
-        Install::Other if cfg!(windows) => Some("nsis"),
-        Install::Other => None,
-    };
-    platform_keys(os, std::env::consts::ARCH, installer)
+    install_keys(install, os, std::env::consts::ARCH)
+}
+
+/// The `latest.json` keys for an install kind. A `.deb` or a portable zip only takes its own file:
+/// falling back to `{os}-{arch}` would offer the AppImage or the installer, so without its own
+/// entry it gets the release page instead.
+pub fn install_keys(install: &Install, os: &str, arch: &str) -> Vec<String> {
+    match install {
+        Install::MacBundle(_) => platform_keys(os, arch, Some("app")),
+        Install::AppImage(_) => platform_keys(os, arch, Some("appimage")),
+        Install::WindowsInstalled(_) => platform_keys(os, arch, Some("nsis")),
+        Install::WindowsPortable(_) => vec![format!("{os}-{arch}-portable")],
+        Install::DebPackage => vec![format!("{os}-{arch}-deb")],
+        Install::Other => platform_keys(os, arch, None),
+    }
 }
 
 /// The first of `keys` the manifest has an archive for.
@@ -444,7 +456,7 @@ async fn download_and_install(s: &Arc<Session>, found: &Found, install: &Install
                 *PENDING_INSTALLER.lock() = Some(file);
                 Ok(())
             }
-            Install::Other => Err("This copy of kimchi can't replace itself.".into()),
+            Install::WindowsPortable(_) | Install::DebPackage | Install::Other => Err("This copy of kimchi can't replace itself.".into()),
         })
         .await
         .map_err(|e| e.to_string())?
@@ -510,22 +522,28 @@ pub fn current_install() -> Install {
     let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) else {
         return Install::Other;
     };
-    if cfg!(target_os = "macos")
-        && let Some(bundle) = bundle_of(&exe)
-    {
-        return Install::MacBundle(bundle);
+    install_of(std::env::consts::OS, &exe, std::env::var_os("APPIMAGE").map(PathBuf::from))
+}
+
+/// How a copy is installed, from its OS (`std::env::consts::OS`), its executable (canonical) and
+/// `$APPIMAGE`. The `.deb` puts kimchi in `/usr/lib/kimchi` (`scripts/bundle-linux.sh`); the
+/// Windows installer leaves `uninstall.exe` beside `kimchi.exe`, the portable zip only the bundled
+/// `kimchi-ffmpeg.exe` (`scripts/bundle-windows.sh`).
+pub fn install_of(os: &str, exe: &Path, appimage: Option<PathBuf>) -> Install {
+    match os {
+        "macos" => bundle_of(exe).map_or(Install::Other, Install::MacBundle),
+        "linux" => match appimage.filter(|p| p.is_file()) {
+            Some(path) => Install::AppImage(path),
+            None if exe.starts_with("/usr/lib/kimchi") => Install::DebPackage,
+            None => Install::Other,
+        },
+        "windows" => match exe.parent() {
+            Some(dir) if dir.join("uninstall.exe").is_file() => Install::WindowsInstalled(dir.to_path_buf()),
+            Some(dir) if dir.join("kimchi-ffmpeg.exe").is_file() => Install::WindowsPortable(dir.to_path_buf()),
+            _ => Install::Other,
+        },
+        _ => Install::Other,
     }
-    if cfg!(target_os = "linux")
-        && let Some(path) = std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|p| p.is_file())
-    {
-        return Install::AppImage(path);
-    }
-    if cfg!(windows)
-        && let Some(dir) = exe.parent().filter(|d| d.join("uninstall.exe").is_file())
-    {
-        return Install::WindowsInstalled(dir.to_path_buf());
-    }
-    Install::Other
 }
 
 /// `…/kimchi.app` for an executable at `…/kimchi.app/Contents/MacOS/<exe>`.
@@ -547,7 +565,8 @@ fn install_support(install: &Install) -> Result<(), String> {
         }
         Install::AppImage(p) => p.clone(),
         Install::WindowsInstalled(dir) => dir.join("kimchi.exe"),
-        Install::Other if cfg!(windows) => return Err("This portable copy of kimchi is updated by hand; the installer version updates itself.".into()),
+        Install::WindowsPortable(_) => return Err("This portable copy of kimchi is updated by hand: unpack the new portable zip over it. The installer version updates itself.".into()),
+        Install::DebPackage => return Err("kimchi was installed from the .deb package, so it's updated by hand: install the new .deb. The AppImage updates itself.".into()),
         Install::Other => return Err("This copy of kimchi (a package or a build from source) is updated by hand.".into()),
     };
     let dir = target.parent().ok_or("kimchi's folder can't be found.")?;
@@ -642,7 +661,7 @@ pub fn install_appimage(new: &Path, appimage: &Path) -> Result<(), String> {
 pub fn finish_pending() -> Vec<PathBuf> {
     match current_install() {
         Install::MacBundle(target) | Install::AppImage(target) => cleanup_beside(&target),
-        Install::WindowsInstalled(_) | Install::Other => vec![],
+        Install::WindowsInstalled(_) | Install::WindowsPortable(_) | Install::DebPackage | Install::Other => vec![],
     }
 }
 
@@ -674,7 +693,7 @@ pub fn restart() -> std::io::Result<()> {
         let (target, launch) = match &install {
             Install::MacBundle(b) => (b.clone(), r#"exec /usr/bin/open -n "$0""#),
             Install::AppImage(p) => (p.clone(), r#"exec "$0""#),
-            Install::WindowsInstalled(_) | Install::Other => (std::env::current_exe()?, r#"exec "$0""#),
+            Install::WindowsInstalled(_) | Install::WindowsPortable(_) | Install::DebPackage | Install::Other => (std::env::current_exe()?, r#"exec "$0""#),
         };
         let script = format!(r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; {launch}"#);
         std::process::Command::new("/bin/sh")
@@ -787,6 +806,40 @@ mod tests {
         assert_eq!(url(platform_keys("linux", "x86_64", Some("deb"))).as_deref(), Some("kimchi_amd64.deb"));
         assert_eq!(url(platform_keys("windows", "x86_64", Some("nsis"))).as_deref(), Some("kimchi_x64-setup.exe"));
         assert_eq!(url(platform_keys("linux", "aarch64", None)), None);
+    }
+
+    #[test]
+    fn each_install_kind_gets_its_own_file() {
+        let mut m = manifest();
+        let url = |m: &Manifest, install: Install, os: &str| select(m, &install_keys(&install, os, "x86_64")).map(|a| a.url.rsplit('/').next().unwrap().to_string());
+        let (p, dir) = (PathBuf::from("/x"), PathBuf::from("C:/kimchi"));
+        assert_eq!(url(&m, Install::AppImage(p.clone()), "linux").as_deref(), Some("kimchi_amd64.AppImage"));
+        assert_eq!(url(&m, Install::DebPackage, "linux").as_deref(), Some("kimchi_amd64.deb"));
+        assert_eq!(url(&m, Install::WindowsInstalled(dir.clone()), "windows").as_deref(), Some("kimchi_x64-setup.exe"));
+        // A release without the portable zip: the release page, never the installer.
+        assert_eq!(url(&m, Install::WindowsPortable(dir.clone()), "windows"), None);
+        m.platforms.insert("windows-x86_64-portable".into(), PlatformAsset { signature: "s".into(), url: "https://example.com/kimchi_x64-portable.zip".into() });
+        assert_eq!(url(&m, Install::WindowsPortable(dir), "windows").as_deref(), Some("kimchi_x64-portable.zip"));
+        // Nor does a .deb fall back to the AppImage.
+        m.platforms.remove("linux-x86_64-deb");
+        assert_eq!(url(&m, Install::DebPackage, "linux"), None);
+    }
+
+    #[test]
+    fn tells_the_install_kinds_apart() {
+        assert_eq!(install_of("linux", Path::new("/usr/lib/kimchi/bin/kimchi"), None), Install::DebPackage);
+        assert_eq!(install_of("linux", Path::new("/home/me/kimchi/target/release/kimchi"), None), Install::Other);
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("kimchi_amd64.AppImage");
+        std::fs::write(&image, b"").unwrap();
+        assert_eq!(install_of("linux", Path::new("/tmp/.mount_kimchi/usr/bin/kimchi"), Some(image.clone())), Install::AppImage(image));
+        assert_eq!(install_of("macos", Path::new("/Applications/kimchi.app/Contents/MacOS/kimchi"), None), Install::MacBundle(PathBuf::from("/Applications/kimchi.app")));
+        let exe = dir.path().join("kimchi.exe");
+        assert_eq!(install_of("windows", &exe, None), Install::Other, "a build from source");
+        std::fs::write(dir.path().join("kimchi-ffmpeg.exe"), b"").unwrap();
+        assert_eq!(install_of("windows", &exe, None), Install::WindowsPortable(dir.path().to_path_buf()));
+        std::fs::write(dir.path().join("uninstall.exe"), b"").unwrap();
+        assert_eq!(install_of("windows", &exe, None), Install::WindowsInstalled(dir.path().to_path_buf()));
     }
 
     #[test]

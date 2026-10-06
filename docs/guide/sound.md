@@ -141,14 +141,13 @@ in the standard folders:
 | CLAP | `~/Library/Audio/Plug-Ins/CLAP`, `/Library/Audio/Plug-Ins/CLAP` | `%COMMONPROGRAMFILES%\CLAP`, `%LOCALAPPDATA%\Programs\Common\CLAP` | `~/.clap`, `/usr/lib/clap`, `/usr/local/lib/clap` |
 | VST3 | the same, with `VST3` | the same, with `VST3` | `~/.vst3`, `/usr/lib/vst3`, `/usr/local/lib/vst3` |
 
-in the folders named by `CLAP_PATH` and `VST3_PATH`, and in the extra folders set in ryolune's own
-Settings › Plugins. Each CLAP, VST3 and ryolune plugin is checked in a separate process, so one that
-crashes can't take kimchi down. The list of plugins found is shared with ryolune. **Rescan plugins**
-(in the browser or Settings › Audio) looks again after you install one.
-
-> As of 0.9.0, the extra folders listed under Settings › Audio › Plugins are saved but not yet
-> scanned. For plugins outside the standard folders, use `CLAP_PATH`, `VST3_PATH` or ryolune's
-> plugin settings.
+in the folders named by `CLAP_PATH` and `VST3_PATH`, in the extra folders set in ryolune's own
+Settings › Plugins, and in the folders you add under Settings › Audio › Plugins (each is searched
+for every format, two folders deep). Each CLAP, VST3 and ryolune plugin is checked in a separate
+process, so one that crashes can't take kimchi down. The list of plugins found is shared with
+ryolune (a rescan from ryolune doesn't know kimchi's folders, so rescan from kimchi to bring their
+plugins back). **Rescan plugins** (in the browser or Settings › Audio) looks again after you
+install one or add a folder.
 
 **The effect panel** opens when you add or click an effect. Drag a knob (Shift for finer steps),
 double-click it for its default, or click a value to type one (`-6 dB`, `2.5k`). Stock effects have

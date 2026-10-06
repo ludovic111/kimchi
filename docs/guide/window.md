@@ -47,8 +47,7 @@ cancels); its size and frame rate (in wide windows); an update button when a new
 **Redo**; **Generations**, which lists generation jobs and counts the running ones; **Agent**; the
 buttons that show and hide the left panel and the inspector; **Settings** (which opens Models & keys
 while no model is connected; in narrow windows it moves into the **…** menu); a **…** menu (command
-palette, keyboard shortcuts, What's new, Help, Support kimchi); and **Export**. Help opens the guide
-to driving kimchi from AI and scripts.
+palette, keyboard shortcuts, What's new, Help, Support kimchi); and **Export**. Help opens this user guide.
 
 ### The rail and the left panel
 
@@ -120,7 +119,7 @@ On macOS, kimchi has a menu bar. Linux and Windows have no menu bar: everything 
 | Timeline | Play / Pause, Loop Playback, Go to Start / End, Previous / Next Cut, Add Marker, Add Title, Zoom In / Out / to Fit, Snapping |
 | Audio | Mixer, Add Effect…, Mute Track, Solo Track, Arm Track, Record Voice-Over |
 | View | Command Palette, the five tabs, Left Panel, Inspector, Agent, Generation Jobs, Toggle Light / Dark |
-| Help | Keyboard Shortcuts, What's New, Driving kimchi from AI and scripts, Logs and Crash Reports, Report a Problem…, Support kimchi |
+| Help | Keyboard Shortcuts, What's New, kimchi User Guide, Logs and Crash Reports, Report a Problem…, Support kimchi |
 
 **Save** only confirms that the project is saved: kimchi writes every change as you make it.
 

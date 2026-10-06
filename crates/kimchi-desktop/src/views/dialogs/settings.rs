@@ -600,7 +600,8 @@ impl SettingsDialog {
                     .gap(px(4.))
                     .child(link("about-page", "lsuite.xyz/kimchi", "https://lsuite.xyz/kimchi"))
                     .child(link("about-support", "Support", crate::app::SUPPORT_URL))
-                    .child(link("about-docs", "AI control guide", crate::app::HELP_URL)),
+                    .child(link("about-guide", "User guide", crate::app::HELP_URL))
+                    .child(link("about-docs", "AI control guide", crate::app::AI_CONTROL_URL)),
             )
             .child(div().h(px(1.)).bg(t.line))
             .child(app_group(
