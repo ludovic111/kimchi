@@ -1087,7 +1087,7 @@ async fn looks_from_other_apps() {
     // A folder with a LUT in a subfolder, a Lightroom preset and a file that isn't a look.
     let looks = dir.path().join("My Looks");
     std::fs::create_dir_all(looks.join("Film")).unwrap();
-    std::fs::write(looks.join("Film/Warm.3dl"), "0 1023\n0 0 0\n0 0 4095\n0 4095 0\n0 4095 4095\n4095 0 0\n4095 0 4095\n4095 4095 0\n4095 4095 4095\n").unwrap();
+    std::fs::write(looks.join("Film/Amber.3dl"), "0 1023\n0 0 0\n0 0 4095\n0 4095 0\n0 4095 4095\n4095 0 0\n4095 0 4095\n4095 4095 0\n4095 4095 4095\n").unwrap();
     std::fs::write(
         looks.join("Pop.xmp"),
         r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Contrast2012="+30" crs:Saturation="+20" crs:Clarity2012="+10"/></rdf:RDF></x:xmpmeta>"#,
@@ -1097,14 +1097,14 @@ async fn looks_from_other_apps() {
     let r = ok(&s, Source::Window, "looks.import", json!({ "paths": [looks] })).await;
     let added = r["added"].as_array().unwrap();
     assert_eq!(added.len(), 2, "{r}");
-    assert!(added.iter().any(|l| l["folder"] == "My Looks/Film" && l["name"] == "Warm"));
+    assert!(added.iter().any(|l| l["folder"] == "My Looks/Film" && l["name"] == "Amber"));
     assert!(added.iter().any(|l| l["name"] == "Pop" && l["dropped"][0].as_str().unwrap().contains("Clarity")));
     let list = ok(&s, Source::Agent, "looks.list", json!({})).await;
     assert_eq!(list.as_array().unwrap().len(), kimchi_core::effects::LOOKS.len() + 2);
     assert_eq!(ok(&s, Source::Agent, "looks.list", json!({ "query": "lightroom" })).await.as_array().unwrap().len(), 1);
     // Applying: corrections and LUT replaced, one step; clip.setEffects takes library looks too.
     ok(&s, Source::Agent, "clip.setEffects", json!({ "clipIds": [a], "chromaKey": true })).await;
-    ok(&s, Source::Agent, "looks.apply", json!({ "clipIds": [a], "look": "Warm", "strength": 0.5 })).await;
+    ok(&s, Source::Agent, "looks.apply", json!({ "clipIds": [a], "look": "Amber", "strength": 0.5 })).await;
     let c = ok(&s, Source::Agent, "clip.get", json!({ "clipId": a })).await;
     assert_eq!(c["effects"]["lut"]["strength"].as_f64(), Some(0.5));
     assert!(c["effects"]["chroma_key"].is_object(), "the key stays");
