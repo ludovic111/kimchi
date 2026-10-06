@@ -109,6 +109,39 @@ Run several commands as one undo step. With atomic (the default) a failing comma
 | `atomic` | boolean |  | Roll everything back if one command fails (default true). |
 | `label` | string |  | Name of the undo step (default "batch"). |
 
+### `project.formats`
+
+What kimchi opens from and writes for other editors: project and timeline formats (project.importFrom, project.exportTo) with the apps that use each and how much survives the trip, look formats (looks.import), and every app kimchi knows with how to bring its projects over, its looks, plugins and keyboard layout. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `app` | string |  | Only what concerns this app (premiere, finalcut, resolve, capcut, avid, vegas, kdenlive, shotcut, openshot, aftereffects, nuke, lightroom, blender…). |
+
+### `project.importFrom`
+
+Open a project or timeline from another editor as a new library project (opened): OpenTimelineIO (.otio, Resolve), FCPXML (Final Cut Pro, Resolve), Final Cut 7 / Premiere XML (.xml), CMX 3600 EDL, Kdenlive (.kdenlive), Shotcut (.mlt), OpenShot (.osp), a Premiere Pro .prproj or a CapCut draft folder. Media is imported from where the file says; returns what came through, what changed, and the files that are missing (media.relink). _(changes things · permission: files)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | The project or timeline file, or a bundle or draft folder. |
+| `format` | string |  | Format id from project.formats (default: from the file). |
+| `into` | string |  | new (default): a new library project, opened. open: add its tracks to the open project, at start (one undo step). |
+| `start` | number |  | Timeline position in seconds. Defaults to the playhead. |
+| `name` | string |  | Name of the new project (default: the timeline's own). |
+| `mediaFolder` | string |  | A folder to look in (with its subfolders) for media that isn't where the file says, by file name. |
+
+### `project.exportTo`
+
+Write the open project for another editor: OpenTimelineIO (Resolve, Nuke), FCPXML (Final Cut Pro, Resolve), Final Cut 7 XML (Premiere Pro, VEGAS), EDL (Avid, any editor), Kdenlive, Shotcut or OpenShot. Returns what the format couldn't carry. _(changes things · permission: files)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | Destination file. |
+| `format` | string |  | Format id from project.formats (default: from app, else from the extension; .xml is Final Cut 7 XML). |
+| `app` | string |  | The app it is for (premiere, finalcut, resolve, avid, vegas, kdenlive, shotcut, openshot, nuke): picks its best format. |
+| `renderMotion` | boolean |  | Render motion clips, titles and solids to video files beside it so the other app shows them (default true). |
+| `collect` | boolean |  | Also copy every media file into a folder beside it, so the project can move to another computer (default false). |
+
 ## media
 
 ### `media.list`
@@ -150,6 +183,16 @@ Save the frame a clip shows at a timeline time as a PNG and return its path (for
 | --- | --- | --- | --- |
 | `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
 | `time` | number |  | Timeline time in seconds inside the clip. Defaults to the playhead, or the clip's first frame. |
+
+### `media.relink`
+
+Point media at files that moved: one item at a new file (assetId and path), or every missing item at the file of the same name in a folder or its subfolders (folder). Previews are made again. One undo step. _(changes things · permission: files)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `assetId` | string |  | Media id or unique name (with path). |
+| `path` | string |  | The new file for assetId. |
+| `folder` | string |  | Look here, with subfolders, for every missing file by name. |
 
 ### `media.look`
 
@@ -418,6 +461,55 @@ Colour and picture effects on clips: a ready-made look, corrections (brightness,
 ### `clip.looks`
 
 The ready-made looks clip.setEffects applies, with their values. _(read only)_
+
+## looks
+
+### `looks.list`
+
+The look library: kimchi's built-in looks, and the looks imported from other apps (LUTs, Lightroom / Camera Raw presets, Lumetri presets) or saved from clips, with what each sets. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `query` | string |  | Only looks whose name, folder or source app contains this. |
+
+### `looks.import`
+
+Add looks to the library from files or folders (with subfolders): LUTs (.cube, .3dl, .csp, .spi1d, .spi3d, Hald CLUT images), Lightroom / Camera Raw presets (.xmp, .lrtemplate) and Premiere Lumetri presets (.prfpset). The files are copied into the library. Returns the looks added and what didn't carry over. _(changes things · permission: files)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `paths` | array of strings | required | Files or folders. |
+| `folder` | string |  | Library folder to put them in (default: the source folder's name). |
+
+### `looks.apply`
+
+Put a look on clips: a built-in look or one from the library. Its corrections and LUT replace the clips' (the chroma key stays). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array of strings | required | Clips (ids or names). |
+| `look` | string | required | Look id or name from looks.list. |
+| `strength` | number |  | 0-1: how much of a LUT shows (default 1). |
+
+### `looks.save`
+
+Save a clip's corrections and LUT as a look in the library, or write them as a .cube LUT file other apps open. _(changes things · permission: files)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `name` | string |  | The look's name (default: the clip's). |
+| `path` | string |  | Instead: write a 33-point .cube LUT of the corrections and LUT here. |
+
+### `looks.remove`
+
+Remove a look from the library (built-in looks stay). _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `look` | string | required | Look id or name. |
+
+## clip
 
 ### `clip.freezeFrame`
 
@@ -1544,14 +1636,19 @@ Export formats, qualities and encoder choices. _(read only)_
 
 The video encoders this computer uses per format: hardware ones (Apple VideoToolbox, NVIDIA NVENC, AMD AMF, Intel Quick Sync, VA-API, Media Foundation) that passed a test encode, and the CPU ones. _(read only)_
 
+### `export.presets`
+
+Ready-made export settings: for YouTube, TikTok, Instagram, X, Vimeo, LinkedIn, and for other editors and finishing (ProRes, DNxHR, image sequences), with the format, size, frame rate and quality each sets. _(read only)_
+
 ### `export.start`
 
 Render the open project to a file: every frame drawn as in the preview (titles, animation, motion graphics, 3D), encoded on the GPU or CPU with the mixed sound. Returns an export id; follow it with export.status, or pass wait. _(changes things · permission: files)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `path` | string | required | Destination file. The extension should match the format. |
-| `format` | string |  | mp4 (default), hevc, prores, webm, gif, audio (sound only: AAC unless audioFormat says) or wav. |
+| `path` | string | required | Destination file (a folder for image sequences). The extension should match the format. |
+| `preset` | string |  | Start from an export preset (export.presets); the other parameters given go on top. |
+| `format` | string |  | mp4 (default), hevc, prores, webm, gif, audio (sound only: AAC unless audioFormat says) or wav; more in export.formats. |
 | `quality` | string |  | draft, standard (default) or high. |
 | `width` | integer |  | Output width (default: the project's). |
 | `height` | integer |  | Output height (default: the project's). |
@@ -1635,6 +1732,30 @@ Font families text clips can use: the bundled ones (Manrope, IBM Plex Mono, Inst
 
 Every setting with its value (agent permissions, updates, appearance, default models, diagnostics). _(read only)_
 
+### `app.onboarding`
+
+The first-run setup: whether it was done, its steps and what each would set, and what is on this computer: the editors found (with how to bring their projects, looks and plugins over), the AI coding tools and local model servers found, the providers with keys, the plugins and Ryolune. _(read only)_
+
+### `app.finishOnboarding`
+
+Finish (or skip) the first-run setup with the choices made: the editor the person comes from (its keyboard layout unless keymap says otherwise), generative AI on or off, the agent on or off. Saved in settings.onboarding; Help › Set up kimchi shows it again. _(changes things · permission: settings)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `comingFrom` | string |  | App id from project.formats (premiere, finalcut, resolve, capcut…), or none. |
+| `keymap` | string |  | Keyboard layout (app.keymaps); default: the app's. |
+| `generativeAi` | boolean |  | Offer generation in the window (settings.generate.enabled). |
+| `agent` | boolean |  | Offer the Agent panel (settings.agent.enabled). |
+| `skipped` | boolean |  | The person skipped it (the choices given still apply). |
+
+### `app.keymaps`
+
+Keyboard layouts kimchi can use (settings.shortcuts.keymap): its own, or Premiere Pro's, Final Cut Pro's, DaVinci Resolve's, Avid's, CapCut's, Kdenlive's, Shotcut's, VEGAS's or iMovie's keys for the commands they share; with every key each one binds. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `keymap` | string |  | One layout's keys only. |
+
 ### `app.setSetting`
 
 Change one setting by dotted key, e.g. updates.checkOnStart or appearance.mode. Agent permissions stay with the person. _(changes things · permission: settings)_
@@ -1646,12 +1767,15 @@ Change one setting by dotted key, e.g. updates.checkOnStart or appearance.mode. 
 
 ### `app.setAgentKey`
 
-Save (or with no key, remove) the API key the built-in agent uses, in the OS keychain. _(changes things · person only)_
+Save (or with no key, remove) the API key the built-in agent uses, in the OS keychain. Keys for services that also generate (OpenAI, Gemini, OpenRouter, xAI, Together) are the same key generation uses. _(changes things · person only)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `provider` | string | required | "anthropic" or "openai". |
-| `key` | string |  | The key; omit to remove it. |
+| `provider` | string | required | An API provider from agent.providers (anthropic, openai, gemini, openrouter, groq, mistral, deepseek, xai, together, fireworks, cerebras, azure-openai, bedrock, lmstudio, openai-compatible). |
+| `key` | string |  | The key (for bedrock, a Bedrock API key); omit to remove it. |
+| `accessKeyId` | string |  | bedrock: an AWS access key id, instead of an API key (with secretAccessKey). |
+| `secretAccessKey` | string |  | bedrock: the secret access key. |
+| `sessionToken` | string |  | bedrock: the session token of temporary credentials. |
 
 ### `app.checkUpdates`
 
@@ -1717,17 +1841,30 @@ Show a short message in the window. _(changes things · needs the window)_
 
 ### `agent.providers`
 
-The models that can run the built-in agent (Claude Code, Codex, the Anthropic and OpenAI APIs, Ollama), whether each is ready on this computer and why not, and which one is chosen. _(read only · needs the window)_
-
-### `agent.setProvider`
-
-Choose what runs the built-in agent (Settings › Agent). _(changes things · person only)_
+What can run the built-in agent: coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen. _(read only · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
-| `provider` | string | required | claude-code, codex, anthropic, openai or ollama. |
-| `model` | string |  | Model id for the API providers and Ollama; empty for the provider's default. |
-| `baseUrl` | string |  | Server address for Ollama or an OpenAI-compatible server; empty for the default. |
+| `refresh` | boolean |  | Fetch the chosen provider's model list again now. |
+
+### `agent.models`
+
+The models a provider offers for the agent (the chosen one by default): fetched from the provider's own list where it has one (kept for a few hours), else a short built-in list; models that can't use tools are marked tools=false. _(read only · needs the window)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `provider` | string |  | A provider id from agent.providers. |
+| `refresh` | boolean |  | Fetch the list again now. |
+
+### `agent.setProvider`
+
+Choose what runs the built-in agent (Settings › Agent). Answers whether it is ready and, if not, what to do next. _(changes things · person only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `provider` | string | required | A provider id from agent.providers. |
+| `model` | string |  | Model id (agent.models lists them; for Azure OpenAI, the deployment name); empty for the provider's default. |
+| `baseUrl` | string |  | Address: a local or compatible server's URL, an Azure OpenAI resource (name or URL), or Bedrock's region; empty for the default. |
 
 ### `agent.send`
 
