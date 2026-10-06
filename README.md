@@ -133,6 +133,15 @@ local Ollama model), shows one card per command and lets you revert a whole run.
 kimchi hands cuts to [ryolune](https://lsuite.xyz/ryolune) to score them and takes its audio back
 (`handoff.toRyolune`, `handoff.fromRyolune`). Details: [docs/AI_CONTROL.md](docs/AI_CONTROL.md).
 
+## Documentation
+
+- [User guide](docs/guide/README.md): the window, from a first cut to motion graphics, sound, generation and export
+- [Keyboard shortcuts](docs/guide/shortcuts.md)
+- [Controlling kimchi from AI and scripts](docs/AI_CONTROL.md) and the [command reference](docs/COMMANDS.md)
+- [Configuration](docs/CONFIGURATION.md): settings, environment variables, files and folders
+- [The project file](docs/PROJECT_FORMAT.md)
+- [Architecture](docs/ARCHITECTURE.md) and [development](docs/DEVELOPMENT.md), for working on kimchi itself
+
 ## Architecture
 
 ```
@@ -182,19 +191,19 @@ anything is replaced; on macOS and with the AppImage the previous copy is kept u
 Windows the verified installer runs when kimchi restarts or quits. With the `.deb` or the portable `.zip`, kimchi
 tells you about the update and links to the file. Turn the checks off with the setting `updates.checkOnStart` or
 `KIMCHI_NO_UPDATE=1`. Installs of 0.1.x (the Tauri builds) update to the new app through their own updater. After
-an update, kimchi shows what changed (from [CHANGELOG.md](CHANGELOG.md); Help › What's New any time).
+an update, kimchi shows what changed (from [CHANGELOG.md](CHANGELOG.md); What's new in the top bar's … menu any time).
 
 **Logs and crash reports.** Each run writes a log to `logs/` in kimchi's data folder (`kimchi.log`, the previous
 runs as `kimchi.1.log`…), and problems leave a report in `logs/crashes/`: a panic with its backtrace, or a run that
-ended without quitting. Settings › Diagnostics shows them, and Help › Report a Problem opens a GitHub issue with the
+ended without quitting. Settings › Diagnostics shows them, and Report a problem (in the command palette, or Help on macOS) opens a GitHub issue with the
 version and system filled in. Nothing is sent anywhere by kimchi itself. The level is the setting
 `diagnostics.logLevel` (`info`, `debug`, `trace`) or `RUST_LOG`; `kimchi-cli app.logs` and `app.crashReports` read
 them too.
 
 ## Development
 
-Requirements: Rust (stable). On Linux, GPUI's libraries:
-`sudo apt install pkg-config clang libdbus-1-dev libfontconfig-dev libfreetype-dev libssl-dev libvulkan-dev libwayland-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev`
+Requirements: a recent stable Rust (1.92 or later on Linux). On Linux, GPUI's and the audio libraries:
+`sudo apt install pkg-config clang libasound2-dev libdbus-1-dev libfontconfig-dev libfreetype-dev libssl-dev libvulkan-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev libglib2.0-dev`
 (other distributions: see `script/linux` in the [Zed repository](https://github.com/zed-industries/zed)).
 In development kimchi uses the ffmpeg on your `PATH`, or the static build `scripts/fetch-ffmpeg.sh` puts in
 `target/ffmpeg/<target>/` if you point `KIMCHI_FFMPEG` and `KIMCHI_FFPROBE` at it.
@@ -205,13 +214,16 @@ cargo run -p kimchi-cli -- help # the CLI
 cargo test --workspace
 ```
 
-Packaging (each writes to `target/dist/`):
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) covers running in a scratch environment, the test suites, and how to add a
+command, a setting or a provider.
+
+Packaging (the bundle scripts write to `target/dist/`; `make-icons.sh` updates the icons in the repository):
 
 ```bash
 scripts/bundle-macos.sh aarch64-apple-darwin   # kimchi.app, .dmg, .app.tar.gz (ad-hoc signed without a Developer ID)
 scripts/bundle-linux.sh                        # .AppImage and .deb (on Linux)
 scripts/bundle-windows.sh                      # setup .exe (NSIS) and portable .zip (Git Bash on Windows)
-scripts/make-icons.sh                          # .icns, .ico and PNGs from brand/icon.svg
+scripts/make-icons.sh                          # .icns, .ico and PNGs from brand/icon.svg, into brand/ and resources/
 ```
 
 The packaging resources (Info.plist template, entitlements, icons, `.desktop` file, NSIS script) are in
