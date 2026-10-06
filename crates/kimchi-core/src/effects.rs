@@ -1,7 +1,10 @@
 //! A clip's colour and picture effects: corrections (brightness, contrast, saturation,
-//! temperature, tint), vignette, sharpen, chroma key and a 3D LUT. They are parameters, drawn by
-//! the compositor in the preview and the export; the numeric ones take keyframes like any clip
-//! property ([`crate::model::CLIP_PROPS`]).
+//! temperature, tint), vignette, sharpen, chroma key, a LUT and video plugins. They are
+//! parameters, drawn by the compositor in the preview and the export; the numeric ones take
+//! keyframes like any clip property ([`crate::model::CLIP_PROPS`]), plugin parameters as
+//! `plugins.<slot id>.<parameter>`.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +30,43 @@ pub struct Effects {
     pub chroma_key: Option<ChromaKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lut: Option<Lut>,
+    /// Video plugins run on the picture after the effects above, first to last.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<PluginEffect>,
+}
+
+/// One video plugin on a clip: kimchi's own (`kimchi:<id>`, built with the `kimchi-plugin`
+/// SDK), frei0r (`frei0r:<name>`) or OpenFX (`ofx:<identifier>`). Hosted by
+/// `kimchi_media::render::plugins`; listed by `plugins.list`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginEffect {
+    /// Slot id, unique on the clip (`p1`, `p2`…): keyframes name it, so it never changes.
+    pub id: String,
+    /// The plugin's id with its format prefix.
+    pub plugin: String,
+    /// What the inspector shows (the plugin's name when added).
+    #[serde(default)]
+    pub name: String,
+    /// Skipped while drawing; its settings are kept.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bypass: bool,
+    /// Parameter values by the plugin's parameter name; the ones not set use its defaults.
+    /// Numbers take keyframes as `plugins.<id>.<name>`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, PluginValue>,
+}
+
+/// A plugin parameter's value.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum PluginValue {
+    Bool(bool),
+    Number(f64),
+    /// Points, sizes and colours as `[x, y]`, `[r, g, b, a]` (0…1).
+    Vector(Vec<f64>),
+    /// Text, a choice by its label, a file path, or a colour as `#rrggbb[aa]`.
+    Text(String),
 }
 
 /// Makes one colour (a green or blue screen) transparent.
@@ -49,10 +89,11 @@ impl Default for ChromaKey {
     }
 }
 
-/// A 3D colour lookup table (`.cube` file).
+/// A colour lookup table: `.cube` (1D or 3D), `.3dl`, `.csp`, `.spi1d`, `.spi3d` or a Hald CLUT
+/// image (`kimchi_media::render::grade::lut`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Lut {
-    /// Absolute path of the `.cube` file.
+    /// Absolute path of the LUT file.
     pub path: String,
     /// 0…1: mix between the original and the graded colour.
     #[serde(default = "one")]
@@ -147,14 +188,14 @@ pub const LOOKS: &[Look] = &[
     Look { id: "dreamy", label: "Dreamy", doc: "Soft, bright and pastel.", values: &[("brightness", 0.1), ("contrast", -0.2), ("saturation", -0.1), ("tint", 0.08)] },
 ];
 
-/// Effects with `look` applied: its corrections, the others at 0; the chroma key and LUT stay.
+/// Effects with `look` applied: its corrections, the others at 0; the chroma key, LUT and plugins stay.
 pub fn apply_look(effects: &Effects, look: &str) -> Result<Effects, String> {
     let Some(l) = LOOKS.iter().find(|l| l.id.eq_ignore_ascii_case(look)) else {
         let ids: Vec<&str> = LOOKS.iter().map(|l| l.id).collect();
         let hint = crate::closest(look, &ids).map(|c| format!(" Did you mean `{c}`?")).unwrap_or_default();
         return Err(format!("Unknown look `{look}`.{hint} Looks: {}.", ids.join(", ")));
     };
-    let mut out = Effects { chroma_key: effects.chroma_key.clone(), lut: effects.lut.clone(), ..Effects::default() };
+    let mut out = Effects { chroma_key: effects.chroma_key.clone(), lut: effects.lut.clone(), plugins: effects.plugins.clone(), ..Effects::default() };
     for (name, v) in l.values {
         out.set(name, *v);
     }
