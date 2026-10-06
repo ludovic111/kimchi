@@ -1110,7 +1110,8 @@ async fn looks_from_other_apps() {
     assert!(c["effects"]["chroma_key"].is_object(), "the key stays");
     let c = ok(&s, Source::Agent, "clip.setEffects", json!({ "clipIds": [a], "look": "pop" })).await;
     assert_eq!(c["clips"][0]["effects"]["contrast"].as_f64(), Some(0.3));
-    assert!(registry::call(&s, Source::Agent, "looks.apply", json!({ "clipIds": [a], "look": "Wram" })).await.unwrap_err().contains("Warm"));
+    let e = registry::call(&s, Source::Agent, "looks.apply", json!({ "clipIds": [a], "look": "Wram" })).await.unwrap_err();
+    assert!(e.to_lowercase().contains("did you mean “warm”"), "{e}");
     // Saving: into the library, and as a .cube.
     let saved = ok(&s, Source::Window, "looks.save", json!({ "clipId": a, "name": "Mine" })).await;
     assert_eq!(saved["folder"], "Saved");
