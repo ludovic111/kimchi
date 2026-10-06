@@ -2,6 +2,7 @@
 //! palette, the keyboard shortcuts, what's new.
 
 pub mod export;
+pub mod interop;
 pub mod palette;
 pub mod settings;
 pub mod shortcuts;
@@ -91,6 +92,7 @@ impl Render for Dialogs {
             Some(Dialog::Palette) => Some(modal("palette", 620., self.palette.clone(), true, window, cx)),
             Some(Dialog::Shortcuts) => Some(modal("shortcuts", 900., shortcuts::sheet(cx), false, window, cx)),
             Some(Dialog::WhatsNew { since, all }) => Some(modal("whats-new", 600., whats_new::sheet(since, all, cx), false, window, cx)),
+            Some(Dialog::Interop { title, report }) => Some(modal("interop-report", 560., interop::sheet(title, report, cx), false, window, cx)),
             None => None,
         })
     }

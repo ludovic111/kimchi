@@ -394,7 +394,15 @@ impl Editor {
 
     /// The "more" menu: what the top bar has no room for, and the less used things.
     fn more_menu(&self, position: gpui::Point<Pixels>, bp: Breakpoint, cx: &mut Context<Self>) {
-        let entries = vec![
+        let mut entries = vec![
+            MenuItem::new("Open from another editor…", |_, cx| crate::views::dialogs::interop::open_from_other(cx)).icon("folder-open").entry(),
+        ];
+        for (app, name, format) in crate::views::dialogs::interop::export_targets() {
+            entries.push(MenuItem::new(format!("Export project for {name}…"), move |_, cx| crate::views::dialogs::interop::export_for(app, name, format, cx)).icon("share").entry());
+        }
+        entries.push(MenuItem::new("Find missing files…", |_, cx| crate::views::dialogs::interop::find_missing(cx)).icon("folder-search").entry());
+        entries.push(crate::store::MenuEntry::Separator);
+        entries.extend([
             MenuItem::new("Command palette", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Palette, cx))).icon("command").shortcut_of(&act::Palette).entry(),
             MenuItem::new("Keyboard shortcuts", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Shortcuts, cx))).icon("keyboard").shortcut_of(&act::ShowShortcuts).entry(),
             MenuItem::new("Settings", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: None }, cx))).icon("settings").shortcut_of(&act::OpenSettings).entry(),
@@ -402,7 +410,7 @@ impl Editor {
             MenuItem::new("What's new", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::WhatsNew { since: None, all: false }, cx))).icon("gift").entry(),
             MenuItem::new("Help", |_, cx| cx.open_url(crate::app::HELP_URL)).icon("info").entry(),
             MenuItem::new("Support kimchi", |_, cx| cx.open_url(crate::app::SUPPORT_URL)).icon("heart").entry(),
-        ];
+        ]);
         // Settings has its own button from the medium width up.
         let entries = entries.into_iter().filter(|e| !(bp > Breakpoint::Compact && matches!(e, crate::store::MenuEntry::Item(i) if i.label.as_ref() == "Settings"))).collect();
         self.store.update(cx, |s, cx| s.open_menu(position, entries, cx));
