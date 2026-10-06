@@ -95,6 +95,7 @@ fn parse_headers(mut b: &[u8]) -> Result<Vec<(String, String)>, String> {
 }
 
 /// Encodes a message with string headers (tests, and the mock servers in them).
+#[cfg(test)]
 pub fn encode(headers: &[(&str, &str)], payload: &[u8]) -> Vec<u8> {
     let mut h = vec![];
     for (k, v) in headers {

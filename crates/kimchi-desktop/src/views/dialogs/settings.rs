@@ -43,7 +43,7 @@ impl Section {
             "models" | "keys" | "providers" => Section::Provider(String::new()),
             "agent" | "permissions" => Section::Agent,
             "appearance" | "theme" => Section::Appearance,
-            "keyboard" | "keys" | "shortcuts" | "keymap" => Section::Keyboard,
+            "keyboard" | "shortcuts" | "keymap" => Section::Keyboard,
             "audio" | "sound" | "devices" | "plugins" => Section::Audio,
             "updates" | "update" | "whatsnew" => Section::Updates,
             "diagnostics" | "logs" | "crashes" | "crash" => Section::Diagnostics,
