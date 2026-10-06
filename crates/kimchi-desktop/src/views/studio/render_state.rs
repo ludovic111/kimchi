@@ -21,7 +21,8 @@ pub enum RenderState {
     Live,
     /// Plays its rendered frames (by this engine).
     Rendered(String),
-    /// Rendered, but the scene changed since: drawn live until rendered again.
+    /// Rendered, but the scene (or the part of it the clip shows) changed since: drawn live, at
+    /// least in part, until rendered again.
     Outdated,
     /// A render is running: progress 0–1, the render's id.
     Rendering(f64, String),
@@ -69,7 +70,7 @@ pub fn state(store: &Store, project: &std::sync::Arc<Project>, clip: &Clip) -> O
         if c.0 != key {
             *c = (key, HashMap::new());
         }
-        *c.1.entry(clip.id).or_insert_with(|| kimchi_media::render::cache::is_current(project, clip))
+        *c.1.entry(clip.id).or_insert_with(|| kimchi_media::render::cache::is_complete(project, clip))
     });
     Some(if current { RenderState::Rendered(rendered.engine.clone()) } else { RenderState::Outdated })
 }

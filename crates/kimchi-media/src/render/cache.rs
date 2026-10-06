@@ -45,12 +45,21 @@ pub fn is_current(project: &Project, clip: &Clip) -> bool {
     }
 }
 
+/// Is the clip's render still right, and does it have a frame for every moment the clip shows?
+/// A clip whose in point moved since (slipped, or trimmed at the start) shows scene time the file
+/// doesn't have: those frames are drawn live, so the clip isn't fully rendered any more.
+pub fn is_complete(project: &Project, clip: &Clip) -> bool {
+    let Some(r) = &clip.rendered else { return false };
+    let (a, b) = (clip.scene_time(clip.start), clip.scene_time(clip.end()));
+    r.covers(a.min(b).max(0.0)) && r.covers(a.max(b).max(0.0)) && is_current(project, clip)
+}
+
 /// The clip's state for listings: `"live"`, `"rendered"` or `"outdated"` (rendered, but the
-/// scene changed since).
+/// scene or the part of it the clip shows changed since).
 pub fn status(project: &Project, clip: &Clip) -> &'static str {
     match &clip.rendered {
         None => "live",
-        Some(_) if is_current(project, clip) => "rendered",
+        Some(_) if is_complete(project, clip) => "rendered",
         Some(_) => "outdated",
     }
 }
