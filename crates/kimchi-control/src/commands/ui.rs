@@ -74,6 +74,7 @@ pub const ACTIONS: &[(&str, Perm)] = &[
     ("ShowShortcuts", Perm::Edit),
     ("OpenSettings", Perm::Edit),
     ("WhatsNew", Perm::Edit),
+    ("SetUpKimchi", Perm::Edit),
     ("ShowDiagnostics", Perm::Edit),
     ("About", Perm::Edit),
     ("Save", Perm::Edit),

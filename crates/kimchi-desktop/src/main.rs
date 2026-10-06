@@ -129,7 +129,10 @@ fn welcome(session: &std::sync::Arc<Session>, started: &kimchi_control::diagnost
     let show_notes = session.settings().updates.show_whats_new && std::env::var("KIMCHI_NO_WHATS_NEW").is_err();
     let store = cx.store();
     store.update(cx, |s, cx| {
-        if let Some(since) = previous.filter(|_| show_notes) {
+        // The first start: the setup, instead of what's new.
+        if crate::views::onboarding::should_show(&s.settings) {
+            s.open_setup(None, cx);
+        } else if let Some(since) = previous.filter(|_| show_notes) {
             s.open_dialog(Dialog::WhatsNew { since: Some(since), all: false }, cx);
         }
         if !reports.is_empty() {

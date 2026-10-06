@@ -110,6 +110,10 @@ pub fn sheet(since: Option<String>, all: bool, cx: &App) -> AnyElement {
                                 cx.store().update(cx, |s, cx| s.open_dialog(Dialog::WhatsNew { since, all: true }, cx))
                             }))
                         })
+                        // People who used kimchi before the setup existed are pointed at it once here.
+                        .when(cx.store().read(cx).settings.onboarding.coming_from.is_empty(), |d| {
+                            d.child(Button::new("whats-new-setup", "Set up for your editor").small().ghost().with_icon("sparkles").on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.open_setup(None, cx))))
+                        })
                         .child(Button::new("whats-new-web", "Changelog").small().ghost().icon_after("arrow-up-right").on_click(|_, _, cx| cx.open_url(CHANGELOG_URL))),
                 )
                 .child(Button::new("whats-new-ok", "Continue").primary().on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.close_dialog(cx)))),

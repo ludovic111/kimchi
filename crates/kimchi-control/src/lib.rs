@@ -9,6 +9,7 @@
 
 pub mod bridge;
 pub mod commands;
+pub mod compat;
 pub mod diagnostics;
 pub mod discovery;
 pub mod keymaps;

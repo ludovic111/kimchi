@@ -3,7 +3,7 @@
 
 use gpui::{AnyElement, App, FontWeight, div, prelude::*, px};
 
-use crate::actions::{SHORTCUTS, Shortcut, keys_label};
+use crate::actions::{self, SHORTCUTS, Shortcut, keys_label};
 use crate::store::StoreExt;
 use crate::theme::{ActiveTheme, size as sz};
 use crate::ui::{Button, caps, kbd};
@@ -27,19 +27,53 @@ const MOUSE: &[(&str, &str)] = &[
     ("Studio: open a motion clip", "Double-click it"),
 ];
 
-/// A shortcut's keys: the main one, an alias if there is one, and the pair for "previous / next" rows.
+/// A shortcut's keys in the layout in use: the main one, an alias if there is one, and the pair
+/// for "previous / next" rows.
 fn keys_of(i: usize) -> Vec<String> {
     let s = &SHORTCUTS[i];
-    let mut keys = vec![keys_label(s.keys[0]).to_string()];
+    let own = actions::keys_of(s);
+    let Some(first) = own.first() else { return vec![] };
+    let mut keys = vec![keys_label(first).to_string()];
     match SHORTCUTS.get(i + 1) {
-        Some(next) if s.label.contains(" / ") && next.group.is_empty() => keys.push(keys_label(next.keys[0]).to_string()),
+        Some(next) if s.label.contains(" / ") && next.group.is_empty() => {
+            if let Some(k) = actions::keys_of(next).first() {
+                keys.push(keys_label(k).to_string());
+            }
+        }
         _ => {
-            if let Some(alias) = s.keys.get(1).filter(|k| !matches!(**k, "+" | "delete" | "shift-delete")) {
+            if let Some(alias) = own.get(1).filter(|k| !matches!(k.as_str(), "+" | "delete" | "shift-delete")) {
                 keys.push(keys_label(alias).to_string());
             }
         }
     }
     keys
+}
+
+/// Why a shortcut has no key in this layout ("⌘K: Split at the playhead in Premiere Pro").
+fn why_none(i: usize) -> Option<String> {
+    let s = &SHORTCUTS[i];
+    if !actions::keys_of(s).is_empty() {
+        return None;
+    }
+    let b = actions::binding(s.action().name().trim_start_matches("kimchi::"))?;
+    b.dropped.first().map(|d| format!("{} is {}", keys_label(&d.key), d.because))
+}
+
+/// A shortcut's row, by its place in the table.
+fn row_i(i: usize, cx: &App) -> AnyElement {
+    let s = &SHORTCUTS[i];
+    match why_none(i) {
+        Some(why) => {
+            let t = cx.theme();
+            div()
+                .flex()
+                .flex_col()
+                .child(row(s.label, vec!["—".into()], cx))
+                .child(div().text_size(px(sz::XS)).text_color(t.text_3).child(why))
+                .into_any_element()
+        }
+        None => row(s.label, keys_of(i), cx),
+    }
 }
 
 fn row(label: &str, keys: Vec<String>, cx: &App) -> AnyElement {
@@ -65,9 +99,9 @@ fn studio(cx: &App) -> AnyElement {
     let t = cx.theme();
     let rows: Vec<(usize, &Shortcut)> = SHORTCUTS.iter().enumerate().filter(|(_, s)| s.group == "Studio").collect();
     let third = rows.len().div_ceil(3).max(1);
-    let col = |part: &[(usize, &Shortcut)], cx: &App| div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).children(part.iter().map(|(i, s)| row(s.label, keys_of(*i), cx)).collect::<Vec<_>>());
+    let col = |part: &[(usize, &Shortcut)], cx: &App| div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).children(part.iter().map(|(i, _)| row_i(*i, cx)).collect::<Vec<_>>());
     let modelling = div().flex().flex_col().gap(px(2.)).mt(px(14.)).child(div().mb(px(4.)).child(caps("Studio: modelling", cx))).child(
-        div().grid().grid_cols(3).gap_x(px(28.)).children(SHORTCUTS.iter().enumerate().filter(|(_, s)| s.group == "Studio: modelling").map(|(i, s)| row(s.label, keys_of(i), cx)).collect::<Vec<_>>()),
+        div().grid().grid_cols(3).gap_x(px(28.)).children(SHORTCUTS.iter().enumerate().filter(|(_, s)| s.group == "Studio: modelling").map(|(i, _)| row_i(i, cx)).collect::<Vec<_>>()),
     );
     div()
         .mb(px(12.))
@@ -86,7 +120,7 @@ pub fn sheet(cx: &App) -> AnyElement {
     let t = cx.theme().clone();
     let group = |name: &'static str, cx: &App| {
         div().flex().flex_col().gap(px(2.)).mb(px(14.)).child(div().mb(px(4.)).child(caps(name, cx))).children(
-            SHORTCUTS.iter().enumerate().filter(|(_, s): &(usize, &Shortcut)| s.group == name).map(|(i, s)| row(s.label, keys_of(i), cx)).collect::<Vec<_>>(),
+            SHORTCUTS.iter().enumerate().filter(|(_, s): &(usize, &Shortcut)| s.group == name).map(|(i, _)| row_i(i, cx)).collect::<Vec<_>>(),
         )
     };
     // Columns of at least 250 px side by side; a narrow window stacks them.
@@ -115,7 +149,14 @@ pub fn sheet(cx: &App) -> AnyElement {
                 .py(px(14.))
                 .border_b_1()
                 .border_color(t.line)
-                .child(div().text_size(px(sz::LG)).font_weight(FontWeight::SEMIBOLD).child("Keyboard shortcuts"))
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap(px(8.))
+                        .child(div().text_size(px(sz::LG)).font_weight(FontWeight::SEMIBOLD).child("Keyboard shortcuts"))
+                        .when(actions::layout().id != "kimchi", |d| d.child(div().text_size(px(sz::SM)).text_color(t.text_2).child(format!("{}'s keys, kimchi's for the rest", actions::layout().name)))),
+                )
                 .child(Button::icon("shortcuts-close", "x", "Close (Esc)").on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.close_dialog(cx)))),
         )
         .child(

@@ -196,6 +196,8 @@ pub enum StoreEvent {
     AskRemoveAsset(kimchi_core::Id),
     /// Open this motion clip in the Studio.
     OpenStudio(kimchi_core::Id),
+    /// The first-run setup closed: the workspace takes the keyboard again.
+    SetupClosed,
 }
 
 pub struct Store {
@@ -231,6 +233,8 @@ pub struct Store {
     /// panel (or its drawer, in a narrow window) when it changes.
     pub left_reveal: u64,
     pub dialog: Option<Dialog>,
+    /// The first-run setup is shown over the whole window, at this step (`views::onboarding`).
+    pub setup: Option<String>,
     pub agent_open: bool,
     pub jobs_open: bool,
     pub menu: Option<ContextMenu>,
@@ -309,6 +313,7 @@ impl Store {
             left_tab: LeftTab::Media,
             left_reveal: 0,
             dialog: None,
+            setup: None,
             agent_open: false,
             jobs_open: false,
             menu: None,
@@ -417,7 +422,12 @@ impl Store {
                 }
             }
             Event::SettingsChanged => {
+                let keymap = self.settings.shortcuts.keymap.clone();
                 self.settings = self.session.settings();
+                if self.settings.shortcuts.keymap != keymap {
+                    // Another layout: bind its keys (after this update: binding reads the store).
+                    cx.defer(crate::actions::bind);
+                }
                 self.refresh_providers(cx);
                 // After this update: it reads the store.
                 cx.defer(crate::app::apply_theme_setting);
@@ -471,6 +481,9 @@ impl Store {
         }
         if let Some(d) = &self.dialog {
             open.push(d.name().to_string());
+        }
+        if self.setup.is_some() {
+            open.push("onboarding".to_string());
         }
         self.session.set_ui_state(UiState {
             screen: match (&self.project, &self.studio) {
@@ -662,6 +675,22 @@ impl Store {
     pub fn open_dialog(&mut self, d: Dialog, cx: &mut Context<Self>) {
         self.dialog = Some(d);
         self.menu = None;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    /// Shows the first-run setup over the window (at a step, or the first).
+    pub fn open_setup(&mut self, step: Option<String>, cx: &mut Context<Self>) {
+        self.setup = Some(step.unwrap_or_default());
+        self.dialog = None;
+        self.menu = None;
+        self.sync_ui(cx);
+        cx.notify();
+    }
+
+    pub fn close_setup(&mut self, cx: &mut Context<Self>) {
+        self.setup = None;
+        cx.emit(StoreEvent::SetupClosed);
         self.sync_ui(cx);
         cx.notify();
     }

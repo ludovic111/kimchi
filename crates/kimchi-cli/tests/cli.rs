@@ -183,3 +183,11 @@ fn commands_md_matches_the_registry() {
     let current = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
     assert!(current == registry::markdown(), "docs/COMMANDS.md is out of date: run `cargo run -p kimchi-cli -- docs`");
 }
+
+/// `docs/COMPATIBILITY.md` is generated from kimchi's tables of apps, formats and layouts.
+#[test]
+fn compatibility_md_matches_the_tables() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/COMPATIBILITY.md");
+    let current = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+    assert!(current == kimchi_control::compat::markdown(), "docs/COMPATIBILITY.md is out of date: run `cargo run -p kimchi-cli -- docs`");
+}

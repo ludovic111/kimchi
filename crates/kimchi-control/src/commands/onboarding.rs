@@ -1,19 +1,17 @@
 //! The first-run setup and keyboard layouts: `app.onboarding` (what the setup asks, and what is
 //! on this computer to answer with), `app.finishOnboarding` (the answers, saved in settings),
-//! `app.keymaps` (other editors' keys, [`crate::keymaps`]) and `captions.downloadModel` (the
-//! setup's "download the captions model now").
+//! and `app.keymaps` (other editors' keys, [`crate::keymaps`]).
 //!
 //! Looking around this computer is quick and read-only: folders and programs that exist, the
 //! keys kimchi already has (keychain or environment), local model servers that answer on their
 //! usual ports within a fraction of a second. Nothing is installed or sent anywhere.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use kimchi_interop::apps::{self, App, Kind};
 use serde_json::{Map, Value, json};
-use tokio_util::sync::CancellationToken;
 
 use crate::keymaps::{self, Layout};
 use crate::registry::{Args, Ctx};
@@ -24,7 +22,6 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "app.keymaps" => keymaps(s, &a),
         "app.onboarding" => overview(s, cx).await,
         "app.finishOnboarding" => finish(s, cx, &a),
-        "captions.downloadModel" => download_model(s, &a).await,
         _ => Err(super::unhandled(cx)),
     }
 }
@@ -82,7 +79,6 @@ pub const STEPS: &[(&str, &str, &[&str])] = &[
     ("comingFrom", "Where are you coming from? Its keys, projects, looks and plugins", &["shortcuts.keymap", "onboarding.comingFrom", "project.importFrom", "looks.import"]),
     ("generativeAi", "Generative AI, and connecting a provider", &["generate.enabled", "generate.setKey", "generate.check"]),
     ("agent", "An AI assistant in kimchi, and other AI apps controlling it", &["agent.enabled", "agent.setProvider", "app.setAgentKey"]),
-    ("sound", "Sound and captions: Ryolune, plugins, the captions model", &["captions.downloadModel"]),
     ("done", "Start: a new project, the imported one, or a file", &["onboarding.completed"]),
 ];
 
@@ -109,7 +105,6 @@ async fn overview(s: &Arc<Session>, cx: &Ctx) -> CmdResult {
         .map_err(err)?;
     let (found_apps, tools, providers, agent_keys, models, ryolune) = local;
     let servers = probe_servers().await;
-    let video_plugins = count_by(sub(s, cx, "plugins.list").await, "format");
     let audio_plugins = count_by(sub(s, cx, "audio.effects").await.map(|v| if v.is_array() { v } else { v["effects"].clone() }), "format");
     let agent_providers = match s.agent_host() {
         Some(host) => host.call(s.clone(), cx.source, "agent.providers", Args(Map::new())).await.ok(),
@@ -167,7 +162,6 @@ async fn overview(s: &Arc<Session>, cx: &Ctx) -> CmdResult {
             "keys": agent_keys,
             "providers": agent_providers,
         },
-        "videoPlugins": video_plugins,
         "audioPlugins": audio_plugins,
         "ryolune": ryolune,
         "captionsModels": models,
@@ -385,22 +379,18 @@ fn env_names(id: &str) -> &'static [&'static str] {
     }
 }
 
-/// Speech models for captions: on this computer or not, and the download running now.
+/// Speech models for captions: on this computer or not.
 fn whisper_models(s: &Session) -> Vec<Value> {
     let dir = super::captions::models_dir(s);
-    let running = download_status();
     kimchi_captions::whisper::MODELS
         .iter()
         .map(|m| {
-            let downloading = running.as_ref().filter(|d| d.model == m.id);
             json!({
                 "id": m.id,
                 "label": m.label,
                 "sizeMb": m.size_mb,
                 "downloaded": m.model.is_downloaded(&dir),
                 "default": m.model == kimchi_captions::whisper::Model::Base,
-                "downloading": downloading.is_some(),
-                "progress": downloading.map(|d| d.progress),
             })
         })
         .collect()
@@ -474,110 +464,6 @@ fn finish(s: &Arc<Session>, cx: &Ctx, a: &Args) -> CmdResult {
         "agent": settings.agent.enabled,
         "again": "Help › Set up kimchi…, or ui.showPanel onboarding.",
     }))
-}
-
-// ---- the captions model -----------------------------------------------------------
-
-#[derive(Clone)]
-struct Download {
-    model: &'static str,
-    progress: f64,
-    error: Option<String>,
-    cancel: CancellationToken,
-}
-
-fn downloads() -> &'static Mutex<Option<Download>> {
-    static D: OnceLock<Mutex<Option<Download>>> = OnceLock::new();
-    D.get_or_init(Default::default)
-}
-
-fn download_status() -> Option<Download> {
-    downloads().lock().unwrap_or_else(|e| e.into_inner()).clone()
-}
-
-/// Starts downloading a speech model in the background (or, while one is downloading, says how
-/// far it is). With `wait`, answers when it is there. `cancel` stops it.
-async fn download_model(s: &Arc<Session>, a: &Args) -> CmdResult {
-    use kimchi_captions::whisper::{self, Model};
-    let model = match a.opt_str("model") {
-        Some(m) => Model::parse(m)?,
-        None => Model::Base,
-    };
-    let dir = super::captions::models_dir(s);
-    let info = model.info();
-    let state = |d: Option<&Download>| {
-        json!({
-            "model": info.id,
-            "sizeMb": info.size_mb,
-            "downloaded": model.is_downloaded(&dir),
-            "downloading": d.is_some_and(|d| d.error.is_none()),
-            "progress": d.map(|d| (d.progress * 100.0).round() / 100.0),
-            "error": d.and_then(|d| d.error.clone()),
-        })
-    };
-    if a.bool_or("cancel", false) {
-        if let Some(d) = download_status() {
-            d.cancel.cancel();
-        }
-        return Ok(state(None));
-    }
-    if model.is_downloaded(&dir) {
-        return Ok(state(None));
-    }
-    let running = download_status();
-    match &running {
-        Some(d) if d.model != info.id && d.error.is_none() => return Err(format!("The {} model is downloading; wait for it, or cancel it first.", d.model)),
-        Some(d) if d.error.is_none() => {}
-        _ => {
-            let cancel = CancellationToken::new();
-            *downloads().lock().unwrap_or_else(|e| e.into_inner()) = Some(Download { model: info.id, progress: 0.0, error: None, cancel: cancel.clone() });
-            let dir = dir.clone();
-            tokio::spawn(async move {
-                let progress = |p: f64| {
-                    if let Some(d) = downloads().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-                        d.progress = p;
-                    }
-                };
-                let result = whisper::download(&dir, model, progress, &cancel).await;
-                let mut d = downloads().lock().unwrap_or_else(|e| e.into_inner());
-                match result {
-                    Ok(()) => {
-                        tracing::info!("downloaded the {} speech model", model.info().id);
-                        *d = None;
-                    }
-                    Err(e) if cancel.is_cancelled() => {
-                        tracing::info!("the speech model download was cancelled: {e}");
-                        *d = None;
-                    }
-                    Err(e) => {
-                        tracing::warn!("couldn't download the speech model: {e}");
-                        if let Some(d) = d.as_mut() {
-                            d.error = Some(format!("Couldn't download the captions model: {e}. Check the connection and try again."));
-                        }
-                    }
-                }
-            });
-        }
-    }
-    if a.bool_or("wait", false) {
-        loop {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            match download_status() {
-                None => break,
-                Some(d) if d.error.is_some() => {
-                    *downloads().lock().unwrap_or_else(|e| e.into_inner()) = None;
-                    return Err(d.error.unwrap_or_default());
-                }
-                Some(_) => {}
-            }
-        }
-    }
-    let d = download_status();
-    // A failure is said once, then the next call starts over.
-    if d.as_ref().is_some_and(|d| d.error.is_some()) {
-        *downloads().lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-    Ok(state(d.as_ref()))
 }
 
 #[cfg(test)]
