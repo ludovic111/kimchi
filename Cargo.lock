@@ -3790,6 +3790,7 @@ dependencies = [
  "kimchi-control",
  "kimchi-core",
  "kimchi-gen",
+ "kimchi-interop",
  "kimchi-media",
  "objc",
  "parking_lot",
