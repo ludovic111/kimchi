@@ -884,7 +884,7 @@ impl Render for StudioTimeline {
                         let selected = st.graph_component.min(components-1)==component;
                         controls = controls.child(div().id(SharedString::from(format!("graph-component-{component}")))
                             .h(px(18.)).min_w(px(22.)).px(px(4.)).flex_none().flex().items_center().justify_center()
-                            .rounded(px(4.)).text_size(px(sz::XS)).cursor_pointer()
+                            .text_size(px(sz::XS)).cursor_pointer()
                             .bg(if selected {t.accent_soft} else {t.bg_raised}).text_color(if selected {t.accent_text} else {t.text_2})
                             .hover(|s| s.bg(t.hover)).child(label)
                             .tooltip(|_,cx| crate::ui::tooltip("Edit values and show handles on this component. Vector components share the same easing.".into(),cx))

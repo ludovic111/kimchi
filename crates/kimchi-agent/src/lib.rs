@@ -586,6 +586,8 @@ impl Run {
         while !matches!(self.commands.try_recv(), Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed)) {}
         let mut request = prompt;
         let mut context = conversation;
+        // Zenith hands steering to its running turn itself (`zenith::steer_queued`).
+        if self.config.provider == ProviderKind::Zenith { return zenith::run(self, request, context).await; }
         loop {
             let shared = self.shared.clone();
             let outcome = tokio::select! {
@@ -593,14 +595,12 @@ impl Run {
                 _ = shared.steered.notified() => None,
                 result = async {
                     match self.config.provider {
-                        ProviderKind::Zenith => zenith::run(self, request.clone(), context.clone()).await,
                         p if p.is_cli() => cli::run(self, request.clone(), context.clone()).await,
                         _ => api::run(self, request.clone(), context.clone()).await,
                     }
                 } => Some(result),
             };
             if let Some(result) = outcome { return result; }
-            if self.config.provider == ProviderKind::Zenith { zenith::interrupt(self).await?; }
             let messages: Vec<String> = self.shared.steering.lock().drain(..).collect();
             if messages.is_empty() { continue; }
             context = self.shared.conversation.lock().clone();

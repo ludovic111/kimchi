@@ -28,7 +28,7 @@ impl Fixture {
         loop {
             cx.run_until_parked();
             let p = self.session.read(|ed| ed.project().clone()).unwrap();
-            if done(&p) || start.elapsed() > Duration::from_secs(3) {
+            if done(&p) || start.elapsed() > crate::tests::PATIENCE {
                 return p;
             }
             std::thread::sleep(Duration::from_millis(10));

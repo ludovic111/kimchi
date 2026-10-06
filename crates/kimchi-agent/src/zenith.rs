@@ -112,21 +112,28 @@ async fn run_at(run: &mut Run, prompt: String, mut conv: Conversation, exe: Path
     run.status("Working in Zenith…");
     let started = Instant::now();
     let mut reply = String::new();
+    // The prompts of this run, including steering, that the newest user message may be.
+    let mut sent = vec![prompt.clone()];
     loop {
+        steer_queued(run, &exe, &id, &mut sent, &mut conv).await?;
         let state = call(&exe, "thread.get", json!({"threadId": id, "messages": 100})).await?;
         let status = state["status"].as_str().unwrap_or("working");
         let timeline = state["timeline"].as_array().cloned().unwrap_or_default();
         let last_user = timeline.iter().rposition(|m| m["kind"] == "message" && m["role"] == "user");
         // A command acknowledgement can precede the new turn appearing in the
         // snapshot. Never stream or finish with the previous turn's answer.
-        if !last_user.is_some_and(|i| timeline[i]["text"].as_str() == Some(prompt.as_str())) {
+        if !last_user.is_some_and(|i| timeline[i]["text"].as_str().is_some_and(|t| sent.iter().any(|s| s == t))) {
             if started.elapsed() > Duration::from_secs(30) { return Err("Zenith did not show the submitted message. Open Zenith to check this conversation.".into()); }
             tokio::time::sleep(Duration::from_millis(250)).await;
             continue;
         }
         let text = timeline.iter().skip(last_user.map_or(0, |i| i + 1)).filter(|m| m["kind"] == "message" && m["role"] == "assistant")
             .filter_map(|m| m["text"].as_str()).collect::<Vec<_>>().join("\n\n");
-        if let Some(delta) = text.strip_prefix(&reply).filter(|s| !s.is_empty()) { run.text(delta); }
+        match text.strip_prefix(&reply) {
+            Some(delta) => if !delta.is_empty() { run.text(delta); },
+            // A steering message started a new answer.
+            None => { run.break_text(); if !text.is_empty() { run.text(&text); } }
+        }
         reply = text;
         run.drain_commands(kimchi_control::Source::Mcp);
         match status {
@@ -136,11 +143,40 @@ async fn run_at(run: &mut Run, prompt: String, mut conv: Conversation, exe: Path
             "ready" | "plan-ready" | "monitoring" if started.elapsed() > Duration::from_secs(1) => break,
             _ => {}
         }
-        tokio::time::sleep(Duration::from_millis(750)).await;
+        let shared = run.shared.clone();
+        tokio::select! {
+            _ = shared.steered.notified() => {}
+            _ = tokio::time::sleep(Duration::from_millis(750)) => {}
+        }
     }
     conv.messages.push(Message::assistant(reply.clone()));
     run.set_conversation(&conv);
     Ok(reply)
+}
+
+/// Hands queued steering messages to the running Zenith turn with `thread.steer`. A Zenith
+/// without it (older than 0.3) gets `thread.send`, which joins a running turn the same way.
+async fn steer_queued(run: &mut Run, exe: &Path, id: &str, sent: &mut Vec<String>, conv: &mut Conversation) -> Result<(), String> {
+    let messages: Vec<String> = run.shared.steering.lock().drain(..).collect();
+    for message in messages {
+        let args = json!({"threadId": id, "prompt": message});
+        match call(exe, "thread.steer", args.clone()).await {
+            Ok(_) => {}
+            Err(e) if e.contains("unknown command") => { call(exe, "thread.send", args).await?; }
+            // The turn ended between the click and the call: start the next one.
+            Err(e) if e.contains("thread.send") => { call(exe, "thread.send", args).await?; }
+            Err(e) if e.contains("thread.approve") || e.contains("thread.answer") => {
+                run.status("Zenith is waiting for your approval or answer. Reply in Zenith, then steer again.");
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+        run.status("Zenith is applying your steering message…");
+        conv.messages.push(Message::user(message.clone()));
+        run.set_conversation(conv);
+        sent.push(message);
+    }
+    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -156,6 +192,11 @@ printf '%s\n%s\n' "$1" "$3" >> calls
 case "$1" in
   thread.new|thread.send) printf '%s' "$3" > submitted.json; printf '{}' ;;
   thread.interrupt) touch interrupted; printf '{}' ;;
+  thread.steer)
+    if [ -f old-zenith ]; then printf 'unknown command "thread.steer" (see `zenith-cli list`)' >&2; exit 1
+    elif [ -f pending ]; then printf 'an approval is pending: answer it with thread.approve / thread.answer first' >&2; exit 1
+    else printf '%s' "$3" > steered.json; printf '{"steered":true}'
+    fi ;;
   thread.get)
     if [ -f interrupted ]; then
       if [ -f stopping ]; then cat ready.json; else touch stopping; printf '{"status":"working"}'; fi
@@ -186,6 +227,30 @@ esac
         assert_eq!(models_at(&exe).await.unwrap(), ["my-codex/coding-model"]);
         assert!(call(&exe, "bad", json!({})).await.unwrap_err().contains("Invalid response"));
         assert!(call(&exe, "denied", json!({})).await.unwrap_err().contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn steering_uses_thread_steer_falls_back_to_send_and_waits_out_approvals() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = mock_cli(dir.path());
+        let session = crate::tests::with_project(dir.path()).await;
+        let (mut run, agent_run) = Run::new(&session, crate::AgentConfig::new(ProviderKind::Zenith), &Conversation::new());
+        let handle = agent_run.handle();
+        let (mut sent, mut conv) = (vec![], Conversation::new());
+        let read = |name: &str| serde_json::from_slice::<Value>(&std::fs::read(dir.path().join(name)).unwrap()).unwrap();
+        handle.steer("Use blue".into()).unwrap();
+        steer_queued(&mut run, &exe, "t1", &mut sent, &mut conv).await.unwrap();
+        assert_eq!(read("steered.json"), json!({"threadId":"t1","prompt":"Use blue"}));
+        std::fs::write(dir.path().join("old-zenith"), "").unwrap();
+        handle.steer("Make it bigger".into()).unwrap();
+        steer_queued(&mut run, &exe, "t1", &mut sent, &mut conv).await.unwrap();
+        assert_eq!(read("submitted.json"), json!({"threadId":"t1","prompt":"Make it bigger"}), "older Zenith gets thread.send");
+        std::fs::remove_file(dir.path().join("old-zenith")).unwrap();
+        std::fs::write(dir.path().join("pending"), "").unwrap();
+        handle.steer("Never mind".into()).unwrap();
+        steer_queued(&mut run, &exe, "t1", &mut sent, &mut conv).await.unwrap();
+        assert_eq!(sent, ["Use blue", "Make it bigger"], "a pending approval keeps the run going without the message");
+        assert_eq!(conv.messages.len(), 2);
     }
 
     #[tokio::test(flavor = "multi_thread")]

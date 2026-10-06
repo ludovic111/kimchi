@@ -21,7 +21,7 @@ fn ui(f: &Fixture, cx: &mut VisualTestContext, name: &str, params: Value) -> Res
     let (s, n) = (f.session.clone(), name.to_string());
     let task = f.rt.spawn(async move { kimchi_control::call(&s, Source::Mcp, &n, params).await });
     let start = Instant::now();
-    while !task.is_finished() && start.elapsed() < Duration::from_secs(5) {
+    while !task.is_finished() && start.elapsed() < crate::tests::PATIENCE {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -86,7 +86,7 @@ fn open(f: &Fixture, cx: &mut VisualTestContext, template: &str) -> Id {
 
 fn wait(cx: &mut VisualTestContext, done: impl Fn(&mut VisualTestContext) -> bool) {
     let start = Instant::now();
-    while !done(cx) && start.elapsed() < Duration::from_secs(4) {
+    while !done(cx) && start.elapsed() < crate::tests::PATIENCE {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(10));
     }

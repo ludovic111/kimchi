@@ -326,7 +326,7 @@ impl Sidebar {
         }
         if let Some(result) = feedback {
             body = body.child(
-                div().p(px(8.)).rounded(px(6.)).bg(t.bg_raised).text_size(px(sz::SM)).text_color(if result.is_ok() { t.text_2 } else { t.accent_text }).child(
+                div().p(px(8.)).bg(t.bg_raised).text_size(px(sz::SM)).text_color(if result.is_ok() { t.text_2 } else { t.accent_text }).child(
                     match result {
                         Ok(s) | Err(s) => s,
                     },

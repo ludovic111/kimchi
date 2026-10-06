@@ -787,7 +787,7 @@ fn mesh_components_move_rotate_and_scale_in_world_or_local_axes_with_exact_undo(
     }));
     cx.update(|_,cx|studio.update(cx,|s,cx|s.close(cx)));
     let start=std::time::Instant::now();
-    while cx.update(|_,cx|studio.read(cx).is_open() || studio.read(cx).sender.busy) && start.elapsed()<Duration::from_secs(5) {cx.run_until_parked();std::thread::sleep(Duration::from_millis(10));}
+    while cx.update(|_,cx|studio.read(cx).is_open() || studio.read(cx).sender.busy) && start.elapsed()<crate::tests::PATIENCE {cx.run_until_parked();std::thread::sleep(Duration::from_millis(10));}
     assert!(!cx.update(|_,cx|studio.read(cx).is_open() || studio.read(cx).sender.busy));
     assert_eq!(f.project().clip(clip),Some(&before),"closing restores selected vertices exactly after pending previews");
 }
@@ -842,7 +842,7 @@ fn mesh_tools_finish_the_latest_amount_before_accepting_another_gesture(cx: &mut
 
 fn wait_mesh(cx:&mut gpui::VisualTestContext,viewport:&Entity<Viewport>,done:impl Fn(&Viewport)->bool) {
     let start=std::time::Instant::now();
-    while !cx.update(|_,cx| done(viewport.read(cx))) && start.elapsed()<Duration::from_secs(5) {
+    while !cx.update(|_,cx| done(viewport.read(cx))) && start.elapsed()<crate::tests::PATIENCE {
         cx.run_until_parked();std::thread::sleep(Duration::from_millis(10));
     }
     assert!(cx.update(|_,cx| done(viewport.read(cx))),"mesh command did not settle: {:?}",cx.update(|_,cx| viewport.read(cx).mesh_modal.clone()));
