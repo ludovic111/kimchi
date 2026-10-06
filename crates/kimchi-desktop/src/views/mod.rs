@@ -15,6 +15,7 @@ pub mod left_panel;
 pub mod media_panel;
 pub mod mixer;
 pub mod motion_panel;
+pub mod onboarding;
 pub mod overlays;
 pub mod preview;
 pub mod screenshot;

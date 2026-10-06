@@ -185,6 +185,7 @@ impl Palette {
             Cmd::action("New project", "file-plus", act::NewProject),
             Cmd::action("Settings", "settings", act::OpenSettings).keywords("preferences"),
             Cmd::action("Keyboard shortcuts", "keyboard", act::ShowShortcuts).keywords("keys help hotkeys"),
+            Cmd::action("Set up kimchi…", "sparkles", act::SetUpKimchi).keywords("onboarding welcome first run premiere final cut resolve switch keymap"),
             Cmd::new("Models & keys", "key-round", |_, cx| settings("models", cx)).keywords("api key provider"),
             Cmd::new("Agent settings and permissions", "bot", |_, cx| settings("agent", cx)),
             Cmd::new("Appearance", "sun", |_, cx| settings("appearance", cx)).keywords("theme dark light transparency"),

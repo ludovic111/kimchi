@@ -644,3 +644,70 @@ fn the_agent_settings_follow_the_provider_and_the_panel_can_be_turned_off(cx: &m
     cx.update(|_, cx| cx.store().update(cx, |s, cx| s.set_agent_open(true, cx)));
     assert!(cx.update(|_, cx| cx.store().read(cx).agent_open));
 }
+
+/// The first start shows the setup (a settings file from before 0.9 doesn't); a person comes
+/// from Premiere Pro, says no to generation, and gets Premiere's keys in the window.
+#[gpui::test]
+fn the_first_run_setup_saves_the_answers_and_switches_the_keys(cx: &mut TestAppContext) {
+    use crate::views::onboarding::{Step, should_show};
+    let (f, view, cx) = setup(cx);
+    if std::env::var("KIMCHI_NO_ONBOARDING").is_err() {
+        assert!(should_show(&kimchi_control::Settings::default()), "a new install shows the setup");
+    }
+    let before_09: kimchi_control::Settings = serde_json::from_str(r#"{ "appearance": { "mode": "dark" } }"#).unwrap();
+    assert!(!should_show(&before_09), "people who used kimchi before aren't asked again");
+
+    remote(&f, cx, "ui.showPanel", json!({ "panel": "onboarding" }));
+    store_settles(cx, |s| s.setup.is_some());
+    let ob = cx.update(|_, cx| view.read(cx).onboarding());
+    let start = Instant::now();
+    while cx.update(|_, cx| ob.read(cx).info().is_none()) && start.elapsed() < Duration::from_secs(5) {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(cx.update(|_, cx| ob.read(cx).info().is_some()), "it reads this computer");
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::Welcome);
+    // Enter goes on.
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::ComingFrom);
+    cx.update(|_, cx| {
+        ob.update(cx, |o, cx| {
+            o.coming_from = Some("premiere".into());
+            o.next(cx);
+        })
+    });
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::Bring);
+    // Esc goes back, Enter on again.
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::ComingFrom);
+    cx.update(|_, cx| ob.update(cx, |o, cx| o.next(cx)));
+    cx.update(|_, cx| ob.update(cx, |o, cx| o.next(cx)));
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::Generative);
+    cx.update(|_, cx| {
+        ob.update(cx, |o, cx| {
+            o.generative = Some(false);
+            o.next(cx);
+        })
+    });
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::Agent, "no provider step after Not now");
+    cx.update(|_, cx| ob.update(cx, |o, cx| o.next(cx)));
+    assert_eq!(cx.update(|_, cx| ob.read(cx).step), Step::Done);
+    cx.update(|_, cx| ob.update(cx, |o, cx| o.finish(false, false, cx)));
+    store_settles(cx, |s| s.setup.is_none() && s.settings.shortcuts.keymap == "premiere");
+    let st = f.session.settings();
+    assert!(st.onboarding.is_done());
+    assert_eq!(st.onboarding.coming_from, "premiere");
+    assert!(!st.generate.enabled);
+    assert_eq!(st.shortcuts.keymap, "premiere");
+    // The window binds Premiere's keys: ⌘K / Ctrl+K splits, S snaps.
+    cx.run_until_parked();
+    assert_eq!(crate::actions::binding("Split").unwrap().keys, ["M-k", "M-shift-k"]);
+    assert_eq!(crate::actions::layout().id, "premiere");
+    let snapping = cx.update(|_, cx| cx.store().read(cx).snapping);
+    cx.simulate_keystrokes("s");
+    cx.run_until_parked();
+    assert_ne!(cx.update(|_, cx| cx.store().read(cx).snapping), snapping, "S is Snapping in Premiere's keys");
+    assert_eq!(f.project().clips().count(), 1, "and no longer splits");
+}

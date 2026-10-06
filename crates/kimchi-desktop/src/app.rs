@@ -94,6 +94,7 @@ pub struct Workspace {
     home: Entity<views::home::Home>,
     editor: Entity<views::editor::Editor>,
     dialogs: Entity<views::dialogs::Dialogs>,
+    onboarding: Entity<views::onboarding::Onboarding>,
     _subs: Vec<Subscription>,
 }
 
@@ -101,6 +102,11 @@ impl Workspace {
     #[cfg(test)]
     pub fn dialogs(&self) -> Entity<views::dialogs::Dialogs> {
         self.dialogs.clone()
+    }
+
+    #[cfg(test)]
+    pub fn onboarding(&self) -> Entity<views::onboarding::Onboarding> {
+        self.onboarding.clone()
     }
 
     #[cfg(test)]
@@ -115,13 +121,13 @@ impl Workspace {
         let home = cx.new(|cx| views::home::Home::new(window, cx));
         let editor = cx.new(|cx| views::editor::Editor::new(window, cx));
         let dialogs = cx.new(|cx| views::dialogs::Dialogs::new(window, cx));
+        let onboarding = cx.new(|cx| views::onboarding::Onboarding::new(window, cx));
         let mut subs = vec![cx.observe(&store, |_, _, cx| cx.notify())];
         subs.push(cx.observe_window_appearance(window, |_, _, cx| apply_theme_setting(cx)));
-        subs.push(cx.subscribe_in(&store, window, |_, _, e: &StoreEvent, window, cx| {
-            if let StoreEvent::FocusPrompt = e {
-                window.refresh();
-                let _ = cx;
-            }
+        subs.push(cx.subscribe_in(&store, window, |ws: &mut Self, _, e: &StoreEvent, window, cx| match e {
+            StoreEvent::FocusPrompt => window.refresh(),
+            StoreEvent::SetupClosed => window.focus(&ws.focus, cx),
+            _ => {}
         }));
 
         // Commands only the window can do, from every client of the registry.
@@ -148,7 +154,7 @@ impl Workspace {
             }
         }));
         store.update(cx, |s, cx| s.sync_ui(cx));
-        Self { store, focus, home, editor, dialogs, _subs: subs }
+        Self { store, focus, home, editor, dialogs, onboarding, _subs: subs }
     }
 
     /// `ui.*`, `timeline.seek/play/pause`, `app.quit`, `app.restart`, `app.notify`.
@@ -188,6 +194,10 @@ impl Workspace {
             }
             "ui.showPanel" if params["open"] == json!(false) => {
                 let panel = params["panel"].as_str().unwrap_or("");
+                if panel == "onboarding" {
+                    store.update(cx, |s, cx| s.close_setup(cx));
+                    return Ok(json!({ "panel": panel, "open": false }));
+                }
                 // The left panel closes to its rail (whichever tab is named); the inspector closes.
                 if matches!(panel, "media" | "generate" | "text" | "motion" | "studio" | "captions" | "inspector") {
                     self.editor.update(cx, |e, cx| if panel == "inspector" { e.set_inspector_open(false, cx) } else { e.set_left_open(false, cx) });
@@ -226,6 +236,7 @@ impl Workspace {
                     "whatsNew" | "releaseNotes" => s.open_dialog(Dialog::WhatsNew { since: None, all: params["all"].as_bool().unwrap_or(false) }, cx),
                     "shortcuts" => s.open_dialog(Dialog::Shortcuts, cx),
                     "diagnostics" | "logs" => s.open_dialog(Dialog::Settings { section: Some("diagnostics".into()) }, cx),
+                    "onboarding" => s.open_setup(params["section"].as_str().map(str::to_string), cx),
                     _ => {}
                 });
                 if panel == "inspector" {
@@ -802,6 +813,10 @@ impl Workspace {
         self.store.update(cx, |s, cx| s.open_dialog(Dialog::WhatsNew { since: None, all: false }, cx));
     }
 
+    fn set_up(&mut self, _: &SetUpKimchi, _: &mut Window, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.open_setup(None, cx));
+    }
+
     fn show_diagnostics(&mut self, _: &ShowDiagnostics, _: &mut Window, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: Some("diagnostics".into()) }, cx));
     }
@@ -953,7 +968,9 @@ impl Render for Workspace {
         let dropping = store.dropping && cx.has_active_drag();
         let menu = store.menu.clone();
         let toasts = store.toasts.clone();
-        let modal = store.dialog.is_some();
+        // The setup takes the whole window: the editor's keys wait behind it like behind a dialog.
+        let setup = store.setup.is_some();
+        let modal = store.dialog.is_some() || setup;
         let pb = store.playback.clone();
         let project = store.project.as_ref().map(|p| (p.duration(), p.settings.fps, p.name.clone()));
         match project {
@@ -1027,6 +1044,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::check_updates))
             .on_action(cx.listener(Self::about))
             .on_action(cx.listener(Self::whats_new))
+            .on_action(cx.listener(Self::set_up))
             .on_action(cx.listener(Self::show_diagnostics))
             .on_action(cx.listener(Self::report_problem))
             .on_action(cx.listener(Self::restart_app))
@@ -1057,7 +1075,13 @@ impl Render for Workspace {
             .text_size(px(sz::BASE))
             .text_color(t.text)
             .child(self.backdrop(window, cx))
-            .child(if has_project { self.editor.clone().into_any_element() } else { self.home.clone().into_any_element() })
+            .child(if setup {
+                self.onboarding.clone().into_any_element()
+            } else if has_project {
+                self.editor.clone().into_any_element()
+            } else {
+                self.home.clone().into_any_element()
+            })
             .child(self.dialogs.clone())
             .when_some(menu, |d, m| d.child(views::overlays::context_menu(m, window, cx)))
             .child(views::overlays::toasts(toasts, cx))

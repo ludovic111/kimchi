@@ -71,6 +71,7 @@ actions!(
         OpenHelp,
         OpenSupport,
         WhatsNew,
+        SetUpKimchi,
         ShowDiagnostics,
         ReportProblem,
         RestartApp,
@@ -286,10 +287,59 @@ fn concrete(keys: &str) -> String {
     }
 }
 
+/// The keys of the layout in use (`settings.shortcuts.keymap`), by action name.
+struct Active {
+    layout: &'static kimchi_control::keymaps::Layout,
+    bindings: Vec<kimchi_control::keymaps::Binding>,
+}
+
+thread_local! {
+    // The window's thread (each UI test has its own app on its own thread).
+    static ACTIVE: std::cell::RefCell<Option<std::rc::Rc<Active>>> = const { std::cell::RefCell::new(None) };
+}
+
+fn active() -> Option<std::rc::Rc<Active>> {
+    ACTIVE.with(|a| a.borrow().clone())
+}
+
+/// The keyboard layout in use.
+pub fn layout() -> &'static kimchi_control::keymaps::Layout {
+    active().map(|a| a.layout).unwrap_or(&kimchi_control::keymaps::LAYOUTS[0])
+}
+
+/// The action's name in the tables (`PlayPause`).
+fn name_of(action: &dyn Action) -> &'static str {
+    action.name().trim_start_matches("kimchi::")
+}
+
+/// The binding of an action in the layout in use (`None` before [`bind`]).
+pub fn binding(name: &str) -> Option<kimchi_control::keymaps::Binding> {
+    active()?.bindings.iter().find(|b| b.action == name).cloned()
+}
+
+/// A shortcut's keys in the layout in use, first shown (empty: none in this layout).
+pub fn keys_of(s: &Shortcut) -> Vec<String> {
+    let name = name_of(&*s.action());
+    match binding(name) {
+        Some(b) => b.keys,
+        None => s.keys.iter().map(|k| k.to_string()).collect(),
+    }
+}
+
+/// Binds the keys of the layout in settings (again, after it changed). Other bindings (text
+/// fields, dialogs) stay.
 pub fn bind(cx: &mut App) {
+    use crate::store::StoreExt;
+    let id = cx.try_global::<crate::store::GlobalStore>().map(|_| cx.store().read(cx).settings.shortcuts.keymap.clone()).unwrap_or_default();
+    let layout = kimchi_control::keymaps::layout(&id).unwrap_or(&kimchi_control::keymaps::LAYOUTS[0]);
+    let bindings = kimchi_control::keymaps::resolve_here(layout);
+    let ours: std::collections::HashSet<&str> = SHORTCUTS.iter().map(|s| s.action().name()).collect();
+    let others: Vec<KeyBinding> = cx.key_bindings().borrow().bindings().filter(|b| !ours.contains(b.action().name())).cloned().collect();
+    ACTIVE.with(|a| *a.borrow_mut() = Some(std::rc::Rc::new(Active { layout, bindings })));
     let mut b: Vec<KeyBinding> = vec![];
     for s in SHORTCUTS {
-        for k in s.keys {
+        for k in keys_of(s) {
+            let k = k.as_str();
             // A key without a modifier (`?`) types a character in a field, so it never works there.
             let bare = !k.starts_with("M-") && !k.contains("ctrl-") && !k.contains("alt-") && !k.contains("cmd-");
             let context = match s.scope {
@@ -300,11 +350,23 @@ pub fn bind(cx: &mut App) {
                 // The Studio's own keys; `StudioBusy` is set while a mouse tool or menu takes the keys.
                 Scope::Studio => Some("Studio && !TextInput && !Modal && !StudioBusy"),
             };
-            b.push(KeyBinding::load(&concrete(k), s.action(), context.map(|c| gpui::KeyBindingContextPredicate::parse(c).expect("valid context").into()), false, None, &gpui::DummyKeyboardMapper).expect("valid keystroke"));
+            match KeyBinding::load(&concrete(k), s.action(), context.map(|c| gpui::KeyBindingContextPredicate::parse(c).expect("valid context").into()), false, None, &gpui::DummyKeyboardMapper) {
+                Ok(binding) => b.push(binding),
+                Err(e) => tracing::warn!("the key {k} of {} doesn't parse: {e}", s.label),
+            }
         }
     }
-    b.extend(crate::ui::input::bindings());
+    // The first time, the text fields' keys come along; later they are among the others.
+    let fresh = others.is_empty();
+    cx.clear_key_bindings();
+    cx.bind_keys(others);
+    if fresh {
+        cx.bind_keys(crate::ui::input::bindings());
+    }
     cx.bind_keys(b);
+    if !fresh {
+        cx.set_menus(menus());
+    }
 }
 
 impl Shortcut {
@@ -312,15 +374,15 @@ impl Shortcut {
         (self.action)()
     }
 
-    /// The first key, as this platform writes it.
-    pub fn hint(&self) -> SharedString {
-        keys_label(self.keys[0])
+    /// The first key in the layout in use, as this platform writes it (empty: no key there).
+    pub fn hint(&self) -> Option<SharedString> {
+        keys_of(self).first().map(|k| keys_label(k))
     }
 }
 
 /// The shortcut of an action, as this platform writes it (`⇧⌘Z`, `Ctrl+Shift+Z`).
 pub fn hint(action: &dyn Action) -> Option<SharedString> {
-    SHORTCUTS.iter().find(|s| s.action().name() == action.name()).map(Shortcut::hint)
+    SHORTCUTS.iter().find(|s| s.action().name() == action.name()).and_then(Shortcut::hint)
 }
 
 /// `"Undo"` → `"Undo (⌘Z)"`: tooltips name their shortcut.
@@ -333,64 +395,12 @@ pub fn tip(label: &str, action: &dyn Action) -> SharedString {
 
 /// A table keystroke (`"M-shift-z"`, `"alt-left"`, `"?"`) in this platform's notation.
 pub fn keys_label(keys: &str) -> SharedString {
-    keys_label_for(keys, cfg!(target_os = "macos")).into()
+    kimchi_control::keymaps::label(keys, cfg!(target_os = "macos")).into()
 }
 
+#[cfg(test)]
 fn keys_label_for(keys: &str, mac: bool) -> String {
-    // The key is the last part ("-" itself is a key: "M--").
-    let (mods, key) = match keys.strip_suffix("--") {
-        Some(m) => (m, "-"),
-        None => match keys.rsplit_once('-') {
-            Some((m, k)) if !k.is_empty() => (m, k),
-            _ => ("", keys),
-        },
-    };
-    let has = |m: &str| mods.split('-').any(|x| x == m);
-    let key = match key {
-        "left" => "←".to_string(),
-        "right" => "→".to_string(),
-        "up" => "↑".to_string(),
-        "down" => "↓".to_string(),
-        "space" => "Space".to_string(),
-        "escape" => "Esc".to_string(),
-        "home" => "Home".to_string(),
-        "end" => "End".to_string(),
-        "enter" => if mac { "↵" } else { "Enter" }.to_string(),
-        "backspace" => if mac { "⌫" } else { "Backspace" }.to_string(),
-        "delete" => if mac { "⌦" } else { "Delete" }.to_string(),
-        "-" => "−".to_string(),
-        k => k.to_uppercase(),
-    };
-    if mac {
-        // macOS order: ⌃⌥⇧⌘.
-        let mut s = String::new();
-        if has("ctrl") {
-            s.push('⌃');
-        }
-        if has("alt") {
-            s.push('⌥');
-        }
-        if has("shift") {
-            s.push('⇧');
-        }
-        if has("M") || has("cmd") {
-            s.push('⌘');
-        }
-        s + &key
-    } else {
-        let mut parts = vec![];
-        if has("M") || has("ctrl") {
-            parts.push("Ctrl");
-        }
-        if has("alt") {
-            parts.push("Alt");
-        }
-        if has("shift") {
-            parts.push("Shift");
-        }
-        parts.push(&key);
-        parts.join("+")
-    }
+    kimchi_control::keymaps::label(keys, mac)
 }
 
 pub fn menus() -> Vec<Menu> {
@@ -472,6 +482,7 @@ pub fn menus() -> Vec<Menu> {
         Menu::new("Help").items([
             MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
             MenuItem::action("What's New", WhatsNew),
+            MenuItem::action("Set Up kimchi…", SetUpKimchi),
             MenuItem::action("Driving kimchi from AI and scripts", OpenHelp),
             MenuItem::separator(),
             MenuItem::action("Logs and Crash Reports", ShowDiagnostics),
@@ -495,6 +506,26 @@ mod tests {
         assert_eq!(keys_label_for("shift-backspace", false), "Shift+Backspace");
         assert_eq!(keys_label_for("?", true), "?");
         assert_eq!(keys_label_for("space", true), "Space");
+    }
+
+    /// kimchi's own keys are the same in both tables (the layouts are built on kimchi-control's).
+    #[test]
+    fn the_table_matches_the_keymaps() {
+        let names: Vec<&str> = SHORTCUTS.iter().map(|s| name_of(&*s.action())).collect();
+        let theirs: Vec<&str> = kimchi_control::keymaps::ACTIONS.iter().map(|a| a.name).collect();
+        assert_eq!(names, theirs, "actions.rs SHORTCUTS and kimchi_control::keymaps::ACTIONS list the same actions in order");
+        for (s, a) in SHORTCUTS.iter().zip(kimchi_control::keymaps::ACTIONS) {
+            assert_eq!(s.keys, a.keys, "{}", a.name);
+            assert_eq!((s.group, s.label), (a.group, a.label), "{}", a.name);
+        }
+        // Every layout's keys parse.
+        for l in kimchi_control::keymaps::LAYOUTS {
+            for b in kimchi_control::keymaps::resolve_here(l) {
+                for k in &b.keys {
+                    gpui::Keystroke::parse(&concrete(k)).unwrap_or_else(|_| panic!("{}: {k} doesn't parse", l.id));
+                }
+            }
+        }
     }
 
     #[test]
