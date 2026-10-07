@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       app:
-        description: App to build with the suite signing credentials
+        description: App to build with the suite signing credentials (lsuite is the launcher, in launcher/ of ludovic111/lsuite)
         type: choice
-        options: [nori, folio]
+        options: [nori, folio, lsuite]
         required: true
       ref:
         description: Full commit SHA in that app's repository
@@ -32,13 +32,16 @@ jobs:
     defaults:
       run:
         shell: bash
+        # The launcher lives in launcher/ of the lsuite repository; the apps at their root.
+        working-directory: ${{ inputs.app == 'lsuite' && 'launcher' || '.' }}
     steps:
       - name: Validate source
+        working-directory: .
         env:
           APP: ${{ inputs.app }}
           REF: ${{ inputs.ref }}
         run: |
-          [[ "$APP" == nori || "$APP" == folio ]]
+          [[ "$APP" == nori || "$APP" == folio || "$APP" == lsuite ]]
           [[ "$REF" =~ ^[0-9a-f]{40}$ ]]
       - uses: actions/checkout@v4
         with:
@@ -47,11 +50,13 @@ jobs:
           persist-credentials: false
       - name: Linux dependencies
         if: runner.os == 'Linux'
+        working-directory: .
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config clang libasound2-dev libdbus-1-dev libfontconfig-dev libfreetype-dev libssl-dev libvulkan-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev libglib2.0-dev desktop-file-utils
       - name: Windows installer tools
         if: runner.os == 'Windows'
+        working-directory: .
         run: choco install nsis -y --no-progress
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -59,6 +64,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: suite-${{ inputs.app }}-${{ matrix.target }}
+          workspaces: ${{ inputs.app == 'lsuite' && 'launcher -> target' || '. -> target' }}
       - name: Prepare Apple signing
         if: runner.os == 'macOS'
         env:
@@ -77,17 +83,18 @@ jobs:
       - name: Sign updater archives
         env:
           APP: ${{ inputs.app }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.app == 'nori' && secrets.NORI_UPDATE_SIGNING_KEY || secrets.FOLIO_UPDATE_SIGNING_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.app == 'nori' && secrets.NORI_UPDATE_SIGNING_KEY || inputs.app == 'lsuite' && secrets.LSUITE_UPDATE_SIGNING_KEY || secrets.FOLIO_UPDATE_SIGNING_KEY }}
         run: |
           version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
           cargo build --release --locked -p "$APP-release"
-          for file in target/dist/*.app.tar.gz target/dist/*.exe target/dist/*.zip target/dist/*.AppImage target/dist/*.deb; do
+          for file in target/dist/*.app.tar.gz target/dist/*.exe target/dist/*.zip target/dist/*.AppImage target/dist/*.deb target/dist/*.tar.gz; do
             [ -f "$file" ] || continue
             "target/release/$APP-release" sign "$file" --version "$version"
             "target/release/$APP-release" verify "$file" --version "$version"
           done
       - name: Remove signing keychain
         if: always() && runner.os == 'macOS'
+        working-directory: .
         run: |
           if [ -f "$RUNNER_TEMP/signing.keychain-db" ]; then security delete-keychain "$RUNNER_TEMP/signing.keychain-db"; fi
           rm -f "$RUNNER_TEMP/notary.p8"
@@ -95,11 +102,12 @@ jobs:
         with:
           name: ${{ inputs.app }}-${{ matrix.target }}
           path: |
-            target/dist/*.dmg
-            target/dist/*.app.tar.gz
-            target/dist/*.exe
-            target/dist/*.zip
-            target/dist/*.AppImage
-            target/dist/*.deb
-            target/dist/*.sig
+            ${{ inputs.app == 'lsuite' && 'launcher/' || '' }}target/dist/*.dmg
+            ${{ inputs.app == 'lsuite' && 'launcher/' || '' }}target/dist/*.app.tar.gz
+            ${{ inputs.app == 'lsuite' && 'launcher/' || '' }}target/dist/*.exe
+            ${{ inputs.app == 'lsuite' && 'launcher/' || '' }}target/dist/*.zip
+            ${{ inputs.app == 'lsuite' && 'launcher/' || '' }}target/dist/*.AppImage
+            ${{ inputs.app == 'lsuite' && 'launcher/' || '' }}target/dist/*.deb
+            ${{ inputs.app == 'lsuite' && 'launcher/' || '' }}target/dist/*.tar.gz
+            ${{ inputs.app == 'lsuite' && 'launcher/' || '' }}target/dist/*.sig
           if-no-files-found: error
