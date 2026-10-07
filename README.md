@@ -48,12 +48,12 @@ rewritten from the ground up in Rust.
 - Keyboard layouts of Premiere Pro, Final Cut Pro, DaVinci Resolve, Avid, CapCut, Kdenlive, Shotcut, VEGAS and iMovie (Settings › Keyboard)
 - A first-run setup asks where you come from, whether you want generative AI, and which agent to use (Help › Set up kimchi brings it back)
 
-**Sound and Ryolune**
+**Sound and ryolune**
 - A Rust mixer shared by playback, exports and speech transcription: clip and track gain/pan, editable fade shapes, buses, sends, automation, ducking, meters and a master true-peak limiter
-- Ryolune's stock effects and plugin host, with searchable effect lists and parameter panels; CLAP, VST3, native plugins and Audio Units on macOS, subject to the plugin and platform
+- ryolune's stock effects and plugin host, with searchable effect lists and parameter panels; CLAP, VST3, native plugins and Audio Units on macOS, subject to the plugin and platform
 - Loudness measurement and normalization, beat detection, beat snapping and cuts on music beats
 - Voice-over recording with a count-in; finish a take to place it on an audio track, with undo
-- Import `.ryolune` songs as mixes or stems, refresh after changes, and send an editable multitrack audio session back to Ryolune
+- Import `.ryolune` songs as mixes or stems, refresh after changes, and send an editable multitrack audio session back to ryolune
 - WAV (16/24-bit or float), AIFF, FLAC, MP3, AAC, Opus and Ogg exports, with sample rate, bitrate, stems and loudness options
 
 **A window that fits**
@@ -147,13 +147,13 @@ The **Agent** panel (⌘J) works with no setup on **lsuite AI**: sign in once wi
 signed in with it) and the agent runs Claude models on a monthly plan, with your allowance shown in Settings › Agent
 (a demo for now: no payment is taken). Or it runs the model you already have: Claude Code (which can also run on lsuite AI), Codex, Gemini CLI, an Anthropic, OpenAI,
 Google Gemini or Amazon Bedrock key, any OpenAI-compatible service (OpenRouter, Groq, Mistral, DeepSeek, xAI,
-Together, Fireworks, Cerebras, Azure OpenAI, LM Studio…), a local Ollama model, or **Zenith**. It shows one card per
+Together, Fireworks, Cerebras, Azure OpenAI, LM Studio…), a local Ollama model, or **zenith**. It shows one card per
 command and lets you revert a whole run. **It can see**: it looks at the frames it renders and at your media, and every
 picture it looked at shows in its card. Each request carries what you're looking at (selection, playhead, the clip open
 in the Studio), so "make this shorter" just works. Choose
 the provider and model in the panel, send a steering message during a run, and keep multiple named
-conversations per project. Conversations and editable project memory survive restarts. Zenith uses
-its own provider accounts and threads through the lsuite command interface; install Zenith and run
+conversations per project. Conversations and editable project memory survive restarts. zenith uses
+its own provider accounts and threads through the lsuite command interface; install zenith and run
 its server to select it. What agents may do
 (files, projects, generation, settings, quitting) is set in Settings › Agent, for the built-in agent and MCP alike.
 kimchi hands cuts to [ryolune](https://lsuite.xyz/ryolune) to score them and takes its audio back
@@ -185,12 +185,15 @@ crates/
                    modifiers, expressions, particles, templates
   kimchi-media     ffmpeg probing, decoding and encoding; the compositor: text, 2D motion and effects, 3D (GPU, CPU and
                    the path tracer), colour, transitions, motion clips rendered ahead
+  kimchi-audio     kimchi's sound: the Rust mixer behind the preview and the export, with ryolune's engine for effects,
+                   plugins and songs
   kimchi-captions  SRT / WebVTT, and speech to text with Whisper (candle, on the CPU)
   kimchi-gen       the generation harness: Provider trait, 16 providers, keys, job queue
   kimchi-control   the command registry, session, permissions, loopback bridge, lsuite discovery, updater
   kimchi-agent     the built-in agent (Claude Code, Codex, Gemini, Anthropic, OpenAI and compatible, Bedrock, Ollama,
-                   Zenith), pictures and the context block
+                   zenith), pictures and the context block
   kimchi-interop   other editors: OTIO, FCPXML, Premiere XML and EDL, LUT and preset formats, keyboard layouts
+  kimchi-plugin    the video plugin SDK: effects, generators and transitions in Rust, loaded through a stable C ABI
   kimchi-desktop   the window (GPUI), binary `kimchi`
   kimchi-cli       `kimchi-cli`: any command, on the running app or a project file
   kimchi-mcp       `kimchi-mcp`: the registry as MCP tools (`--live`, `--file`)
@@ -275,7 +278,7 @@ the tag. The release workflow builds
 macOS (Apple Silicon and Intel; signed and notarized), Windows and Linux, signs the update files, writes
 `latest.json` and drafts the GitHub release; publishing the draft rolls the update out to everyone.
 
-Update signatures use the minisign key of the Tauri builds, through `crates/kimchi-release` (no Node or Tauri CLI):
+Update signatures use kimchi's minisign update key (the secret keeps its old name `TAURI_SIGNING_PRIVATE_KEY`), through `crates/kimchi-release` (no Node or Tauri CLI):
 
 ```bash
 cargo run -p kimchi-release -- sign <file> --version X.Y.Z     # key in TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)
