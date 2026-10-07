@@ -248,6 +248,24 @@ Audio sound generation, Studio modelling workbench and animation tools). CI and 
 - [ ] The new windows (setup, import/export, look picker) were only checked by headless UI tests; look at them.
 - [ ] Docs-found, still open: `kimchi-cli` bypasses agent permissions; no menu bar on Linux/Windows.
 
+## Plugins and lsuite AI (0.10.0, 2026-10-07, overnight)
+
+Done overnight by an agent (see the lsuite notes above for the pieces). Checked: the workspace tests (the plugin recipe
+end to end in `kimchi-control` tests: new → build with an error → fix → publish → on a clip in a rendered frame → rebuilt
+and used at once → switched off → removed), the loopback sign-in and an agent run against the site's real demo server
+(`../lsuite` `server.js` + `ai.js`, port 4331), 158 real frei0r filters scanned and drawn, hot reload in the running
+window on vscreen.
+
+- [ ] macOS: the loopback sign-in (`open` the browser), loading copies of a plugin's `.dylib` (hot reload; dyld and
+      install names), frei0r from Homebrew (`/opt/homebrew/lib/frei0r-1`), `plugin.build` with the Dock's bare PATH.
+- [ ] Windows: none of it was run (DLL copies, `rundll32` for the browser).
+- [ ] "Build with your agent" with a real model: the demo server answers with a canned line, and no API key is on this
+      machine, so the agent never wrote a plugin by itself; the recipe commands are tested directly.
+- [ ] The inspector's Plugins section: no keyframe toggles yet (commands only), colours/points/text shown read-only.
+- [ ] A run sends ~38k input tokens (every command as a tool): on lsuite AI that is ~20 credits a message before caching.
+      Consider the trimmed tool set for lsuite AI, or caching the tool list across turns.
+- [ ] frei0r: `defish0r` gives no answer in the scan child (listed as failed); three-input mixers are refused.
+
 ## Next session
 
 - [ ] A pass with real mouse input in the running app: clicks, drags and typing are covered by GPUI

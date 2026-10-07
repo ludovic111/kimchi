@@ -1,3 +1,25 @@
+# Performance
+
+## The window at rest, 0.10.0 (2026-10-07)
+
+The 0.9.1 release (`kimchi_amd64.deb`) and a release build of 0.10.0, each started on the same
+virtual screen (sway, 1600×1000) with empty data folders and no setup: time until the window
+shows, then the app's own CPU over 30 s of rest 10 s after, and its resident memory on Home. The
+machine was shared with other builds, so the times vary from run to run; the table keeps each run.
+
+| | Start to window | CPU at rest | Memory |
+| --- | ---: | ---: | ---: |
+| 0.9.1 | 0.54 s, 0.61 s, 2.06 s | 0.70 %, 0.50 %, 0.56 % | 202–207 MB |
+| 0.10.0 | 1.93 s, 1.50 s | 0.43 %, 0.43 % | 214–215 MB |
+
+The start times are dominated by the shared machine (the same 0.9.1 binary took from 0.5 to 2 s).
+At rest 0.10.0 wakes less (the captions panel no longer checks four times a second when nothing
+is transcribing). It holds about 10 MB more: the stock SDK plugins, the plugin catalogue and the
+lsuite account. The first start also scans the plugin folders in child processes (158 frei0r
+plugins: 6.8 s of wall time in the background, 2.4 s of CPU); later starts read the cache (0.5 s).
+How: start the app, poll the compositor until its window shows,
+sample `/proc/<pid>/stat` and `VmRSS`.
+
 # Renderer measurements for 0.8.0
 
 The `render_bench` example exercises compositing, motion effects, 3D, path tracing,
