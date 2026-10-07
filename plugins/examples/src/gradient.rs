@@ -71,9 +71,9 @@ mod tests {
         let out = b.generate(10, 100);
         assert!(out.pixel(5, 0)[0] <= 2 && out.pixel(5, 99)[0] >= 253);
         assert!((out.pixel(5, 50)[0] as i32 - 128).abs() <= 3);
-        // Radial: the centre is the start colour, the corners the end colour.
+        // Radial: the centre is the start colour (a pixel's centre is half a pixel off it), the corners the end colour.
         b.set("Shape", 1).set("Start", [0.5, 0.5]).set("End", [1.0, 0.5]);
         let out = b.generate(100, 100);
-        assert!(out.pixel(50, 50)[0] <= 3 && out.pixel(0, 0)[0] >= 253);
+        assert!(out.pixel(50, 50)[0] <= 6 && out.pixel(0, 0)[0] >= 253, "centre {:?} corner {:?} right {:?}", out.pixel(50, 50), out.pixel(0, 0), out.pixel(99, 50));
     }
 }
