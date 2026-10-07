@@ -123,6 +123,17 @@ pub struct CommandRecord {
     pub checkpoint: Option<u64>,
 }
 
+/// How many changes [`Session::edits_since`] remembers.
+const RECENT_EDITS: usize = 128;
+
+/// A successful change any client made.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RecentEdit {
+    pub seq: u64,
+    pub source: Source,
+    pub command: String,
+}
+
 /// Progress of one export.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExportStatus {
@@ -273,9 +284,13 @@ pub struct Session {
     ui_state: RwLock<UiState>,
     agent: RwLock<Option<Arc<dyn AgentHost>>>,
     seq: AtomicU64,
+    /// The latest successful changes, oldest first (for the agents' live context).
+    recent_edits: Mutex<std::collections::VecDeque<RecentEdit>>,
     runtime: tokio::runtime::Handle,
     pub(crate) update: Mutex<crate::update::UpdateState>,
     pub(crate) bridge_port: Mutex<Option<u16>>,
+    /// The control file of this session's bridge, when it runs.
+    pub(crate) bridge_path: Mutex<Option<PathBuf>>,
     /// Held by a running `project.batch`; other changes wait for it (briefly) before starting.
     pub(crate) batch_lock: Arc<tokio::sync::Mutex<()>>,
 }
@@ -316,9 +331,11 @@ impl Session {
             ui_state: RwLock::new(UiState::default()),
             agent: RwLock::new(None),
             seq: AtomicU64::new(1),
+            recent_edits: Mutex::new(Default::default()),
             runtime: tokio::runtime::Handle::current(),
             update: Mutex::new(Default::default()),
             bridge_port: Mutex::new(None),
+            bridge_path: Mutex::new(None),
             batch_lock: Arc::new(tokio::sync::Mutex::new(())),
         });
         crate::commands::generate::spawn_job_listener(&session);
@@ -358,6 +375,21 @@ impl Session {
 
     pub(crate) fn next_seq(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Notes a successful change (`harness.context` tells agents what others changed).
+    pub(crate) fn note_edit(&self, seq: u64, source: Source, command: &str) {
+        let mut recent = self.recent_edits.lock();
+        if recent.len() >= RECENT_EDITS {
+            recent.pop_front();
+        }
+        recent.push_back(RecentEdit { seq, source, command: command.to_string() });
+    }
+
+    /// The changes noted after `since` (a `seq`), oldest first, and the latest seq given out.
+    pub fn edits_since(&self, since: u64) -> (Vec<RecentEdit>, u64) {
+        let recent = self.recent_edits.lock();
+        (recent.iter().filter(|e| e.seq > since).cloned().collect(), self.seq.load(Ordering::Relaxed).saturating_sub(1))
     }
 
     // ---- settings -------------------------------------------------------
@@ -649,6 +681,11 @@ impl Session {
 
     pub fn bridge_port(&self) -> Option<u16> {
         *self.bridge_port.lock()
+    }
+
+    /// The control file clients of this session's bridge read (`KIMCHI_CONTROL`), when it runs.
+    pub fn bridge_path(&self) -> Option<PathBuf> {
+        self.bridge_path.lock().clone()
     }
 }
 

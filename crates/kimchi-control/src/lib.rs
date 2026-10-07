@@ -13,6 +13,7 @@ pub mod commands;
 pub mod compat;
 pub mod diagnostics;
 pub mod discovery;
+pub mod harness;
 pub mod keymaps;
 pub mod looks;
 pub mod plugin_dev;

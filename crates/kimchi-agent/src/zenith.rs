@@ -68,7 +68,7 @@ pub(crate) async fn run(run: &mut Run, prompt: String, conv: Conversation) -> Re
 }
 
 fn context_prompt(name: &str, id: kimchi_core::Id, prompt: &str) -> String {
-    format!("You are working in kimchi, part of lsuite. Use the installed kimchi MCP tools to edit project '{name}' (id {id}). Check project.overview before editing; stop if another project is open. Use the suite's ryolune tools when audio work needs them. kimchi's command permissions and undo history apply.\n\n{}\n\nRequest:\n{prompt}", crate::SYSTEM_PROMPT)
+    format!("You are working in kimchi, part of lsuite. Use the installed kimchi MCP tools to edit project '{name}' (id {id}). Check project.overview before editing; stop if another project is open. Use the suite's ryolune tools when audio work needs them. kimchi's command permissions and undo history apply.\n\n{}\n\nRequest:\n{prompt}", crate::system_prompt())
 }
 
 async fn run_at(run: &mut Run, prompt: String, mut conv: Conversation, exe: PathBuf) -> Result<String, String> {

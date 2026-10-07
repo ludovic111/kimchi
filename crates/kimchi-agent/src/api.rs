@@ -209,10 +209,15 @@ pub(crate) async fn run(run: &mut Run, prompt: String, mut conv: Conversation) -
     let (limit, compact) = tool_budget(api.wire);
     let tools = ToolSet::new(limit, compact);
     conv.prepare_turn();
-    conv.messages.push(Message::user(crate::context::glance(&run.session).frame(&prompt)));
+    // The live context: in front of the request, then before each later step when it changed.
+    let mut seen = crate::context::glance_since(&run.session, Some(u64::MAX), &[]);
+    conv.messages.push(Message::user(seen.frame(&prompt)));
     run.set_conversation(&conv);
     let steps = run.config.max_steps.max(1);
     for round in 0..steps {
+        if round > 0 {
+            refresh_context(run, &mut conv, &mut seen);
+        }
         run.status(format!("Thinking with {}…", api.model));
         run.break_text();
         let Step { parts, calls } = api.step(run, &tools, &conv.messages, round).await.map_err(|e| if api.kind == ProviderKind::Lsuite { crate::lsuite::explain(&e) } else { e })?;
@@ -248,6 +253,19 @@ pub(crate) async fn run(run: &mut Run, prompt: String, mut conv: Conversation) -
         conv.messages.push(results);
     }
     Err(format!("Stopped after {steps} model steps without finishing. Finished edits stay; ask it to continue, or split the request."))
+}
+
+/// Before a model step: when the project or the window changed since the context the model last
+/// saw (its own edits, or the person's meanwhile), an updated `<context>` block goes after the
+/// tool results, with what others changed.
+pub(crate) fn refresh_context(run: &Run, conv: &mut Conversation, seen: &mut crate::context::Glance) {
+    let now = crate::context::glance_since(&run.session, Some(seen.seq), &[kimchi_control::Source::Agent]);
+    let changed = now.lines != seen.lines || now.changes.is_some();
+    if changed && let Some(last) = conv.messages.last_mut().filter(|m| m.role == Role::User) {
+        last.parts.push(Part::Text { text: format!("<context>\nUpdated before this step.\n{}\n</context>", now.text()) });
+        run.set_conversation(conv);
+    }
+    *seen = now;
 }
 
 fn has_pictures(messages: &[Message]) -> bool {

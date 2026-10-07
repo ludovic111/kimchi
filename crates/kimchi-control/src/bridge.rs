@@ -112,6 +112,7 @@ impl Server {
         let d = Discovery { version: VERSION, port, token: token.clone(), pid: std::process::id() };
         write_private(&path, &serde_json::to_vec_pretty(&d).map_err(std::io::Error::other)?)?;
         *session.bridge_port.lock() = Some(port);
+        *session.bridge_path.lock() = Some(path.clone());
         let task = tokio::spawn(async move {
             loop {
                 let Ok((stream, peer)) = listener.accept().await else { continue };

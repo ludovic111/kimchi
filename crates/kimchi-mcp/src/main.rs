@@ -103,7 +103,7 @@ async fn main() {
     eprintln!("kimchi-mcp {}: {} mode{}", env!("CARGO_PKG_VERSION"), backend.mode(), backend.path().map(|p| format!(" on {}", p.display())).unwrap_or_default());
 
     let (out, writer) = protocol_out();
-    let server = Arc::new(Server { backend });
+    let server = Arc::new(Server { backend, seen: Default::default() });
     // Requests in flight by id (as JSON text), to cancel them.
     let running: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>> = Arc::default();
     let mut stdin = tokio::io::BufReader::with_capacity(1 << 16, tokio::io::stdin());
@@ -271,6 +271,8 @@ fn exit_usage(message: &str) -> ! {
 
 struct Server {
     backend: Backend,
+    /// The live context the client last saw: the summary and the change it goes up to.
+    seen: tokio::sync::Mutex<Option<(String, u64)>>,
 }
 
 /// A request (with an id) or a notification.
@@ -352,21 +354,41 @@ impl Server {
                                 Err(e) => text.push_str(&format!("\n(The picture couldn't be attached: {e})")),
                             }
                         }
-                        let mut reply = json!({ "content": std::iter::once(json!({ "type": "text", "text": text })).chain(pictures).collect::<Vec<_>>(), "isError": false });
+                        let context = self.context_update(spec.name).await;
+                        let mut reply = json!({ "content": std::iter::once(json!({ "type": "text", "text": text })).chain(pictures).chain(context).collect::<Vec<_>>(), "isError": false });
                         if result.is_object() {
                             reply["structuredContent"] = result;
                         }
                         reply
                     }
-                    Err(message) => json!({ "content": [{ "type": "text", "text": message }], "isError": true }),
+                    Err(message) => {
+                        let context = self.context_update(spec.name).await;
+                        json!({ "content": std::iter::once(json!({ "type": "text", "text": message })).chain(context).collect::<Vec<_>>(), "isError": true })
+                    }
                 })
             }
-            "resources/list" => Ok(json!({ "resources": RESOURCES.iter().map(|(uri, name, description, _)| json!({
-                "uri": uri, "name": name, "description": description, "mimeType": "application/json",
-            })).collect::<Vec<_>>() })),
-            "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
+            "resources/list" => {
+                let mut list: Vec<Value> = RESOURCES.iter().map(|(uri, name, description, _)| json!({
+                    "uri": uri, "name": name, "description": description, "mimeType": "application/json",
+                })).collect();
+                list.push(json!({ "uri": "kimchi://brief", "name": "Brief", "description": "How to work in kimchi: the project model, the quality bar, the finish routine (the same as these instructions).", "mimeType": "text/markdown" }));
+                list.extend(kimchi_control::harness::skills().iter().map(|s| json!({
+                    "uri": format!("kimchi://skills/{}", s.name), "name": format!("Skill: {}", s.title), "description": s.when, "mimeType": "text/markdown",
+                })));
+                Ok(json!({ "resources": list }))
+            }
+            "resources/templates/list" => Ok(json!({ "resourceTemplates": [{
+                "uriTemplate": "kimchi://skills/{name}", "name": "Skill", "description": "A playbook for a video job (harness.skills lists them).", "mimeType": "text/markdown",
+            }] })),
             "resources/read" => {
                 let uri = params.get("uri").and_then(Value::as_str).ok_or((-32602, "resources/read needs `uri`".to_string()))?;
+                let markdown = |text: String| json!({ "contents": [{ "uri": uri, "mimeType": "text/markdown", "text": text }] });
+                if uri == "kimchi://brief" {
+                    return Ok(markdown(kimchi_control::harness::brief()));
+                }
+                if let Some(name) = uri.strip_prefix("kimchi://skills/") {
+                    return kimchi_control::harness::skill(name).map(|t| markdown(t.to_string())).map_err(|e| (-32002, e));
+                }
                 let command = RESOURCES.iter().find(|(u, ..)| *u == uri).map(|(.., c)| *c).ok_or((-32002, format!("Unknown resource `{uri}`")))?;
                 let value = self.backend.call(command, json!({})).await.map_err(|e| (-32000, e))?;
                 Ok(json!({ "contents": [{
@@ -375,26 +397,11 @@ impl Server {
                     "text": serde_json::to_string_pretty(&value).unwrap_or_default(),
                 }] }))
             }
-            "prompts/list" => Ok(json!({ "prompts": prompts::PROMPTS.iter().map(|p| json!({
-                "name": p.name,
-                "description": p.description,
-                "arguments": p.arguments.iter().map(|(name, description, required)| json!({
-                    "name": name, "description": description, "required": required,
-                })).collect::<Vec<_>>(),
-            })).collect::<Vec<_>>() })),
+            "prompts/list" => Ok(json!({ "prompts": prompts::list() })),
             "prompts/get" => {
                 let name = params.get("name").and_then(Value::as_str).ok_or((-32602, "prompts/get needs `name`".to_string()))?;
-                let prompt = prompts::PROMPTS.iter().find(|p| p.name == name).ok_or((-32602, format!("Unknown prompt `{name}`")))?;
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
-                for (arg, _, required) in prompt.arguments {
-                    if *required && prompts::arg(&arguments, arg, "").is_empty() {
-                        return Err((-32602, format!("Prompt `{name}` needs `{arg}`")));
-                    }
-                }
-                Ok(json!({
-                    "description": prompt.description,
-                    "messages": [{ "role": "user", "content": { "type": "text", "text": (prompt.render)(&arguments) } }],
-                }))
+                prompts::get(name, &arguments).ok_or((-32602, format!("Unknown prompt `{name}`")))
             }
             "completion/complete" => Ok(json!({ "completion": { "values": [] } })),
             _ => Err((-32601, format!("Method not found: {method}"))),
@@ -410,16 +417,47 @@ impl Server {
             ),
             Backend::Local { .. } => "Headless mode on the library (the app isn't running): project_list, project_open or project_create first. Commands that need the window are unavailable; exports and generations wait until they finish.".into(),
         };
+        if for_builtin_agent() {
+            // The built-in agent's system prompt already holds the brief.
+            return format!("kimchi's commands for the Agent panel's model. {mode} Your system prompt has kimchi's brief; harness_skill loads a playbook.");
+        }
         format!(
-            "kimchi is a video editor with image and video generation in the cut. {mode}\n\
-             Start with project_overview (also the resource kimchi://project/overview): one bounded answer with the canvas, every track and its clips, media with how they were generated, markers, running jobs, undo history, what the window shows and problems. Drill down with clip_get, media_get, track_list or generate_jobs.\n\
-             Conventions: times are seconds on the timeline; parameters are camelCase; ids and unique names both work wherever an id is expected (clipId \"Title\", trackId \"Video 1\"), and a near miss answers with \"did you mean\". Every edit is one undo step; project_batch runs several commands as one step and rolls back on failure.\n\
-             Generation: generate_providers and generate_models show what is ready; generate_submit makes an image or video and puts a placeholder on the timeline that becomes the result; generate_animateFrame, generate_extendClip, generate_bridge, generate_restyleFrame and generate_regenerate work from clips already in the cut. Pass wait=true to get the finished job back; otherwise follow it with generate_wait.\n\
-             Motion graphics and 3D: clip_setKeyframes / clip_animate animate any clip (position, scale, rotation, opacity, blur, volume) with easings; motion_addTemplate adds a lower third, title card, counter, chart, 3D title…; motion_add takes a whole 2D (layers) or 3D (camera, lights, objects) scene as JSON; motion_setLayer and motion_setKeyframes edit one. Read motion_guide first.\n\
-             Seeing: project_renderFrame (the cut at a time; several times give one labelled sheet), media_look (a media item; a video as a sheet of frames) and media_frame return the picture itself as image content along with its path. Look at what you made before calling it done.\n\
-             export_start renders the cut. Agent permissions (Settings › Agent › Permissions) decide whether you may import, export, switch projects, generate, change settings or control the app; API keys and the permissions themselves stay with the person."
+            "{}\n## Over MCP\n\n{mode}\n\nkimchi's commands are this server's tools, with an underscore for the dot (the command clip.addText is the tool clip_addText), as they are written above. The overview is also the resource kimchi://project/overview; each skill is a prompt and the resource kimchi://skills/<name>. When the project or the window changed since your last call, a tool result ends with an updated <context> block that says what the person changed meanwhile. Agent permissions (Settings › Agent › Permissions) decide whether you may import, export, switch projects, generate, change settings or control the app; API keys and the permissions themselves stay with the person.",
+            kimchi_control::harness::as_tools(&kimchi_control::harness::brief())
         )
     }
+}
+
+impl Server {
+    /// An updated `<context>` block for a tool result, when the project or the window changed
+    /// since the client last saw it (`KIMCHI_MCP_CONTEXT=0` turns this off).
+    async fn context_update(&self, command: &str) -> Option<Value> {
+        if !live_context() || command.starts_with("harness.") {
+            return None;
+        }
+        let mut seen = self.seen.lock().await;
+        let since = seen.as_ref().map(|(_, seq)| *seq);
+        let v = self.backend.call("harness.context", since.map_or(json!({}), |s| json!({ "since": s }))).await.ok()?;
+        let summary = v["summary"].as_str().unwrap_or("").to_string();
+        let seq = v["seq"].as_u64().unwrap_or(0);
+        let changes = v["changes"].as_str().filter(|c| !c.is_empty());
+        // A closed app or no open project: nothing to summarise.
+        if summary.starts_with("No project is open") {
+            return None;
+        }
+        // The first block is news unless the built-in agent framed the request with it already.
+        let first = seen.is_none();
+        let changed = seen.as_ref().is_none_or(|(s, _)| *s != summary) || changes.is_some();
+        *seen = Some((summary, seq));
+        if !changed || (first && for_builtin_agent()) {
+            return None;
+        }
+        Some(json!({ "type": "text", "text": format!("<context>\nUpdated after this call.\n{}\n</context>", v["context"].as_str().unwrap_or("")) }))
+    }
+}
+
+fn live_context() -> bool {
+    std::env::var("KIMCHI_MCP_CONTEXT").map_or(true, |v| v != "0")
 }
 
 /// Registry-backed resources: uri, name, description, command.

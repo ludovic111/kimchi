@@ -157,7 +157,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # The kimchi plugin SDK, from kimchi's repository at the tag of the kimchi this was made in
-# (any tag or branch works: tag = "v0.10.0", or branch = "main"). Set KIMCHI_PLUGIN_SDK to a local
+# (any tag or branch works: tag = "v0.11.0", or branch = "main"). Set KIMCHI_PLUGIN_SDK to a local
 # kimchi-plugin folder before plugin.new to build against that copy instead.
 {dep}
 

@@ -10,6 +10,7 @@ pub mod clip;
 pub mod export;
 pub mod generate;
 pub mod handoff;
+pub mod harness;
 pub mod history;
 pub mod interop;
 pub mod looks;
@@ -901,6 +902,24 @@ pub static SPECS: &[Spec] = &[
         OPT_TRACK,
         opt("start", Number, "Seconds (default 0)."),
     ]).perm(Perm::Files),
+    // ---- harness (lsuite HARNESS.md) ----------------------------------------
+    query("harness.brief", "The expert brief every agent working in kimchi gets (the built-in agent's system prompt, kimchi-mcp's instructions): the project model, the commands for the common jobs, the trade's quality bar (cuts, pacing, colour, titles, loudness, motion, 3D, delivery), the usual mistakes, the finish routine and the skills' index. Markdown.", &[]),
+    query("harness.skills", "The skills: playbooks for video jobs (rough cut, trailer, social vertical edit, titles and captions, colour grade, audio mix, motion graphics, 3D product shot, b-roll, scoring with ryolune, export, writing a plugin, reviewing a cut), each with its name, title and when to use it.", &[]),
+    query("harness.skill", "One skill's playbook (markdown): when to use it, the steps with the exact commands, the checks that prove it worked. Load it before that kind of job.", &[
+        req("name", String, "Skill name from harness.skills, e.g. rough-cut."),
+    ]),
+    query("harness.context", "The live context agents get before each step: the project in a few lines (canvas, length, tracks and what is on them), the playhead and what is under it, the selection, the Studio, and with since, what others changed after that point.", &[
+        opt("since", Integer, "The seq of an earlier answer: also list the changes made after it by others than the caller."),
+    ]),
+    query("harness.look", "The best look at the current work, for an agent to check it before saying it is done: a labelled sheet of frames drawn as the export draws them (over the whole cut, a span or one clip), each frame's brightness and whether it is blank, gaps in the picture, the loudness of the mix there (integrated LUFS, true peak, against the master's target) and the project's problems, with notes on what is off. Returns the PNG's path; agents that can see get the picture itself.", &[
+        opt("from", Number, "Start of the span in seconds (default 0)."),
+        opt("to", Number, "End of the span in seconds (default: the end of the cut)."),
+        opt("clipId", String, "Look at this clip's span instead (id or name)."),
+        opt("frames", Integer, "How many frames, evenly spread over the span (1 to 16, default 8)."),
+        opt("times", Array, "Exact times in seconds instead (up to 16).").of(Number),
+        opt("width", Integer, "Width of each frame in pixels (default 480 in a sheet, 960 for one frame)."),
+        opt("measure", Boolean, "Measure the sound too (default true)."),
+    ]),
     // ---- app --------------------------------------------------------------
     query("app.info", "Version, ffmpeg, library and data folders, whether the window and the bridge are running.", &[]),
     query("app.commands", "Describe every command with its parameters, or one command.", &[opt("command", String, "One command name.")]),
@@ -928,7 +947,7 @@ pub static SPECS: &[Spec] = &[
         opt("secretAccessKey", String, "bedrock: the secret access key."),
         opt("sessionToken", String, "bedrock: the session token of temporary credentials."),
     ]).perm(Perm::PersonOnly),
-    query("app.checkUpdates", "Check GitHub Releases for a newer kimchi and report it.", &[]),
+    query("app.checkUpdates", "Check lsuite for a newer kimchi and report it. Updates come with the free lsuite account: signed out, the answer says to sign in (in the lsuite app) instead of failing.", &[]),
     edit("app.installUpdate", "Download, verify (signature) and install the update found by app.checkUpdates; kimchi restarts into it.", &[]).perm(Perm::AppControl),
     edit("app.restart", "Quit and start kimchi again (into an installed update, when there is one).", &[]).perm(Perm::AppControl).window(),
     query("app.whatsNew", "Release notes: what changed in this version, in another (version), or in every version since one (since). Markdown, newest first.", &[
@@ -1123,6 +1142,7 @@ pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "generate" => Box::pin(generate::run(s, cx, a)).await,
         "export" => Box::pin(export::run(s, cx, a)).await,
         "handoff" => Box::pin(handoff::run(s, cx, a)).await,
+        "harness" => Box::pin(harness::run(s, cx, a)).await,
         "app" => Box::pin(app::run(s, cx, a)).await,
         "agent" => Box::pin(agent::run(s, cx, a)).await,
         "account" => Box::pin(account::run(s, cx, a)).await,

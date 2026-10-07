@@ -22,6 +22,7 @@ macro_rules! say {
     }};
 }
 
+mod ask;
 mod generate;
 
 /// Nobody reads our output any more: stop, quietly for a closed pipe (128 + SIGPIPE, as a shell
@@ -50,6 +51,8 @@ USAGE
   kimchi-cli generate <provider> <model> \"<prompt>\" [--video] [--image PATH] [--end PATH] [--aspect 16:9]
                     [--duration 5] [--seed N] [--count N] [--out DIR]
                                      one generation straight to files, without a project
+  kimchi-cli --file <project.json> ask \"<request>\" [--provider <id>] [--model <id>] [--max-steps N] [--json]
+                                     run kimchi's built-in agent on the file, in this process (no window needed)
   kimchi-cli providers | models [<provider>]
                                      = generate.providers | generate.models provider=<provider>
 
@@ -152,6 +155,7 @@ async fn run(args: &[String]) -> Res {
         "batch" => batch(&inv).await,
         "render" => render(&inv).await,
         "generate" => generate::run(&inv.rest).await.map_err(Failure::Command),
+        "ask" => ask::run(&inv).await.map_err(Failure::Command),
         "providers" => {
             let p = serde_json::Map::new();
             run_command(&inv, "generate.providers", p).await

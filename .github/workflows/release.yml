@@ -2,12 +2,16 @@ name: Release
 
 # Builds kimchi for macOS (Apple Silicon + Intel), Windows and Linux with the scripts in scripts/
 # (no Node, no Tauri), signs the updater files with the update key, and attaches everything plus
-# latest.json (read by the in-app updaters, including kimchi 0.1.x's Tauri updater) to a draft
-# GitHub release. Publish the draft to ship the update.
+# latest.json (read by the in-app updaters, including kimchi 0.1.x's Tauri updater) to a DRAFT
+# GitHub release, which stays private. The builds are not published here any more (lsuite
+# DISTRIBUTION.md): `scripts/publish-build.sh <version>` copies the draft's files to the private
+# ludovic111/lsuite-builds as kimchi-v<version>, where the lsuite app and the in-app updater get
+# them through lsuite.xyz with the person's account, then deletes the draft. Never publish the draft.
 #
-# Asset names are stable (no version) so lsuite.xyz/kimchi/download/<platform> and the updaters
-# always find them: kimchi_aarch64.dmg, kimchi_x64.dmg, kimchi_{aarch64,x64}.app.tar.gz,
-# kimchi_x64-setup.exe, kimchi_x64-portable.zip, kimchi_amd64.AppImage, kimchi_amd64.deb.
+# Asset names are stable (no version) so the lsuite app and the updaters always find them:
+# kimchi_aarch64.dmg, kimchi_x64.dmg, kimchi_{aarch64,x64}.app.tar.gz, kimchi_x64-setup.exe,
+# kimchi_x64-portable.zip, kimchi_amd64.AppImage, kimchi_amd64.deb. latest.json's URLs point at
+# GitHub; lsuite.xyz rewrites them to its own file route.
 on:
   push:
     tags: ["v*"]
@@ -173,12 +177,9 @@ jobs:
           fi
           cat >> "$RUNNER_TEMP/notes.md" <<'EOF'
 
-          ### Download
-          Download the build for your system below. kimchi updates itself from here on.
-
-          - **macOS**: `kimchi_aarch64.dmg` (Apple Silicon) or `kimchi_x64.dmg` (Intel).
-          - **Windows**: `kimchi_x64-setup.exe` (installer) or `kimchi_x64-portable.zip`.
-          - **Linux**: `kimchi_amd64.AppImage` or `kimchi_amd64.deb`.
+          ### Get it
+          Get kimchi in the lsuite app (lsuite.xyz/launcher), with your free lsuite account. kimchi
+          updates itself from there on.
           EOF
           # Checks every signature against kimchi's update key before writing the manifest.
           cargo run --quiet --release --locked -p kimchi-release -- manifest dist --version "$version" \
@@ -188,6 +189,7 @@ jobs:
           (cd dist && sha256sum kimchi_* latest.json > SHA256SUMS)
           ls -l dist
 
+      # A draft only: scripts/publish-build.sh moves it to ludovic111/lsuite-builds.
       - name: Upload to the draft release
         env:
           GH_TOKEN: ${{ github.token }}

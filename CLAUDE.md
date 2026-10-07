@@ -77,7 +77,7 @@ Rules that keep it working:
   `import -window <id>` (ImageMagick; `ui.screenshot` is macOS-only) and clicks with `xdotool`. UI tests run the real views headless (`crates/kimchi-desktop/src/tests.rs`,
   `views/timeline/tests.rs`).
 
-## lsuite (notes updated 2026-10-07)
+## lsuite (notes updated 2026-10-07, 0.11.0)
 
 kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
@@ -96,7 +96,7 @@ kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is
       `registry::call` for agent and MCP alike. Codex untested (not installed on the dev Mac).
 - [x] **Auto-update**: `app.checkUpdates` / `app.installUpdate`, `KIMCHI_NO_UPDATE=1`, setting
       `updates.checkOnStart`; signed with the Tauri-era minisign key, `latest.json` in the Tauri
-      format so 0.1.x installs update to this app.
+      format so 0.1.x installs update to this app. Since 0.11.0 through lsuite (below).
 - [x] **Design system v2** (2026-10-06): black and white, square, grain, Chakra Petch + IBM Plex Mono
       (bundled), tiers over the grain, solid work surfaces, macOS window blur, dark and light, contrast
       test, one-ink mark and icon (`scripts/gen-mark.py`). See "Look" above and `../lsuite/design/DESIGN.md`.
@@ -125,6 +125,25 @@ kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is
       saved in `plugins.disabled`. Window: the Plugins dialog (`views/dialogs/plugins.rs`: Stock, Installed, Formats, Build
       with your agent) and the inspector's Plugins section. No OpenFX (the WIP on `t3code/090-hosts` was dropped: not
       loaded, not listed). Format logos: lsuite, frei0r, CLAP, VST3, ryolune; LUTs and Audio Units have none.
+- [x] **Agent harness** (lsuite `HARNESS.md`, 0.11.0): `kimchi-control/src/harness/` (`brief.md` = the expert brief, one
+      source for the built-in agent's system prompt (`kimchi_agent::system_prompt`) and `kimchi-mcp`'s instructions, with
+      command names rewritten to tool names by `harness::as_tools`; `skills/*.md` = 13 playbooks, each `# Title`, `When:`,
+      `## Steps`, `## Checks`; tests check every command they name exists and the brief stays 800–1,500 words;
+      `context.rs` = the live context, moved from `kimchi-agent`), `commands/harness.rs` (`harness.brief/skills/skill/
+      context/look`; `harness.look` is in `vision::LOOKS`). Live context before every model step: `api::refresh_context`
+      appends an updated `<context>` block to the tool results when it changed, with what others changed
+      (`Session::edits_since`, fed by `registry::call_in`; `harness.context` and checkpoints aren't recorded). Over MCP the
+      same block ends a tool result when something changed (`KIMCHI_MCP_CONTEXT=0`); prompts are the skills (old prompt
+      names are aliases), resources `kimchi://brief`, `kimchi://skills/<name>`. Per-run checkpoint unchanged.
+      `kimchi-cli --file x.json ask "…" [--provider --model --json]` runs the built-in agent headless (CLI providers get a
+      private bridge, `Session::bridge_path`). Evals: `evals/run.py` (12 jobs in `evals/jobs.json`, fixtures made with
+      ffmpeg, scores in `evals/RESULTS.md`); add a job when a skill is added, and run them before a release.
+- [x] **Distribution through lsuite** (lsuite `DISTRIBUTION.md`, 0.11.0): the updater reads
+      `<server>/api/apps/kimchi/latest.json` with the account's token (`update::source`; the token only goes to the lsuite
+      server's origin, also for downloads); signed out or a refused token → `UpdateStatus.sign_in` and `update::SIGN_IN`,
+      not an error; `KIMCHI_UPDATE_URL` still overrides. `release.yml` only makes a draft; `scripts/publish-build.sh
+      <version>` copies it to `ludovic111/lsuite-builds` as `kimchi-v<version>` (checks SHA256SUMS, refuses a published
+      release or an existing target) and deletes the draft. Never publish the draft in this repository.
 - [x] **Real logos** of the editors kimchi really works with (`ui/logos.rs`, `assets/logos/SOURCES.md`): setup, Home,
       the export menu, Settings › Keyboard. OpenShot, Natron and Audacity keep initials (kimchi opens nothing of theirs).
 

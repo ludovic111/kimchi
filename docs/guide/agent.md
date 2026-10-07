@@ -65,10 +65,19 @@ account from its next step, without losing the edits it already made.
 **It knows what "this" is.** Each request carries what you're looking at: the project, the playhead
 and what's under it, the selected clips or media, and the clip open in the Studio. The line above
 the message box shows what it will be told (hover it for the full text), so "make this shorter" or
-"put a title here" works without naming anything.
+"put a title here" works without naming anything. While it works it is told again, before each
+step, what changed, including what you did in the meantime.
 
-**It can see.** When it makes a title, an animation or a 3D scene, it renders frames, looks at them
-(from any angle in 3D) and corrects what looks wrong before saying it's done. It can also look at
+**It knows the trade.** The agent starts from a brief written for video work (cutting and pacing,
+J and L cuts, colour, readable titles, loudness for YouTube, social or podcasts, motion, 3D,
+exports) and follows a playbook for the common jobs: a rough cut from your footage, a trailer, a
+vertical edit for TikTok, Reels and Shorts, titles and captions, a colour grade, a sound mix,
+motion graphics, a 3D product shot, generated b-roll, a score made in ryolune, an export for a
+platform, a plugin, or a review of your cut.
+
+**It can see, and checks before it's done.** Before it says a job is done, it looks at a sheet of
+frames across what it changed and measures the sound (loudness, peaks, blank frames, holes in the
+picture), compares that with what you asked, and fixes what's off (from any angle in 3D). It can also look at
 your media (a picture as it is, a video as a sheet of frames) to choose between takes or describe
 footage. Every picture it looks at appears in its command's card, so you see what it saw. Models
 that can't read pictures get a short text note instead.

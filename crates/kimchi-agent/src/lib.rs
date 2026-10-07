@@ -55,7 +55,7 @@ pub use host::{Entry, Host, RunInfo, RunState, Snapshot};
 pub use models::{ModelInfo, ModelList, list as list_models};
 pub use providers::Group;
 pub use status::{Action, KeyStatus, Next, ProviderStatus, provider_status, status_of};
-pub use tools::{RUN_TOOL, SYSTEM_PROMPT, TOOL_OUTPUT_LIMIT, ToolDef, ToolSet, tool_defs};
+pub use tools::{RUN_TOOL, TOOL_OUTPUT_LIMIT, ToolDef, ToolSet, system_prompt, tool_defs};
 
 /// Most model round trips in one run before it stops and says so.
 pub const MAX_STEPS: usize = 40;
@@ -351,7 +351,8 @@ impl Conversation {
     /// dropped with it so no block is replayed after a changed prefix.
     pub(crate) fn prepare_turn(&mut self) {
         if let Some(ai) = self.messages.iter().rposition(|m| m.role == Role::Assistant) {
-            let answers = self.messages.get(ai + 1).filter(|m| m.role == Role::User && m.parts.iter().all(|p| matches!(p, Part::ToolResult { .. })));
+            // The answers to its calls (with the pictures and the context update that may follow them).
+            let answers = self.messages.get(ai + 1).filter(|m| m.role == Role::User && m.parts.iter().any(|p| matches!(p, Part::ToolResult { .. })));
             let has_answers = answers.is_some();
             let answered: Vec<&str> = answers.into_iter().flat_map(|m| &m.parts).filter_map(|p| if let Part::ToolResult { id, .. } = p { Some(id.as_str()) } else { None }).collect();
             let open: Vec<Part> = self.messages[ai]

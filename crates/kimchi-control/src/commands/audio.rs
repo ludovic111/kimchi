@@ -1343,7 +1343,7 @@ fn held(p: &Project, t: Target, prop: &Prop, v: f64, mut chain: Vec<Insert>, key
 
 // ---- analysis -------------------------------------------------------------------------------
 
-fn loudness_json(l: &kimchi_audio::loudness::Loudness, target: Option<f64>) -> Value {
+pub(crate) fn loudness_json(l: &kimchi_audio::loudness::Loudness, target: Option<f64>) -> Value {
     let r = |x: f64| (x * 10.0).round() / 10.0;
     let silent = l.integrated <= MIN_DB + 1.0;
     let mut v = json!({

@@ -1917,3 +1917,49 @@ async fn a_plugin_is_made_built_installed_used_and_reloaded() {
     let c = ok(&s, Source::Agent, "clip.get", json!({ "clipId": clip })).await;
     assert!(c.to_string().contains("local.plugins.warm-test"), "{c}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_harness_tells_agents_what_changed_and_shows_the_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = session(dir.path());
+    ok(&s, Source::Window, "project.create", json!({ "name": "Harness" })).await;
+    let skills = ok(&s, Source::Cli, "harness.skills", json!({})).await;
+    assert!(skills.as_array().unwrap().iter().any(|k| k["name"] == "rough-cut"));
+    // Agents get the texts with their tool names; people get the commands.
+    assert!(ok(&s, Source::Agent, "harness.skill", json!({ "name": "rough-cut" })).await["skill"].as_str().unwrap().contains("`clip_insertMedia"));
+    assert!(ok(&s, Source::Cli, "harness.brief", json!({})).await["brief"].as_str().unwrap().contains("`harness.look`"));
+
+    // The context, then what the person changed since: the agent's own changes are no news.
+    ok(&s, Source::Window, "clip.addSolid", json!({ "color": "#204080", "start": 0, "duration": 2 })).await;
+    let first = ok(&s, Source::Agent, "harness.context", json!({ "since": 0 })).await;
+    let seq = first["seq"].as_u64().unwrap();
+    assert!(first["summary"].as_str().unwrap().contains("1 clip"), "{first}");
+    ok(&s, Source::Agent, "clip.addText", json!({ "text": "Hello", "start": 0, "duration": 2 })).await;
+    ok(&s, Source::Agent, "history.checkpoint", json!({})).await;
+    let mine = ok(&s, Source::Agent, "harness.context", json!({ "since": seq })).await;
+    assert!(mine["changes"].is_null(), "{mine}");
+    ok(&s, Source::Window, "clip.addSolid", json!({ "color": "#802020", "start": 3, "duration": 1 })).await;
+    let theirs = ok(&s, Source::Agent, "harness.context", json!({ "since": seq })).await;
+    let changes = theirs["changes"].as_str().unwrap();
+    assert!(changes.contains("clip.addSolid (the person, in the window)") && !changes.contains("addText"), "{changes}");
+    // Asking for the context is not a change, nor a card on the panel.
+    let (after, _) = s.edits_since(seq);
+    assert!(after.iter().all(|e| e.command != "harness.context" && e.command != "history.checkpoint"));
+
+    if s.tools().is_err() {
+        eprintln!("ffmpeg not found; skipping the look");
+        return;
+    }
+    // The look: a sheet, each frame's numbers, and the hole between 2 and 3 s.
+    let look = ok(&s, Source::Agent, "harness.look", json!({ "frames": 4 })).await;
+    assert!(std::path::Path::new(look["path"].as_str().unwrap()).is_file());
+    assert_eq!(look["frames"].as_array().unwrap().len(), 4);
+    assert_eq!(look["gaps"], json!([[2.0, 3.0]]), "{look}");
+    assert!(look["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("No picture from 2.00 to 3.00 s")));
+    // A flat colour is blank; the title over it is not.
+    let at = ok(&s, Source::Agent, "harness.look", json!({ "times": [1.0, 3.5], "measure": false })).await;
+    let frames = at["frames"].as_array().unwrap();
+    assert_eq!(frames[0]["blank"], false, "{at}");
+    assert_eq!(frames[1]["blank"], true, "{at}");
+    assert!(crate::vision::pictures_in("harness.look", &at).len() == 1);
+}

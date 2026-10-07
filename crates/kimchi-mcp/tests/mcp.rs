@@ -122,13 +122,19 @@ fn speaks_mcp_over_a_project_file() {
 
     let prompts = mcp.request(15, "prompts/list", json!({}))["result"]["prompts"].clone();
     let names: Vec<&str> = prompts.as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["rough-cut", "title-and-captions", "generate-b-roll", "review-the-cut", "motion-design", "3d-scene"]);
+    assert_eq!(names.len(), kimchi_control::harness::skills().len());
+    assert!(names.contains(&"rough-cut") && names.contains(&"3d-product-shot"), "{names:?}");
+    // The prompts from before the skills still answer, with their arguments passed on.
     let got = mcp.request(19, "prompts/get", json!({ "name": "3d-scene", "arguments": { "idea": "a chrome teapot", "seconds": "8" } }));
     let text = got["result"]["messages"][0]["content"]["text"].as_str().unwrap();
-    assert!(text.contains("a chrome teapot") && text.contains("times=[0.5, 4, 7.5]"), "{text}");
-    let got = mcp.request(16, "prompts/get", json!({ "name": "generate-b-roll", "arguments": { "subject": "a misty harbour" } }));
+    assert!(text.contains("# 3D product shot") && text.contains("idea: a chrome teapot") && text.contains("motion_cameraMove"), "{text}");
+    let got = mcp.request(16, "prompts/get", json!({ "name": "b-roll", "arguments": { "request": "a misty harbour" } }));
     assert!(got["result"]["messages"][0]["content"]["text"].as_str().unwrap().contains("a misty harbour"));
-    assert_eq!(mcp.request(17, "prompts/get", json!({ "name": "title-and-captions" }))["error"]["code"], -32602);
+    // Skills are resources too.
+    let read = mcp.request(20, "resources/read", json!({ "uri": "kimchi://skills/rough-cut" }));
+    assert!(read["result"]["contents"][0]["text"].as_str().unwrap().starts_with("# Rough cut"));
+    assert!(mcp.request(21, "resources/read", json!({ "uri": "kimchi://brief" }))["result"]["contents"][0]["text"].as_str().unwrap().contains("## The finish routine"));
+    assert_eq!(mcp.request(17, "prompts/get", json!({ "name": "no-such-skill" }))["error"]["code"], -32602);
     assert_eq!(mcp.request(18, "no/such", json!({}))["error"]["code"], -32601);
 }
 
