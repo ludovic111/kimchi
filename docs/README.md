@@ -17,6 +17,8 @@
 - [Configuration](CONFIGURATION.md): settings, environment variables, files and folders, the
   lsuite registration and the bridge.
 - [The project file](PROJECT_FORMAT.md): the JSON format of a project.
+- [Plugins](PLUGINS.md): the formats kimchi loads, the plugin SDK and its ABI, bundles, and the
+  recipe agents follow to make one.
 
 **Working on kimchi**
 

@@ -254,6 +254,8 @@ changes, the key no longer matches and kimchi draws the clip live again.
 | `vignette`, `sharpen` | 0 to 1 | |
 | `chroma_key` | object | Optional: `color` (default `#00b140`), `similarity` (0.5), `softness` (0.1), `spill` (0.5), each 0 to 1. |
 | `lut` | object | Optional: `path` (absolute path of a 3D `.cube` file) and `strength` (0 to 1, default 1). |
+| `plugins` | array | Optional: video plugins run on the picture after the fields above, first to last. Each is `{id, plugin, name, bypass, params}`: `id` the slot (`p1`, `p2`…, never reused on the clip; keyframes name it), `plugin` the plugin's id with its format (`kimchi:<id>` for lsuite plugins, `frei0r:<name>`), `name` what the inspector shows, `bypass` (skipped while drawing), `params` the values given, by parameter name (numbers, `true`/`false`, `[x, y]` or `[r, g, b, a]`, text; the others take the plugin's defaults). A plugin that isn't on the computer is kept as it is and not drawn. Its numbers, points and colours take keyframes as `plugins.<slot>.<parameter>`. |
+| `last_plugin` | integer | The highest slot number given on the clip, so a removed slot's id isn't given again. |
 
 ## Transition
 
@@ -262,6 +264,7 @@ changes, the key no longer matches and kimchi draws the clip live again.
 | `kind` | `dissolve`, `dipToBlack`, `dipToWhite`, `wipeLeft`, `wipeRight`, `wipeUp`, `wipeDown`, `slideLeft`, `slideRight`, `slideUp`, `slideDown`, `pushLeft`, `pushRight`, `pushUp`, `pushDown`, `zoom`, `iris`, `blur` |
 | `duration` | Seconds, up to 30. The played length is limited by the clips; see [Transitions](guide/transitions-and-colour.md#length). |
 | `easing` | Default `easeInOutSine`. |
+| `plugin` | Optional: a transition plugin drawn instead of `kind` (`kind` is drawn where the plugin isn't installed), in the same form as a clip's `plugins` entry, slot id `transition`. |
 
 ## Clip audio
 

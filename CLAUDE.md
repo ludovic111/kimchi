@@ -19,6 +19,8 @@ crates/kimchi-control   registry (commands/mod.rs lists every spec), session, pe
 crates/kimchi-agent     the built-in agent (Claude Code, Codex, Anthropic, OpenAI, Ollama)
 crates/kimchi-desktop   the window (package/binary `kimchi`): store.rs, app.rs, views/, ui/, theme.rs
 crates/kimchi-cli       `kimchi-cli`;  crates/kimchi-mcp: `kimchi-mcp`;  crates/kimchi-release: signing
+crates/kimchi-plugin    the video plugin SDK (frozen repr(C) ABI 1 in ffi.rs, GUIDE.md, template/)
+plugins/examples        Halftone, Chromatic aberration, Gradient, Radial wipe: stock plugins on the SDK
 ```
 
 Rules that keep it working:
@@ -75,7 +77,7 @@ Rules that keep it working:
   `import -window <id>` (ImageMagick; `ui.screenshot` is macOS-only) and clicks with `xdotool`. UI tests run the real views headless (`crates/kimchi-desktop/src/tests.rs`,
   `views/timeline/tests.rs`).
 
-## lsuite (notes updated 2026-10-03)
+## lsuite (notes updated 2026-10-07)
 
 kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
@@ -102,6 +104,29 @@ kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is
       `kimchi-control/src/discovery.rs`), `handoff.toRyolune` / `handoff.fromRyolune` through
       ryolune's bridge.
 - [x] Support links go to `https://lsuite.xyz/kimchi/support`.
+- [x] **lsuite AI** (lsuite `AI.md`, 0.10.0): `kimchi-control/src/account.rs` (the shared `~/.lsuite/account.json`,
+      0600, atomic; loopback sign-in on 127.0.0.1 with `state`, or a pasted `lsk_` key; `/api/account/me` for plan and
+      allowance; `LSUITE_ACCOUNT_SERVER`), `account.status/plans/signIn/signOut` (signing in and out is person-only),
+      `kimchi-agent/src/lsuite.rs` + the `lsuite` provider (first in `ProviderKind::ALL`, group "No setup"; the
+      Anthropic wire at `<server>/api/ai` with the token; errors explained in one line, the allowance one starts with
+      `lsuite::ALLOWANCE` and the panel adds Manage plan), Claude Code on lsuite AI with `agent.claudeCodeOnLsuite`
+      (`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`). Window: `views/lsuite.rs` (the account card, used in Settings ›
+      Agent, the Agent panel's notice and the setup's assistant step), `Store::account`. Decided: new installs default to
+      `agent.provider = "lsuite"` (old settings keep theirs); the lsuite mark is the site's `assets/img/lsuite.svg`.
+      Tests: `account.rs` (wiremock: loopback, key, revoked) and `kimchi-agent` (`lsuite_ai_runs_on_the_account…`).
+- [x] **Plugins** (lsuite `PLUGINS.md`, 0.10.0): SDK `crates/kimchi-plugin` (frozen ABI 1 modelled on ryolune's
+      `sdk/src/ffi.rs`: entry + `repr(C)` vtables, JSON manifest, panics caught and the instance poisoned), host
+      `kimchi-media/src/render/plugins/` (`native.rs` lsuite bundles + stock linked in, `frei0r.rs`, `catalogue.rs` scan
+      in a child process with `--scan-video-plugin`, cache, folder watch; `pool.rs` instances per clip slot, remade when
+      `plugins::generation()` changes = hot reload; libraries are loaded from a copy per build in `<data>/plugins/loaded`),
+      `bundle.rs` (`plugin.toml`). Commands in `commands/plugins.rs` and `plugin_dev.rs` (toolchain, `plugin.new` from
+      `crates/kimchi-plugin/template/`, `writeSource` confined to the crate, `build` with errors as data,
+      `publishLocal`), permission `agent.permissions.plugins` (off by default). A plugin that fails is switched off and
+      saved in `plugins.disabled`. Window: the Plugins dialog (`views/dialogs/plugins.rs`: Stock, Installed, Formats, Build
+      with your agent) and the inspector's Plugins section. No OpenFX (the WIP on `t3code/090-hosts` was dropped: not
+      loaded, not listed). Format logos: lsuite, frei0r, CLAP, VST3, ryolune; LUTs and Audio Units have none.
+- [x] **Real logos** of the editors kimchi really works with (`ui/logos.rs`, `assets/logos/SOURCES.md`): setup, Home,
+      the export menu, Settings › Keyboard. OpenShot, Natron and Audacity keep initials (kimchi opens nothing of theirs).
 
 ## Animation, motion graphics and 3D (released in 0.5.0, 2026-10-03)
 
@@ -217,8 +242,8 @@ Audio sound generation, Studio modelling workbench and animation tools). CI and 
 (first-run setup, Settings › Keyboard), the OpenAI-compatible family, Gemini and Bedrock agent providers
 (`agent.models`), `docs/COMPATIBILITY.md` (generated, a test checks it), `docs/SWITCHING.md`. Plus #13's fixes.
 
-- [ ] Not shipped, on their branches: video plugins (`t3code/090-plugins` SDK + native host, `t3code/090-hosts`
-      frei0r/OpenFX — never built), ryolune LV2/LADSPA (`claude/lv2-ladspa`), extra sound tasks (`t3code/090-gen`,
+- [x] Video plugins shipped in 0.10.0 (built from `t3code/090-plugins` and the frei0r half of `t3code/090-hosts`;
+      OpenFX dropped). Still on their branches: ryolune LV2/LADSPA (`claude/lv2-ladspa`), extra sound tasks (`t3code/090-gen`,
       fold onto #11's ElevenLabs), Kdenlive/Shotcut/OpenShot/CapCut/.prproj files, new export formats.
 - [ ] The new windows (setup, import/export, look picker) were only checked by headless UI tests; look at them.
 - [ ] Docs-found, still open: `kimchi-cli` bypasses agent permissions; no menu bar on Linux/Windows.

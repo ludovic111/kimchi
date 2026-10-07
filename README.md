@@ -143,7 +143,9 @@ kimchi-cli project.overview                                                     
 kimchi-cli --file cut.json clip.addText text="Opening title"                           # a project file
 ```
 
-The **Agent** panel (⌘J) runs the model you already have: Claude Code, Codex, Gemini CLI, an Anthropic, OpenAI,
+The **Agent** panel (⌘J) works with no setup on **lsuite AI**: sign in once with your lsuite account (every lsuite app is
+signed in with it) and the agent runs Claude models on a monthly plan, with your allowance shown in Settings › Agent
+(a demo for now: no payment is taken). Or it runs the model you already have: Claude Code (which can also run on lsuite AI), Codex, Gemini CLI, an Anthropic, OpenAI,
 Google Gemini or Amazon Bedrock key, any OpenAI-compatible service (OpenRouter, Groq, Mistral, DeepSeek, xAI,
 Together, Fireworks, Cerebras, Azure OpenAI, LM Studio…), a local Ollama model, or **Zenith**. It shows one card per
 command and lets you revert a whole run. **It can see**: it looks at the frames it renders and at your media, and every
@@ -156,6 +158,14 @@ its server to select it. What agents may do
 (files, projects, generation, settings, quitting) is set in Settings › Agent, for the built-in agent and MCP alike.
 kimchi hands cuts to [ryolune](https://lsuite.xyz/ryolune) to score them and takes its audio back
 (`handoff.toRyolune`, `handoff.fromRyolune`). Details: [docs/AI_CONTROL.md](docs/AI_CONTROL.md).
+
+## Plugins
+
+**Plugins** (⋯ › Plugins) lists what ships with kimchi, what is installed, and the formats it loads: lsuite plugins
+written in Rust with kimchi's SDK (`crates/kimchi-plugin`), frei0r filters, LUTs, and ryolune's, CLAP, VST3 and Audio
+Unit sound plugins. Describe the plugin you want and **Build with your agent**: it writes it, builds it, installs it and
+tries it on your clip, and kimchi picks it up without a restart. Halftone, Chromatic aberration, Gradient and Radial wipe
+come with kimchi, made with the same SDK. See [docs/PLUGINS.md](docs/PLUGINS.md).
 
 ## Documentation
 

@@ -3,6 +3,18 @@
 What changed in each kimchi release. The app shows the newest section in **What's new** after it
 updates, and the release workflow puts the section in the update's notes.
 
+## 0.10.0 — 2026-10-07
+
+### New
+- **lsuite AI: the agent works with no setup.** Sign in once with your lsuite account and the Agent panel runs Claude models on a monthly plan: nothing to install, no key to paste. It is the first choice in the agent's providers and in the first-run setup, it signs in every lsuite app on your computer at once, and Settings › Agent shows your plan and how much of the month you have used, with Manage plan and Sign out. When the allowance runs out, the agent says so in one line. Claude Code can run on it too. A demo for now: choosing a plan charges nothing. Bringing your own (Claude Code, Codex, API keys, Ollama) stays free.
+- **Plugins.** A Plugins window (⋯ › Plugins) shows what ships with kimchi, what is installed on your computer with a switch for each, and the formats kimchi loads: lsuite plugins, frei0r filters (the ones Kdenlive and Shotcut use), LUTs, and ryolune's, CLAP, VST3 and Audio Unit sound plugins. The inspector's Plugins section puts them on clips; transitions can come from a plugin too.
+- **Build a plugin with your agent.** Describe the effect you want; your agent writes it in Rust with kimchi's new plugin SDK, builds it, installs it and tries it on your clip, and it appears in kimchi without a restart. Rebuild it and the new version is used at once.
+- **Four plugins made with the SDK** come with kimchi: Halftone, Chromatic aberration, Gradient and Radial wipe.
+- **Real logos.** The editors kimchi works with (Premiere Pro, Final Cut Pro, DaVinci Resolve, Media Composer, After Effects, Lightroom, CapCut, iMovie, Blender, Kdenlive, VEGAS, Nuke, Shotcut) and the plugin formats show their own logos in the setup, Home, the export menu and Settings › Keyboard.
+
+### Better
+- A plugin that crashes is switched off and kimchi carries on; switch it back on in Plugins once it is fixed.
+
 ## 0.9.1 — 2026-10-06
 
 ### New

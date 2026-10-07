@@ -278,6 +278,7 @@ not checked.
 | Generate | `agent.permissions.generate` | on | `generate.submit`, `generate.animateFrame`, `generate.extendClip`, `generate.bridge`, `generate.restyleFrame`, `generate.regenerate` (they spend the provider's credits), and `agent.send` (it uses the person's model account) |
 | Settings | `agent.permissions.settings` | off | `app.setSetting`, `generate.setProvider` |
 | App control | `agent.permissions.appControl` | off | `app.quit`, `app.restart`, `app.installUpdate` |
+| Plugins | `agent.permissions.plugins` | off | `plugin.new`, `plugin.writeSource`, `plugin.build`, `plugin.publishLocal`, `plugin.install`, `plugin.remove`, `plugin.enable`, `plugin.disable` (sending a request from Plugins › Build with your agent turns it on) |
 
 `ui.action` runs a shortcut as the window would, so an agent needs the permission of what the
 shortcut does: `NewProject` and `CloseProject` need projects, `Import` and `Export` files,
@@ -285,6 +286,20 @@ shortcut does: `NewProject` and `CloseProject` need projects, `Import` and `Expo
 
 `kimchi-cli help <command>` and the [command reference](COMMANDS.md) name the permission each
 command needs. A refused command says which switch is off.
+
+## Plugins, and making one
+
+`plugin.list` has everything kimchi can use as a plugin (stock and installed, with the formats it
+loads and where it looks); `plugin.info` a plugin's parameters; `clip.addPlugin`, `clip.setPlugin`,
+`clip.removePlugin`, `clip.movePlugin` put them on clips, and `transition.set plugin=…` uses a
+transition plugin. Plugin parameters take keyframes as `plugins.<slot>.<parameter>`.
+
+An agent asked for a new effect follows the recipe: `plugin.guide` (the SDK, the rules, the
+templates), `plugin.toolchain` (tell the person when Rust is missing; never install it yourself),
+`plugin.new {name, kind}`, `plugin.writeSource {name, path, contents}` (inside the crate only),
+`plugin.build` until it is green (errors come back as `{file, line, column, message}`),
+`plugin.publishLocal` (installed and loaded at once, replacing an earlier build), then try it on a
+clip and look with `project.renderFrame`. See [PLUGINS.md](PLUGINS.md).
 
 ## Generation
 
@@ -494,7 +509,9 @@ kimchi-cli handoff.fromRyolune --start 0
 
 A few things deliberately stay with the person: API keys (`generate.setKey` and
 `app.setAgentKey` are refused for agents), the agent's own settings and permissions (`app.setSetting` refuses `agent.*` keys from
-an agent), and the choice of which model runs the built-in agent (`agent.setProvider`). The built-in
+an agent), the choice of which model runs the built-in agent (`agent.setProvider`), and signing in or out of
+lsuite AI (`account.signIn`, `account.signOut`; agents may read `account.status` and `account.plans`,
+which never show the key). The built-in
 agent doesn't see the `agent.*` commands: it can't drive itself. Agents never see keys:
 `generate.providers` reports only where a key comes from and its last four characters.
 

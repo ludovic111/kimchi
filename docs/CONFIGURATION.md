@@ -36,7 +36,7 @@ only with the **Settings** permission, and never the `agent.*` ones.
 | `updates.autoInstall` | boolean | `false` | | Download and install updates found by the automatic check without asking; the new version runs from the next start. |
 | `updates.showWhatsNew` | boolean | `true` | | Show the release notes once after an update. |
 | `diagnostics.logLevel` | string | `debug` | `info`, `debug`, `trace` | How much goes in the log (Normal, Detailed, Everything). `RUST_LOG` overrides it. |
-| `agent.provider` | string | `claude-code` | `claude-code`, `codex`, `anthropic`, `openai`, `ollama` | Who runs the built-in agent. |
+| `agent.provider` | string | `lsuite` | `lsuite`, `zenith`, `claude-code`, `codex`, `gemini-cli`, `anthropic`, `openai`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `azure-openai`, `bedrock`, `ollama`, `lmstudio`, `openai-compatible` | Who runs the built-in agent. `lsuite` is lsuite AI (the lsuite account); settings from before 0.10 keep the one they name. |
 | `agent.model` | string | `""` | a model id | Empty uses the provider's default. |
 | `agent.baseUrl` | string | `""` | a URL | For the Anthropic, OpenAI and Ollama choices: another server or a proxy. Empty uses the provider's. |
 | `agent.permissions.enabled` | boolean | `true` | | Let agents and MCP clients act in kimchi at all. |
@@ -45,6 +45,10 @@ only with the **Settings** permission, and never the `agent.*` ones.
 | `agent.permissions.generate` | boolean | `true` | | Generate images and video. |
 | `agent.permissions.settings` | boolean | `false` | | Change settings (other than `agent.*`). |
 | `agent.permissions.appControl` | boolean | `false` | | Quit kimchi, install an update. |
+| `agent.permissions.plugins` | boolean | `false` | | Write, build, install, remove and switch plugins. Turned on by sending a request from Plugins › Build with your agent. |
+| `agent.claudeCodeOnLsuite` | boolean | `false` | | Claude Code runs on lsuite AI (the lsuite account's plan, through `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`) instead of its own sign-in, when signed in to lsuite. |
+| `plugins.videoFolders` | array of strings | `[]` | folder paths | More folders to look for video plugins in (lsuite bundles and frei0r), besides the standard ones. |
+| `plugins.disabled` | array of strings | `[]` | plugin ids | Plugins switched off (Plugins' switches, `plugin.disable`), and plugins that crashed and were switched off. |
 
 If `settings.json` can't be parsed, kimchi renames it `settings.json.bad` and starts with the
 defaults. Missing keys take their defaults; unknown keys are ignored.
@@ -86,7 +90,12 @@ The OpenAI image provider and the agent's OpenAI choice share one keychain entry
 | `KIMCHI_WINDOW_SIZE` | app | The window's size when it opens, as `WIDTHxHEIGHT` (for example `2000x1250`). |
 | `KIMCHI_UPDATE_URL` | app | Where to look for updates (default `https://github.com/ludovic111/kimchi/releases/latest/download/latest.json`). |
 | `KIMCHI_MCP` | app | The `kimchi-mcp` program given to Claude Code and Codex, if the file exists. Otherwise kimchi looks next to itself, then on `PATH`. |
-| `LSUITE_HOME` | all | Where lsuite apps register and hand files over (default `~/.lsuite`). |
+| `LSUITE_HOME` | all | Where lsuite apps register, hand files over, keep the shared lsuite account and lsuite plugins (default `~/.lsuite`). |
+| `LSUITE_ACCOUNT_SERVER` | all | The lsuite account server for lsuite AI (default `https://lsuite.xyz`), for a local demo server such as `http://127.0.0.1:4321`. |
+| `KIMCHI_NO_BROWSER` | all | Any value other than `0`: signing in to lsuite AI doesn't open a browser (scripts). |
+| `KIMCHI_PLUGIN_PATH` | all | More folders (a list, separated like `PATH`) of lsuite plugin bundles. |
+| `KIMCHI_PLUGIN_SDK` | all | A local `kimchi-plugin` folder that `plugin.new` points new plugin crates at, instead of the repository's tag. |
+| `FREI0R_PATH` | all | The folders to look for frei0r plugins in (a list); replaces the usual ones. |
 | `RYOLUNE_CONTROL` | all | ryolune's bridge file, for the hand-offs. Default: `~/.ryolune/control.json`, then the file named in ryolune's lsuite registration. |
 | `RYOLUNE_DATA_DIR` | app | ryolune's data folder, which holds the plugin list kimchi shares with it. |
 | `CODEX_HOME` | app | Where Codex keeps its settings and sign-in (default `~/.codex`); see `agent-codex-home/` below. |
@@ -155,6 +164,8 @@ projects/<project id>/      one folder per project in the library
 logs/                       kimchi.log, kimchi.1.log … kimchi.3.log; running-<pid>.json while the app runs
 logs/crashes/               crash-*.txt and unclean-*.txt reports (the latest 25)
 models/whisper-<size>/      speech models for captions (tiny, base, small)
+plugins/video.json          the video plugins a scan found (lsuite plugins, frei0r), by file
+plugins/loaded/             the copies of lsuite plugin libraries the app loads (one per build: hot reload)
 recordings/                 voice-over takes
 thumbs/                     the Motion tab's template previews
 agent-workspace/            the working folder of Claude Code and Codex when they run as the agent
@@ -172,6 +183,9 @@ file.
 | --- | --- |
 | `~/Documents/kimchi/comfyui-workflows/` | ComfyUI workflows that become models (changeable in Settings). |
 | `~/.lsuite/apps/kimchi.json` | kimchi's registration with lsuite, so other apps and agents find it. See below. |
+| `~/.lsuite/account.json` | The lsuite account (lsuite AI), shared by every lsuite app: `{format: 1, server, email, name, plan, token, signedInAt}`, readable by you only (0600). The token is a secret: kimchi never logs it or shows it (only `lsk_…` and its last four characters). Signing out removes the file. |
+| `~/.lsuite/plugins/kimchi/<id>/` | Installed lsuite plugins (bundles: `plugin.toml` and the library). |
+| `~/.lsuite/plugins-src/kimchi/<name>/` | Plugin crates made by `plugin.new` (and the agent); `.target/` is their shared build folder. |
 | `~/.lsuite/handoff/ryolune/`, `~/.lsuite/handoff/kimchi/` | Files handed to and from ryolune. |
 | ryolune's data folder, `plugins.json` | The list of audio plugins found, shared with ryolune. |
 

@@ -48,9 +48,10 @@ Generate; the result lands on the timeline at the playhead. See [Generation](gen
 
 ## Asking the agent
 
-Press ⌘J to open the Agent panel and describe what you want done to the cut. It uses Claude Code,
-Codex, an Anthropic or OpenAI key, or a local Ollama model, shows each change it makes, and can
-undo its whole run in one click. See [The agent](agent.md).
+Press ⌘J to open the Agent panel and describe what you want done to the cut. With no setup at all,
+sign in to **lsuite AI** (one click and your browser) and it works; or it uses your Claude Code,
+Codex, an API key, or a local Ollama model. It shows each change it makes, and can undo its whole
+run in one click. See [The agent](agent.md).
 
 ## Where to go next
 
