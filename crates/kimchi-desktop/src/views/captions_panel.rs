@@ -51,9 +51,12 @@ impl CaptionsPanel {
         subs.push(cx.subscribe(&height, |this: &mut Self, _, ch: &ScrubChange, cx| this.restyle(json!({ "y": ch.value }), "y", ch.final_, cx)));
         // Watch the transcription (started here or by any other client).
         let poll = cx.spawn(async move |this, cx| {
+            let mut busy = false;
             loop {
-                cx.background_executor().timer(Duration::from_millis(250)).await;
+                // Quick while a transcription runs; a calm check otherwise (an idle window shouldn't wake often).
+                cx.background_executor().timer(Duration::from_millis(if busy { 250 } else { 1500 })).await;
                 let now = kimchi_control::commands::captions::current().map(|s| (s.stage.to_string(), s.progress));
+                busy = now.is_some();
                 let Ok(()) = this.update(cx, |this, cx| {
                     if this.running != now {
                         let finished = this.running.is_some() && now.is_none();
