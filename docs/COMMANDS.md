@@ -119,7 +119,7 @@ What kimchi opens from and writes for other editors: project and timeline format
 
 ### `project.importFrom`
 
-Open a project or timeline from another editor as a new library project (opened): OpenTimelineIO (.otio, Resolve), FCPXML (Final Cut Pro, Resolve), Final Cut 7 / Premiere XML (.xml), CMX 3600 EDL, Kdenlive (.kdenlive), Shotcut (.mlt), OpenShot (.osp), a Premiere Pro .prproj or a CapCut draft folder. Media is imported from where the file says; returns what came through, what changed, and the files that are missing (media.relink). _(changes things · permission: files)_
+Open a project or timeline from another editor as a new library project (opened): OpenTimelineIO (.otio, Resolve, Kdenlive, Nuke), FCPXML (Final Cut Pro, Resolve), Final Cut 7 / Premiere XML (.xml: Premiere Pro, VEGAS) or a CMX 3600 EDL (Media Composer and every editor). Kdenlive, Shotcut, OpenShot, .prproj and CapCut files aren't read yet: export one of these from them. Media is imported from where the file says; returns what came through, what changed, and the files that are missing (media.relink). _(changes things · permission: files)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -462,6 +462,49 @@ Colour and picture effects on clips: a ready-made look, corrections (brightness,
 
 The ready-made looks clip.setEffects applies, with their values. _(read only)_
 
+### `clip.addPlugin`
+
+Put a video plugin on clips' pictures, after their colour effects: kimchi's stock plugins, lsuite plugins (built with the kimchi-plugin SDK, plugin.new) or frei0r filters (plugin.list kind effect or generator; a generator draws its clip's picture, put it on a solid). Animate its numbers, points and colours with clip.setKeyframes on plugins.<slot>.<parameter>. One undo step; returns the slot ids. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipIds` | array of strings | required | Clips (ids or names). |
+| `plugin` | string | required | Plugin id or name from plugin.list. |
+| `params` | object |  | Values by parameter name (plugin.info lists them); the others keep their defaults. |
+| `index` | integer |  | Position among the clip's plugins from 0 (default: last). |
+
+### `clip.setPlugin`
+
+Change a plugin on a clip: parameter values, bypass, or its name. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `slot` | any | required | Slot id (p1…), plugin name or position from 1. |
+| `params` | object |  | Values by parameter name; the others stay. |
+| `bypass` | boolean |  | Skip it while drawing (its settings stay). |
+| `name` | string |  | What the inspector calls it. |
+| `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
+
+### `clip.removePlugin`
+
+Take a plugin off a clip (its keyframes go too). One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `slot` | any | required | Slot id, plugin name or position from 1. |
+
+### `clip.movePlugin`
+
+Move a plugin to another place among the clip's plugins. One undo step. _(changes things)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `clipId` | string | required | Clip id or unique name, as listed by clip.list. |
+| `slot` | any | required | Slot id, plugin name or position from 1. |
+| `index` | integer | required | New position from 0. |
+
 ## looks
 
 ### `looks.list`
@@ -542,6 +585,8 @@ Put a transition at the start of clips. On a cut (the clip before ends where thi
 | `kind` | string |  | dissolve (default), dipToBlack, dipToWhite, wipeLeft, wipeRight, wipeUp, wipeDown, slideLeft, slideRight, slideUp, slideDown, pushLeft, pushRight, pushUp, pushDown, zoom, iris or blur. |
 | `duration` | number |  | Seconds (default 0.8). On a cut it can't be longer than the shorter clip; otherwise than half the clip. |
 | `easing` | string |  | How the progress moves (default easeInOutSine; any keyframe easing). |
+| `plugin` | string |  | A transition plugin (plugin.list kind transition, e.g. Radial wipe) drawn instead of kind, which stays as the fallback on computers without it; "" removes it. |
+| `pluginParams` | object |  | The transition plugin's values by parameter name (plugin.info). |
 | `coalesce` | string |  | Consecutive edits from the same source with the same key within ~1 s fold into one undo step. Prefix a unique per-gesture key with gesture: to keep that gesture together across pauses. A different edit, undo or redo ends the group. |
 
 ### `transition.remove`
@@ -1926,11 +1971,142 @@ Show a short message in the window. _(changes things · needs the window)_
 | `text` | string | required | Message. |
 | `kind` | string |  | info (default), success or error. |
 
+## plugin
+
+### `plugin.list`
+
+Everything kimchi can use as a plugin: stock (its colour effects, transitions and looks, ryolune's sound effects, and the SDK plugins it ships: Halftone, Chromatic aberration, Gradient, Radial wipe) and installed (lsuite plugins in ~/.lsuite/plugins/kimchi, frei0r filters, CLAP/VST3/Audio Unit sound plugins found by ryolune's engine), each with id, name, kind, format, version, path, whether it is on and which command uses it; the formats kimchi loads (LUTs among them, as looks) and where it looks; and the plugins that failed to load. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `query` | string |  | Only plugins whose name, vendor, category, format or description contains this. |
+| `kind` | string |  | effect, generator, transition, look or sound. |
+| `source` | string |  | stock or installed. |
+
+### `plugin.info`
+
+One plugin: its parameters (name, type, range, default, choices, unit), description and where it came from. With clipId and slot, also the values that slot has now. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `id` | string |  | Plugin id or name (plugin.list). |
+| `clipId` | string |  | A clip with the plugin on it. |
+| `slot` | any |  | The plugin on the clip: slot id, name or position from 1. |
+
+### `plugin.enable`
+
+Switch a plugin on again (also one that failed and was switched off). A setting: nothing is installed or deleted. _(changes things · permission: plugins)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `id` | string | required | Plugin id or name. |
+
+### `plugin.disable`
+
+Switch a plugin off: clips that use it are drawn without it (their settings stay). A setting: nothing is deleted. _(changes things · permission: plugins)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `id` | string | required | Plugin id or name. |
+
+### `plugin.rescan`
+
+Look for plugins again (lsuite plugins, frei0r, and Settings' extra folders) and load the ones that changed: a rebuilt lsuite plugin is used at once, without a restart. Returns how many there are and the ones that failed to load. _(changes things)_
+
+### `plugin.install`
+
+Install a built lsuite plugin bundle (a folder with plugin.toml and the library) into ~/.lsuite/plugins/kimchi/<id>/, after checking it loads; its plugins are usable at once. Installing a new build replaces the old one in the running app. _(changes things · permission: plugins)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `path` | string | required | The bundle's folder. |
+
+### `plugin.remove`
+
+Remove an installed lsuite plugin (stock plugins and other formats can only be switched off). _(changes things · permission: plugins)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `id` | string | required | The bundle's id, or one of its plugins' ids or names. |
+
+### `plugin.guide`
+
+How to write a kimchi plugin, for an agent: the SDK (kinds, parameters, frames, the render context), the rules, the recipe (plugin.new, writeSource, build, publishLocal, try it) and the three templates. Markdown. _(read only)_
+
+### `plugin.toolchain`
+
+Whether Rust is installed to build plugins: cargo and rustc, rustc's version, and how to install Rust (rustup) when it isn't. Never installs anything: offer the install to the person. _(read only)_
+
+### `plugin.new`
+
+Start a plugin: a Rust crate from the SDK's template in ~/.lsuite/plugins-src/kimchi/<name>/ (Cargo.toml, plugin.toml, src/lib.rs: a working plugin of that kind to change). Returns its folder, files and the starting source. _(changes things · permission: plugins)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `name` | string | required | Crate name: lowercase letters, digits and -, like halftone-dots. |
+| `kind` | string |  | effect (default), generator or transition. |
+| `id` | string |  | Reverse-DNS id (default local.plugins.<name>); stored in projects, so never change it later. |
+| `description` | string |  | One short sentence: what it does to a picture. |
+
+### `plugin.writeSource`
+
+Write one file of a plugin crate made by plugin.new (src/lib.rs, a module, Cargo.toml, plugin.toml). Paths are inside the crate; anything outside it is refused. _(changes things · permission: plugins)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `name` | string | required | The crate's name. |
+| `path` | string | required | Path inside the crate, like src/lib.rs. |
+| `contents` | string | required | The whole file. |
+
+### `plugin.build`
+
+Build a plugin crate (cargo build --release). Returns ok, and the compiler's errors as {file, line, column, message, rendered}. The first build fetches and compiles the SDK; later ones take seconds. _(changes things · permission: plugins)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `name` | string | required | The crate's name. |
+
+### `plugin.publishLocal`
+
+Build a plugin crate, make the bundle (plugin.toml and the library) and install it (plugin.install): its plugins are usable in kimchi at once, replacing an earlier build without a restart. _(changes things · permission: plugins)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `name` | string | required | The crate's name. |
+
+## account
+
+### `account.status`
+
+The lsuite account shared by every lsuite app on this computer (~/.lsuite/account.json), which runs the agent on lsuite AI with no other setup: signed in or not, email, plan, the allowance used this month and when it resets, the plan's models, and where to manage the plan. Never shows the key. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `offline` | boolean |  | Only what the account file says, without asking the server (default false). |
+
+### `account.plans`
+
+The lsuite AI plans as the lsuite server lists them: prices, models and monthly allowances (a demo for now: no payment is taken). _(read only)_
+
+### `account.signIn`
+
+Sign in to lsuite AI (every lsuite app on this computer is signed in with it). Without key, opens the lsuite sign-in page in the browser and waits for it to come back; with key, uses the key the account page shows (lsk_…), for CLIs and computers without a browser. _(changes things · person only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `key` | string |  | The key from the account page (lsk_…). |
+| `wait` | boolean |  | Wait for the browser to finish the sign-in (default true); false answers at once with the address and finishes in the background. |
+| `cancel` | boolean |  | Stop a sign-in that is waiting for the browser. |
+
+### `account.signOut`
+
+Sign out of lsuite AI on this computer (every lsuite app), and tell the server to forget the key. _(changes things · person only)_
+
 ## agent
 
 ### `agent.providers`
 
-What can run the built-in agent: Zenith, coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen. _(read only · needs the window)_
+What can run the built-in agent: lsuite AI (the lsuite account: sign in and it works, see account.status), Zenith, coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen. _(read only · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
@@ -2060,12 +2236,12 @@ Select clips (or one media item) in the window. _(changes things · needs the wi
 
 ### `ui.showPanel`
 
-Open a panel or dialog: media, generate, text, motion, studio, captions, inspector (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics, onboarding (the first-run setup); or home. With open false, close it. _(changes things · needs the window)_
+Open a panel or dialog: media, generate, text, motion, studio, captions, inspector (left panel), agent, jobs, settings, plugins, export, palette, shortcuts, whatsNew, diagnostics, onboarding (the first-run setup); or home. With open false, close it. _(changes things · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |
 | `panel` | string | required | Panel name. |
-| `section` | string |  | For settings: models, agent, appearance, audio, keyboard, updates, diagnostics or about. For onboarding: the step to show (welcome, comingFrom, generativeAi, agent, done). |
+| `section` | string |  | For settings: models, agent, appearance, audio, keyboard, updates, diagnostics or about. For plugins: stock, installed, formats or build. For onboarding: the step to show (welcome, comingFrom, generativeAi, agent, done). |
 | `open` | boolean |  | false closes the panel or dialog instead (the left panel, inspector, agent, jobs or a dialog; default true). |
 | `all` | boolean |  | For whatsNew: the notes of every release, not only this one's. |
 

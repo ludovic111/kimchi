@@ -14,7 +14,7 @@ Coming from another editor? kimchi opens its projects, uses its looks and LUTs, 
 - **Bring a project over:** In Premiere Pro, select the sequence in the Project panel and choose File › Export › Final Cut Pro XML…. Open that .xml in kimchi (Home › Open from another editor).
 - **Send a cut back:** In kimchi, open the ⋯ menu in the top bar and choose Export project for Premiere Pro… (Final Cut Pro 7 XML). In Premiere Pro, choose File › Import and pick the .xml.
 - **Looks:** Lumetri Color presets (.prfpset) and the .cube LUTs in Lumetri's Input LUT and Creative Look menus: kimchi reads both.
-- **Plugins:** Premiere Pro plugins are built on Adobe's own SDK and only run in Adobe's apps. Many plugin makers (Boris FX, Sapphire, Neat Video) also sell OpenFX versions, which run in kimchi.
+- **Plugins:** Premiere Pro plugins are built on Adobe's own SDK and only run in Adobe's apps. kimchi runs lsuite plugins (ask your agent to build one) and frei0r filters.
 
 ### Final Cut Pro (Apple)
 
@@ -24,7 +24,7 @@ Coming from another editor? kimchi opens its projects, uses its looks and LUTs, 
 - **Bring a project over:** In Final Cut Pro, select the project in the browser and choose File › Export XML…. Open the .fcpxml (or .fcpxmld) in kimchi.
 - **Send a cut back:** In kimchi, open the ⋯ menu in the top bar and choose Export project for Final Cut Pro… (FCPXML). In Final Cut Pro, choose File › Import › XML….
 - **Looks:** Final Cut's Custom LUT effect uses .cube files: kimchi reads the same ones.
-- **Plugins:** FxPlug plugins only run in Final Cut Pro and Motion. Their makers often sell OpenFX versions, which run in kimchi.
+- **Plugins:** FxPlug plugins only run in Final Cut Pro and Motion. kimchi runs lsuite plugins (ask your agent to build one) and frei0r filters.
 
 ### DaVinci Resolve (Blackmagic Design)
 
@@ -34,7 +34,7 @@ Coming from another editor? kimchi opens its projects, uses its looks and LUTs, 
 - **Bring a project over:** In Resolve, select the timeline in the Media Pool and choose File › Export › Timeline…, then pick OpenTimelineIO (.otio) or FCPXML. Open that file in kimchi.
 - **Send a cut back:** In kimchi, open the ⋯ menu in the top bar and choose Export project for DaVinci Resolve… (OpenTimelineIO). In Resolve, choose File › Import › Timeline… and pick the .otio.
 - **Looks:** Resolve's LUT folder holds .cube and .3dl LUTs: kimchi reads them as they are.
-- **Plugins:** OpenFX plugins installed for Resolve run in kimchi too (kimchi looks in the same OFX folder). Fusion macros and DCTL don't.
+- **Plugins:** Resolve's OpenFX plugins, Fusion macros and DCTL don't run in kimchi. kimchi runs lsuite plugins (ask your agent to build one) and frei0r filters.
 
 ### CapCut (ByteDance)
 
@@ -74,7 +74,7 @@ Coming from another editor? kimchi opens its projects, uses its looks and LUTs, 
 - **Bring a project over:** In VEGAS Pro, choose File › Export › Final Cut Pro 7 / DaVinci Resolve (*.xml)…, and open that .xml in kimchi.
 - **Send a cut back:** In kimchi, open the ⋯ menu in the top bar and choose Export project for VEGAS Pro… (Final Cut Pro 7 XML), then File › Import › Final Cut Pro 7 / DaVinci Resolve (*.xml) in VEGAS.
 - **Looks:** VEGAS's LUT filter uses .cube files: kimchi reads them.
-- **Plugins:** OpenFX plugins installed for VEGAS run in kimchi too.
+- **Plugins:** VEGAS's plugins don't run in kimchi. kimchi runs lsuite plugins (ask your agent to build one) and frei0r filters.
 
 ### Kdenlive (KDE)
 
@@ -114,7 +114,7 @@ Coming from another editor? kimchi opens its projects, uses its looks and LUTs, 
 - **Bring a project over:** After Effects projects can't be read outside After Effects. Render the composition (ProRes 4444 keeps transparency) and import it; for new work, kimchi's Motion Studio has layers, keyframes, expressions, masks, effects and 3D.
 - **Send a cut back:** Export from kimchi as ProRes 4444 or a PNG sequence and import it in After Effects.
 - **Looks:** Lumetri presets (.prfpset) and .cube LUTs work in kimchi too.
-- **Plugins:** After Effects plugins are built on Adobe's own SDK and only run in Adobe's apps; many also exist as OpenFX, which runs in kimchi.
+- **Plugins:** After Effects plugins are built on Adobe's own SDK and only run in Adobe's apps. kimchi's Studio has its own effects, and it runs lsuite plugins and frei0r filters.
 
 ### Nuke (Foundry)
 
@@ -123,7 +123,7 @@ Coming from another editor? kimchi opens its projects, uses its looks and LUTs, 
 - **Bring a project over:** Export the timeline from Nuke Studio or Hiero as OpenTimelineIO and open it in kimchi.
 - **Send a cut back:** In kimchi, open the ⋯ menu in the top bar and choose Export project for Nuke…, then import the .otio in Nuke Studio or Hiero.
 - **Looks:** Nuke's .cube, .3dl, .csp, .spi1d and .spi3d LUTs work in kimchi as they are.
-- **Plugins:** OpenFX plugins installed for Nuke run in kimchi too; Nuke's own NDK plugins don't.
+- **Plugins:** Nuke's plugins (OpenFX and NDK) don't run in kimchi. kimchi runs lsuite plugins (ask your agent to build one) and frei0r filters.
 
 ### Natron (Natron)
 
@@ -132,7 +132,7 @@ Coming from another editor? kimchi opens its projects, uses its looks and LUTs, 
 - **Bring a project over:** Render the Natron project and import the result.
 - **Send a cut back:** Export from kimchi as a PNG or EXR sequence and read it in Natron.
 - **Looks:** Natron's LUT files work in kimchi as they are.
-- **Plugins:** Natron's OpenFX plugins (openfx-misc, openfx-io, openfx-arena) run in kimchi.
+- **Plugins:** Natron's OpenFX plugins don't run in kimchi. kimchi runs lsuite plugins (ask your agent to build one) and frei0r filters.
 
 ## Photos and colour
 
@@ -250,4 +250,4 @@ Settings › Models, or the first-run setup's "Connect your provider". Keys stay
 
 ## The assistant
 
-The Agent panel runs one of: `zenith`, `claude-code`, `codex`, `gemini-cli`, `anthropic`, `openai`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `azure-openai`, `bedrock`, `ollama`, `lmstudio`, `openai-compatible`. Settings › Agent, `agent.providers`, `agent.setProvider`. Any MCP client can drive kimchi too: `kimchi-mcp --live`.
+The Agent panel runs one of: `lsuite`, `zenith`, `claude-code`, `codex`, `gemini-cli`, `anthropic`, `openai`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `azure-openai`, `bedrock`, `ollama`, `lmstudio`, `openai-compatible`. Settings › Agent, `agent.providers`, `agent.setProvider`. Any MCP client can drive kimchi too: `kimchi-mcp --live`.
