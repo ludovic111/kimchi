@@ -282,7 +282,8 @@ fn tools_cover_the_registry_except_person_only_commands() {
 #[test]
 fn settings_choose_the_provider() {
     let mut a = kimchi_control::settings::AgentSettings::default();
-    assert_eq!(AgentConfig::from_settings(&a).provider, ProviderKind::ClaudeCode);
+    // New installs start on lsuite AI (no setup).
+    assert_eq!(AgentConfig::from_settings(&a).provider, ProviderKind::Lsuite);
     a.provider = "anthropic".into();
     let c = AgentConfig::from_settings(&a);
     assert_eq!((c.provider, c.model(), c.base_url()), (ProviderKind::Anthropic, "claude-sonnet-5-5".to_string(), "https://api.anthropic.com".to_string()));

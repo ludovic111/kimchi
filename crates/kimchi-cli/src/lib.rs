@@ -270,7 +270,10 @@ pub fn parse_args(args: &[String]) -> Result<Invocation, String> {
             }
         }
     }
-    absolute_paths(&mut inv.params);
+    // plugin.writeSource's path is inside the plugin's crate, not the current folder.
+    if command != "plugin.writeSource" {
+        absolute_paths(&mut inv.params);
+    }
     Ok(inv)
 }
 

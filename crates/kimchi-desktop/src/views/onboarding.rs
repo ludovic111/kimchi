@@ -538,7 +538,8 @@ impl Onboarding {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().flex().items_center().gap(px(6.)).child(div().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).text_color(if selected { t.accent_text } else { t.text }).child(title)).children(tag.map(|g| badge(g, cx))))
+                    // Names are never cut to make room: the tag wraps under them instead.
+                    .child(div().flex().flex_wrap().items_center().gap_x(px(6.)).gap_y(px(2.)).child(div().font_weight(FontWeight::SEMIBOLD).text_color(if selected { t.accent_text } else { t.text }).child(title)).children(tag.map(|g| badge(g, cx))))
                     .child(div().text_size(px(sz::SM)).text_color(t.text_2).child(sub)),
             )
             .into_any_element()
@@ -582,7 +583,7 @@ impl Onboarding {
                 lead,
                 name,
                 app["vendor"].as_str().unwrap_or("").to_string(),
-                found.then(|| "Found on this computer".to_string()),
+                found.then(|| "Installed".to_string()),
                 move |this, _| {
                     this.coming_from = Some(pick.clone());
                     this.use_keys = true;

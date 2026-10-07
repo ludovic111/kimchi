@@ -1879,7 +1879,7 @@ async fn a_plugin_is_made_built_installed_used_and_reloaded() {
     assert_eq!(p["plugins"][0]["id"], "kimchi:local.plugins.warm-test");
     assert!(dir.path().join("lsuite/plugins/kimchi/local.plugins.warm-test/plugin.toml").is_file());
     let installed = ok(&s, Source::Agent, "plugin.list", json!({ "source": "installed", "kind": "effect" })).await;
-    assert_eq!(installed["plugins"][0]["name"], "Warm test");
+    assert_eq!(installed["plugins"][0]["name"], "Warm test", "{installed}\n{p}\n{}", ok(&s, Source::Agent, "plugin.list", json!({ "source": "installed" })).await);
     assert_eq!(installed["plugins"][0]["enabled"], true);
 
     ok(&s, Source::Window, "project.create", json!({ "name": "P", "width": 320, "height": 180 })).await;

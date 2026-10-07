@@ -136,7 +136,9 @@ pub fn stage_folder() -> Option<PathBuf> {
 }
 
 fn cache_path() -> Option<PathBuf> {
-    config().read().unwrap_or_else(|e| e.into_inner()).as_ref().map(|c| c.data_dir.join("plugins").join("video.json"))
+    // Test binaries run many sessions at once, each with its own data folder: they share the
+    // cache of the lsuite folder they look in, so one test's scan isn't lost to another's session.
+    config().read().unwrap_or_else(|e| e.into_inner()).as_ref().map(|c| if is_test_binary() { c.lsuite_home.join("plugins").join("video-cache.json") } else { c.data_dir.join("plugins").join("video.json") })
 }
 
 fn load_cache() -> Cache {
@@ -287,7 +289,8 @@ pub fn rescan(retry_failed: bool, progress: &(dyn Fn(&Path) + Sync)) -> Result<S
     let mut todo: Vec<(Format, PathBuf)> = vec![];
     for folder in folders().into_iter().filter(|f| f.exists) {
         for h in hosts().iter().filter(|h| folder.format.is_none_or(|f| f == h.format())) {
-            todo.extend(h.find(&folder.path).into_iter().map(|p| (h.format(), p)));
+            // The same files reached through two folders (a symlinked /usr/lib/frei0r-1) count once.
+            todo.extend(h.find(&folder.path).into_iter().map(|p| (h.format(), p.canonicalize().unwrap_or(p))));
         }
     }
     let mut seen = HashSet::new();
