@@ -120,6 +120,10 @@ pub async fn list(session: &Arc<Session>, kind: ProviderKind, refresh: bool) -> 
             Err(e) => Err(e),
         },
         ProviderKind::Ollama => ollama(&http, &base).await,
+        ProviderKind::Lsuite => match kimchi_control::account::load() {
+            Some(a) => fetch(&http, kind, &kimchi_control::account::ai_base(&a.server), Some(&a.token)).await,
+            None => Err("Sign in to lsuite AI to see your plan's models.".into()),
+        },
         _ if kind.info().key.is_some_and(|k| k.required) && key.is_none() => Err("Add a key to see this provider's models.".into()),
         _ => fetch(&http, kind, &base, key.as_deref()).await,
     };
@@ -169,7 +173,9 @@ pub(crate) async fn fetch(http: &reqwest::Client, kind: ProviderKind, base: &str
     let mut out: Vec<ModelInfo> = match kind.info().wire {
         Wire::Anthropic => {
             let v = json(get(http, &format!("{base}/v1/models?limit=1000")).header("x-api-key", key.unwrap_or("")).header("anthropic-version", "2023-06-01"), label).await?;
-            v["data"].as_array().into_iter().flatten().filter_map(|m| Some(ModelInfo { name: m["display_name"].as_str().map(str::to_string), tools: Some(true), context: m["max_input_tokens"].as_u64(), ..ModelInfo::new(m["id"].as_str()?) })).collect()
+            // lsuite's server may list its models plainly (`{models: ["claude-…"]}`).
+            let items = v["data"].as_array().or_else(|| v["models"].as_array()).or_else(|| v.as_array()).cloned().unwrap_or_default();
+            items.iter().filter_map(|m| Some(ModelInfo { name: m["display_name"].as_str().or_else(|| m["name"].as_str()).map(str::to_string), tools: Some(true), context: m["max_input_tokens"].as_u64(), ..ModelInfo::new(m["id"].as_str().or_else(|| m.as_str())?) })).collect()
         }
         Wire::Gemini => {
             let v = json(get(http, &format!("{base}/models?pageSize=1000")).header("x-goog-api-key", key.unwrap_or("")), label).await?;

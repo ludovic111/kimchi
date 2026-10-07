@@ -25,6 +25,7 @@ mod eventstream;
 pub mod context;
 mod host;
 mod http;
+pub mod lsuite;
 pub mod models;
 pub mod providers;
 mod sigv4;
@@ -69,6 +70,9 @@ pub const MAX_HISTORY: usize = 80;
 /// about each.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderKind {
+    /// lsuite AI: the lsuite account's plan, no other setup ([`lsuite`]).
+    #[serde(rename = "lsuite")]
+    Lsuite,
     #[serde(rename = "zenith")]
     Zenith,
     #[serde(rename = "claude-code")]
@@ -112,8 +116,9 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    /// Every provider, grouped: the CLIs, the model APIs, the local servers.
-    pub const ALL: [ProviderKind; 20] = [
+    /// Every provider, grouped: lsuite AI, the CLIs, the model APIs, the local servers.
+    pub const ALL: [ProviderKind; 21] = [
+        ProviderKind::Lsuite,
         ProviderKind::Zenith,
         ProviderKind::ClaudeCode,
         ProviderKind::Codex,
@@ -161,6 +166,7 @@ impl ProviderKind {
         }
         Some(match id.as_str() {
             "claude" | "claudecode" => ProviderKind::ClaudeCode,
+            "lsuite-ai" | "lsuiteai" | "lsuite.xyz" => ProviderKind::Lsuite,
             "gemini-code" | "geminicli" => ProviderKind::GeminiCli,
             "google" | "google-gemini" | "ai-studio" | "aistudio" => ProviderKind::Gemini,
             "x.ai" | "grok" => ProviderKind::Xai,
@@ -265,9 +271,6 @@ pub fn key_for(session: &Session, kind: ProviderKind) -> Option<(String, KeySour
         return Some((k, KeySource::Keychain));
     }
     spec.env.iter().find_map(|var| std::env::var(var).ok().map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).map(|k| (k, KeySource::Env(var))))
-}
-
-impl AgentConfig {
 }
 
 // ---- conversation ----------------------------------------------------------

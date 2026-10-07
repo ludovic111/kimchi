@@ -57,6 +57,8 @@ pub enum Dialog {
     /// What came through opening or writing another editor's project (`project.importFrom` /
     /// `project.exportTo`'s report).
     Interop { title: String, report: serde_json::Value },
+    /// Plugins: stock, installed, formats, build with your agent (`part` names one).
+    Plugins { part: Option<String> },
 }
 
 impl Dialog {
@@ -68,6 +70,7 @@ impl Dialog {
             Dialog::Shortcuts => "shortcuts",
             Dialog::WhatsNew { .. } => "whatsNew",
             Dialog::Interop { .. } => "interopReport",
+            Dialog::Plugins { .. } => "plugins",
         }
     }
 }
@@ -231,6 +234,12 @@ pub struct Store {
     pub commands: Vec<CommandRecord>,
     pub settings: Settings,
     pub update: kimchi_control::update::UpdateStatus,
+    /// The lsuite account (lsuite AI), as last read (`account.status`); `None` until the first read.
+    pub account: Option<kimchi_control::account::Status>,
+    /// A sign-in is waiting for the browser.
+    pub signing_in: bool,
+    /// The address the sign-in opened, to open again.
+    pub sign_in_url: Option<String>,
 
     pub selection: Vec<Id>,
     pub selected_asset: Option<Id>,
@@ -315,6 +324,9 @@ impl Store {
             commands: vec![],
             settings,
             update: kimchi_control::update::status(&session),
+            account: None,
+            signing_in: false,
+            sign_in_url: None,
             selection: vec![],
             selected_asset: None,
             pps: 60.0,
@@ -339,7 +351,84 @@ impl Store {
         store.refresh_project();
         store.library = session.library.list();
         store.refresh_providers(cx);
+        store.refresh_account(cx);
         store
+    }
+
+    // ---- the lsuite account (lsuite AI) -----------------------------------
+
+    /// Reads the lsuite account and its plan again (off the main thread: it asks the server).
+    pub fn refresh_account(&mut self, cx: &mut Context<Self>) {
+        let task = gpui_tokio::Tokio::spawn(cx, async move { kimchi_control::account::status(false).await });
+        cx.spawn(async move |this, cx| {
+            if let Ok(st) = task.await {
+                this.update(cx, |s, cx| {
+                    s.account = Some(st);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Signs in in the browser (`account.signIn`), waiting for it to come back.
+    pub fn sign_in(&mut self, cx: &mut Context<Self>) {
+        if self.signing_in {
+            if let Some(url) = self.sign_in_url.clone() {
+                cx.open_url(&url);
+            }
+            return;
+        }
+        self.signing_in = true;
+        cx.notify();
+        let task = self.call("account.signIn", json!({ "wait": false }), cx);
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            this.update(cx, |s, cx| match r {
+                Ok(v) => {
+                    s.sign_in_url = v["url"].as_str().map(str::to_string);
+                    // Without a browser to open, open it from the window.
+                    if v["opened"] == false
+                        && let Some(url) = &s.sign_in_url
+                    {
+                        cx.open_url(url);
+                    }
+                    cx.notify();
+                }
+                Err(e) => {
+                    s.signing_in = false;
+                    s.error(e, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Signs in with a key from the account page (`lsk_…`).
+    pub fn sign_in_with_key(&mut self, key: String, cx: &mut Context<Self>) {
+        self.run_then("account.signIn", json!({ "key": key }), cx, |s, _, cx| s.refresh_account(cx));
+    }
+
+    pub fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {
+        self.signing_in = false;
+        self.sign_in_url = None;
+        self.run("account.signIn", json!({ "cancel": true }), cx);
+        cx.notify();
+    }
+
+    pub fn sign_out(&mut self, cx: &mut Context<Self>) {
+        self.run_then("account.signOut", json!({}), cx, |s, _, cx| {
+            s.info("Signed out of lsuite AI on this computer.", cx);
+            s.refresh_account(cx);
+        });
+    }
+
+    /// Opens the account page, where the plan is chosen or changed.
+    pub fn manage_plan(&mut self, cx: &mut Context<Self>) {
+        let url = self.account.as_ref().map(|a| a.manage_url.clone()).filter(|u| !u.is_empty()).unwrap_or_else(|| kimchi_control::account::manage_url(&kimchi_control::account::server()));
+        cx.open_url(&url);
     }
 
     /// Provider statuses read keys (the keychain may ask the person), so never on the UI thread.
@@ -456,6 +545,15 @@ impl Store {
                     self.agent_open = false;
                 }
                 self.refresh_providers(cx);
+                // A sign-in that finished (or stopped) in the background says so this way.
+                if self.signing_in && !kimchi_control::account::signing_in() {
+                    self.signing_in = false;
+                    self.sign_in_url = None;
+                }
+                // Signed in or out (here or in another lsuite app): read the plan again.
+                if account_fingerprint() != self.account.as_ref().map(|a| (a.signed_in, a.email.clone())) {
+                    self.refresh_account(cx);
+                }
                 // After this update: it reads the store.
                 cx.defer(crate::app::apply_theme_setting);
             }
@@ -822,4 +920,12 @@ impl Store {
         self.sync_ui(cx);
         cx.notify();
     }
+}
+
+/// Who the account file says is signed in, to compare with what the store last read.
+fn account_fingerprint() -> Option<(bool, String)> {
+    Some(match kimchi_control::account::load() {
+        Some(a) => (true, a.email),
+        None => (false, String::new()),
+    })
 }

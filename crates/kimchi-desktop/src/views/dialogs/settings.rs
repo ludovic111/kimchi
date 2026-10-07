@@ -96,7 +96,7 @@ impl SettingsDialog {
         let key = field(cx, true);
         let base = field(cx, true);
         let option = field(cx, false);
-        let agent = agent::AgentState::new(cx);
+        let agent = agent::AgentState::new(window, cx);
         let mut subs = vec![cx.observe_in(&store, window, |this: &mut Self, store, _, cx| {
             let dialog = store.read(cx).dialog.clone();
             let open = matches!(dialog, Some(Dialog::Settings { .. }));
@@ -392,7 +392,15 @@ impl SettingsDialog {
                     .when(selected, |d| d.bg(t.accent_soft).border_color(t.accent_ring))
                     .when(!selected, |d| d.border_color(t.line).hover(|s| s.bg(t.hover)))
                     .on_click(cx.listener(move |this, _, _, cx| this.set_setting("shortcuts.keymap", json!(id), cx)))
-                    .child(div().font_weight(FontWeight::SEMIBOLD).text_color(if selected { t.accent_text } else { t.text }).child(if l.id == "kimchi" { "kimchi's own keys".to_string() } else { format!("{}'s keys", l.name) }))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            // The editor's own logo (kimchi's mark for its own keys).
+                            .when_some(l.app.filter(|a| crate::ui::logos::logo_file(a).is_some()), |d, app| d.child(crate::ui::logo(app, px(18.))))
+                            .child(div().font_weight(FontWeight::SEMIBOLD).text_color(if selected { t.accent_text } else { t.text }).child(if l.id == "kimchi" { "kimchi's own keys".to_string() } else { format!("{}'s keys", l.name) })),
+                    )
                     .child(div().text_size(px(sz::SM)).text_color(t.text_2).child(l.notes))
                     .into_any_element()
             })

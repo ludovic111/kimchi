@@ -21,6 +21,18 @@ pub struct Settings {
     #[serde(default = "OnboardingSettings::set_up_before")]
     pub onboarding: OnboardingSettings,
     pub shortcuts: ShortcutSettings,
+    pub plugins: PluginSettings,
+}
+
+/// Video plugins (`plugin.*`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PluginSettings {
+    /// More folders to look for video plugins in (lsuite bundles and frei0r), besides the
+    /// standard ones.
+    pub video_folders: Vec<String>,
+    /// Plugin ids switched off (`plugin.disable`), and plugins that failed and were switched off.
+    pub disabled: Vec<String>,
 }
 
 /// The first-run setup (`app.onboarding`, `app.finishOnboarding`).
@@ -62,9 +74,11 @@ impl Default for ShortcutSettings {
 /// Keyboard layouts kimchi can take from other editors (`app.keymaps` describes them).
 pub const KEYMAPS: &[&str] = &["kimchi", "premiere", "finalcut", "resolve", "avid", "capcut", "kdenlive", "shotcut", "vegas", "imovie"];
 
-/// What can run the built-in agent (`settings.agent.provider`): the person's coding CLIs, model
-/// APIs, and local servers. `kimchi_agent::ProviderKind` has one variant per id.
+/// What can run the built-in agent (`settings.agent.provider`): lsuite AI (the lsuite account, no
+/// setup), the person's coding CLIs, model APIs, and local servers. `kimchi_agent::ProviderKind`
+/// has one variant per id.
 pub const AGENT_PROVIDERS: &[&str] = &[
+    "lsuite",
     "zenith",
     "claude-code",
     "codex",
@@ -99,11 +113,16 @@ pub struct AgentSettings {
     pub model: String,
     /// Base URL for `ollama` (and OpenAI-compatible servers).
     pub base_url: String,
+    /// Claude Code runs on lsuite AI (the lsuite account's plan) instead of the person's own
+    /// Claude sign-in, when signed in to lsuite.
+    pub claude_code_on_lsuite: bool,
 }
 
 impl Default for AgentSettings {
     fn default() -> Self {
-        Self { enabled: true, permissions: Permissions::default(), provider: "claude-code".into(), model: String::new(), base_url: String::new() }
+        // lsuite AI first: install, sign in once, and the agent works. Settings files from before
+        // 0.10 keep the provider they name.
+        Self { enabled: true, permissions: Permissions::default(), provider: "lsuite".into(), model: String::new(), base_url: String::new(), claude_code_on_lsuite: false }
     }
 }
 
@@ -124,11 +143,13 @@ pub struct Permissions {
     pub settings: bool,
     /// Quit the app, install an update.
     pub app_control: bool,
+    /// Write, build, install and remove plugins (lsuite PLUGINS.md); off until the person allows it.
+    pub plugins: bool,
 }
 
 impl Default for Permissions {
     fn default() -> Self {
-        Self { enabled: true, files: true, projects: true, generate: true, settings: false, app_control: false }
+        Self { enabled: true, files: true, projects: true, generate: true, settings: false, app_control: false, plugins: false }
     }
 }
 

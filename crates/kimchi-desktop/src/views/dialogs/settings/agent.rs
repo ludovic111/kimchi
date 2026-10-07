@@ -18,12 +18,13 @@ use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::{Button, icon};
 
 /// The permission switches: (setting key, title, what it allows).
-const PERMISSIONS: [(&str, &str, &str); 5] = [
+const PERMISSIONS: [(&str, &str, &str); 6] = [
     ("files", "Files", "Import media, export, write files, save a copy of the project."),
     ("projects", "Projects", "Create, open, close, duplicate or delete projects."),
     ("generate", "Generate", "Generate images and video (spends the provider's credits)."),
     ("settings", "Settings", "Change settings other than these permissions and API keys."),
     ("appControl", "App control", "Quit kimchi, install an update."),
+    ("plugins", "Plugins", "Write, build, install, remove and switch plugins (Plugins › Build with your agent)."),
 ];
 
 pub(super) struct AgentState {
@@ -41,10 +42,12 @@ pub(super) struct AgentState {
     base: Entity<TextInput>,
     /// The (provider, model, base URL) the fields were filled from.
     loaded: Option<(String, String, String)>,
+    /// lsuite AI's account card.
+    lsuite: Entity<crate::views::lsuite::LsuiteCard>,
 }
 
 impl AgentState {
-    pub(super) fn new(cx: &mut Context<SettingsDialog>) -> Self {
+    pub(super) fn new(window: &mut Window, cx: &mut Context<SettingsDialog>) -> Self {
         let field = |cx: &mut Context<SettingsDialog>| {
             cx.new(|cx| {
                 let mut i = TextInput::new(cx);
@@ -52,7 +55,8 @@ impl AgentState {
                 i
             })
         };
-        Self { statuses: vec![], models: None, previews: HashMap::new(), loading: false, refresh_models: false, generation: 0, key: field(cx), model: field(cx), base: field(cx), loaded: None }
+        let lsuite = cx.new(|cx| crate::views::lsuite::LsuiteCard::new(window, cx));
+        Self { statuses: vec![], models: None, previews: HashMap::new(), loading: false, refresh_models: false, generation: 0, key: field(cx), model: field(cx), base: field(cx), loaded: None, lsuite }
     }
 
     pub(super) fn subscribe(this: &Self, window: &mut Window, cx: &mut Context<SettingsDialog>) -> Vec<Subscription> {
@@ -209,6 +213,7 @@ impl SettingsDialog {
         let (state_color, state) = match &status {
             None => (t.text_2, if self.agent.loading { "Checking…" } else { "" }),
             Some(s) if s.ready => (t.success, "Ready"),
+            Some(s) if s.next == Some(kimchi_agent::Next::SignIn) => (t.text_2, "Sign in"),
             Some(_) => (t.text_2, "Set up"),
         };
         let line = match &status {
@@ -343,7 +348,8 @@ impl SettingsDialog {
         let rows = self.provider_rows(cx);
         let info = kind.info();
         let uses_key = info.key.is_some();
-        let uses_base = !kind.is_cli();
+        let is_lsuite = kind == ProviderKind::Lsuite;
+        let uses_base = !kind.is_cli() && !is_lsuite;
         let key_empty = self.agent.key.read(cx).text().trim().is_empty();
         let preview = info.key.and_then(|k| self.agent.previews.get(k.id).cloned());
         let current_model = settings.agent.model.clone();
@@ -441,6 +447,7 @@ impl SettingsDialog {
                 "projects" => perms.projects,
                 "generate" => perms.generate,
                 "settings" => perms.settings,
+                "plugins" => perms.plugins,
                 _ => perms.app_control,
             };
             let weak = weak.clone();
@@ -450,6 +457,7 @@ impl SettingsDialog {
                     "projects" => "perm-projects",
                     "generate" => "perm-generate",
                     "settings" => "perm-settings",
+                    "plugins" => "perm-plugins",
                     _ => "perm-app-control",
                 },
                 title,
@@ -472,6 +480,23 @@ impl SettingsDialog {
         } else {
             "Change it for a proxy, or a server on another computer."
         };
+        // Claude Code can run on lsuite AI instead of the person's own Claude sign-in.
+        let signed_in = self.store.read(cx).account.as_ref().is_some_and(|a| a.signed_in);
+        let on_lsuite = settings.agent.claude_code_on_lsuite;
+        let weak_cc = cx.entity().downgrade();
+        let claude_on_lsuite = (kind == ProviderKind::ClaudeCode && (signed_in || on_lsuite)).then(|| {
+            toggle_row(
+                "agent-claude-on-lsuite",
+                "Run Claude Code on lsuite AI",
+                "Your lsuite plan pays for Claude Code's requests, so it needs no Claude sign-in of its own.",
+                on_lsuite,
+                true,
+                move |on, _, cx| {
+                    weak_cc.update(cx, |this, cx| this.set_setting("agent.claudeCodeOnLsuite", json!(on), cx)).ok();
+                },
+                cx,
+            )
+        });
         let chosen = div()
             .flex()
             .flex_col()
@@ -480,7 +505,8 @@ impl SettingsDialog {
             .rounded(px(sz::R_MD))
             .border_1()
             .border_color(t.line)
-            .child(
+            .when(is_lsuite, |d| d.child(self.agent.lsuite.clone()))
+            .when(!is_lsuite, |d| d.child(
                 div()
                     .flex()
                     .items_center()
@@ -495,8 +521,9 @@ impl SettingsDialog {
                             .disabled(self.agent.loading)
                             .on_click(cx.listener(|this, _, _, cx| this.load_agent(cx))),
                     ),
-            )
-            .when_some(status.as_ref().map(|s| (s.ready, s.message.clone())), |d, (ready, m)| d.child(note(if ready { "circle-check" } else { "info" }, &m, if ready { t.success } else { t.text_2 }, cx)))
+            ))
+            .when_some(status.as_ref().filter(|_| !is_lsuite).map(|s| (s.ready, s.message.clone())), |d, (ready, m)| d.child(note(if ready { "circle-check" } else { "info" }, &m, if ready { t.success } else { t.text_2 }, cx)))
+            .when_some(claude_on_lsuite, |d, row| d.child(row))
             .when_some(key_field, |d, k| d.child(group(if kind == ProviderKind::Bedrock { "Bedrock API key" } else { "API key" }, None, k, cx)))
             .when(uses_base, |d| d.child(group(if kind == ProviderKind::Bedrock { "Region" } else { "Address" }, Some(base_help), self.agent.base.clone().into_any_element(), cx)))
             .child(group(if kind == ProviderKind::AzureOpenAi { "Deployment" } else { "Model" }, Some("Saved when you leave the field. Empty uses the default."), model_field, cx));

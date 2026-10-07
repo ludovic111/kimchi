@@ -7,6 +7,7 @@ use kimchi_agent::{RunInfo, RunState};
 use kimchi_control::{CommandRecord, Source};
 use serde_json::Value;
 
+use crate::store::StoreExt;
 use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::{Button, icon};
 use crate::views::agent::{clock, params_summary, source_badge, source_label, tokens};
@@ -191,7 +192,15 @@ impl AgentPanel {
                     })
                     .when(reverted, |d| d.child(div().flex_none().text_size(px(sz::XS)).text_color(t.text_2).child("Reverted"))),
             )
-            .when_some(o.error.map(str::to_string), |d, m| d.child(div().text_size(px(sz::SM)).text_color(t.text).child(m)))
+            .when_some(o.error.map(str::to_string), |d, m| {
+                // lsuite AI's allowance ran out: one line, and the way to more.
+                let allowance = m.starts_with(kimchi_agent::lsuite::ALLOWANCE);
+                d.child(div().text_size(px(sz::SM)).text_color(t.text).child(m)).when(allowance, |d| {
+                    d.child(div().flex().child(
+                        Button::new(("manage-plan", i), "Manage plan").small().primary().icon_after("arrow-up-right").on_click(|_, _, cx| cx.store().update(cx, |s, cx| s.manage_plan(cx))),
+                    ))
+                })
+            })
             .into_any_element()
     }
 }

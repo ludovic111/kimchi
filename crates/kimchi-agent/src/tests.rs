@@ -1100,3 +1100,71 @@ async fn unreadable_history_is_never_overwritten() {
     assert_eq!(std::fs::read(&path).unwrap(), b"{damaged but recoverable history");
     assert!(host.snapshot().storage_error.is_some());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lsuite_ai_runs_on_the_account_and_says_when_the_allowance_is_out() {
+    use kimchi_control::account;
+    use wiremock::matchers::header;
+    let dir = tempfile::tempdir().unwrap();
+    let s = with_project(dir.path()).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/ai/v1/messages"))
+        .and(header("x-api-key", "lsk_test_123456"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/event-stream").set_body_string(anthropic_text("Hello from lsuite AI.")))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/ai/v1/messages"))
+        .respond_with(ResponseTemplate::new(402).set_body_json(json!({ "error": { "type": "allowance_exceeded", "message": "This month's allowance is used up." } })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/account/me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "email": "ada@example.com", "plan": "plus", "status": "active", "usage": { "used": 100, "limit": 1000, "resetsAt": "2026-11-01T00:00:00Z" }, "models": ["claude-sonnet-5-5", "claude-haiku-4-5"] })))
+        .mount(&server)
+        .await;
+    let _env = account::testing(&dir.path().join("lsuite"), Some(&server.uri()));
+
+    // Signed out: one clear line, nothing sent.
+    let mut run = Agent::start(&s, AgentConfig::new(ProviderKind::Lsuite), "Hi", Conversation::new());
+    let events = collect(&mut run).await;
+    assert!(matches!(events.last(), Some(AgentEvent::Error { message, .. }) if message == crate::lsuite::SIGNED_OUT), "{events:?}");
+    let st = status_of(&s, ProviderKind::Lsuite).await;
+    assert!(!st.ready && st.next == Some(Next::SignIn), "{st:?}");
+
+    account::save(&account::Account { format: 1, server: server.uri(), email: "ada@example.com".into(), name: "Ada".into(), plan: "plus".into(), token: "lsk_test_123456".into(), signed_in_at: None }).unwrap();
+    let st = status_of(&s, ProviderKind::Lsuite).await;
+    assert!(st.ready, "{st:?}");
+    assert!(st.message.starts_with("Plus · 10 % used · resets 1 Nov"), "{}", st.message);
+    assert_eq!(st.models, ["claude-sonnet-5-5", "claude-haiku-4-5"]);
+
+    // Signed in: the Anthropic provider at <server>/api/ai with the account's key.
+    let mut run = Agent::start(&s, AgentConfig::new(ProviderKind::Lsuite), "Hi", Conversation::new());
+    let events = collect(&mut run).await;
+    assert!(matches!(events.last(), Some(AgentEvent::Done { summary, .. }) if summary == "Hello from lsuite AI."), "{events:?}");
+    let sent: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.url.path() == "/api/ai/v1/messages").collect();
+    let body: Value = serde_json::from_slice(&sent[0].body).unwrap();
+    assert_eq!(body["model"], "claude-sonnet-5-5");
+    assert_eq!(body["stream"], true);
+
+    // The allowance runs out: one line naming Manage plan, and no other provider is tried.
+    let mut run = Agent::start(&s, AgentConfig::new(ProviderKind::Lsuite), "Again", Conversation::new());
+    let events = collect(&mut run).await;
+    match events.last() {
+        Some(AgentEvent::Error { message, .. }) => {
+            assert!(message.starts_with(crate::lsuite::ALLOWANCE), "{message}");
+            assert!(message.contains(&format!("{}/account", server.uri())) && !message.contains('\n'), "{message}");
+        }
+        e => panic!("expected an error, got {e:?}"),
+    }
+
+    // Claude Code runs on lsuite AI only when the person picks it.
+    let mut settings = s.settings().agent;
+    assert!(crate::lsuite::claude_code_env(&settings).is_none());
+    settings.claude_code_on_lsuite = true;
+    let env = crate::lsuite::claude_code_env(&settings).unwrap();
+    assert_eq!(env[0], ("ANTHROPIC_BASE_URL", format!("{}/api/ai", server.uri())));
+    assert_eq!(env[1], ("ANTHROPIC_AUTH_TOKEN", "lsk_test_123456".to_string()));
+}

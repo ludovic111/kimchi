@@ -56,12 +56,15 @@ pub struct AgentPanel {
     mcp: Option<PathBuf>,
     was_open: bool,
     provider_seen: String,
+    /// lsuite AI's sign-in, shown instead of the warning while it isn't ready.
+    lsuite: Entity<crate::views::lsuite::LsuiteCard>,
     _subs: Vec<Subscription>,
 }
 
 impl AgentPanel {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = cx.store();
+        let lsuite = cx.new(|cx| crate::views::lsuite::LsuiteCard::new(window, cx).compact());
         let composer = cx.new(|cx| {
             let mut i = TextInput::new(cx).multiline(2).placeholder("Ask the agent to edit the cut…");
             i.bare = true;
@@ -124,6 +127,7 @@ impl AgentPanel {
             mcp: kimchi_agent::mcp_executable(),
             was_open: false,
             provider_seen,
+            lsuite,
             _subs: subs,
         };
         this.title_input.update(cx, |i, cx| i.set_text(this.snap.conversation.title.clone(), cx));
@@ -437,6 +441,10 @@ impl AgentPanel {
         let kind = self.provider(cx);
         let (text, action): (String, Option<&'static str>) = if !s.settings.agent.permissions.enabled {
             ("Agents are turned off: the agent, MCP clients and `kimchi-cli --agent` are refused.".into(), Some("Turn on in Settings › Agent"))
+        } else if kind == ProviderKind::Lsuite {
+            // lsuite AI: its own card (sign in, or the plan), only while it isn't ready.
+            self.status_of(kind).filter(|st| !st.ready)?;
+            return Some(div().m(px(10.)).mb_0().p(px(12.)).border_1().border_color(t.line_strong).bg(t.bg_raised).child(self.lsuite.clone()).into_any_element());
         } else {
             (self.status_of(kind).filter(|st| !st.ready)?.message.clone(), None)
         };
