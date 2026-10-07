@@ -1,7 +1,8 @@
 //! A clip's colour and picture effects: corrections (brightness, contrast, saturation,
 //! temperature, tint), vignette, sharpen, chroma key, a LUT and video plugins. They are
 //! parameters, drawn by the compositor in the preview and the export; the numeric ones take
-//! keyframes like any clip property ([`crate::model::CLIP_PROPS`]).
+//! keyframes like any clip property ([`crate::model::CLIP_PROPS`]), plugin parameters as
+//! `plugins.<slot id>.<parameter>`.
 
 use std::collections::BTreeMap;
 
@@ -29,14 +30,23 @@ pub struct Effects {
     pub chroma_key: Option<ChromaKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lut: Option<Lut>,
-    /// Video plugins on the picture after the effects above, first to last (kept, not drawn yet).
+    /// Video plugins run on the picture after the effects above, first to last.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<PluginEffect>,
+    /// The highest plugin slot number given on this clip (`p3` → 3), so a removed slot's id is
+    /// never given to another plugin ([`Effects::next_plugin_id`]).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub last_plugin: u32,
 }
 
-/// One video plugin on a clip: kimchi's own (`kimchi:<id>`), frei0r (`frei0r:<name>`) or OpenFX
-/// (`ofx:<identifier>`). Kept in the project so files from newer versions keep their plugins;
-/// this version doesn't draw them yet.
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// One video plugin on a clip: kimchi's own (`kimchi:<id>`, an lsuite plugin built with the
+/// `kimchi-plugin` SDK) or frei0r (`frei0r:<name>`). Hosted by `kimchi_media::render::plugins`;
+/// listed by `plugin.list`. Other ids (`ofx:…`, from a file made elsewhere) are kept as they are
+/// and not drawn.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginEffect {
@@ -161,7 +171,100 @@ impl Effects {
 
     /// Does anything change the colours or the pixels (not counting keyframes)?
     pub fn is_active(&self) -> bool {
-        !self.is_default()
+        !self.is_default() && (self.last_plugin == 0 || !Effects { last_plugin: 0, ..self.clone() }.is_default())
+    }
+
+    /// Do the corrections, vignette, sharpen, chroma key or LUT change the picture? (Plugins are
+    /// run on their own, after these.)
+    pub fn grades(&self) -> bool {
+        EFFECT_PROPS.iter().any(|n| self.get(n).is_some_and(|v| v != 0.0)) || self.chroma_key.is_some() || self.lut.is_some()
+    }
+
+    /// The plugins that are drawn (not bypassed), first to last.
+    pub fn active_plugins(&self) -> impl Iterator<Item = &PluginEffect> {
+        self.plugins.iter().filter(|p| !p.bypass)
+    }
+
+    /// A slot by id (`p2`), by position from 1 (`2`, `"2"`), or by its name or plugin name
+    /// (case-insensitive), with "did you mean" when nothing matches.
+    pub fn plugin_index(&self, slot: &str) -> Result<usize, String> {
+        let s = slot.trim();
+        if let Some(i) = self.plugins.iter().position(|p| p.id == s) {
+            return Ok(i);
+        }
+        if let Ok(n) = s.parse::<usize>() {
+            return match n {
+                1.. if n <= self.plugins.len() => Ok(n - 1),
+                _ => Err(format!("There is no plugin {n} on this clip: it has {} (positions start at 1).", self.plugins.len())),
+            };
+        }
+        let named: Vec<usize> = (0..self.plugins.len()).filter(|&i| self.plugins[i].name.eq_ignore_ascii_case(s)).collect();
+        let by_plugin: Vec<usize> = (0..self.plugins.len()).filter(|&i| {
+            let p = &self.plugins[i].plugin;
+            p.eq_ignore_ascii_case(s) || p.split_once(':').is_some_and(|(_, id)| id.eq_ignore_ascii_case(s))
+        }).collect();
+        match (named.as_slice(), by_plugin.as_slice()) {
+            ([i], _) | ([], [i]) => return Ok(*i),
+            ([_, _, ..], _) | ([], [_, _, ..]) => {
+                let ids: Vec<&str> = named.iter().chain(&by_plugin).map(|&i| self.plugins[i].id.as_str()).collect();
+                return Err(format!("More than one plugin on this clip is called `{s}`: name it by slot id ({}).", ids.join(", ")));
+            }
+            _ => {}
+        }
+        if self.plugins.is_empty() {
+            return Err(format!("This clip has no plugins (looked for `{s}`). Add one with clip.addPlugin."));
+        }
+        let mut names: Vec<&str> = self.plugins.iter().map(|p| p.id.as_str()).collect();
+        names.extend(self.plugins.iter().map(|p| p.name.as_str()));
+        let hint = crate::closest(s, &names).map(|c| format!(" Did you mean `{c}`?")).unwrap_or_default();
+        let list: Vec<String> = self.plugins.iter().map(|p| format!("{} ({})", p.id, p.name)).collect();
+        Err(format!("No plugin `{s}` on this clip.{hint} Its plugins: {}.", list.join(", ")))
+    }
+
+    /// The id the next plugin added to this clip gets (`p1`, `p2`…; never one given before).
+    pub fn next_plugin_id(&self) -> (String, u32) {
+        let used = self.plugins.iter().filter_map(|p| p.id.strip_prefix('p')?.parse::<u32>().ok()).max().unwrap_or(0);
+        let n = used.max(self.last_plugin) + 1;
+        (format!("p{n}"), n)
+    }
+}
+
+/// The parts of a plugin keyframe name `plugins.<slot>.<parameter>` (parameter names may have
+/// dots of their own: OpenFX splits 2D values into `size.x`, `size.y`).
+pub fn plugin_key(name: &str) -> Option<(&str, &str)> {
+    let mut parts = name.splitn(3, '.');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("plugins"), Some(slot), Some(param)) if !slot.is_empty() && !param.is_empty() => Some((slot, param)),
+        _ => None,
+    }
+}
+
+impl PluginValue {
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            PluginValue::Number(n) => Some(*n),
+            PluginValue::Bool(b) => Some(*b as u8 as f64),
+            PluginValue::Vector(v) if v.len() == 1 => Some(v[0]),
+            _ => None,
+        }
+    }
+
+    /// As a keyframe value (numbers, vectors and text; true/false as 1/0).
+    pub fn to_key(&self) -> crate::KeyValue {
+        match self {
+            PluginValue::Bool(b) => crate::KeyValue::Number(*b as u8 as f64),
+            PluginValue::Number(n) => crate::KeyValue::Number(*n),
+            PluginValue::Vector(v) => crate::KeyValue::Vector(v.clone()),
+            PluginValue::Text(t) => crate::KeyValue::Text(t.clone()),
+        }
+    }
+
+    pub fn from_key(k: &crate::KeyValue) -> Self {
+        match k {
+            crate::KeyValue::Number(n) => PluginValue::Number(*n),
+            crate::KeyValue::Vector(v) => PluginValue::Vector(v.clone()),
+            crate::KeyValue::Text(t) => PluginValue::Text(t.clone()),
+        }
     }
 }
 
@@ -195,7 +298,7 @@ pub fn apply_look(effects: &Effects, look: &str) -> Result<Effects, String> {
         let hint = crate::closest(look, &ids).map(|c| format!(" Did you mean `{c}`?")).unwrap_or_default();
         return Err(format!("Unknown look `{look}`.{hint} Looks: {}.", ids.join(", ")));
     };
-    let mut out = Effects { chroma_key: effects.chroma_key.clone(), lut: effects.lut.clone(), plugins: effects.plugins.clone(), ..Effects::default() };
+    let mut out = Effects { chroma_key: effects.chroma_key.clone(), lut: effects.lut.clone(), plugins: effects.plugins.clone(), last_plugin: effects.last_plugin, ..Effects::default() };
     for (name, v) in l.values {
         out.set(name, *v);
     }
@@ -225,6 +328,26 @@ mod tests {
         assert_eq!(look_of(&e), Some("vintage"));
         assert_eq!(look_of(&Effects::default()), Some("none"));
         assert!(apply_look(&e, "vintge").unwrap_err().contains("vintage"));
+    }
+
+    #[test]
+    fn plugin_slots_by_id_position_or_name() {
+        let slot = |id: &str, plugin: &str, name: &str| PluginEffect { id: id.into(), plugin: plugin.into(), name: name.into(), bypass: false, params: Default::default() };
+        let mut e = Effects { plugins: vec![slot("p1", "kimchi:xyz.lsuite.kimchi.glow", "Glow"), slot("p3", "frei0r:glow", "Soft glow")], ..Default::default() };
+        assert_eq!(e.plugin_index("p3"), Ok(1));
+        assert_eq!(e.plugin_index("2"), Ok(1));
+        assert_eq!(e.plugin_index("glow"), Ok(0));
+        assert_eq!(e.plugin_index("frei0r:glow"), Ok(1));
+        assert!(e.plugin_index("3").unwrap_err().contains("has 2"));
+        assert!(e.plugin_index("Sotf glow").unwrap_err().contains("Did you mean `Soft glow`"));
+        assert_eq!(e.next_plugin_id(), ("p4".into(), 4));
+        e.plugins.pop();
+        e.last_plugin = 3;
+        assert_eq!(e.next_plugin_id().0, "p4", "a removed slot's id isn't given again");
+        assert_eq!(plugin_key("plugins.p1.size.x"), Some(("p1", "size.x")));
+        assert_eq!(plugin_key("plugins.p1"), None);
+        // The counter alone doesn't make the effects do anything.
+        assert!(!Effects { last_plugin: 4, ..Default::default() }.is_active());
     }
 
     #[test]

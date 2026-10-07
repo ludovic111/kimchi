@@ -4,6 +4,7 @@
 pub mod export;
 pub mod interop;
 pub mod palette;
+pub mod plugins;
 pub mod settings;
 pub mod shortcuts;
 pub mod whats_new;
@@ -19,6 +20,7 @@ pub struct Dialogs {
     settings: Entity<settings::SettingsDialog>,
     export: Entity<export::ExportDialog>,
     palette: Entity<palette::Palette>,
+    plugins: Entity<plugins::PluginsDialog>,
     _sub: Subscription,
 }
 
@@ -35,6 +37,7 @@ impl Dialogs {
             settings: cx.new(|cx| settings::SettingsDialog::new(window, cx)),
             export: cx.new(|cx| export::ExportDialog::new(window, cx)),
             palette: cx.new(|cx| palette::Palette::new(window, cx)),
+            plugins: cx.new(|cx| plugins::PluginsDialog::new(window, cx)),
             store,
             _sub: sub,
         }
@@ -93,6 +96,7 @@ impl Render for Dialogs {
             Some(Dialog::Shortcuts) => Some(modal("shortcuts", 900., shortcuts::sheet(cx), false, window, cx)),
             Some(Dialog::WhatsNew { since, all }) => Some(modal("whats-new", 600., whats_new::sheet(since, all, cx), false, window, cx)),
             Some(Dialog::Interop { title, report }) => Some(modal("interop-report", 560., interop::sheet(title, report, cx), false, window, cx)),
+            Some(Dialog::Plugins { .. }) => Some(modal("plugins", 860., self.plugins.clone(), false, window, cx)),
             None => None,
         })
     }

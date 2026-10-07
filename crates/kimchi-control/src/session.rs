@@ -322,6 +322,19 @@ impl Session {
             batch_lock: Arc::new(tokio::sync::Mutex::new(())),
         });
         crate::commands::generate::spawn_job_listener(&session);
+        configure_plugins(&session);
+        // A plugin that fails is switched off and stays off until the person switches it on.
+        let weak = Arc::downgrade(&session);
+        kimchi_media::render::plugins::set_failure_hook(move |id, why| {
+            let Some(s) = weak.upgrade() else { return };
+            let _ = s.update_settings(|st| {
+                if !st.plugins.disabled.iter().any(|d| d == id) {
+                    st.plugins.disabled.push(id.to_string());
+                }
+            });
+            s.toast(ToastKind::Error, format!("The plugin {} failed and was switched off ({why}). Plugins switches it on again.", id.split_once(':').map(|(_, n)| n).unwrap_or(id)));
+            s.emit(Event::SettingsChanged);
+        });
         Ok(session)
     }
 
@@ -640,6 +653,13 @@ impl Session {
 }
 
 pub const NO_PROJECT: &str = "No project is open. Open one with project.open or create one with project.create.";
+
+/// Points the video plugin catalogue at this session's folders and switches (`settings.plugins`).
+pub fn configure_plugins(s: &Session) {
+    let st = s.settings();
+    kimchi_media::render::plugins::configure(&s.data_dir, &crate::account::lsuite_home(), &st.plugins.video_folders);
+    kimchi_media::render::plugins::set_disabled(&st.plugins.disabled);
+}
 
 pub fn default_data_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("KIMCHI_DATA_DIR").filter(|p| !p.is_empty()) {

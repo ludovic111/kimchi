@@ -18,6 +18,7 @@ pub mod color;
 pub mod effects;
 pub mod fonts;
 pub mod format;
+pub mod plugins;
 pub mod scene_editor;
 pub mod slider;
 
@@ -78,6 +79,7 @@ pub struct Inspector {
     item_fields: scene_editor::ItemFields,
     /// Colour, transition and speed controls.
     fx: effects::EffectFields,
+    plugin_sliders: plugins::PluginSliders,
     /// Sections the person folded (by key), kept while the window is open.
     folded: std::collections::HashSet<&'static str>,
     /// Sound controls (the clip's Audio section, a mixer strip's mix).
@@ -220,6 +222,7 @@ impl Inspector {
             scene_item: None,
             item_fields: Default::default(),
             fx,
+            plugin_sliders: Default::default(),
             folded: Default::default(),
             audio,
             _subs: subs,
@@ -486,6 +489,7 @@ impl Inspector {
         if !matches!(clip.content, ClipContent::Pending { .. }) && track_kind == Some(TrackKind::Video) {
             body.push(self.animation_section(clip, fps, cx));
             body.push(self.color_section(clip, fps, cx));
+            body.push(self.plugins_section(clip, cx));
         }
         // The picture's sections, then sound, then the edit: timing and the transition in.
         if has_sound {

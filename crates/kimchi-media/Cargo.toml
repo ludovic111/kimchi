@@ -26,6 +26,12 @@ wgpu = "29"
 # tiff a small pure-Rust one.
 png = "0.17"
 tiff = "0.11"
+# Video plugins: kimchi's SDK (its C ABI), the stock plugins built on it (linked in), libloading
+# for plugin libraries (lsuite plugins and frei0r), toml for lsuite plugin bundles.
+kimchi-plugin = { path = "../kimchi-plugin" }
+kimchi-plugin-examples = { path = "../../plugins/examples" }
+libloading = "0.8"
+toml = "0.8"
 
 [dev-dependencies]
 chrono.workspace = true

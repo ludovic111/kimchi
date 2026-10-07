@@ -12,6 +12,7 @@ kimchi-gen.workspace = true
 kimchi-media.workspace = true
 kimchi-captions.workspace = true
 kimchi-interop.workspace = true
+kimchi-plugin = { path = "../kimchi-plugin" }
 
 base64.workspace = true
 chrono.workspace = true
@@ -29,6 +30,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+url.workspace = true
 uuid.workspace = true
 
 # ryolune's engine, for its stock effects' factory presets (the same pin as kimchi-audio's).

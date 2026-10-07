@@ -92,6 +92,8 @@ pub enum Perm {
     Generate,
     Settings,
     AppControl,
+    /// Write, build, install, remove and switch plugins.
+    Plugins,
     /// Never from an agent: API keys and the agent's own permissions stay with the person.
     PersonOnly,
 }
@@ -105,6 +107,7 @@ impl Perm {
             Perm::Generate => "generate",
             Perm::Settings => "settings",
             Perm::AppControl => "app control",
+            Perm::Plugins => "plugins",
             Perm::PersonOnly => "person only",
         }
     }
@@ -284,6 +287,7 @@ pub fn allowed(session: &Session, source: Source, spec: &Spec) -> CmdResult<()> 
         Perm::Generate => p.generate,
         Perm::Settings => p.settings,
         Perm::AppControl => p.app_control,
+        Perm::Plugins => p.plugins,
         Perm::PersonOnly => false,
     };
     if ok {
@@ -559,6 +563,7 @@ pub fn markdown() -> String {
                 Perm::Generate => "permission: generate",
                 Perm::Settings => "permission: settings",
                 Perm::AppControl => "permission: app control",
+                Perm::Plugins => "permission: plugins",
                 Perm::Edit => unreachable!(),
             });
         }

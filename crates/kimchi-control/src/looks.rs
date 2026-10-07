@@ -70,7 +70,7 @@ impl Found {
     pub fn apply(&self, clip: &Effects, strength: Option<f64>) -> Result<Effects, String> {
         let mut out = match self {
             Found::BuiltIn(l) => kimchi_core::effects::apply_look(clip, l.id)?,
-            Found::Library(l) => Effects { chroma_key: clip.chroma_key.clone(), plugins: clip.plugins.clone(), ..l.effects.clone() },
+            Found::Library(l) => Effects { chroma_key: clip.chroma_key.clone(), plugins: clip.plugins.clone(), last_plugin: clip.last_plugin, ..l.effects.clone() },
         };
         if let (Some(s), Some(lut)) = (strength, out.lut.as_mut()) {
             lut.strength = s;

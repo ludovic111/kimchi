@@ -50,8 +50,11 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "audio.setMaster" => set_master(s, cx, &a),
         "audio.effects" => {
             let category = a.opt_str("category").map(str::to_lowercase);
+            // Plugins switched off in Plugins aren't offered.
+            let off = s.settings().plugins.disabled;
             let list: Vec<Value> = plugins::effects(a.opt_str("query"))
                 .into_iter()
+                .filter(|e| !off.contains(&e.id))
                 .filter(|e| category.as_ref().is_none_or(|c| e.category.to_lowercase() == *c))
                 .map(|e| json!(e))
                 .collect();

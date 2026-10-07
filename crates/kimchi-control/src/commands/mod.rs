@@ -1,6 +1,7 @@
 //! Every command's spec and handler. Specs are listed here in one table so the
 //! docs, the CLI help and the MCP tools are generated in a stable order.
 
+pub mod account;
 pub mod agent;
 pub mod app;
 pub mod audio;
@@ -18,6 +19,7 @@ pub mod motion_camera;
 pub mod motion_edit;
 pub mod motion_mesh;
 pub mod onboarding;
+pub mod plugins;
 pub mod project;
 pub mod timeline;
 pub mod track;
@@ -92,7 +94,7 @@ pub static SPECS: &[Spec] = &[
     query("project.formats", "What kimchi opens from and writes for other editors: project and timeline formats (project.importFrom, project.exportTo) with the apps that use each and how much survives the trip, look formats (looks.import), and every app kimchi knows with how to bring its projects over, its looks, plugins and keyboard layout.", &[
         opt("app", String, "Only what concerns this app (premiere, finalcut, resolve, capcut, avid, vegas, kdenlive, shotcut, openshot, aftereffects, nuke, lightroom, blender…)."),
     ]),
-    edit("project.importFrom", "Open a project or timeline from another editor as a new library project (opened): OpenTimelineIO (.otio, Resolve), FCPXML (Final Cut Pro, Resolve), Final Cut 7 / Premiere XML (.xml), CMX 3600 EDL, Kdenlive (.kdenlive), Shotcut (.mlt), OpenShot (.osp), a Premiere Pro .prproj or a CapCut draft folder. Media is imported from where the file says; returns what came through, what changed, and the files that are missing (media.relink).", &[
+    edit("project.importFrom", "Open a project or timeline from another editor as a new library project (opened): OpenTimelineIO (.otio, Resolve, Kdenlive, Nuke), FCPXML (Final Cut Pro, Resolve), Final Cut 7 / Premiere XML (.xml: Premiere Pro, VEGAS) or a CMX 3600 EDL (Media Composer and every editor). Kdenlive, Shotcut, OpenShot, .prproj and CapCut files aren't read yet: export one of these from them. Media is imported from where the file says; returns what came through, what changed, and the files that are missing (media.relink).", &[
         req("path", String, "The project or timeline file, or a bundle or draft folder."),
         opt("format", String, "Format id from project.formats (default: from the file)."),
         opt("into", String, "new (default): a new library project, opened. open: add its tracks to the open project, at start (one undo step)."),
@@ -250,6 +252,22 @@ pub static SPECS: &[Spec] = &[
         crate::registry::COALESCE,
     ]),
     query("clip.looks", "The ready-made looks clip.setEffects applies, with their values.", &[]),
+    edit("clip.addPlugin", "Put a video plugin on clips' pictures, after their colour effects: kimchi's stock plugins, lsuite plugins (built with the kimchi-plugin SDK, plugin.new) or frei0r filters (plugin.list kind effect or generator; a generator draws its clip's picture, put it on a solid). Animate its numbers, points and colours with clip.setKeyframes on plugins.<slot>.<parameter>. One undo step; returns the slot ids.", &[
+        req("clipIds", Array, "Clips (ids or names).").of(String),
+        req("plugin", String, "Plugin id or name from plugin.list."),
+        opt("params", Object, "Values by parameter name (plugin.info lists them); the others keep their defaults."),
+        opt("index", Integer, "Position among the clip's plugins from 0 (default: last)."),
+    ]),
+    edit("clip.setPlugin", "Change a plugin on a clip: parameter values, bypass, or its name. One undo step.", &[
+        CLIP_ID,
+        req("slot", Any, "Slot id (p1…), plugin name or position from 1."),
+        opt("params", Object, "Values by parameter name; the others stay."),
+        opt("bypass", Boolean, "Skip it while drawing (its settings stay)."),
+        opt("name", String, "What the inspector calls it."),
+        crate::registry::COALESCE,
+    ]),
+    edit("clip.removePlugin", "Take a plugin off a clip (its keyframes go too). One undo step.", &[CLIP_ID, req("slot", Any, "Slot id, plugin name or position from 1.")]),
+    edit("clip.movePlugin", "Move a plugin to another place among the clip's plugins. One undo step.", &[CLIP_ID, req("slot", Any, "Slot id, plugin name or position from 1."), req("index", Integer, "New position from 0.")]),
     // ---- looks ------------------------------------------------------------
     query("looks.list", "The look library: kimchi's built-in looks, and the looks imported from other apps (LUTs, Lightroom / Camera Raw presets, Lumetri presets) or saved from clips, with what each sets.", &[
         opt("query", String, "Only looks whose name, folder or source app contains this."),
@@ -283,6 +301,8 @@ pub static SPECS: &[Spec] = &[
         opt("kind", String, "dissolve (default), dipToBlack, dipToWhite, wipeLeft, wipeRight, wipeUp, wipeDown, slideLeft, slideRight, slideUp, slideDown, pushLeft, pushRight, pushUp, pushDown, zoom, iris or blur."),
         opt("duration", Number, "Seconds (default 0.8). On a cut it can't be longer than the shorter clip; otherwise than half the clip."),
         opt("easing", String, "How the progress moves (default easeInOutSine; any keyframe easing)."),
+        opt("plugin", String, "A transition plugin (plugin.list kind transition, e.g. Radial wipe) drawn instead of kind, which stays as the fallback on computers without it; \"\" removes it."),
+        opt("pluginParams", Object, "The transition plugin's values by parameter name (plugin.info)."),
         crate::registry::COALESCE,
     ]),
     edit("transition.remove", "Remove the transitions at the start of clips (or every one on a track). One undo step.", &[
@@ -927,8 +947,50 @@ pub static SPECS: &[Spec] = &[
     edit("app.clearCrashReports", "Delete every crash report.", &[]).perm(Perm::Files),
     edit("app.quit", "Quit kimchi.", &[]).perm(Perm::AppControl).window(),
     edit("app.notify", "Show a short message in the window.", &[req("text", String, "Message."), opt("kind", String, "info (default), success or error.")]).window(),
+    // ---- plugin -----------------------------------------------------------
+    query("plugin.list", "Everything kimchi can use as a plugin: stock (its colour effects, transitions and looks, ryolune's sound effects, and the SDK plugins it ships: Halftone, Chromatic aberration, Gradient, Radial wipe) and installed (lsuite plugins in ~/.lsuite/plugins/kimchi, frei0r filters, CLAP/VST3/Audio Unit sound plugins found by ryolune's engine), each with id, name, kind, format, version, path, whether it is on and which command uses it; the formats kimchi loads (LUTs among them, as looks) and where it looks; and the plugins that failed to load.", &[
+        opt("query", String, "Only plugins whose name, vendor, category, format or description contains this."),
+        opt("kind", String, "effect, generator, transition, look or sound."),
+        opt("source", String, "stock or installed."),
+    ]),
+    query("plugin.info", "One plugin: its parameters (name, type, range, default, choices, unit), description and where it came from. With clipId and slot, also the values that slot has now.", &[
+        opt("id", String, "Plugin id or name (plugin.list)."),
+        opt("clipId", String, "A clip with the plugin on it."),
+        opt("slot", Any, "The plugin on the clip: slot id, name or position from 1."),
+    ]),
+    edit("plugin.enable", "Switch a plugin on again (also one that failed and was switched off). A setting: nothing is installed or deleted.", &[req("id", String, "Plugin id or name.")]).perm(Perm::Plugins),
+    edit("plugin.disable", "Switch a plugin off: clips that use it are drawn without it (their settings stay). A setting: nothing is deleted.", &[req("id", String, "Plugin id or name.")]).perm(Perm::Plugins),
+    edit("plugin.rescan", "Look for plugins again (lsuite plugins, frei0r, and Settings' extra folders) and load the ones that changed: a rebuilt lsuite plugin is used at once, without a restart. Returns how many there are and the ones that failed to load.", &[]),
+    edit("plugin.install", "Install a built lsuite plugin bundle (a folder with plugin.toml and the library) into ~/.lsuite/plugins/kimchi/<id>/, after checking it loads; its plugins are usable at once. Installing a new build replaces the old one in the running app.", &[req("path", String, "The bundle's folder.")]).perm(Perm::Plugins),
+    edit("plugin.remove", "Remove an installed lsuite plugin (stock plugins and other formats can only be switched off).", &[req("id", String, "The bundle's id, or one of its plugins' ids or names.")]).perm(Perm::Plugins),
+    query("plugin.guide", "How to write a kimchi plugin, for an agent: the SDK (kinds, parameters, frames, the render context), the rules, the recipe (plugin.new, writeSource, build, publishLocal, try it) and the three templates. Markdown.", &[]),
+    query("plugin.toolchain", "Whether Rust is installed to build plugins: cargo and rustc, rustc's version, and how to install Rust (rustup) when it isn't. Never installs anything: offer the install to the person.", &[]),
+    edit("plugin.new", "Start a plugin: a Rust crate from the SDK's template in ~/.lsuite/plugins-src/kimchi/<name>/ (Cargo.toml, plugin.toml, src/lib.rs: a working plugin of that kind to change). Returns its folder, files and the starting source.", &[
+        req("name", String, "Crate name: lowercase letters, digits and -, like halftone-dots."),
+        opt("kind", String, "effect (default), generator or transition."),
+        opt("id", String, "Reverse-DNS id (default local.plugins.<name>); stored in projects, so never change it later."),
+        opt("description", String, "One short sentence: what it does to a picture."),
+    ]).perm(Perm::Plugins),
+    edit("plugin.writeSource", "Write one file of a plugin crate made by plugin.new (src/lib.rs, a module, Cargo.toml, plugin.toml). Paths are inside the crate; anything outside it is refused.", &[
+        req("name", String, "The crate's name."),
+        req("path", String, "Path inside the crate, like src/lib.rs."),
+        req("contents", String, "The whole file."),
+    ]).perm(Perm::Plugins),
+    edit("plugin.build", "Build a plugin crate (cargo build --release). Returns ok, and the compiler's errors as {file, line, column, message, rendered}. The first build fetches and compiles the SDK; later ones take seconds.", &[req("name", String, "The crate's name.")]).perm(Perm::Plugins),
+    edit("plugin.publishLocal", "Build a plugin crate, make the bundle (plugin.toml and the library) and install it (plugin.install): its plugins are usable in kimchi at once, replacing an earlier build without a restart.", &[req("name", String, "The crate's name.")]).perm(Perm::Plugins),
+    // ---- account ----------------------------------------------------------
+    query("account.status", "The lsuite account shared by every lsuite app on this computer (~/.lsuite/account.json), which runs the agent on lsuite AI with no other setup: signed in or not, email, plan, the allowance used this month and when it resets, the plan's models, and where to manage the plan. Never shows the key.", &[
+        opt("offline", Boolean, "Only what the account file says, without asking the server (default false)."),
+    ]),
+    query("account.plans", "The lsuite AI plans as the lsuite server lists them: prices, models and monthly allowances (a demo for now: no payment is taken).", &[]),
+    edit("account.signIn", "Sign in to lsuite AI (every lsuite app on this computer is signed in with it). Without key, opens the lsuite sign-in page in the browser and waits for it to come back; with key, uses the key the account page shows (lsk_…), for CLIs and computers without a browser.", &[
+        opt("key", String, "The key from the account page (lsk_…)."),
+        opt("wait", Boolean, "Wait for the browser to finish the sign-in (default true); false answers at once with the address and finishes in the background."),
+        opt("cancel", Boolean, "Stop a sign-in that is waiting for the browser."),
+    ]).perm(Perm::PersonOnly),
+    edit("account.signOut", "Sign out of lsuite AI on this computer (every lsuite app), and tell the server to forget the key.", &[]).perm(Perm::PersonOnly),
     // ---- agent ------------------------------------------------------------
-    query("agent.providers", "What can run the built-in agent: Zenith, coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen.", &[
+    query("agent.providers", "What can run the built-in agent: lsuite AI (the lsuite account: sign in and it works, see account.status), Zenith, coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen.", &[
         opt("refresh", Boolean, "Fetch the chosen provider's model list again now."),
     ]).window(),
     query("agent.models", "The models a provider offers for the agent (the chosen one by default): fetched from the provider's own list where it has one (kept for a few hours), else a short built-in list; models that can't use tools are marked tools=false.", &[
@@ -968,9 +1030,9 @@ pub static SPECS: &[Spec] = &[
     // ---- ui ---------------------------------------------------------------
     query("ui.state", "What the window shows: home or editor, playhead, playing, selection, zoom, open panel and dialogs, theme.", &[]),
     edit("ui.select", "Select clips (or one media item) in the window.", &[opt("clipIds", Array, "Clips to select (ids or names); empty clears.").of(String), opt("assetId", String, "A media item to select instead.")]).window(),
-    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, studio, captions, inspector (left panel), agent, jobs, settings, export, palette, shortcuts, whatsNew, diagnostics, onboarding (the first-run setup); or home. With open false, close it.", &[
+    edit("ui.showPanel", "Open a panel or dialog: media, generate, text, motion, studio, captions, inspector (left panel), agent, jobs, settings, plugins, export, palette, shortcuts, whatsNew, diagnostics, onboarding (the first-run setup); or home. With open false, close it.", &[
         req("panel", String, "Panel name."),
-        opt("section", String, "For settings: models, agent, appearance, audio, keyboard, updates, diagnostics or about. For onboarding: the step to show (welcome, comingFrom, generativeAi, agent, done)."),
+        opt("section", String, "For settings: models, agent, appearance, audio, keyboard, updates, diagnostics or about. For plugins: stock, installed, formats or build. For onboarding: the step to show (welcome, comingFrom, generativeAi, agent, done)."),
         opt("open", Boolean, "false closes the panel or dialog instead (the left panel, inspector, agent, jobs or a dialog; default true)."),
         opt("all", Boolean, "For whatsNew: the notes of every release, not only this one's."),
     ]).window(),
@@ -1043,6 +1105,7 @@ pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
     match cx.spec.name {
         "project.formats" | "project.importFrom" | "project.exportTo" | "media.relink" => return Box::pin(interop::run(s, cx, a)).await,
         "app.onboarding" | "app.finishOnboarding" | "app.keymaps" => return Box::pin(onboarding::run(s, cx, a)).await,
+        "clip.addPlugin" | "clip.setPlugin" | "clip.removePlugin" | "clip.movePlugin" => return Box::pin(plugins::run(s, cx, a)).await,
         _ => {}
     }
     match cx.spec.family() {
@@ -1062,6 +1125,8 @@ pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "handoff" => Box::pin(handoff::run(s, cx, a)).await,
         "app" => Box::pin(app::run(s, cx, a)).await,
         "agent" => Box::pin(agent::run(s, cx, a)).await,
+        "account" => Box::pin(account::run(s, cx, a)).await,
+        "plugin" => Box::pin(plugins::run(s, cx, a)).await,
         "ui" => Box::pin(ui::run(s, cx, a)).await,
         _ => Err(unhandled(cx)),
     }

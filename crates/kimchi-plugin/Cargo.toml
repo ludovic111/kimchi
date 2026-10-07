@@ -1,0 +1,13 @@
+[package]
+name = "kimchi-plugin"
+description = "kimchi video plugin SDK: write effects, generators and transitions in Rust, load them into kimchi through a stable C ABI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Plugins are built with this crate, so it stays small: the manifest a plugin hands the host is
+# JSON (serde), and that is all it needs.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

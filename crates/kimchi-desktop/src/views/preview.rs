@@ -113,13 +113,16 @@ struct Playing {
     generation: u64,
 }
 
+/// What a paused frame was drawn for: playhead, project, pixel size, plugins' generation.
+type FrameKey = (f64, usize, (u32, u32), u64);
+
 pub struct PreviewView {
     store: Entity<Store>,
     playback: Entity<Playback>,
     image: Option<Arc<RenderImage>>,
     garbage: Vec<Arc<RenderImage>>,
     /// What the shown frame is: (playhead, project, size).
-    shown: Option<(f64, usize, (u32, u32))>,
+    shown: Option<FrameKey>,
     rendering: Option<Task<()>>,
     /// A newer frame was asked for while one was rendering.
     stale: bool,
@@ -201,7 +204,8 @@ impl PreviewView {
             return;
         }
         self.playing = None;
-        let key = (playhead, Arc::as_ptr(&project) as usize, self.render_size(&project, 2.0));
+        // Plugins changed (installed, rebuilt, switched): the same frame draws differently.
+        let key = (playhead, Arc::as_ptr(&project) as usize, self.render_size(&project, 2.0), kimchi_media::render::plugins::generation());
         if self.shown.is_some_and(|s| s == key) {
             return;
         }
@@ -212,9 +216,9 @@ impl PreviewView {
         self.render_frame(project, key, cx);
     }
 
-    fn render_frame(&mut self, project: Arc<Project>, key: (f64, usize, (u32, u32)), cx: &mut Context<Self>) {
+    fn render_frame(&mut self, project: Arc<Project>, key: FrameKey, cx: &mut Context<Self>) {
         let session = self.store.read(cx).session.clone();
-        let (t, _, (w, h)) = key;
+        let (t, _, (w, h), _) = key;
         let task = gpui_tokio::Tokio::spawn(cx, crate::preview::render(session, project, t, w, h));
         self.stale = false;
         self.rendering = Some(cx.spawn(async move |this, cx| {
@@ -320,7 +324,7 @@ impl PreviewView {
         }
         if let Some((pts, frame)) = due {
             self.set_image(frame);
-            self.shown = Some((pts, 0, (0, 0)));
+            self.shown = Some((pts, 0, (0, 0), 0));
         }
         if still {
             window.request_animation_frame();

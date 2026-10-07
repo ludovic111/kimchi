@@ -184,6 +184,8 @@ impl Palette {
         v.extend([
             Cmd::action("New project", "file-plus", act::NewProject),
             Cmd::action("Settings", "settings", act::OpenSettings).keywords("preferences"),
+            Cmd::action("Plugins", "plug-zap", act::OpenPlugins).keywords("effects frei0r lut clap vst sdk install build agent rust"),
+            Cmd::new("Build a plugin with your agent", "sparkles", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(crate::store::Dialog::Plugins { part: Some("build".into()) }, cx))).keywords("plugin make write rust sdk effect transition").ai(),
             Cmd::action("Keyboard shortcuts", "keyboard", act::ShowShortcuts).keywords("keys help hotkeys"),
             Cmd::action("Set up kimchi…", "sparkles", act::SetUpKimchi).keywords("onboarding welcome first run premiere final cut resolve switch keymap"),
             Cmd::new("Models & keys", "key-round", |_, cx| settings("models", cx)).keywords("api key provider"),

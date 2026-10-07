@@ -1823,3 +1823,97 @@ async fn audio_loudness_measure_and_normalize() {
     let e = registry::call(&s, Source::Cli, "audio.normalize", json!({ "clipIds": ["quiet.wav"], "mode": "peak", "target": 3 })).await.unwrap_err();
     assert!(e.contains("Peak targets"), "{e}");
 }
+
+/// The plugin recipe of lsuite's PLUGINS.md, end to end: scaffold from the SDK's template, a
+/// build with an error reported as data, a green build, publish (bundle, install, load), the
+/// plugin on a clip in a rendered frame, a rebuilt version used at once (hot reload), the switch,
+/// and removal. Needs cargo (skipped without it); builds share `target/plugin-tests`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_is_made_built_installed_used_and_reloaded() {
+    if crate::plugin_dev::toolchain().await.cargo.is_none() {
+        eprintln!("no cargo: skipped");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let _env = crate::account::testing(&dir.path().join("lsuite"), None);
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    crate::plugin_dev::set_target_dir_for_tests(workspace.join("target/plugin-tests"));
+    let s = session(dir.path());
+    crate::session::configure_plugins(&s);
+
+    // Agents need the plugins permission (off by default).
+    let e = registry::call(&s, Source::Agent, "plugin.new", json!({ "name": "warm-test" })).await.unwrap_err();
+    assert!(e.contains("\"plugins\" permission"), "{e}");
+    s.update_settings(|st| st.agent.permissions.plugins = true).unwrap();
+
+    let list = ok(&s, Source::Agent, "plugin.list", json!({})).await;
+    let stock: Vec<&str> = list["plugins"].as_array().unwrap().iter().filter(|p| p["source"] == "stock").filter_map(|p| p["name"].as_str()).collect();
+    for want in ["Brightness", "Dissolve", "Punchy", "Halftone", "Radial wipe"] {
+        assert!(stock.contains(&want), "{want} in {stock:?}");
+    }
+    let formats: Vec<&str> = list["formats"].as_array().unwrap().iter().filter_map(|f| f["id"].as_str()).collect();
+    assert!(formats.starts_with(&["lsuite", "frei0r", "lut", "ryolune", "clap", "vst3"]), "{formats:?}");
+    assert!(ok(&s, Source::Agent, "plugin.guide", json!({})).await["guide"].as_str().unwrap().contains("plugin.publishLocal"));
+
+    let made = ok(&s, Source::Agent, "plugin.new", json!({ "name": "warm-test", "kind": "effect", "description": "Warms the picture." })).await;
+    assert_eq!(made["id"], "local.plugins.warm-test");
+    assert!(made["source"].as_str().unwrap().contains("pub struct WarmTest") && made["source"].as_str().unwrap().contains("export_plugins!(WarmTest)"));
+    let e = registry::call(&s, Source::Agent, "plugin.new", json!({ "name": "warm-test" })).await.unwrap_err();
+    assert!(e.contains("exists already"), "{e}");
+    let e = registry::call(&s, Source::Agent, "plugin.writeSource", json!({ "name": "warm-test", "path": "../escape.rs", "contents": "" })).await.unwrap_err();
+    assert!(e.contains("inside the crate"), "{e}");
+
+    // An error comes back as data, with its place.
+    let src = made["source"].as_str().unwrap().to_string();
+    ok(&s, Source::Agent, "plugin.writeSource", json!({ "name": "warm-test", "path": "src/lib.rs", "contents": src.replace("let input = inputs[0];", "let input = inputs[0]; let oops: u8 = \"no\";") })).await;
+    let b = ok(&s, Source::Agent, "plugin.build", json!({ "name": "warm-test" })).await;
+    assert_eq!(b["ok"], false, "{b}");
+    let first = &b["errors"][0];
+    assert_eq!(first["file"], "src/lib.rs", "{b}");
+    assert!(first["line"].as_u64().unwrap() > 10 && first["message"].as_str().unwrap().contains("mismatched types"), "{b}");
+
+    // Fixed, built, published: a solid clip turns the template's orange.
+    ok(&s, Source::Agent, "plugin.writeSource", json!({ "name": "warm-test", "path": "src/lib.rs", "contents": src })).await;
+    let p = ok(&s, Source::Agent, "plugin.publishLocal", json!({ "name": "warm-test" })).await;
+    assert_eq!(p["published"], true, "{p}");
+    assert_eq!(p["plugins"][0]["id"], "kimchi:local.plugins.warm-test");
+    assert!(dir.path().join("lsuite/plugins/kimchi/local.plugins.warm-test/plugin.toml").is_file());
+    let installed = ok(&s, Source::Agent, "plugin.list", json!({ "source": "installed", "kind": "effect" })).await;
+    assert_eq!(installed["plugins"][0]["name"], "Warm test");
+    assert_eq!(installed["plugins"][0]["enabled"], true);
+
+    ok(&s, Source::Window, "project.create", json!({ "name": "P", "width": 320, "height": 180 })).await;
+    let solid = ok(&s, Source::Agent, "clip.addSolid", json!({ "color": "#000000", "duration": 2 })).await;
+    let clip = solid["clips"][0]["id"].as_str().map(str::to_string).or_else(|| solid["id"].as_str().map(str::to_string)).unwrap();
+    ok(&s, Source::Agent, "clip.addPlugin", json!({ "clipIds": [clip], "plugin": "Warm test", "params": { "Amount": 100 } })).await;
+    let pixel = |s: Arc<Session>| async move {
+        let f = ok(&s, Source::Agent, "project.renderFrame", json!({ "time": 1.0, "width": 160 })).await;
+        let png = kimchi_media::tiny_skia::Pixmap::load_png(f["path"].as_str().unwrap()).unwrap();
+        let p = png.pixel(80, 45).unwrap();
+        (p.red(), p.green(), p.blue())
+    };
+    let (r, g, b) = pixel(s.clone()).await;
+    assert!(r > 240 && (130..150).contains(&g) && (40..60).contains(&b), "orange: {r} {g} {b}");
+
+    // Rebuilt to tint blue: the next frame uses the new build, without a restart.
+    let blue = made["source"].as_str().unwrap().replace("[1.0, 0.55, 0.2, 1.0]", "[0.0, 0.2, 1.0, 1.0]");
+    ok(&s, Source::Agent, "plugin.writeSource", json!({ "name": "warm-test", "path": "src/lib.rs", "contents": blue })).await;
+    ok(&s, Source::Agent, "plugin.publishLocal", json!({ "name": "warm-test" })).await;
+    // The clip keeps the value it was given (the default changed, not the clip's).
+    ok(&s, Source::Agent, "clip.setPlugin", json!({ "clipId": clip, "slot": "p1", "params": { "Colour": "#0033ff" } })).await;
+    let (r, _, b) = pixel(s.clone()).await;
+    assert!(r < 20 && b > 240, "blue now: {r} {b}");
+
+    // Switched off: drawn without it. On again: back.
+    ok(&s, Source::Agent, "plugin.disable", json!({ "id": "Warm test" })).await;
+    assert_eq!(pixel(s.clone()).await, (0, 0, 0));
+    ok(&s, Source::Agent, "plugin.enable", json!({ "id": "Warm test" })).await;
+    assert!(pixel(s.clone()).await.2 > 240);
+
+    // Removed: the clip keeps its settings and is drawn without it.
+    ok(&s, Source::Agent, "plugin.remove", json!({ "id": "local.plugins.warm-test" })).await;
+    assert!(!dir.path().join("lsuite/plugins/kimchi/local.plugins.warm-test").exists());
+    assert_eq!(pixel(s.clone()).await, (0, 0, 0));
+    let c = ok(&s, Source::Agent, "clip.get", json!({ "clipId": clip })).await;
+    assert!(c.to_string().contains("local.plugins.warm-test"), "{c}");
+}

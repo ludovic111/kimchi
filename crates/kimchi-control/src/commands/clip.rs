@@ -180,7 +180,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
             let property = a.str("property")?;
             let keys = crate::commands::motion::keyframes(&a)?;
             for k in &keys {
-                kimchi_core::check_clip_key(&clip.content, property, &k.value)?;
+                crate::commands::plugins::check_key(clip, property, &k.value)?;
             }
             let mut all = clip.keyframes.clone();
             if keys.is_empty() {
@@ -200,7 +200,7 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 Some(v) => serde_json::from_value::<kimchi_core::KeyValue>(v.clone()).map_err(|_| format!("value {v} should be a number, [x, y] or a colour"))?,
                 None => crate::commands::motion::current_value(clip, property, time)?,
             };
-            kimchi_core::check_clip_key(&clip.content, property, &value)?;
+            crate::commands::plugins::check_key(clip, property, &value)?;
             let easing = a.opt_str("easing").map(kimchi_core::Easing::parse).transpose()?.unwrap_or_default();
             let mut all = clip.keyframes.clone();
             kimchi_core::anim::set_key(&mut all, property, kimchi_core::Keyframe { time: time - clip.start, value, easing });
@@ -292,7 +292,8 @@ pub(crate) fn apply_all(s: &Arc<Session>, cx: &Ctx, edits: &[Edit], coalesce: Op
 
 /// The effects `clip.setEffects` asks for, on top of the clip's (or none, with reset).
 fn effects_of(clip: &Clip, a: &Args, looks: &crate::looks::Library) -> CmdResult<Effects> {
-    let mut e = if a.bool_or("reset", false) { Effects::default() } else { clip.effects.clone() };
+    // A reset leaves the plugins (they have their own commands).
+    let mut e = if a.bool_or("reset", false) { Effects { plugins: clip.effects.plugins.clone(), last_plugin: clip.effects.last_plugin, ..Effects::default() } } else { clip.effects.clone() };
     if let Some(look) = a.opt_str("look") {
         e = looks.find(look)?.apply(&e, None)?;
     }
@@ -458,6 +459,13 @@ fn keyframes_and_value(s: &Arc<Session>, cx: &Ctx, a: &Args, id: Id, clip: &Clip
     if let (Some(v), true) = (n, kimchi_core::effects::EFFECT_PROPS.contains(&property)) {
         let mut e = clip.effects.clone();
         e.set(property, v);
+        patch.effects = Some(e);
+    }
+    if let Some((slot, param)) = kimchi_core::effects::plugin_key(property)
+        && let Some(p) = clip.effects.plugins.iter().position(|p| p.id == slot)
+    {
+        let mut e = clip.effects.clone();
+        e.plugins[p].params.insert(param.to_string(), kimchi_core::PluginValue::from_key(&value));
         patch.effects = Some(e);
     }
     if let (ClipContent::Text { style }, true) = (&clip.content, ["fontSize", "letterSpacing", "color"].contains(&property)) {

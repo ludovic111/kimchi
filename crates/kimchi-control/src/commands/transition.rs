@@ -22,6 +22,14 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                 return Err("duration should be more than 0 seconds".into());
             }
             let easing = a.opt_str("easing").map(Easing::parse).transpose()?;
+            // A transition plugin (or "" / null: none); its values with pluginParams.
+            let plugin = match a.get("plugin") {
+                None => None,
+                Some(Value::Null) => Some(None),
+                Some(Value::String(k)) if k.trim().is_empty() => Some(None),
+                Some(Value::String(k)) => Some(Some(crate::commands::plugins::transition_plugin(k, a.object("pluginParams"))?)),
+                Some(other) => return Err(format!("plugin is a transition plugin's id or name, not {other}")),
+            };
             let edits: Vec<Edit> = ids
                 .iter()
                 .filter_map(|id| p.clip(*id))
@@ -31,9 +39,14 @@ pub async fn run(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
                     tr.kind = kind.unwrap_or(tr.kind);
                     tr.duration = duration.unwrap_or(tr.duration);
                     tr.easing = easing.unwrap_or(tr.easing);
-                    Edit::UpdateClip { clip_id: c.id, patch: ClipPatch { transition: Some(Some(tr)), ..Default::default() } }
+                    if let Some(p) = &plugin {
+                        tr.plugin = p.clone();
+                    } else if let (Some(o), Some(slot)) = (a.object("pluginParams"), tr.plugin.as_mut()) {
+                        crate::commands::plugins::set_params(slot, o)?;
+                    }
+                    Ok(Edit::UpdateClip { clip_id: c.id, patch: ClipPatch { transition: Some(Some(tr)), ..Default::default() } })
                 })
-                .collect();
+                .collect::<CmdResult<Vec<Edit>>>()?;
             apply_all(s, cx, &edits, a.coalesce())?;
             let p = s.project()?;
             Ok(json!(list(&p).into_iter().filter(|v| ids.iter().any(|id| v["clipId"] == json!(id))).collect::<Vec<_>>()))

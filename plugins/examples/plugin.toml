@@ -1,0 +1,14 @@
+# A kimchi plugin bundle: this file and the library, in one folder (lsuite PLUGINS.md).
+id = "xyz.lsuite.kimchi.examples"
+name = "kimchi examples"
+version = "0.10.0"
+app = "kimchi"
+kind = "effect"
+abi = 1
+description = "Halftone, Chromatic aberration, Gradient and Radial wipe: the SDK's examples."
+authors = ["kimchi"]
+
+[library]
+macos = "libkimchi_plugin_examples.dylib"
+linux = "libkimchi_plugin_examples.so"
+windows = "kimchi_plugin_examples.dll"

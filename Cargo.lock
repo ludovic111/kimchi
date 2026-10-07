@@ -3774,7 +3774,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kimchi"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3809,7 +3809,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-agent"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3832,7 +3832,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-audio"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "cpal",
  "hound",
@@ -3848,7 +3848,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-captions"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -3866,7 +3866,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-cli"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "kimchi-audio",
  "kimchi-control",
@@ -3880,7 +3880,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-control"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3894,6 +3894,7 @@ dependencies = [
  "kimchi-gen",
  "kimchi-interop",
  "kimchi-media",
+ "kimchi-plugin",
  "minisign",
  "minisign-verify",
  "parking_lot",
@@ -3908,13 +3909,14 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "wiremock",
 ]
 
 [[package]]
 name = "kimchi-core"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3927,7 +3929,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-gen"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3951,7 +3953,7 @@ dependencies = [
 
 [[package]]
 name = "kimchi-interop"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -3969,11 +3971,12 @@ dependencies = [
 
 [[package]]
 name = "kimchi-mcp"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "kimchi-audio",
  "kimchi-cli",
  "kimchi-control",
+ "kimchi-media",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3981,13 +3984,16 @@ dependencies = [
 
 [[package]]
 name = "kimchi-media"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "cosmic-text",
  "gltf",
  "kimchi-audio",
  "kimchi-core",
+ "kimchi-plugin",
+ "kimchi-plugin-examples",
+ "libloading",
  "lyon_tessellation",
  "png 0.17.16",
  "pollster 0.4.0",
@@ -4000,13 +4006,29 @@ dependencies = [
  "tiny-skia",
  "tokio",
  "tokio-util",
+ "toml 0.8.23",
  "tracing",
  "wgpu",
 ]
 
 [[package]]
+name = "kimchi-plugin"
+version = "0.10.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "kimchi-plugin-examples"
+version = "0.10.0"
+dependencies = [
+ "kimchi-plugin",
+]
+
+[[package]]
 name = "kimchi-release"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "base64 0.22.1",
  "minisign",

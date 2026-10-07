@@ -209,7 +209,7 @@ impl Workspace {
                 store.update(cx, |s, cx| match panel {
                     "agent" => s.set_agent_open(false, cx),
                     "jobs" => s.set_jobs_open(false, cx),
-                    "settings" | "diagnostics" | "export" | "palette" | "shortcuts" | "whatsNew" => {
+                    "settings" | "diagnostics" | "export" | "palette" | "shortcuts" | "whatsNew" | "plugins" => {
                         let name = if panel == "diagnostics" { "settings" } else { panel };
                         if s.dialog.as_ref().is_some_and(|d| d.name() == name) {
                             s.close_dialog(cx);
@@ -217,7 +217,7 @@ impl Workspace {
                     }
                     _ => {}
                 });
-                if !matches!(panel, "agent" | "jobs" | "settings" | "diagnostics" | "export" | "palette" | "shortcuts" | "whatsNew") {
+                if !matches!(panel, "agent" | "jobs" | "settings" | "diagnostics" | "export" | "palette" | "shortcuts" | "whatsNew" | "plugins") {
                     return Err(format!("`{panel}` can't be closed: home is left by opening a project."));
                 }
                 Ok(json!({ "panel": panel, "open": false }))
@@ -235,6 +235,7 @@ impl Workspace {
                     "jobs" => s.set_jobs_open(true, cx),
                     "settings" => s.open_dialog(Dialog::Settings { section: params["section"].as_str().map(str::to_string) }, cx),
                     "export" => s.open_dialog(Dialog::Export, cx),
+                    "plugins" => s.open_dialog(Dialog::Plugins { part: params["section"].as_str().map(str::to_string) }, cx),
                     "palette" => s.open_dialog(Dialog::Palette, cx),
                     "whatsNew" | "releaseNotes" => s.open_dialog(Dialog::WhatsNew { since: None, all: params["all"].as_bool().unwrap_or(false) }, cx),
                     "shortcuts" => s.open_dialog(Dialog::Shortcuts, cx),
@@ -812,6 +813,10 @@ impl Workspace {
         self.store.update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: Some("about".into()) }, cx));
     }
 
+    fn open_plugins(&mut self, _: &OpenPlugins, _: &mut Window, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.open_dialog(Dialog::Plugins { part: None }, cx));
+    }
+
     fn whats_new(&mut self, _: &WhatsNew, _: &mut Window, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| s.open_dialog(Dialog::WhatsNew { since: None, all: false }, cx));
     }
@@ -1047,6 +1052,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::check_updates))
             .on_action(cx.listener(Self::about))
             .on_action(cx.listener(Self::whats_new))
+            .on_action(cx.listener(Self::open_plugins))
             .on_action(cx.listener(Self::set_up))
             .on_action(cx.listener(Self::show_diagnostics))
             .on_action(cx.listener(Self::report_problem))
