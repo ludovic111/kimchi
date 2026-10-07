@@ -530,7 +530,7 @@ impl Agent {
             };
             if !matches!(outcome, Some(Ok(_))) && run.config.provider == ProviderKind::Zenith
                 && let Err(error) = zenith::interrupt(&run).await {
-                outcome = Some(Err(format!("Could not confirm Zenith stopped: {error}")));
+                outcome = Some(Err(format!("Could not confirm zenith stopped: {error}")));
             }
             run.finish(outcome);
         });

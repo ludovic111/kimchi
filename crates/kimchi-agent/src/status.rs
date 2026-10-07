@@ -173,7 +173,7 @@ pub async fn status_of(session: &Arc<Session>, kind: ProviderKind) -> ProviderSt
         ProviderKind::Zenith => match crate::zenith::models().await {
             Ok(models) => {
                 s.ready = true;
-                s.message = "Connected to Zenith. Conversations use your lsuite agents and their permissions.".into();
+                s.message = "Connected to zenith. Conversations use your lsuite agents and their permissions.".into();
                 s.detail = crate::zenith::executable().map(|p| p.display().to_string()).unwrap_or_default();
                 s.models = models;
             }

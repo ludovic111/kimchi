@@ -103,7 +103,7 @@ pub(super) fn read(path: &Path) -> CmdResult<Archive> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Archive::default()),
-        Err(e) => return Err(format!("Could not read conversation history at {}: {e}. Saving is paused to protect the existing file; restore it and restart Kimchi.", path.display())),
+        Err(e) => return Err(format!("Could not read conversation history at {}: {e}. Saving is paused to protect the existing file; restore it and restart kimchi.", path.display())),
     };
     let mut archive: Archive = match serde_json::from_slice(&bytes) {
         Ok(archive) => archive,
@@ -112,7 +112,7 @@ pub(super) fn read(path: &Path) -> CmdResult<Archive> {
             let backup = path.with_extension(format!("unreadable-{}.json", Utc::now().timestamp_millis()));
             if let Err(error) = std::fs::copy(path, &backup) { tracing::error!(%error, "Could not back up conversation history"); }
             tracing::error!(%e, ?backup, "Could not decode agent conversations");
-            return Err(format!("Conversation history at {} could not be decoded: {e}. Saving is paused to protect it; restore the file and restart Kimchi.", path.display()));
+            return Err(format!("Conversation history at {} could not be decoded: {e}. Saving is paused to protect it; restore the file and restart kimchi.", path.display()));
         }
     };
     for project in archive.projects.values_mut() {

@@ -1868,7 +1868,7 @@ Every setting with its value (agent permissions, updates, appearance, default mo
 
 ### `app.onboarding`
 
-The first-run setup: whether it was done, its steps and what each would set, and what is on this computer: the editors found (with how to bring their projects, looks and plugins over), the AI coding tools and local model servers found, the providers with keys, the plugins and Ryolune. _(read only)_
+The first-run setup: whether it was done, its steps and what each would set, and what is on this computer: the editors found (with how to bring their projects, looks and plugins over), the AI coding tools and local model servers found, the providers with keys, the plugins and ryolune. _(read only)_
 
 ### `app.finishOnboarding`
 
@@ -2106,7 +2106,7 @@ Sign out of lsuite AI on this computer (every lsuite app), and tell the server t
 
 ### `agent.providers`
 
-What can run the built-in agent: lsuite AI (the lsuite account: sign in and it works, see account.status), Zenith, coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen. _(read only · needs the window)_
+What can run the built-in agent: lsuite AI (the lsuite account: sign in and it works, see account.status), zenith, coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen. _(read only · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |

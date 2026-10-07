@@ -158,9 +158,9 @@ pub const ALL: &[Info] = &[
     Info {
         kind: ProviderKind::Zenith,
         id: "zenith",
-        label: "Zenith · lsuite",
+        label: "zenith · lsuite",
         group: Group::Cli,
-        tagline: "Your lsuite agents and their permissions, through Zenith.",
+        tagline: "Your lsuite agents and their permissions, through zenith.",
         wire: Wire::Cli,
         default_model: "",
         default_base_url: "",
