@@ -550,7 +550,7 @@ impl SettingsDialog {
                     ),
             )
             .child(status)
-            .when_some(u.error.clone(), |d, e| d.child(note("circle-alert", &e, t.danger, cx)))
+            .when_some(u.error.clone().filter(|_| !u.sign_in), |d, e| d.child(note("circle-alert", &e, t.danger, cx)))
             .child(
                 div()
                     .flex()

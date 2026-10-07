@@ -130,6 +130,21 @@ images out to look at.
 | `text_contrast_holds_on_every_surface` (`kimchi-desktop`) | A theme colour falls below 4.5:1 for text (3:1 for the accent). |
 | `gpu_matches_cpu` (`kimchi-media`) | The GPU and CPU 3D shading differ. Without a GPU it passes without checking anything; use `KIMCHI_GPU=any` on llvmpipe. |
 
+**Agent evals** (`evals/`) score the built-in agent on 12 scripted video jobs (title card, rough
+cut, lower third, vertical edit, grade, dissolves, loudness, music ending, chapters, 3D title, Ken
+Burns, trim to length). Each builds a project from fixtures made with ffmpeg, runs
+`kimchi-cli --file cut.json ask "…" --json` with a real model, and checks the project it left (its
+structure, loudness, rendered frames, and whether the agent looked at its work before finishing):
+
+```sh
+cargo build -p kimchi-cli -p kimchi-mcp
+evals/run.py title-card rough-cut              # some jobs, through Claude Code (no key needed)
+evals/run.py --record                          # all of them, added to evals/RESULTS.md
+evals/run.py --provider anthropic --model claude-sonnet-5-5   # with ANTHROPIC_API_KEY
+```
+
+Add a job when you add a skill (`kimchi-control/src/harness/skills/`).
+
 **UI tests** run the real views without a screen. Window commands such as `timeline.seek` must be
 started and then pumped (the `remote` helper in `kimchi-desktop/src/tests.rs`): calling them through a
 blocking fixture call deadlocks, since they wait for the window that the test is blocking.
@@ -261,12 +276,20 @@ needs resvg or rsvg-convert and python3, and makes the `.icns` only on a Mac. Pa
 2. Add the version's section at the top of `CHANGELOG.md`. Write it for people, in plain words: the
    app shows it in What's new after updating, and it begins the release notes. A test checks that it
    is there.
-3. Tag `vX.Y.Z` and push the tag.
+3. Run the agent evals (`evals/run.py --record`, below) and commit `evals/RESULTS.md`. A harness
+   change that lowers the pass rate doesn't ship.
+4. Tag `vX.Y.Z` and push the tag.
+5. When the workflow is done, `scripts/publish-build.sh X.Y.Z` (needs `gh` with access to both
+   repositories).
 
 The release workflow checks that the tag matches the version, builds macOS (Apple Silicon and Intel;
 signed and notarized when the Apple secrets are set, ad-hoc signed otherwise), Windows and Linux,
-signs the update files, writes `latest.json` and `SHA256SUMS`, and drafts a GitHub release.
-Publishing the draft rolls the update out.
+signs the update files, writes `latest.json` and `SHA256SUMS`, and makes a **draft** GitHub release.
+Never publish the draft: kimchi's builds come only through the lsuite app and lsuite.xyz, with a free
+lsuite account (lsuite `DISTRIBUTION.md`). `scripts/publish-build.sh` checks the draft's files
+against `SHA256SUMS`, copies them to the private `ludovic111/lsuite-builds` as `kimchi-vX.Y.Z`, then
+deletes the draft. That rolls the update out: installed copies read
+`<server>/api/apps/kimchi/latest.json` with the account's token, and download through the server.
 
 Updates are signed with minisign, with the key of the original Tauri builds, through
 `kimchi-release`:
