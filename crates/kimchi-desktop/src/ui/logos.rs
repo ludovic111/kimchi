@@ -30,6 +30,8 @@ const fn themed(file: &'static str) -> Option<LogoFile> {
 /// Ids: agent providers (`kimchi_agent::ProviderKind::id`), generation providers
 /// (`kimchi_gen::providers`), MCP clients and the lsuite apps.
 pub const LOGOS: &[(&str, Option<LogoFile>)] = &[
+    // lsuite AI (the agent's lsuite provider): the lsuite mark.
+    ("lsuite", one("lsuite")),
     // Claude: the agent's Claude Code and Anthropic API, and Claude Desktop over MCP.
     ("claude", one("claude")),
     ("claude-code", one("claude")),
@@ -72,6 +74,28 @@ pub const LOGOS: &[(&str, Option<LogoFile>)] = &[
     // MCP clients.
     ("cursor", one("cursor")),
     ("vscode", one("vscode")),
+    // Plugin formats kimchi loads (Plugins). LUTs and Audio Units have no logo of their own.
+    ("frei0r", themed("frei0r")),
+    ("clap", themed("clap")),
+    ("vst3", one("vst3")),
+    ("lut", None),
+    ("au", None),
+    // Editors kimchi opens projects, looks or keys from (`kimchi_interop::apps` ids), and
+    // OpenTimelineIO. Apps it has no real support for show their initials instead.
+    ("premiere", one("premiere")),
+    ("aftereffects", one("aftereffects")),
+    ("lightroom", one("lightroom")),
+    ("finalcut", one("finalcut")),
+    ("imovie", one("imovie")),
+    ("resolve", one("resolve")),
+    ("capcut", one("capcut")),
+    ("avid", one("avid")),
+    ("blender", one("blender")),
+    ("otio", one("otio")),
+    ("kdenlive", one("kdenlive")),
+    ("vegas", themed("vegas")),
+    ("nuke", themed("nuke")),
+    ("shotcut", one("shotcut")),
     // lsuite.
     ("ryolune", one("ryolune")),
     ("zenith", one("zenith")),
@@ -144,7 +168,7 @@ mod tests {
     #[test]
     fn only_generic_services_go_without_a_logo() {
         let without: Vec<&str> = LOGOS.iter().filter(|(_, f)| f.is_none()).map(|(k, _)| *k).collect();
-        assert_eq!(without, ["groq", "mistral", "deepseek", "fireworks", "cerebras", "azure-openai", "bedrock", "lmstudio", "openai-compatible", "a1111", "openai_compat"]);
+        assert_eq!(without, ["groq", "mistral", "deepseek", "fireworks", "cerebras", "azure-openai", "bedrock", "lmstudio", "openai-compatible", "a1111", "openai_compat", "lut", "au"]);
         // The owner's mapping: Claude everywhere for Claude, the ChatGPT mark for OpenAI and Codex.
         assert_eq!(logo_file("Claude-Code").map(|f| f.file), Some("claude"));
         assert_eq!(logo_file("anthropic").map(|f| f.file), Some("claude"));
@@ -152,6 +176,17 @@ mod tests {
         assert_eq!(logo_file("nope"), None);
         assert_eq!(logo_path(logo_file("openai").unwrap(), true), "logos/openai-dark.png");
         assert_eq!(logo_path(logo_file("claude").unwrap(), true), "logos/claude.png");
+    }
+
+    /// An editor shows its own logo exactly when kimchi really works with it: opens its projects,
+    /// takes its looks or models, or uses its keys. The others keep their initials.
+    #[test]
+    fn editors_have_logos_only_where_kimchi_really_supports_them() {
+        for app in kimchi_interop::apps::APPS {
+            let supported = !app.opens.is_empty() || app.keymap.is_some() || matches!(app.id, "aftereffects" | "lightroom" | "blender");
+            assert_eq!(logo_file(app.id).is_some(), supported, "{}", app.id);
+        }
+        assert!(logo_file("otio").is_some());
     }
 
     #[test]

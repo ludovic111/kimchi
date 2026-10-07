@@ -112,6 +112,8 @@ pub struct Onboarding {
     show_all: bool,
     copied: bool,
     scroll: ScrollHandle,
+    /// lsuite AI's account card (the first choice of the assistant step).
+    lsuite: Entity<crate::views::lsuite::LsuiteCard>,
     _subs: Vec<Subscription>,
 }
 
@@ -161,6 +163,7 @@ impl Onboarding {
             show_all: false,
             copied: false,
             scroll: ScrollHandle::new(),
+            lsuite: cx.new(|cx| crate::views::lsuite::LsuiteCard::new(window, cx)),
             _subs: subs,
         }
     }
@@ -456,7 +459,8 @@ fn heading(title: impl Into<SharedString>, sub: impl Into<SharedString>, cx: &Ap
         .into_any_element()
 }
 
-/// An app's initials on a quiet tile (the apps' own logos aren't kimchi's to show).
+/// An app's initials on a quiet tile, for the apps kimchi has no logo of (it only shows the logos
+/// of apps it really opens projects, looks or keys from).
 fn monogram(name: &str, cx: &App) -> AnyElement {
     let t = cx.theme();
     let letters: String = name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect();
@@ -569,7 +573,8 @@ impl Onboarding {
             let name = app["name"].as_str().unwrap_or("").to_string();
             let found = app["installed"] == true;
             let sel = self.coming_from.as_deref() == Some(id.as_str());
-            let lead = monogram(&name, cx);
+            // The editor's own logo where kimchi really works with it; its initials otherwise.
+            let lead = if crate::ui::logos::logo_file(&id).is_some() { div().flex_none().size(px(34.)).flex().items_center().justify_center().child(crate::ui::logo(&id, px(30.))).into_any_element() } else { monogram(&name, cx) };
             let pick = id.clone();
             cards.push(self.choice(
                 format!("from-{id}").into(),
@@ -607,7 +612,13 @@ impl Onboarding {
         let t = cx.theme().clone();
         let Some(app) = self.app() else { return div().into_any_element() };
         let name = app["name"].as_str().unwrap_or("").to_string();
-        let mut col = div().flex().flex_col().gap(px(14.)).child(heading(format!("Bring your work from {name}"), "Its keys, its projects and its looks. All of it can wait: kimchi keeps these in its menus.", cx));
+        let app_id = app["id"].as_str().unwrap_or("").to_string();
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .when(crate::ui::logos::logo_file(&app_id).is_some(), |d| d.child(crate::ui::logo(&app_id, px(44.))))
+            .child(heading(format!("Bring your work from {name}"), "Its keys, its projects and its looks. All of it can wait: kimchi keeps these in its menus.", cx));
         if let Some(layout) = app["keymap"].as_str().and_then(|k| kimchi_control::keymaps::layout(k).ok()) {
             let on = self.use_keys;
             let weak = cx.entity().downgrade();
@@ -814,6 +825,18 @@ impl Onboarding {
                 format!("The Agent panel ({}) edits with you: a rough cut from your clips, captions, titles, a colour pass. You see every change and can take a whole run back.", crate::actions::hint(&crate::actions::ToggleAgent).unwrap_or_default()),
                 cx,
             ))
+            .child({
+                let using = chosen.as_deref() == Some("lsuite");
+                let ready = self.store.read(cx).account.as_ref().is_some_and(|a| a.signed_in && a.can_run && !a.expired);
+                block(cx)
+                    .when(using, |d| d.border_color(t.accent_ring))
+                    .child(div().flex().items_center().child(div().flex_1().child(caps("No setup", cx))).child({
+                        let b = Button::new("agent-lsuite", if using { "In use" } else { "Use lsuite AI" }).small().selected(using);
+                        let b = if ready && !using { b.primary() } else { b };
+                        b.on_click(cx.listener(|this, _, _, cx| this.use_agent("lsuite".into(), None, cx)))
+                    }))
+                    .child(self.lsuite.clone())
+            })
             .when(!found.is_empty(), |d| d.child(div().flex().flex_col().gap(px(8.)).child(caps("On this computer", cx)).children(found)))
             .child(block(cx).child(caps("With an API key", cx)).children(keys))
             .child(self.choice("agent-none".into(), none, div().flex_none().size(px(26.)).flex().items_center().justify_center().child(icon("circle-slash")).into_any_element(), "No assistant".into(), "The Agent panel stays hidden. Settings › Agent brings it back.".into(), None, |this, _| {

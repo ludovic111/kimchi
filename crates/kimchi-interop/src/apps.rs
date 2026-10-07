@@ -104,7 +104,7 @@ pub const APPS: &[App] = &[
         take: "In kimchi, open the ⋯ menu in the top bar and choose Export project for Premiere Pro… (Final Cut Pro 7 XML). In Premiere Pro, choose File › Import and pick the .xml.",
         looks: "Lumetri Color presets (.prfpset) and the .cube LUTs in Lumetri's Input LUT and Creative Look menus: kimchi reads both.",
         look_folders: &[mac("/Library/Application Support/Adobe/Common/LUTs"), win("%PROGRAMFILES%/Adobe/Common/LUTs")],
-        plugins: "Premiere Pro plugins are built on Adobe's own SDK and only run in Adobe's apps. Many plugin makers (Boris FX, Sapphire, Neat Video) also sell OpenFX versions, which run in kimchi.",
+        plugins: "Premiere Pro plugins are built on Adobe's own SDK and only run in Adobe's apps. kimchi runs lsuite plugins (ask your agent to build one) and frei0r filters.",
         detect: &[mac("/Applications/Adobe Premiere Pro*"), win("%PROGRAMFILES%/Adobe/Adobe Premiere Pro*")],
     },
     App {
@@ -119,7 +119,7 @@ pub const APPS: &[App] = &[
         take: "In kimchi, open the ⋯ menu in the top bar and choose Export project for Final Cut Pro… (FCPXML). In Final Cut Pro, choose File › Import › XML….",
         looks: "Final Cut's Custom LUT effect uses .cube files: kimchi reads the same ones.",
         look_folders: &[],
-        plugins: "FxPlug plugins only run in Final Cut Pro and Motion. Their makers often sell OpenFX versions, which run in kimchi.",
+        plugins: "FxPlug plugins only run in Final Cut Pro and Motion. kimchi runs lsuite plugins (ask your agent to build one) and frei0r filters.",
         detect: &[mac("/Applications/Final Cut Pro.app"), mac("/Applications/Final Cut Pro Trial.app")],
     },
     App {
@@ -138,7 +138,7 @@ pub const APPS: &[App] = &[
             win("%PROGRAMDATA%/Blackmagic Design/DaVinci Resolve/Support/LUT"),
             linux("/opt/resolve/LUT"),
         ],
-        plugins: "OpenFX plugins installed for Resolve run in kimchi too (kimchi looks in the same OFX folder). Fusion macros and DCTL don't.",
+        plugins: "Resolve's OpenFX plugins, Fusion macros and DCTL don't run in kimchi. kimchi runs lsuite plugins (ask your agent to build one) and frei0r filters.",
         detect: &[mac("/Applications/DaVinci Resolve"), win("%PROGRAMFILES%/Blackmagic Design/DaVinci Resolve"), linux("/opt/resolve")],
     },
     App {
@@ -198,7 +198,7 @@ pub const APPS: &[App] = &[
         take: "In kimchi, open the ⋯ menu in the top bar and choose Export project for VEGAS Pro… (Final Cut Pro 7 XML), then File › Import › Final Cut Pro 7 / DaVinci Resolve (*.xml) in VEGAS.",
         looks: "VEGAS's LUT filter uses .cube files: kimchi reads them.",
         look_folders: &[],
-        plugins: "OpenFX plugins installed for VEGAS run in kimchi too.",
+        plugins: "VEGAS's plugins don't run in kimchi. kimchi runs lsuite plugins (ask your agent to build one) and frei0r filters.",
         detect: &[win("%PROGRAMFILES%/VEGAS/VEGAS Pro*")],
     },
     App {
@@ -258,7 +258,7 @@ pub const APPS: &[App] = &[
         take: "Export from kimchi as ProRes 4444 or a PNG sequence and import it in After Effects.",
         looks: "Lumetri presets (.prfpset) and .cube LUTs work in kimchi too.",
         look_folders: &[],
-        plugins: "After Effects plugins are built on Adobe's own SDK and only run in Adobe's apps; many also exist as OpenFX, which runs in kimchi.",
+        plugins: "After Effects plugins are built on Adobe's own SDK and only run in Adobe's apps. kimchi's Studio has its own effects, and it runs lsuite plugins and frei0r filters.",
         detect: &[mac("/Applications/Adobe After Effects*"), win("%PROGRAMFILES%/Adobe/Adobe After Effects*")],
     },
     App {
@@ -273,7 +273,7 @@ pub const APPS: &[App] = &[
         take: "In kimchi, open the ⋯ menu in the top bar and choose Export project for Nuke…, then import the .otio in Nuke Studio or Hiero.",
         looks: "Nuke's .cube, .3dl, .csp, .spi1d and .spi3d LUTs work in kimchi as they are.",
         look_folders: &[],
-        plugins: "OpenFX plugins installed for Nuke run in kimchi too; Nuke's own NDK plugins don't.",
+        plugins: "Nuke's plugins (OpenFX and NDK) don't run in kimchi. kimchi runs lsuite plugins (ask your agent to build one) and frei0r filters.",
         detect: &[mac("/Applications/Nuke*"), win("%PROGRAMFILES%/Nuke*"), linux("/usr/local/Nuke*")],
     },
     App {
@@ -288,7 +288,7 @@ pub const APPS: &[App] = &[
         take: "Export from kimchi as a PNG or EXR sequence and read it in Natron.",
         looks: "Natron's LUT files work in kimchi as they are.",
         look_folders: &[],
-        plugins: "Natron's OpenFX plugins (openfx-misc, openfx-io, openfx-arena) run in kimchi.",
+        plugins: "Natron's OpenFX plugins don't run in kimchi. kimchi runs lsuite plugins (ask your agent to build one) and frei0r filters.",
         detect: &[linux("natron"), linux("Natron"), mac("/Applications/Natron.app"), win("%PROGRAMFILES%/Natron*")],
     },
     App {

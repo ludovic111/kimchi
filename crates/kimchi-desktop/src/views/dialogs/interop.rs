@@ -23,6 +23,15 @@ pub fn export_targets() -> Vec<(&'static str, &'static str, &'static str)> {
         .collect()
 }
 
+/// Editors whose projects kimchi opens (a format it reads), with a logo: `(app id, name)`.
+pub fn import_apps() -> Vec<(&'static str, &'static str)> {
+    APPS.iter()
+        .filter(|a| a.opens.iter().any(|o| FORMATS.iter().any(|f| f.id == *o && f.import != Support::No)))
+        .filter(|a| crate::ui::logos::logo_file(a.id).is_some())
+        .map(|a| (a.id, a.name))
+        .collect()
+}
+
 /// The file name extension a format is written with.
 pub fn extension(format: &str) -> &'static str {
     match format {

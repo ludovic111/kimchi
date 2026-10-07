@@ -517,6 +517,10 @@ impl Home {
                         div()
                             .flex()
                             .gap(px(4.))
+                            // The editors whose projects it opens, by their own logos.
+                            .child(div().flex().items_center().gap(px(3.)).mr(px(2.)).children(crate::views::dialogs::interop::import_apps().into_iter().map(|(id, name)| {
+                                div().id(SharedString::from(format!("from-{id}"))).tooltip(move |_, cx| crate::ui::tooltip(format!("Opens {name} projects").into(), cx)).child(crate::ui::logo(id, px(16.)))
+                            })))
                             .child(Button::new("open-other", "Open from another editor").small().ghost().with_icon("folder-open").on_click(|_, _, cx| crate::views::dialogs::interop::open_from_other(cx)))
                             .child(Button::new("new-project", "New").small().ghost().with_icon("plus").on_click(cx.listener(|h, _, _, cx| h.create(false, cx)))),
                     ),

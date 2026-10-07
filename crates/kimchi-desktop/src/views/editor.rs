@@ -394,7 +394,9 @@ impl Editor {
             MenuItem::new("Open from another editor…", |_, cx| crate::views::dialogs::interop::open_from_other(cx)).icon("folder-open").entry(),
         ];
         for (app, name, format) in crate::views::dialogs::interop::export_targets() {
-            entries.push(MenuItem::new(format!("Export project for {name}…"), move |_, cx| crate::views::dialogs::interop::export_for(app, name, format, cx)).icon("share").entry());
+            let item = MenuItem::new(format!("Export project for {name}…"), move |_, cx| crate::views::dialogs::interop::export_for(app, name, format, cx));
+            let item = if crate::ui::logos::logo_file(app).is_some() { item.logo(app) } else { item.icon("share") };
+            entries.push(item.entry());
         }
         entries.push(MenuItem::new("Find missing files…", |_, cx| crate::views::dialogs::interop::find_missing(cx)).icon("folder-search").entry());
         entries.push(crate::store::MenuEntry::Separator);
@@ -402,6 +404,7 @@ impl Editor {
             MenuItem::new("Command palette", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Palette, cx))).icon("command").shortcut_of(&act::Palette).entry(),
             MenuItem::new("Keyboard shortcuts", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Shortcuts, cx))).icon("keyboard").shortcut_of(&act::ShowShortcuts).entry(),
             MenuItem::new("Settings", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Settings { section: None }, cx))).icon("settings").shortcut_of(&act::OpenSettings).entry(),
+            MenuItem::new("Plugins", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::Plugins { part: None }, cx))).icon("plug-zap").entry(),
             crate::store::MenuEntry::Separator,
             MenuItem::new("What's new", |_, cx| cx.store().update(cx, |s, cx| s.open_dialog(Dialog::WhatsNew { since: None, all: false }, cx))).icon("gift").entry(),
             MenuItem::new("Help", |_, cx| cx.open_url(crate::app::HELP_URL)).icon("info").entry(),
