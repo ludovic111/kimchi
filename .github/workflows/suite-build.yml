@@ -1,0 +1,105 @@
+name: Suite release build
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: App to build with the suite signing credentials
+        type: choice
+        options: [nori, folio]
+        required: true
+      ref:
+        description: Full commit SHA in that app's repository
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ inputs.app }} · ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin, script: bundle-macos.sh }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, script: bundle-macos.sh }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, script: bundle-windows.sh }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, script: bundle-linux.sh }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate source
+        env:
+          APP: ${{ inputs.app }}
+          REF: ${{ inputs.ref }}
+        run: |
+          [[ "$APP" == nori || "$APP" == folio ]]
+          [[ "$REF" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@v4
+        with:
+          repository: ludovic111/${{ inputs.app }}
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config clang libasound2-dev libdbus-1-dev libfontconfig-dev libfreetype-dev libssl-dev libvulkan-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev libglib2.0-dev desktop-file-utils
+      - name: Windows installer tools
+        if: runner.os == 'Windows'
+        run: choco install nsis -y --no-progress
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: suite-${{ inputs.app }}-${{ matrix.target }}
+      - name: Prepare Apple signing
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash scripts/prepare-apple-signing.sh
+      - name: Build and package
+        env:
+          TARGET: ${{ matrix.target }}
+          SCRIPT: ${{ matrix.script }}
+        run: bash "scripts/$SCRIPT" "$TARGET"
+      - name: Sign updater archives
+        env:
+          APP: ${{ inputs.app }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.app == 'nori' && secrets.NORI_UPDATE_SIGNING_KEY || secrets.FOLIO_UPDATE_SIGNING_KEY }}
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          cargo build --release --locked -p "$APP-release"
+          for file in target/dist/*.app.tar.gz target/dist/*.exe target/dist/*.zip target/dist/*.AppImage target/dist/*.deb; do
+            [ -f "$file" ] || continue
+            "target/release/$APP-release" sign "$file" --version "$version"
+            "target/release/$APP-release" verify "$file" --version "$version"
+          done
+      - name: Remove signing keychain
+        if: always() && runner.os == 'macOS'
+        run: |
+          if [ -f "$RUNNER_TEMP/signing.keychain-db" ]; then security delete-keychain "$RUNNER_TEMP/signing.keychain-db"; fi
+          rm -f "$RUNNER_TEMP/notary.p8"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.app }}-${{ matrix.target }}
+          path: |
+            target/dist/*.dmg
+            target/dist/*.app.tar.gz
+            target/dist/*.exe
+            target/dist/*.zip
+            target/dist/*.AppImage
+            target/dist/*.deb
+            target/dist/*.sig
+          if-no-files-found: error
