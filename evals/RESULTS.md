@@ -16,7 +16,7 @@ Notes:
   `music-ends-with-picture`, was the scorer's: the agent checked its fade with `audio.measure`
   (the right check for a sound-only job, "look and listen" in the brief), but `looked` only counted
   pictures. Sound jobs now count a measurement after the last change too (`looked {sound: true}`);
-  re-run with both sound jobs, 2/2 (the second entry below). The first attempt at the full set had
+  re-run with both sound jobs, 2/2 (the first entry below). The first attempt at the full set had
   stopped on `youtube-loudness`'s setup (media names keep their extension: `music-quiet.wav`); a
   setup error is now one failed job, not a stopped run.
 
