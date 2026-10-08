@@ -88,14 +88,14 @@
       "setup": [
         {"command": "media.import", "params": {"paths": ["{fx}/shot-a.mp4", "{fx}/shot-b.mp4"], "place": true, "start": 0}},
         {"command": "media.import", "params": {"paths": ["{fx}/music-quiet.wav"]}},
-        {"command": "clip.insertMedia", "params": {"assetId": "music-quiet", "start": 0, "trackId": "Audio 1"}},
-        {"command": "clip.trim", "params": {"clipId": "music-quiet", "edge": "end", "time": 16}}
+        {"command": "clip.insertMedia", "params": {"assetId": "music-quiet.wav", "start": 0, "trackId": "Audio 1"}},
+        {"command": "clip.trim", "params": {"clipId": "music-quiet.wav", "edge": "end", "time": 16}}
       ],
       "prompt": "Get the sound ready to publish on YouTube.",
       "checks": [
         ["loudness", {"target": -14, "tolerance": 1.5}],
         ["true_peak", {"max": -0.9}],
-        ["looked", {}]
+        ["looked", {"sound": true}]
       ]
     },
     {
@@ -104,13 +104,13 @@
       "setup": [
         {"command": "media.import", "params": {"paths": ["{fx}/shot-a.mp4"], "place": true, "start": 0}},
         {"command": "media.import", "params": {"paths": ["{fx}/music.wav"]}},
-        {"command": "clip.insertMedia", "params": {"assetId": "music", "start": 0, "trackId": "Audio 1"}}
+        {"command": "clip.insertMedia", "params": {"assetId": "music.wav", "start": 0, "trackId": "Audio 1"}}
       ],
       "prompt": "The music runs on long after the picture ends. Make it end with the picture, fading out over the last 2 seconds.",
       "checks": [
         ["music_ends_with_picture", {"fade_min": 1.5}],
         ["duration", {"min": 7.5, "max": 8.5}],
-        ["looked", {}]
+        ["looked", {"sound": true}]
       ]
     },
     {

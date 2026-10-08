@@ -298,11 +298,13 @@ class Scorer:
                 return True, f"{c['name']}: {hit}"
         return False, "no clip moves"
 
-    def looked(self):
-        """The finish routine: a look (frames, a sheet) after the last change."""
+    def looked(self, sound=False):
+        """The finish routine: a look (frames, a sheet) after the last change; for a sound job,
+        measuring the mix (`audio.measure`) is checking it too."""
+        checks = LOOKS | {"audio.measure"} if sound else LOOKS
         cmds = [e["record"] for e in self.events if e.get("type") == "command"]
-        last_edit = max((i for i, r in enumerate(cmds) if r["ok"] and r["mutates"] and r["command"] not in LOOKS), default=-1)
-        after = [r["command"] for r in cmds[last_edit + 1:] if r["ok"] and r["command"] in LOOKS]
+        last_edit = max((i for i, r in enumerate(cmds) if r["ok"] and r["mutates"] and r["command"] not in checks), default=-1)
+        after = [r["command"] for r in cmds[last_edit + 1:] if r["ok"] and r["command"] in checks]
         return bool(after), f"looked with {after}" if after else "no look after the last change"
 
 
@@ -352,9 +354,13 @@ def run_job(k: Kimchi, job: dict, fx: Path, work: Path, provider: str, model: st
     project = folder / "cut.json"
     w, h = job.get("canvas", [1920, 1080])
     k.call(project, "project.create", {"name": job["name"], "width": w, "height": h})
-    for step in job.get("setup", []):
-        params = json.loads(json.dumps(step["params"]).replace("{fx}", str(fx)))
-        k.call(project, step["command"], params)
+    try:
+        for step in job.get("setup", []):
+            params = json.loads(json.dumps(step["params"]).replace("{fx}", str(fx)))
+            k.call(project, step["command"], params)
+    except Exception as e:  # a job whose setup fails is a failed job, not a stopped run
+        return {"job": job["name"], "passed": False, "checks": [{"check": "setup", "ok": False, "detail": str(e)}],
+                "seconds": 0, "commands": 0, "tokens": 0, "reply": "", "error": str(e)}
     events, error, seconds = k.ask(project, job["prompt"], provider, model, folder / "run.jsonl", timeout)
     done = next((e for e in events if e.get("type") == "done"), None)
     tokens = sum(e.get("input_tokens", 0) + e.get("output_tokens", 0) for e in events if e.get("type") == "usage")
