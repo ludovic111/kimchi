@@ -140,7 +140,7 @@ Claude Code, Codex, Cursor, Claude Desktop and any other MCP client can drive ki
 **Settings › About & AI control** has the lines to copy, for example:
 
 ```sh
-claude mcp add kimchi -- /Applications/kimchi.app/Contents/MacOS/kimchi-mcp --live
+claude mcp add kimchi -- /usr/bin/kimchi-mcp --live
 ```
 
 Their edits share the same undo history and permissions, and appear in the Changes tab. The panel's

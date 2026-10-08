@@ -79,10 +79,16 @@ Rules that keep it working:
   env vars with hyphens, so the `kimchi-cli` / `kimchi-mcp` integration tests (`CARGO_BIN_EXE_kimchi-cli`) need
   `RUSTC_WRAPPER= cargo test …` (workspace crates rebuild, dependencies don't).
 
-## lsuite (notes updated 2026-10-07, 0.11.0)
+## lsuite (notes updated 2026-10-08, 0.11.0)
 
 kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
+
+**Linux only while lsuite is in beta** (owner, 2026-10-08): macOS and Windows are "coming soon". `release.yml` and
+`suite-build.yml` (nori, folio, the lsuite launcher) build Linux only (their macOS and Windows matrix lines are commented
+out); the platform code, bundle scripts and signing steps stay in the source. Released `latest.json` files list Linux
+platforms only; the macOS and Windows files were removed from every earlier kimchi release (GitHub and lsuite-builds).
+Docs say "beta on Linux, macOS and Windows coming soon".
 
 - [x] **Command registry**: 200 `family.verb` commands (project, media, track, clip, transition,
       captions, audio, motion, timeline, history, generate, export, handoff, app, agent, ui), one undo history for every client,

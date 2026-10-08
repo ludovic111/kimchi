@@ -205,13 +205,13 @@ come from the registry, with a note when it needs a permission or the window.
 
 ```sh
 # Claude Code
-claude mcp add kimchi -- /Applications/kimchi.app/Contents/MacOS/kimchi-mcp --live
+claude mcp add kimchi -- /usr/bin/kimchi-mcp --live
 # Codex CLI
-codex mcp add kimchi -- /Applications/kimchi.app/Contents/MacOS/kimchi-mcp --live
+codex mcp add kimchi -- /usr/bin/kimchi-mcp --live
 ```
 
 ```json
-{"mcpServers": {"kimchi": {"command": "/Applications/kimchi.app/Contents/MacOS/kimchi-mcp", "args": ["--live"]}}}
+{"mcpServers": {"kimchi": {"command": "/usr/bin/kimchi-mcp", "args": ["--live"]}}}
 ```
 
 The block above suits Cursor (`~/.cursor/mcp.json`), Claude Desktop

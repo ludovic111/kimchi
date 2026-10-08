@@ -3,7 +3,9 @@
 What changed in each kimchi release. The app shows the newest section in **What's new** after it
 updates, and the release workflow puts the section in the update's notes.
 
-## 0.11.0 — 2026-10-07
+## 0.11.0 — 2026-10-08
+
+kimchi is in beta on **Linux** while lsuite is in beta. **macOS and Windows are coming soon.**
 
 ### New
 - **An agent that knows video.** Every agent working in kimchi (the Agent panel's, the lsuite app's, or Claude Code and Codex connected to kimchi) now starts from the same expert brief: how to cut and pace, J and L cuts, when to dissolve, how to match colour, how big titles must be and where they stay readable, how loud a video should be for YouTube, social or podcasts, how to animate with intent, how to light a 3D shot, and which export suits each platform.

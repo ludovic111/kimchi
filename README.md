@@ -9,7 +9,7 @@
 
 <h1 align="center">kimchi</h1>
 
-<p align="center"><strong>An open-source video editor where generative models are part of the cut.</strong> (beta)<br/>
+<p align="center"><strong>An open-source video editor where generative models are part of the cut.</strong> (beta, on Linux; macOS and Windows coming soon)<br/>
 Native Rust app (GPUI) · drivable by your AI (MCP, CLI, built-in agent) · bring your own keys, or run everything locally.<br/>
 Part of <a href="https://lsuite.xyz">lsuite</a>, the free, open-source creative suite your AI can drive.</p>
 
@@ -133,26 +133,24 @@ a video save node are treated as video models; an optional
 
 ## Install
 
+kimchi is in beta on **Linux** (x86-64). **macOS and Windows are coming soon.**
+
 Get kimchi in the [lsuite app](https://lsuite.xyz/launcher), with a free lsuite account: it installs and
 updates every lsuite app. kimchi is free and open source (MIT), so you can also build it from source (see Development below).
 
 | System | File the lsuite app installs |
 | --- | --- |
-| macOS, Apple Silicon | `kimchi_aarch64.dmg` |
-| macOS, Intel | `kimchi_x64.dmg` |
-| Windows | `kimchi_x64-setup.exe` (installer) or `kimchi_x64-portable.zip` |
 | Linux | `kimchi_amd64.AppImage` or `kimchi_amd64.deb` |
+| macOS, Windows | Coming soon |
 
-ffmpeg is bundled, and so are `kimchi-cli` and `kimchi-mcp`. The macOS build is signed with a Developer ID and
-notarized by Apple, so it opens like any other app.
+ffmpeg is bundled, and so are `kimchi-cli` and `kimchi-mcp`.
 
 **Updates.** kimchi checks lsuite when it starts and every few hours, with your lsuite account (signed out, it
 says to sign in in the lsuite app), and installs a new version in one
 click, or by itself with Settings › Updates › "Download and install updates by themselves" (also
 `kimchi-cli app.checkUpdates` / `app.installUpdate`). Every update is signed and its signature checked before
-anything is replaced; on macOS and with the AppImage the previous copy is kept until the new one has started. On
-Windows the verified installer runs when kimchi restarts or quits. With the `.deb` or the portable `.zip`, kimchi
-tells you about the update and links to the lsuite app. Turn the checks off with the setting `updates.checkOnStart` or
+anything is replaced; with the AppImage the previous copy is kept until the new one has started. With the `.deb`,
+kimchi tells you about the update and links to the lsuite app. Turn the checks off with the setting `updates.checkOnStart` or
 `KIMCHI_NO_UPDATE=1`. Installs of 0.1.x (the Tauri builds) update to the new app through their own updater. After
 an update, kimchi shows what changed (from [CHANGELOG.md](CHANGELOG.md); What's new in the top bar's … menu any time).
 
@@ -170,9 +168,9 @@ Everything you can do in the window is a named command (`clip.split`, `generate.
 `kimchi-cli` and `kimchi-mcp` all go through the same registry and share one undo history.
 
 ```bash
-claude mcp add kimchi -- /Applications/kimchi.app/Contents/MacOS/kimchi-mcp --live   # Claude Code
-kimchi-cli project.overview                                                           # the running app
-kimchi-cli --file cut.json clip.addText text="Opening title"                           # a project file
+claude mcp add kimchi -- /usr/bin/kimchi-mcp --live              # Claude Code (the .deb's path; kimchi-cli mcp-config has yours)
+kimchi-cli project.overview                                      # the running app
+kimchi-cli --file cut.json clip.addText text="Opening title"      # a project file
 ```
 
 The **Agent** panel (⌘J) works with no setup on **lsuite AI**: sign in once with your lsuite account (every lsuite app is
@@ -273,7 +271,8 @@ cargo test --workspace
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) covers running in a scratch environment, the test suites, and how to add a
 command, a setting or a provider.
 
-Packaging (the bundle scripts write to `target/dist/`; `make-icons.sh` updates the icons in the repository):
+Packaging (the bundle scripts write to `target/dist/`; `make-icons.sh` updates the icons in the repository). Releases
+only ship Linux for now; the macOS and Windows scripts are kept for when they come:
 
 ```bash
 scripts/bundle-macos.sh aarch64-apple-darwin   # kimchi.app, .dmg, .app.tar.gz (ad-hoc signed without a Developer ID)
@@ -289,9 +288,9 @@ The packaging resources (Info.plist template, entitlements, icons, `.desktop` fi
 
 Bump the version in `Cargo.toml` (`[workspace.package]`), add its section at the top of `CHANGELOG.md` (a test
 checks it is there; the app shows it after updating and the release notes start with it), tag `vX.Y.Z` and push
-the tag. The release workflow builds
-macOS (Apple Silicon and Intel; signed and notarized), Windows and Linux, signs the update files, writes
-`latest.json` and drafts the GitHub release; publishing the draft rolls the update out to everyone.
+the tag. The release workflow builds Linux (macOS and Windows are coming soon: their lines are commented out
+in its matrix), signs the update files, writes `latest.json` and makes a draft GitHub release, which
+`scripts/publish-build.sh X.Y.Z` copies to lsuite's builds (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#releases)).
 
 Update signatures use kimchi's minisign update key (the secret keeps its old name `TAURI_SIGNING_PRIVATE_KEY`), through `crates/kimchi-release` (no Node or Tauri CLI):
 
