@@ -1,6 +1,6 @@
 name: Release
 
-# Builds kimchi for macOS (Apple Silicon + Intel), Windows and Linux with the scripts in scripts/
+# Builds kimchi for Linux (macOS and Windows are paused for now: see the matrix) with the scripts in scripts/
 # (no Node, no Tauri), signs the updater files with the update key, and attaches everything plus
 # latest.json (read by the in-app updaters, including kimchi 0.1.x's Tauri updater) to a DRAFT
 # GitHub release, which stays private. The builds are not published here any more (lsuite
@@ -35,9 +35,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: macOS (Apple Silicon), os: macos-latest, target: aarch64-apple-darwin, script: bundle-macos.sh }
-          - { name: macOS (Intel), os: macos-latest, target: x86_64-apple-darwin, script: bundle-macos.sh }
-          - { name: Windows, os: windows-latest, target: x86_64-pc-windows-msvc, script: bundle-windows.sh }
+          # Linux only for now (decided 2026-10-08): macOS and Windows builds are paused. Put these
+          # lines back to build them again; everything after the build handles any set of platforms.
+          # - { name: macOS (Apple Silicon), os: macos-latest, target: aarch64-apple-darwin, script: bundle-macos.sh }
+          # - { name: macOS (Intel), os: macos-latest, target: x86_64-apple-darwin, script: bundle-macos.sh }
+          # - { name: Windows, os: windows-latest, target: x86_64-pc-windows-msvc, script: bundle-windows.sh }
           - { name: Linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, script: bundle-linux.sh }
     defaults:
       run:
