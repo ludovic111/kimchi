@@ -134,7 +134,7 @@ a video save node are treated as video models; an optional
 ## Install
 
 Get kimchi in the [lsuite app](https://lsuite.xyz/launcher), with a free lsuite account: it installs and
-updates every lsuite app. kimchi is free and open source (MIT), so you can also build it from source (below).
+updates every lsuite app. kimchi is free and open source (MIT), so you can also build it from source (see Development below).
 
 | System | File the lsuite app installs |
 | --- | --- |
