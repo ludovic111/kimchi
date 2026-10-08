@@ -47,6 +47,12 @@ jobs:
       - name: macOS dependencies
         if: runner.os == 'macOS'
         run: brew install ffmpeg
+      - name: Own Rust install per repo on ludodesktop
+        # The runners of several repos run at once; a shared ~/.rustup makes their installs collide.
+        if: runner.environment == 'self-hosted'
+        run: |
+          echo "RUSTUP_HOME=$HOME/.rustup-${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$HOME/.cargo-${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
