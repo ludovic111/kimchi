@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,7 +23,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-latest]
+        # Pull requests: Linux only, on ludodesktop (1-6 min). macOS runs on main and by hand (gh workflow run).
+        os: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main') && '["ubuntu-22.04", "macos-latest"]' || '["ubuntu-22.04"]') }}
     steps:
       - uses: actions/checkout@v4
         with:
