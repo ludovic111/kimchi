@@ -6,3 +6,4 @@ target/
 *.tmp
 .DS_Store
 .claude/
+evals/.work/

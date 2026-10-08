@@ -64,7 +64,7 @@ impl Plugin for Halftone {
                         let (cx, cy, d) = cell_centre(fx, fy, cell, *angle);
                         let sample = input.sample(cx, cy);
                         let lit = straight_channel(sample, i);
-                        let radius = (1.0 - lit).sqrt() * cell * 0.7071;
+                        let radius = (1.0 - lit).sqrt() * cell * std::f32::consts::FRAC_1_SQRT_2;
                         c[i] = 1.0 - coverage(d, radius, soft);
                     }
                     [c[0], c[1], c[2], src[3]]
@@ -73,7 +73,7 @@ impl Plugin for Halftone {
                     let sample = input.sample(cx, cy);
                     let a = sample[3].max(1e-6);
                     let l = luma([sample[0] / a, sample[1] / a, sample[2] / a, 1.0]);
-                    let radius = (1.0 - l).max(0.0).sqrt() * cell * 0.7071;
+                    let radius = (1.0 - l).max(0.0).sqrt() * cell * std::f32::consts::FRAC_1_SQRT_2;
                     let k = coverage(d, radius, soft);
                     let m = mix(paper, ink, k);
                     [m[0], m[1], m[2], src[3]]

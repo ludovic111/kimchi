@@ -27,8 +27,10 @@ struct Key {
 }
 
 /// Instances left by renderers that are gone, newest last.
-fn spares() -> &'static Mutex<Vec<(Key, Box<dyn Instance>)>> {
-    static S: OnceLock<Mutex<Vec<(Key, Box<dyn Instance>)>>> = OnceLock::new();
+type Spares = Mutex<Vec<(Key, Box<dyn Instance>)>>;
+
+fn spares() -> &'static Spares {
+    static S: OnceLock<Spares> = OnceLock::new();
     S.get_or_init(Default::default)
 }
 const SPARES: usize = 32;

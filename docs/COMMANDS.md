@@ -1844,6 +1844,46 @@ Put audio from ryolune on an audio track: a file ryolune exported (path), or, wh
 | `trackId` | string |  | Track id or name. Defaults to the first free compatible track (a new one if none is free). |
 | `start` | number |  | Seconds (default 0). |
 
+## harness
+
+### `harness.brief`
+
+The expert brief every agent working in kimchi gets (the built-in agent's system prompt, kimchi-mcp's instructions): the project model, the commands for the common jobs, the trade's quality bar (cuts, pacing, colour, titles, loudness, motion, 3D, delivery), the usual mistakes, the finish routine and the skills' index. Markdown. _(read only)_
+
+### `harness.skills`
+
+The skills: playbooks for video jobs (rough cut, trailer, social vertical edit, titles and captions, colour grade, audio mix, motion graphics, 3D product shot, b-roll, scoring with ryolune, export, writing a plugin, reviewing a cut), each with its name, title and when to use it. _(read only)_
+
+### `harness.skill`
+
+One skill's playbook (markdown): when to use it, the steps with the exact commands, the checks that prove it worked. Load it before that kind of job. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `name` | string | required | Skill name from harness.skills, e.g. rough-cut. |
+
+### `harness.context`
+
+The live context agents get before each step: the project in a few lines (canvas, length, tracks and what is on them), the playhead and what is under it, the selection, the Studio, and with since, what others changed after that point. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `since` | integer |  | The seq of an earlier answer: also list the changes made after it by others than the caller. |
+
+### `harness.look`
+
+The best look at the current work, for an agent to check it before saying it is done: a labelled sheet of frames drawn as the export draws them (over the whole cut, a span or one clip), each frame's brightness and whether it is blank, gaps in the picture, the loudness of the mix there (integrated LUFS, true peak, against the master's target) and the project's problems, with notes on what is off. Returns the PNG's path; agents that can see get the picture itself. _(read only)_
+
+| Parameter | Type | | Description |
+| --- | --- | --- | --- |
+| `from` | number |  | Start of the span in seconds (default 0). |
+| `to` | number |  | End of the span in seconds (default: the end of the cut). |
+| `clipId` | string |  | Look at this clip's span instead (id or name). |
+| `frames` | integer |  | How many frames, evenly spread over the span (1 to 16, default 8). |
+| `times` | array of numbers |  | Exact times in seconds instead (up to 16). |
+| `width` | integer |  | Width of each frame in pixels (default 480 in a sheet, 960 for one frame). |
+| `measure` | boolean |  | Measure the sound too (default true). |
+
 ## app
 
 ### `app.info`
@@ -1913,7 +1953,7 @@ Save (or with no key, remove) the API key the built-in agent uses, in the OS key
 
 ### `app.checkUpdates`
 
-Check GitHub Releases for a newer kimchi and report it. _(read only)_
+Check lsuite for a newer kimchi and report it. Updates come with the free lsuite account: signed out, the answer says to sign in (in the lsuite app) instead of failing. _(read only)_
 
 ### `app.installUpdate`
 

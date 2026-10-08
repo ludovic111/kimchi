@@ -192,7 +192,7 @@ pub struct Invocation {
 }
 
 /// Commands of the CLI itself rather than the registry. Their arguments are kept as given.
-pub const TOOLS: &[&str] = &["commands", "help", "docs", "batch", "doctor", "mcp-config", "render", "generate", "providers", "models"];
+pub const TOOLS: &[&str] = &["commands", "help", "docs", "batch", "doctor", "mcp-config", "render", "generate", "providers", "models", "ask"];
 
 /// Parses a command line. Options may come before or after the command; for a registry
 /// command, every other argument is a parameter: `--name value`, `--name=value` or `name=value`

@@ -293,7 +293,7 @@ fn rebase(v: &mut Value, from: &str, to: &str) {
 }
 
 /// `project.overview`: the whole project, bounded, plus what an agent should notice.
-fn overview(s: &Arc<Session>) -> CmdResult {
+pub(crate) fn overview(s: &Arc<Session>) -> CmdResult {
     let (p, history) = s.read(|ed| (ed.project().clone(), json!({
         "canUndo": ed.can_undo(),
         "canRedo": ed.can_redo(),

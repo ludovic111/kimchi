@@ -122,13 +122,19 @@ fn speaks_mcp_over_a_project_file() {
 
     let prompts = mcp.request(15, "prompts/list", json!({}))["result"]["prompts"].clone();
     let names: Vec<&str> = prompts.as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["rough-cut", "title-and-captions", "generate-b-roll", "review-the-cut", "motion-design", "3d-scene"]);
+    assert_eq!(names.len(), kimchi_control::harness::skills().len());
+    assert!(names.contains(&"rough-cut") && names.contains(&"3d-product-shot"), "{names:?}");
+    // The prompts from before the skills still answer, with their arguments passed on.
     let got = mcp.request(19, "prompts/get", json!({ "name": "3d-scene", "arguments": { "idea": "a chrome teapot", "seconds": "8" } }));
     let text = got["result"]["messages"][0]["content"]["text"].as_str().unwrap();
-    assert!(text.contains("a chrome teapot") && text.contains("times=[0.5, 4, 7.5]"), "{text}");
-    let got = mcp.request(16, "prompts/get", json!({ "name": "generate-b-roll", "arguments": { "subject": "a misty harbour" } }));
+    assert!(text.contains("# 3D product shot") && text.contains("idea: a chrome teapot") && text.contains("motion_cameraMove"), "{text}");
+    let got = mcp.request(16, "prompts/get", json!({ "name": "b-roll", "arguments": { "request": "a misty harbour" } }));
     assert!(got["result"]["messages"][0]["content"]["text"].as_str().unwrap().contains("a misty harbour"));
-    assert_eq!(mcp.request(17, "prompts/get", json!({ "name": "title-and-captions" }))["error"]["code"], -32602);
+    // Skills are resources too.
+    let read = mcp.request(20, "resources/read", json!({ "uri": "kimchi://skills/rough-cut" }));
+    assert!(read["result"]["contents"][0]["text"].as_str().unwrap().starts_with("# Rough cut"));
+    assert!(mcp.request(21, "resources/read", json!({ "uri": "kimchi://brief" }))["result"]["contents"][0]["text"].as_str().unwrap().contains("## The finish routine"));
+    assert_eq!(mcp.request(17, "prompts/get", json!({ "name": "no-such-skill" }))["error"]["code"], -32602);
     assert_eq!(mcp.request(18, "no/such", json!({}))["error"]["code"], -32601);
 }
 
@@ -177,7 +183,15 @@ fn rendered_frames_come_back_as_pictures() {
     mcp.request(1, "initialize", json!({ "protocolVersion": "2025-06-18" }));
     assert!(mcp.request(2, "initialize", json!({}))["result"]["instructions"].as_str().unwrap().contains("media_look"));
     assert_eq!(mcp.tool(3, "project_create", json!({ "name": "Look" }))["isError"], false);
-    assert_eq!(mcp.tool(4, "clip_addSolid", json!({ "color": "#00ff00", "duration": 2 }))["isError"], false);
+    let solid = mcp.tool(4, "clip_addSolid", json!({ "color": "#00ff00", "duration": 2 }));
+    assert_eq!(solid["isError"], false, "{solid}");
+    // After an edit: the live context and the finish routine's reminder end the text, and ride in
+    // the structured result too (Claude Code shows that instead of the text when there is one).
+    let text = solid["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("<context>") && text.contains("Not checked yet"), "{text}");
+    let notes = solid["structuredContent"]["harnessNotes"].as_array().expect("harnessNotes");
+    assert!(notes.iter().any(|n| n.as_str().unwrap().contains("<context>")), "{notes:?}");
+    assert!(notes.iter().any(|n| n.as_str().unwrap().contains("Not checked yet")), "{notes:?}");
     let frame = mcp.tool(5, "project_renderFrame", json!({ "time": 1, "width": 320 }));
     if frame["isError"] == true && frame["content"][0]["text"].as_str().unwrap_or("").contains("ffmpeg") {
         eprintln!("ffmpeg not found; skipping");
@@ -190,5 +204,10 @@ fn rendered_frames_come_back_as_pictures() {
     assert_eq!(picture["mimeType"], "image/png");
     assert!(picture["data"].as_str().unwrap().starts_with("iVBORw0KGgo"), "base64 of a PNG");
     // Other commands stay text only.
-    assert_eq!(mcp.tool(6, "project_overview", json!({}))["content"].as_array().unwrap().len(), 1);
+    let overview = mcp.tool(6, "project_overview", json!({}));
+    assert_eq!(overview["content"].as_array().unwrap().len(), 1);
+    // Once it has looked, edits no longer remind it until the next one.
+    assert!(!overview.to_string().contains("Not checked yet"), "{overview}");
+    let moved = mcp.tool(7, "clip_addSolid", json!({ "color": "#0000ff", "start": 2, "duration": 1 }));
+    assert!(moved["structuredContent"]["harnessNotes"].to_string().contains("Not checked yet"), "{moved}");
 }

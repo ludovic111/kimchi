@@ -133,27 +133,26 @@ a video save node are treated as video models; an optional
 
 ## Install
 
-Grab the build for your system from the [latest release](https://github.com/ludovic111/kimchi/releases/latest)
-(or [lsuite.xyz/kimchi](https://lsuite.xyz/kimchi)):
+Get kimchi in the [lsuite app](https://lsuite.xyz/launcher), with a free lsuite account: it installs and
+updates every lsuite app. kimchi is free and open source (MIT), so you can also build it from source (see Development below).
 
-| System | File |
+| System | File the lsuite app installs |
 | --- | --- |
 | macOS, Apple Silicon | `kimchi_aarch64.dmg` |
 | macOS, Intel | `kimchi_x64.dmg` |
 | Windows | `kimchi_x64-setup.exe` (installer) or `kimchi_x64-portable.zip` |
 | Linux | `kimchi_amd64.AppImage` or `kimchi_amd64.deb` |
 
-Or install it with the [lsuite launcher](https://lsuite.xyz/launcher).
-
 ffmpeg is bundled, and so are `kimchi-cli` and `kimchi-mcp`. The macOS build is signed with a Developer ID and
 notarized by Apple, so it opens like any other app.
 
-**Updates.** kimchi checks GitHub Releases when it starts and every few hours, and installs a new version in one
+**Updates.** kimchi checks lsuite when it starts and every few hours, with your lsuite account (signed out, it
+says to sign in in the lsuite app), and installs a new version in one
 click, or by itself with Settings › Updates › "Download and install updates by themselves" (also
 `kimchi-cli app.checkUpdates` / `app.installUpdate`). Every update is signed and its signature checked before
 anything is replaced; on macOS and with the AppImage the previous copy is kept until the new one has started. On
 Windows the verified installer runs when kimchi restarts or quits. With the `.deb` or the portable `.zip`, kimchi
-tells you about the update and links to the file. Turn the checks off with the setting `updates.checkOnStart` or
+tells you about the update and links to the lsuite app. Turn the checks off with the setting `updates.checkOnStart` or
 `KIMCHI_NO_UPDATE=1`. Installs of 0.1.x (the Tauri builds) update to the new app through their own updater. After
 an update, kimchi shows what changed (from [CHANGELOG.md](CHANGELOG.md); What's new in the top bar's … menu any time).
 

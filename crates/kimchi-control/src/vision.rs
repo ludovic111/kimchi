@@ -1,7 +1,7 @@
 //! Pictures for models that can see.
 //!
-//! A few commands answer with the path of a picture (`project.renderFrame`, `media.frame`,
-//! `media.look`, `ui.screenshot`). The built-in agent and `kimchi-mcp` hand the model the picture
+//! A few commands answer with the path of a picture (`harness.look`, `project.renderFrame`,
+//! `media.frame`, `media.look`, `ui.screenshot`). The built-in agent and `kimchi-mcp` hand the model the picture
 //! itself, not only its path, so an agent can look at what it made before saying it is done.
 //! [`pictures_in`] says which results carry one; [`picture`] reads it (through ffmpeg when it isn't
 //! a PNG, upright) and scales it to what models take in.
@@ -13,7 +13,7 @@ use kimchi_media::tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 use serde_json::Value;
 
 /// Commands whose answer's `path` is a picture to show the model.
-pub const LOOKS: &[&str] = &["project.renderFrame", "media.frame", "media.look", "ui.screenshot"];
+pub const LOOKS: &[&str] = &["harness.look", "project.renderFrame", "media.frame", "media.look", "ui.screenshot"];
 
 /// Longest side of a picture sent to a model, in pixels: what the providers keep without
 /// scaling it down themselves.

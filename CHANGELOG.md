@@ -3,6 +3,18 @@
 What changed in each kimchi release. The app shows the newest section in **What's new** after it
 updates, and the release workflow puts the section in the update's notes.
 
+## 0.11.0 — 2026-10-07
+
+### New
+- **An agent that knows video.** Every agent working in kimchi (the Agent panel's, the lsuite app's, or Claude Code and Codex connected to kimchi) now starts from the same expert brief: how to cut and pace, J and L cuts, when to dissolve, how to match colour, how big titles must be and where they stay readable, how loud a video should be for YouTube, social or podcasts, how to animate with intent, how to light a 3D shot, and which export suits each platform.
+- **Playbooks for the common jobs.** Rough cut from your footage, trailer or teaser, vertical edit for TikTok, Reels and Shorts, titles and captions, colour grade, sound mix, motion graphics, 3D product shot, generated b-roll, a score made in ryolune, export for a platform, writing a plugin, and a review of your cut. The agent follows the right one, step by step, and checks the result the way the playbook says.
+- **It checks its work before it says it's done.** The agent looks at a sheet of frames across what it changed and measures the sound (loudness, peaks, blank frames, holes in the picture), compares it with what you asked, fixes what's off, then tells you in a few lines what changed.
+- **It keeps up with you.** While it works, the agent sees what you change in the window between its steps, so it doesn't undo your edits or work from an old picture of the project.
+- **Run the agent from a terminal.** `kimchi-cli --file cut.json ask "…"` runs kimchi's agent on a project file without opening the window.
+
+### Better
+- **Updates come through lsuite.** kimchi now gets its updates from lsuite with your free lsuite account (sign in once, in the lsuite app). Signed out, Settings › Updates says so instead of showing an error. Updates are still signed and checked exactly as before.
+
 ## 0.10.0 — 2026-10-07
 
 ### New

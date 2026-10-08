@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-use crate::tools::{SYSTEM_PROMPT, bounded};
+use crate::tools::{bounded, system_prompt};
 use crate::{CliSession, Conversation, Message, ProviderKind, Role, Run};
 
 const CLAUDE_PLACES: &[&str] = &["~/.local/bin/claude", "~/.claude/local/claude", "~/.claude/local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude", "~/.npm-global/bin/claude"];
@@ -198,7 +198,8 @@ fn live(run: &Run) -> Result<Live, String> {
         ));
     }
     let mcp = mcp_executable().ok_or_else(|| format!("{label} needs kimchi-mcp, which wasn't found next to kimchi. Reinstall kimchi, or choose an API provider in Settings › Agent."))?;
-    Ok(Live { mcp, control: kimchi_control::bridge::control_path(&run.session.data_dir) })
+    let control = run.session.bridge_path().unwrap_or_else(|| kimchi_control::bridge::control_path(&run.session.data_dir));
+    Ok(Live { mcp, control })
 }
 
 pub(crate) async fn run(run: &mut Run, prompt: String, mut conv: Conversation) -> Result<String, String> {
@@ -294,9 +295,15 @@ impl Drop for TempFile {
     }
 }
 
-/// The arguments for one Claude Code turn (the prompt goes on stdin). `batch`: the executable is
-/// a Windows `.cmd` shim, which can't take line breaks, so the system prompt is on one line.
-pub(crate) fn claude_args(config: &Path, model: &str, resume: Option<&str>, batch: bool) -> Vec<String> {
+/// What Claude Code is told on top of its own system prompt.
+pub(crate) fn claude_system() -> String {
+    format!("{}\nkimchi's commands are the MCP tools mcp__kimchi__family_verb; you have no other tools.", system_prompt())
+}
+
+/// The arguments for one Claude Code turn (the prompt goes on stdin). `system_file`: the system
+/// prompt is in that file (for a Windows `.cmd` shim, which can't take line breaks or a line of
+/// the brief's length); otherwise it goes inline.
+pub(crate) fn claude_args(config: &Path, model: &str, resume: Option<&str>, system_file: Option<&Path>) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         "--output-format",
@@ -319,9 +326,16 @@ pub(crate) fn claude_args(config: &Path, model: &str, resume: Option<&str>, batc
     .collect();
     args.push("--mcp-config".into());
     args.push(config.to_string_lossy().into_owned());
-    args.push("--append-system-prompt".into());
-    let system = format!("{SYSTEM_PROMPT}\nkimchi's commands are the MCP tools mcp__kimchi__family_verb; you have no other tools.");
-    args.push(if batch { system.split(['\r', '\n']).map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ") } else { system });
+    match system_file {
+        Some(file) => {
+            args.push("--append-system-prompt-file".into());
+            args.push(file.to_string_lossy().into_owned());
+        }
+        None => {
+            args.push("--append-system-prompt".into());
+            args.push(claude_system());
+        }
+    }
     if !model.is_empty() {
         args.extend(["--model".into(), model.into()]);
     }
@@ -337,8 +351,14 @@ async fn claude(run: &mut Run, exe: &Path, live: &Live, workspace: &Path, resume
     if let Err(e) = std::fs::write(&config.0, mcp_config(live).to_string()) {
         return (Outcome::default(), Err(format!("Couldn't write the MCP configuration: {e}")));
     }
+    let system = is_batch(exe).then(|| TempFile(workspace.join(format!("system-{}-{nanos}.md", std::process::id()))));
+    if let Some(f) = &system
+        && let Err(e) = std::fs::write(&f.0, claude_system())
+    {
+        return (Outcome::default(), Err(format!("Couldn't write the system prompt: {e}")));
+    }
     let mut cmd = Command::new(exe);
-    cmd.args(claude_args(&config.0, &run.config.model(), resume, is_batch(exe))).current_dir(workspace).env("PATH", child_path(exe));
+    cmd.args(claude_args(&config.0, &run.config.model(), resume, system.as_ref().map(|f| f.0.as_path()))).current_dir(workspace).env("PATH", child_path(exe));
     // On lsuite AI when the person picked it: the plan pays, not their own Claude sign-in.
     if let Some(env) = crate::lsuite::claude_code_env(&run.session.settings().agent) {
         cmd.env_remove("ANTHROPIC_API_KEY");
@@ -571,7 +591,7 @@ async fn codex(run: &mut Run, exe: &Path, live: &Live, workspace: &Path, resume:
     let input = if resume.is_some() {
         prompt.to_string()
     } else {
-        format!("{SYSTEM_PROMPT}\nkimchi's commands are the tools of the `kimchi` MCP server; use no other tools.\n\n{}", with_context(conv, prompt))
+        format!("{}\nkimchi's commands are the tools of the `kimchi` MCP server; use no other tools.\n\n{}", system_prompt(), with_context(conv, prompt))
     };
     run.status("Starting Codex…");
     // `own` hands the sign-in back when dropped, also when the run is cancelled.
@@ -699,7 +719,7 @@ pub(crate) fn gemini_args(policy: &Path, model: &str, resume: Option<&str>) -> V
 async fn gemini(run: &mut Run, exe: &Path, live: &Live, workspace: &Path, resume: Option<&str>, prompt: &str, conv: &Conversation) -> (Outcome, Result<(), String>) {
     let dir = run.session.data_dir.join("agent-gemini");
     let (settings, policy, system) = (dir.join("settings.json"), dir.join("policy.toml"), dir.join("system.md"));
-    let system_text = format!("{SYSTEM_PROMPT}\nkimchi's commands are your tools mcp_kimchi_family_verb (the kimchi MCP server); you have no other tools.\n");
+    let system_text = format!("{}\nkimchi's commands are your tools mcp_kimchi_family_verb (the kimchi MCP server); you have no other tools.\n", system_prompt());
     let written = std::fs::create_dir_all(&dir)
         .and_then(|()| std::fs::write(&settings, serde_json::to_string_pretty(&gemini_settings(live)).unwrap_or_default()))
         .and_then(|()| std::fs::write(&policy, GEMINI_POLICY))

@@ -38,6 +38,49 @@ kimchi-cli project.overview
 Then drill down only where needed: `clip.get`, `media.get`, `track.list`, `timeline.markers`,
 `generate.jobs`, `ui.state` for the window and `ui.screenshot` to see it.
 
+## The harness: what every agent knows
+
+Whichever agent works in kimchi (the built-in one, the lsuite app's, or Claude Code and Codex over
+MCP), it gets the same harness (lsuite's `HARNESS.md`):
+
+- **The brief** (`harness.brief`): who the agent is in this trade, the project model, the commands
+  for the common jobs, the quality bar (cuts and pacing, J and L cuts, transitions, colour, title
+  legibility and safe areas, loudness for video: -14 LUFS for the web and social, -16 for podcasts
+  and Vimeo, true peak at -1 dBTP; motion, 3D, delivery), the usual mistakes and the finish routine.
+  It is the built-in agent's system prompt and `kimchi-mcp`'s instructions, from one source
+  (`crates/kimchi-control/src/harness/brief.md`).
+- **Skills** (`harness.skills`, `harness.skill {name}`): playbooks with exact commands and checks
+  for rough cuts, trailers, social vertical edits, titles and captions, colour grades, audio mixes,
+  motion graphics, 3D product shots, b-roll generation, scoring with ryolune, exports for platforms,
+  writing a plugin and reviewing a cut (`harness/skills/*.md`). Over MCP each is also a prompt and
+  the resource `kimchi://skills/<name>`.
+- **Live context** (`harness.context`): the project in a few lines (canvas, length, each track's
+  clips), the playhead and what is under it, the selection and the Studio. The built-in agent gets
+  it before every model step, not only with the request: when something changed, an updated block
+  follows its tool results, with what the person changed meanwhile (`since` asks for that). Over MCP
+  a tool result ends with the same block when something changed, and the result of an edit reminds
+  the agent of the finish routine until it looks (`harness.look`, `project.renderFrame`…) or
+  measures (`audio.measure`). These notes are also in the structured result, as `harnessNotes`:
+  some clients (Claude Code) show the structured result instead of the text. `KIMCHI_MCP_CONTEXT=0`
+  turns them off.
+- **Eyes and ears** (`harness.look`): the best picture of the current work, a labelled sheet of
+  frames over the cut, a span or a clip, drawn as the export draws them, with each frame's
+  brightness and whether it is blank, gaps in the picture, the loudness of the mix there (against
+  the master's target) and the project's problems.
+- **The finish routine**: look and listen, compare with the request, fix (up to three passes),
+  report in a few lines.
+- **One undo per turn**: a checkpoint before the agent's first change; **Revert this run** puts it
+  all back.
+
+```sh
+kimchi-cli harness.skills
+kimchi-cli harness.skill --name rough-cut
+kimchi-cli harness.look --from 0 --to 12 --frames 6
+```
+
+The evals (`evals/run.py`, scores in `evals/RESULTS.md`) run scripted video jobs through the
+built-in agent with a real model and check the projects it leaves.
+
 ## Seeing
 
 Agents can look. `project.renderFrame` draws the cut at a time (several `times` give one labelled
@@ -181,10 +224,14 @@ with the real path of `kimchi-mcp` on this computer (and `KIMCHI_CONTROL` when y
   (`project_create` makes it). A file open in the app is refused.
 - `--headless` hosts a session on the library. Without a flag, the server drives the app when it
   runs and otherwise hosts a session on the library.
+- **Instructions**: the harness brief (above), with the mode the server runs in.
 - **Resources**: `kimchi://project/overview` (read it first), `kimchi://project` (the project
-  file), `kimchi://commands`, `kimchi://settings` and `kimchi://app`.
-- **Prompts**: `rough-cut` (assemble media into a cut), `title-and-captions`, `generate-b-roll`
-  and `review-the-cut`.
+  file), `kimchi://commands`, `kimchi://settings`, `kimchi://app`, `kimchi://brief` and one
+  `kimchi://skills/<name>` per skill.
+- **Prompts**: one per skill (`rough-cut`, `trailer`, `social-vertical`, `titles-and-captions`,
+  `color-grade`, `audio-mix`, `motion-graphics`, `3d-product-shot`, `b-roll`, `scoring`, `export`,
+  `write-a-plugin`, `review-the-cut`), each taking an optional `request`. The older names
+  `title-and-captions`, `generate-b-roll`, `motion-design` and `3d-scene` still work.
 - A failing tool answers with `isError: true` and the message, so the model can read it and try
   again. MCP requests are always held to the agent permissions.
 
@@ -205,10 +252,22 @@ ran), `agent.stop` stops it, `agent.revert` puts the project back as it was befo
 undo step), and `agent.newConversation` saves the current conversation and starts another. A request sent from a terminal shows in the
 panel like one typed there. One run at a time; these commands need the running app.
 
-Each request reaches the model with a short `<context>` block in front of it: the project, the
-playhead and the clips under it, the selected clips (names, ids, times) or media, and the Studio when
-it is open. So "shorten this" or "a title here" needs no question back. The line above the panel's
-composer shows what it will say (hover for all of it).
+Each request reaches the model with a short `<context>` block in front of it: the project and
+what is on each track, the playhead and the clips under it, the selected clips (names, ids, times)
+or media, and the Studio when it is open. So "shorten this" or "a title here" needs no question
+back. Before each later step an updated block follows the tool results when something changed,
+with what the person did meanwhile. The line above the panel's composer shows what it will say
+(hover for all of it).
+
+`kimchi-cli ask` runs the same agent without the window, on a project file (or `--headless` on the
+library), with the provider and model from Settings › Agent unless `--provider` and `--model` say
+otherwise. Claude Code, Codex and Gemini CLI reach the file through a private bridge of their own.
+`--json` prints every event as a line (the evals read it).
+
+```sh
+kimchi-cli --file cut.json ask "Add a title saying Hello at 0 s and fade it in"
+kimchi-cli --file cut.json ask "Make a 15 s rough cut of the media" --provider claude-code --model sonnet --json
+```
 
 ```sh
 kimchi-cli agent.send --prompt "Add a title saying Hello at 0 s and fade it in" --wait
@@ -524,6 +583,7 @@ agent doesn't see the `agent.*` commands: it can't drive itself. Agents never se
 | `KIMCHI_CONFIG_DIR` | the settings folder (`settings.json`, `providers.json`) |
 | `KIMCHI_FFMPEG`, `KIMCHI_FFPROBE` | ffmpeg and ffprobe to use instead of the bundled or installed ones |
 | `KIMCHI_NO_UPDATE=1` | never check for updates |
+| `KIMCHI_MCP_CONTEXT=0` | `kimchi-mcp` doesn't end tool results with the updated context or the finish routine's reminder |
 | `KIMCHI_WINDOW_SIZE` | the window's size when it opens, e.g. `2000x1250` (screenshots) |
 | `KIMCHI_GPU` | `0` draws 3D on the CPU; `any` accepts a software GPU adapter (default: a hardware GPU when there is one) |
 | `KIMCHI_KEYCHAIN` | `1` stores API keys in the OS keychain; `0` keeps keys entered in the window in memory until quit. Keys in environment variables work either way (default: on in release builds, off in debug builds) |

@@ -312,7 +312,7 @@ fn a_stopped_turn_is_closed_before_the_next() {
 
 #[test]
 fn cli_invocations_attach_kimchi_only() {
-    let args = cli::claude_args(std::path::Path::new("/tmp/mcp.json"), "", Some("sess-1"), false);
+    let args = cli::claude_args(std::path::Path::new("/tmp/mcp.json"), "", Some("sess-1"), None);
     let joined = args.join(" ");
     for flag in ["-p", "--output-format stream-json", "--strict-mcp-config", "--allowedTools mcp__kimchi__*", "--mcp-config /tmp/mcp.json", "--resume sess-1"] {
         assert!(joined.contains(flag), "{flag} in {joined}");
@@ -332,10 +332,13 @@ fn cli_invocations_attach_kimchi_only() {
 }
 
 #[test]
-fn a_batch_shim_gets_the_system_prompt_on_one_line() {
-    let args = cli::claude_args(std::path::Path::new("/tmp/mcp.json"), "", None, true);
-    let system = &args[args.iter().position(|a| a == "--append-system-prompt").unwrap() + 1];
-    assert!(!system.contains('\n') && system.contains("mcp__kimchi__family_verb"), "{system}");
+fn a_batch_shim_gets_the_system_prompt_in_a_file() {
+    let args = cli::claude_args(std::path::Path::new("/tmp/mcp.json"), "", None, Some(std::path::Path::new("/tmp/system.md")));
+    assert!(args.windows(2).any(|w| w == ["--append-system-prompt-file", "/tmp/system.md"]), "{args:?}");
+    assert!(!args.iter().any(|a| a == "--append-system-prompt"));
+    let inline = cli::claude_args(std::path::Path::new("/tmp/mcp.json"), "", None, None);
+    let system = &inline[inline.iter().position(|a| a == "--append-system-prompt").unwrap() + 1];
+    assert!(system.contains("mcp__kimchi__family_verb") && system.contains("## The finish routine"), "{system}");
 }
 
 #[test]
@@ -916,7 +919,7 @@ async fn red_and_selected(dir: &std::path::Path) -> (Arc<Session>, String) {
 
 #[test]
 fn the_context_block_frames_a_request_and_comes_off_again() {
-    let g = Glance { lines: vec!["What the person sees:".into(), "Playhead: 1.00 s.".into()], short: "Playhead 1.00 s".into() };
+    let g = Glance { lines: vec!["What the person sees:".into(), "Playhead: 1.00 s.".into()], short: "Playhead 1.00 s".into(), ..Default::default() };
     let framed = g.frame("Make it shorter");
     assert_eq!(framed, "<context>\nWhat the person sees:\nPlayhead: 1.00 s.\n</context>\n\nMake it shorter");
     assert_eq!(context::unframed(&framed), "Make it shorter");

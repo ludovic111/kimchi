@@ -187,7 +187,9 @@ pub async fn call_in(session: &Arc<Session>, source: Source, name: &str, params:
         None => return Err(unknown_command(name)),
     };
     let result = run_checked(session, source, spec, params.clone()).await;
-    if source != Source::Window || spec.mutates {
+    // `harness.context` is how agents keep up with the project (kimchi-mcp asks after each call):
+    // it is no news to show on the panel's cards.
+    if (source != Source::Window || spec.mutates) && spec.name != "harness.context" {
         let record = CommandRecord {
             seq: session.next_seq(),
             source,
@@ -201,6 +203,10 @@ pub async fn call_in(session: &Arc<Session>, source: Source, name: &str, params:
             result: result.as_ref().ok().filter(|v| v.to_string().len() <= 4096).cloned(),
             checkpoint,
         };
+        // A checkpoint changes nothing.
+        if record.ok && record.mutates && spec.name != "history.checkpoint" {
+            session.note_edit(record.seq, source, spec.name);
+        }
         session.emit(Event::Command { record });
     }
     result

@@ -75,7 +75,7 @@ impl Image {
         Self::from_fn(width, height, |x, y| {
             let r = (x * 255 / width.max(2).saturating_sub(1).max(1)) as u8;
             let g = (y * 255 / height.max(2).saturating_sub(1).max(1)) as u8;
-            let b = if (x / cell + y / cell) % 2 == 0 { 255 } else { 0 };
+            let b = if (x / cell + y / cell).is_multiple_of(2) { 255 } else { 0 };
             [r, g, b, 255]
         })
     }
@@ -89,7 +89,7 @@ impl Image {
     pub fn mean(&self) -> [f64; 4] {
         let n = (self.width * self.height).max(1) as f64;
         let mut sum = [0.0; 4];
-        for px in self.data.chunks_exact(4) {
+        for px in self.data.as_chunks::<4>().0 {
             for i in 0..4 {
                 sum[i] += px[i] as f64;
             }
@@ -106,7 +106,7 @@ impl Image {
 
     /// No colour channel above alpha (a valid premultiplied picture).
     pub fn is_premultiplied(&self) -> bool {
-        self.data.chunks_exact(4).all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3])
+        self.data.as_chunks::<4>().0.iter().all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3])
     }
 
     fn raw(&self) -> RawFrame {

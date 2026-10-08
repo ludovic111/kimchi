@@ -1,0 +1,168 @@
+{
+  "about": "Scripted video jobs for kimchi's agent harness (lsuite HARNESS.md part 7). Each job builds a project (setup: kimchi commands, {fx} is the fixtures folder), asks the agent in words, then scores the resulting project with automatic checks. run.py runs them; RESULTS.md keeps the scores.",
+  "jobs": [
+    {
+      "name": "title-card",
+      "canvas": [1920, 1080],
+      "setup": [],
+      "prompt": "Add an opening title that says \"Northern Lights\", 4 seconds long at the very start, big and centred, fading in and out.",
+      "checks": [
+        ["text_contains", {"text": "Northern Lights", "start_max": 0.25, "min_duration": 3}],
+        ["text_fades", {"text": "Northern Lights"}],
+        ["frames_nonblank", {"times": [2.0]}],
+        ["looked", {}]
+      ]
+    },
+    {
+      "name": "rough-cut",
+      "canvas": [1920, 1080],
+      "setup": [
+        {"command": "media.import", "params": {"paths": ["{fx}/shot-a.mp4", "{fx}/shot-b.mp4", "{fx}/shot-c.mp4"]}}
+      ],
+      "prompt": "The project has three shots in its media (shot-a, shot-b, shot-c, 8 s each). Make a rough cut of about 15 seconds that uses all three, in that order, on one track, with no gaps.",
+      "checks": [
+        ["video_clips", {"min": 3, "distinct_assets": 3}],
+        ["duration", {"min": 12, "max": 18}],
+        ["order", {"assets": ["shot-a", "shot-b", "shot-c"]}],
+        ["no_gaps", {}],
+        ["frames_nonblank", {}],
+        ["looked", {}]
+      ]
+    },
+    {
+      "name": "lower-third",
+      "canvas": [1920, 1080],
+      "setup": [
+        {"command": "media.import", "params": {"paths": ["{fx}/shot-a.mp4"], "place": true, "start": 0}}
+      ],
+      "prompt": "Add a lower third introducing \"Ada Lovelace\", mathematician, starting 1 second in, over the shot.",
+      "checks": [
+        ["text_contains", {"text": "Ada Lovelace", "start_min": 0.5, "start_max": 2.0, "min_duration": 2.5}],
+        ["above_picture", {"text": "Ada Lovelace"}],
+        ["frames_nonblank", {"times": [3.0]}],
+        ["looked", {}]
+      ]
+    },
+    {
+      "name": "social-vertical",
+      "canvas": [1920, 1080],
+      "setup": [
+        {"command": "media.import", "params": {"paths": ["{fx}/shot-a.mp4"], "place": true, "start": 0}}
+      ],
+      "prompt": "Turn this into a vertical 9:16 video for TikTok. The picture must fill the whole frame, no black bars.",
+      "checks": [
+        ["canvas", {"width": 1080, "height": 1920}],
+        ["fills_frame", {"time": 4.0}],
+        ["looked", {}]
+      ]
+    },
+    {
+      "name": "warm-grade",
+      "canvas": [1920, 1080],
+      "setup": [
+        {"command": "media.import", "params": {"paths": ["{fx}/shot-a.mp4", "{fx}/shot-b.mp4"], "place": true, "start": 0}}
+      ],
+      "prompt": "Give the whole cut a warm, slightly punchy look, the same on every shot.",
+      "checks": [
+        ["all_video_clips_warm", {}],
+        ["frames_nonblank", {}],
+        ["looked", {}]
+      ]
+    },
+    {
+      "name": "dissolves",
+      "canvas": [1920, 1080],
+      "setup": [
+        {"command": "media.import", "params": {"paths": ["{fx}/shot-a.mp4", "{fx}/shot-b.mp4", "{fx}/shot-c.mp4"], "place": true, "start": 0}}
+      ],
+      "prompt": "Put half-second dissolves on every cut between the shots.",
+      "checks": [
+        ["transitions", {"kind": "dissolve", "count": 2, "duration": 0.5, "tolerance": 0.15}],
+        ["video_clips", {"min": 3, "distinct_assets": 3}],
+        ["looked", {}]
+      ]
+    },
+    {
+      "name": "youtube-loudness",
+      "canvas": [1920, 1080],
+      "setup": [
+        {"command": "media.import", "params": {"paths": ["{fx}/shot-a.mp4", "{fx}/shot-b.mp4"], "place": true, "start": 0}},
+        {"command": "media.import", "params": {"paths": ["{fx}/music-quiet.wav"]}},
+        {"command": "clip.insertMedia", "params": {"assetId": "music-quiet.wav", "start": 0, "trackId": "Audio 1"}},
+        {"command": "clip.trim", "params": {"clipId": "music-quiet.wav", "edge": "end", "time": 16}}
+      ],
+      "prompt": "Get the sound ready to publish on YouTube.",
+      "checks": [
+        ["loudness", {"target": -14, "tolerance": 1.5}],
+        ["true_peak", {"max": -0.9}],
+        ["looked", {"sound": true}]
+      ]
+    },
+    {
+      "name": "music-ends-with-picture",
+      "canvas": [1920, 1080],
+      "setup": [
+        {"command": "media.import", "params": {"paths": ["{fx}/shot-a.mp4"], "place": true, "start": 0}},
+        {"command": "media.import", "params": {"paths": ["{fx}/music.wav"]}},
+        {"command": "clip.insertMedia", "params": {"assetId": "music.wav", "start": 0, "trackId": "Audio 1"}}
+      ],
+      "prompt": "The music runs on long after the picture ends. Make it end with the picture, fading out over the last 2 seconds.",
+      "checks": [
+        ["music_ends_with_picture", {"fade_min": 1.5}],
+        ["duration", {"min": 7.5, "max": 8.5}],
+        ["looked", {"sound": true}]
+      ]
+    },
+    {
+      "name": "chapter-markers",
+      "canvas": [1920, 1080],
+      "setup": [
+        {"command": "media.import", "params": {"paths": ["{fx}/shot-a.mp4", "{fx}/shot-b.mp4", "{fx}/shot-c.mp4"], "place": true, "start": 0}}
+      ],
+      "prompt": "Add a chapter marker at the start of each shot, labelled Intro, Middle and End.",
+      "checks": [
+        ["markers", {"labels": ["Intro", "Middle", "End"], "times": [0, 8, 16], "tolerance": 0.3}]
+      ]
+    },
+    {
+      "name": "3d-title",
+      "canvas": [1920, 1080],
+      "setup": [],
+      "prompt": "Make a 4-second 3D title that says KIMCHI, at the start of the timeline.",
+      "checks": [
+        ["motion_clip", {"three_d": true, "text": "KIMCHI"}],
+        ["duration", {"min": 3, "max": 6}],
+        ["frames_nonblank", {"times": [2.0]}],
+        ["looked", {}]
+      ]
+    },
+    {
+      "name": "ken-burns-photo",
+      "canvas": [1920, 1080],
+      "setup": [
+        {"command": "media.import", "params": {"paths": ["{fx}/photo.png"]}}
+      ],
+      "prompt": "Put the photo on the timeline at the start for 5 seconds with a slow Ken Burns zoom.",
+      "checks": [
+        ["image_clip", {"min_duration": 4.5, "max_duration": 5.5}],
+        ["keyframed", {"properties": ["scale", "scaleX", "scaleY", "position", "x", "y"]}],
+        ["frames_nonblank", {}],
+        ["looked", {}]
+      ]
+    },
+    {
+      "name": "trim-to-length",
+      "canvas": [1920, 1080],
+      "setup": [
+        {"command": "media.import", "params": {"paths": ["{fx}/shot-a.mp4", "{fx}/shot-b.mp4", "{fx}/shot-c.mp4"], "place": true, "start": 0}}
+      ],
+      "prompt": "Shorten the cut to 12 seconds: keep all three shots, trim each about evenly, and leave no gaps.",
+      "checks": [
+        ["duration", {"min": 11, "max": 13}],
+        ["video_clips", {"min": 3, "distinct_assets": 3}],
+        ["no_gaps", {}],
+        ["looked", {}]
+      ]
+    }
+  ]
+}
