@@ -91,8 +91,10 @@ struct Library {
 }
 
 /// Loaded libraries by (file, time, size): a rebuilt file is another key.
-fn loaded() -> &'static Mutex<HashMap<(PathBuf, u64, u64), Arc<Library>>> {
-    static L: OnceLock<Mutex<HashMap<(PathBuf, u64, u64), Arc<Library>>>> = OnceLock::new();
+type Loaded = Mutex<HashMap<(PathBuf, u64, u64), Arc<Library>>>;
+
+fn loaded() -> &'static Loaded {
+    static L: OnceLock<Loaded> = OnceLock::new();
     L.get_or_init(Default::default)
 }
 

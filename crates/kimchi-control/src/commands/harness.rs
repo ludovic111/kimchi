@@ -157,7 +157,7 @@ impl FrameStats {
     fn of(rgba: &[u8]) -> Self {
         let (mut sum, mut sq, mut n) = (0.0f64, 0.0f64, 0.0f64);
         // Every 4th pixel is plenty for a mean and a spread.
-        for px in rgba.chunks_exact(4).step_by(4) {
+        for px in rgba.as_chunks::<4>().0.iter().step_by(4) {
             let y = 0.2126 * px[0] as f64 + 0.7152 * px[1] as f64 + 0.0722 * px[2] as f64;
             sum += y;
             sq += y * y;

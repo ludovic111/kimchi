@@ -173,7 +173,7 @@ fn store(cache: &Cache) {
 pub fn plugins() -> Vec<PluginInfo> {
     let mut all = native::built_ins();
     let mut found: Vec<PluginInfo> = cached().entries.into_iter().flat_map(|e| e.plugins).collect();
-    found.sort_by(|a, b| (a.format as u8, a.name.to_lowercase()).cmp(&(b.format as u8, b.name.to_lowercase())));
+    found.sort_by_key(|p| (p.format as u8, p.name.to_lowercase()));
     all.extend(found);
     let mut seen = HashSet::new();
     all.retain(|p| seen.insert(p.id.clone()));
