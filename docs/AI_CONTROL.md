@@ -58,8 +58,11 @@ MCP), it gets the same harness (lsuite's `HARNESS.md`):
   clips), the playhead and what is under it, the selection and the Studio. The built-in agent gets
   it before every model step, not only with the request: when something changed, an updated block
   follows its tool results, with what the person changed meanwhile (`since` asks for that). Over MCP
-  a tool result ends with the same block when something changed (`KIMCHI_MCP_CONTEXT=0` turns it
-  off).
+  a tool result ends with the same block when something changed, and the result of an edit reminds
+  the agent of the finish routine until it looks (`harness.look`, `project.renderFrame`…) or
+  measures (`audio.measure`). These notes are also in the structured result, as `harnessNotes`:
+  some clients (Claude Code) show the structured result instead of the text. `KIMCHI_MCP_CONTEXT=0`
+  turns them off.
 - **Eyes and ears** (`harness.look`): the best picture of the current work, a labelled sheet of
   frames over the cut, a span or a clip, drawn as the export draws them, with each frame's
   brightness and whether it is blank, gaps in the picture, the loudness of the mix there (against
@@ -580,7 +583,7 @@ agent doesn't see the `agent.*` commands: it can't drive itself. Agents never se
 | `KIMCHI_CONFIG_DIR` | the settings folder (`settings.json`, `providers.json`) |
 | `KIMCHI_FFMPEG`, `KIMCHI_FFPROBE` | ffmpeg and ffprobe to use instead of the bundled or installed ones |
 | `KIMCHI_NO_UPDATE=1` | never check for updates |
-| `KIMCHI_MCP_CONTEXT=0` | `kimchi-mcp` doesn't end tool results with the updated context |
+| `KIMCHI_MCP_CONTEXT=0` | `kimchi-mcp` doesn't end tool results with the updated context or the finish routine's reminder |
 | `KIMCHI_WINDOW_SIZE` | the window's size when it opens, e.g. `2000x1250` (screenshots) |
 | `KIMCHI_GPU` | `0` draws 3D on the CPU; `any` accepts a software GPU adapter (default: a hardware GPU when there is one) |
 | `KIMCHI_KEYCHAIN` | `1` stores API keys in the OS keychain; `0` keeps keys entered in the window in memory until quit. Keys in environment variables work either way (default: on in release builds, off in debug builds) |

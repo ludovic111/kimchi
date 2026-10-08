@@ -89,7 +89,7 @@ The OpenAI image provider and the agent's OpenAI choice share one keychain entry
 | `KIMCHI_NO_SYSTEM_FONTS` | all | Any value: text in the picture (titles, captions, motion text) uses only the fonts bundled with kimchi. |
 | `KIMCHI_WINDOW_SIZE` | app | The window's size when it opens, as `WIDTHxHEIGHT` (for example `2000x1250`). |
 | `KIMCHI_UPDATE_URL` | app | Another `latest.json` to check for updates (tests). By default kimchi asks the lsuite server, `<server>/api/apps/kimchi/latest.json`, with the signed-in lsuite account's token; signed out, the check says to sign in to lsuite in the lsuite app. The token is only sent to the lsuite server. |
-| `KIMCHI_MCP_CONTEXT` | `kimchi-mcp` | `0` stops tool results from ending with an updated `<context>` block when the project or the window changed. |
+| `KIMCHI_MCP_CONTEXT` | `kimchi-mcp` | `0` stops tool results from ending with an updated `<context>` block when the project or the window changed, and edits' results from reminding the agent to look at its work. |
 | `KIMCHI_MCP` | app | The `kimchi-mcp` program given to Claude Code and Codex, if the file exists. Otherwise kimchi looks next to itself, then on `PATH`. |
 | `LSUITE_HOME` | all | Where lsuite apps register, hand files over, keep the shared lsuite account and lsuite plugins (default `~/.lsuite`). |
 | `LSUITE_ACCOUNT_SERVER` | all | The lsuite account server for lsuite AI and updates (default: the signed-in account's, else `https://lsuite.xyz`), for a local demo server such as `http://127.0.0.1:4321`. |

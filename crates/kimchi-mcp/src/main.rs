@@ -103,7 +103,7 @@ async fn main() {
     eprintln!("kimchi-mcp {}: {} mode{}", env!("CARGO_PKG_VERSION"), backend.mode(), backend.path().map(|p| format!(" on {}", p.display())).unwrap_or_default());
 
     let (out, writer) = protocol_out();
-    let server = Arc::new(Server { backend, seen: Default::default() });
+    let server = Arc::new(Server { backend, seen: Default::default(), unchecked: Default::default() });
     // Requests in flight by id (as JSON text), to cancel them.
     let running: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>> = Arc::default();
     let mut stdin = tokio::io::BufReader::with_capacity(1 << 16, tokio::io::stdin());
@@ -273,6 +273,8 @@ struct Server {
     backend: Backend,
     /// The live context the client last saw: the summary and the change it goes up to.
     seen: tokio::sync::Mutex<Option<(String, u64)>>,
+    /// An edit was made since the client last looked at or measured the work.
+    unchecked: std::sync::atomic::AtomicBool,
 }
 
 /// A request (with an id) or a notification.
@@ -346,24 +348,39 @@ impl Server {
                         {
                             text.push_str(&format!("\n(saved {})", path.display()));
                         }
+                        // What the harness adds to a result (lsuite HARNESS.md parts 3 to 5).
+                        let mut notes = vec![];
                         // A frame, a media look or a screenshot: the client's model gets the picture itself.
                         let mut pictures = vec![];
                         for path in kimchi_control::vision::pictures_in(spec.name, &result) {
                             match kimchi_control::vision::picture(&path).await {
                                 Ok(p) => pictures.push(json!({ "type": "image", "data": p.data, "mimeType": p.media_type })),
-                                Err(e) => text.push_str(&format!("\n(The picture couldn't be attached: {e})")),
+                                Err(e) => notes.push(format!("(The picture couldn't be attached: {e})")),
                             }
                         }
-                        let context = self.context_update(spec.name).await;
-                        let mut reply = json!({ "content": std::iter::once(json!({ "type": "text", "text": text })).chain(pictures).chain(context).collect::<Vec<_>>(), "isError": false });
-                        if result.is_object() {
-                            reply["structuredContent"] = result;
+                        notes.extend(self.context_update(spec.name).await);
+                        notes.extend(self.finish_reminder(spec.name, spec.mutates));
+                        for note in &notes {
+                            text.push_str("\n\n");
+                            text.push_str(note);
+                        }
+                        let mut reply = json!({ "content": std::iter::once(json!({ "type": "text", "text": text })).chain(pictures).collect::<Vec<_>>(), "isError": false });
+                        // Some clients (Claude Code) show the structured result instead of the text
+                        // when there is one: the notes ride in it too.
+                        if let Value::Object(mut object) = result {
+                            if !notes.is_empty() {
+                                object.insert("harnessNotes".into(), json!(notes));
+                            }
+                            reply["structuredContent"] = Value::Object(object);
                         }
                         reply
                     }
-                    Err(message) => {
-                        let context = self.context_update(spec.name).await;
-                        json!({ "content": std::iter::once(json!({ "type": "text", "text": message })).chain(context).collect::<Vec<_>>(), "isError": true })
+                    Err(mut message) => {
+                        if let Some(context) = self.context_update(spec.name).await {
+                            message.push_str("\n\n");
+                            message.push_str(&context);
+                        }
+                        json!({ "content": [{ "type": "text", "text": message }], "isError": true })
                     }
                 })
             }
@@ -422,7 +439,7 @@ impl Server {
             return format!("kimchi's commands for the Agent panel's model. {mode} Your system prompt has kimchi's brief; harness_skill loads a playbook.");
         }
         format!(
-            "{}\n## Over MCP\n\n{mode}\n\nkimchi's commands are this server's tools, with an underscore for the dot (the command clip.addText is the tool clip_addText), as they are written above. The overview is also the resource kimchi://project/overview; each skill is a prompt and the resource kimchi://skills/<name>. When the project or the window changed since your last call, a tool result ends with an updated <context> block that says what the person changed meanwhile. Agent permissions (Settings › Agent › Permissions) decide whether you may import, export, switch projects, generate, change settings or control the app; API keys and the permissions themselves stay with the person.",
+            "{}\n## Over MCP\n\n{mode}\n\nkimchi's commands are this server's tools, with an underscore for the dot (the command clip.addText is the tool clip_addText), as they are written above. The overview is also the resource kimchi://project/overview; each skill is a prompt and the resource kimchi://skills/<name>. When the project or the window changed since your last call, a tool result ends with an updated <context> block that says what the person changed meanwhile; after an edit, it reminds you of the finish routine until you look (harness_look) or measure (audio_measure). These notes are also under harnessNotes in the structured result. Agent permissions (Settings › Agent › Permissions) decide whether you may import, export, switch projects, generate, change settings or control the app; API keys and the permissions themselves stay with the person.",
             kimchi_control::harness::as_tools(&kimchi_control::harness::brief())
         )
     }
@@ -431,7 +448,7 @@ impl Server {
 impl Server {
     /// An updated `<context>` block for a tool result, when the project or the window changed
     /// since the client last saw it (`KIMCHI_MCP_CONTEXT=0` turns this off).
-    async fn context_update(&self, command: &str) -> Option<Value> {
+    async fn context_update(&self, command: &str) -> Option<String> {
         if !live_context() || command.starts_with("harness.") {
             return None;
         }
@@ -452,7 +469,21 @@ impl Server {
         if !changed || (first && for_builtin_agent()) {
             return None;
         }
-        Some(json!({ "type": "text", "text": format!("<context>\nUpdated after this call.\n{}\n</context>", v["context"].as_str().unwrap_or("")) }))
+        Some(format!("<context>\nUpdated after this call.\n{}\n</context>", v["context"].as_str().unwrap_or("")))
+    }
+
+    /// The finish routine's reminder after an edit, until the client looks at or measures the
+    /// work (`KIMCHI_MCP_CONTEXT=0` turns it off too).
+    fn finish_reminder(&self, command: &str, mutates: bool) -> Option<String> {
+        use std::sync::atomic::Ordering;
+        if kimchi_control::vision::LOOKS.contains(&command) || command == "audio.measure" {
+            self.unchecked.store(false, Ordering::Relaxed);
+        } else if mutates && !command.starts_with("harness.") {
+            self.unchecked.store(true, Ordering::Relaxed);
+        }
+        (live_context() && mutates && self.unchecked.load(Ordering::Relaxed)).then(|| {
+            "Not checked yet: before you report, run the finish routine (harness_look over what you changed; audio_measure when the sound matters).".to_string()
+        })
     }
 }
 
