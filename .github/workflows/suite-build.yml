@@ -25,9 +25,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, target: aarch64-apple-darwin, script: bundle-macos.sh }
-          - { os: macos-15-intel, target: x86_64-apple-darwin, script: bundle-macos.sh }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc, script: bundle-windows.sh }
+          # Linux only while lsuite is in beta (decided 2026-10-08): macOS and Windows are coming
+          # soon. Put these lines back to build them again; the steps for them are kept below.
+          # - { os: macos-14, target: aarch64-apple-darwin, script: bundle-macos.sh }
+          # - { os: macos-15-intel, target: x86_64-apple-darwin, script: bundle-macos.sh }
+          # - { os: windows-latest, target: x86_64-pc-windows-msvc, script: bundle-windows.sh }
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, script: bundle-linux.sh }
     defaults:
       run:
