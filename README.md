@@ -3,8 +3,8 @@
 </p>
 <p align="center">
   <a href="https://lsuite.xyz/kimchi">Website</a> ·
-  <a href="https://github.com/ludovic111/kimchi/releases/latest">Download</a> ·
-  <a href="https://lsuite.xyz/kimchi/support">Sponsor</a>
+  <a href="https://lsuite.xyz/kimchi/download">Download</a> ·
+  <a href="https://lsuite.xyz/kimchi/support">Support</a>
 </p>
 
 <h1 align="center">kimchi</h1>
@@ -14,6 +14,8 @@ Native Rust app (GPUI) · drivable by your AI (MCP, CLI, built-in agent) · brin
 Part of <a href="https://lsuite.xyz">lsuite</a>, the free, open-source creative suite your AI can drive.</p>
 
 ---
+
+## What it does
 
 kimchi is a desktop video editor with a built-in harness for image and video
 generation models. Prompt a shot straight onto the timeline, animate a frame you
@@ -26,8 +28,6 @@ system v2: black and white, square, with film grain behind the chrome.
 
 It started as a fork of [OpenCut](https://github.com/OpenCut-app/OpenCut) and was
 rewritten from the ground up in Rust.
-
-## What it does
 
 **Editing**
 - Multi-track timeline: video, image, text, solid and audio clips
@@ -85,7 +85,7 @@ rewritten from the ground up in Rust.
 - **Provenance.** Every generated asset remembers its prompt, model, seed and inputs: regenerate or make variations in one click
 - Start a project from a prompt on the home screen, or type one into the command palette (⌘K)
 
-## Models
+### Models
 
 Keys live in your OS keychain (or come from the usual environment variables) and
 are only sent to the provider they belong to.
@@ -117,7 +117,7 @@ sound effects and music; Stability AI supplies Stable Audio 2.5. Results enter t
 and audio timeline with their original prompt and settings, and can be reused or regenerated.
 Set the provider key in Settings, or use `ELEVENLABS_API_KEY` / `STABILITY_API_KEY`.
 
-### Your own ComfyUI workflows
+#### Your own ComfyUI workflows
 
 Export a workflow in API format into `~/Documents/kimchi/comfyui-workflows` (or
 set another folder in Settings → Models & keys → ComfyUI). Each file becomes a
@@ -130,6 +130,39 @@ model. Put placeholders in any string input and kimchi fills them in:
 A value that is exactly one numeric placeholder becomes a number. Workflows with
 a video save node are treated as video models; an optional
 `<name>.kimchi.json` sidecar can set the name, tasks and defaults.
+
+## Install
+
+Grab the build for your system from the [latest release](https://github.com/ludovic111/kimchi/releases/latest)
+(or [lsuite.xyz/kimchi](https://lsuite.xyz/kimchi)):
+
+| System | File |
+| --- | --- |
+| macOS, Apple Silicon | `kimchi_aarch64.dmg` |
+| macOS, Intel | `kimchi_x64.dmg` |
+| Windows | `kimchi_x64-setup.exe` (installer) or `kimchi_x64-portable.zip` |
+| Linux | `kimchi_amd64.AppImage` or `kimchi_amd64.deb` |
+
+Or install it with the [lsuite launcher](https://lsuite.xyz/launcher).
+
+ffmpeg is bundled, and so are `kimchi-cli` and `kimchi-mcp`. The macOS build is signed with a Developer ID and
+notarized by Apple, so it opens like any other app.
+
+**Updates.** kimchi checks GitHub Releases when it starts and every few hours, and installs a new version in one
+click, or by itself with Settings › Updates › "Download and install updates by themselves" (also
+`kimchi-cli app.checkUpdates` / `app.installUpdate`). Every update is signed and its signature checked before
+anything is replaced; on macOS and with the AppImage the previous copy is kept until the new one has started. On
+Windows the verified installer runs when kimchi restarts or quits. With the `.deb` or the portable `.zip`, kimchi
+tells you about the update and links to the file. Turn the checks off with the setting `updates.checkOnStart` or
+`KIMCHI_NO_UPDATE=1`. Installs of 0.1.x (the Tauri builds) update to the new app through their own updater. After
+an update, kimchi shows what changed (from [CHANGELOG.md](CHANGELOG.md); What's new in the top bar's … menu any time).
+
+**Logs and crash reports.** Each run writes a log to `logs/` in kimchi's data folder (`kimchi.log`, the previous
+runs as `kimchi.1.log`…), and problems leave a report in `logs/crashes/`: a panic with its backtrace, or a run that
+ended without quitting. Settings › Diagnostics shows them, and Report a problem (in the command palette, or Help on macOS) opens a GitHub issue with the
+version and system filled in. Nothing is sent anywhere by kimchi itself. The level is the setting
+`diagnostics.logLevel` (`info`, `debug`, `trace`) or `RUST_LOG`; `kimchi-cli app.logs` and `app.crashReports` read
+them too.
 
 ## Drive it from AI and scripts
 
@@ -147,17 +180,16 @@ The **Agent** panel (⌘J) works with no setup on **lsuite AI**: sign in once wi
 signed in with it) and the agent runs Claude models on a monthly plan, with your allowance shown in Settings › Agent
 (a demo for now: no payment is taken). Or it runs the model you already have: Claude Code (which can also run on lsuite AI), Codex, Gemini CLI, an Anthropic, OpenAI,
 Google Gemini or Amazon Bedrock key, any OpenAI-compatible service (OpenRouter, Groq, Mistral, DeepSeek, xAI,
-Together, Fireworks, Cerebras, Azure OpenAI, LM Studio…), a local Ollama model, or **zenith**. It shows one card per
-command and lets you revert a whole run. **It can see**: it looks at the frames it renders and at your media, and every
+Together, Fireworks, Cerebras, Azure OpenAI, LM Studio…), a local Ollama model, or **zenith**
+([below](#works-with-the-rest-of-lsuite)).
+
+It shows one card per command and lets you revert a whole run. **It can see**: it looks at the frames it renders and at your media, and every
 picture it looked at shows in its card. Each request carries what you're looking at (selection, playhead, the clip open
 in the Studio), so "make this shorter" just works. Choose
 the provider and model in the panel, send a steering message during a run, and keep multiple named
-conversations per project. Conversations and editable project memory survive restarts. zenith uses
-its own provider accounts and threads through the lsuite command interface; install zenith and run
-its server to select it. What agents may do
+conversations per project. Conversations and editable project memory survive restarts. What agents may do
 (files, projects, generation, settings, quitting) is set in Settings › Agent, for the built-in agent and MCP alike.
-kimchi hands cuts to [ryolune](https://lsuite.xyz/ryolune) to score them and takes its audio back
-(`handoff.toRyolune`, `handoff.fromRyolune`). Details: [docs/AI_CONTROL.md](docs/AI_CONTROL.md).
+Details: [docs/AI_CONTROL.md](docs/AI_CONTROL.md).
 
 ## Plugins
 
@@ -167,6 +199,15 @@ Unit sound plugins. Describe the plugin you want and **Build with your agent**: 
 tries it on your clip, and kimchi picks it up without a restart. Halftone, Chromatic aberration, Gradient and Radial wipe
 come with kimchi, made with the same SDK. See [docs/PLUGINS.md](docs/PLUGINS.md).
 
+## Works with the rest of lsuite
+
+- **ryolune**: kimchi hands cuts to [ryolune](https://lsuite.xyz/ryolune) to score them and takes its audio back
+  (`handoff.toRyolune`, `handoff.fromRyolune`). ryolune's effects, plugin host and `.ryolune` songs are part of
+  kimchi's sound (see [What it does](#what-it-does)).
+- **zenith**: the Agent panel can run on [zenith](https://lsuite.xyz/zenith). zenith uses
+  its own provider accounts and threads through the lsuite command interface; install zenith and run
+  its server to select it.
+
 ## Documentation
 
 - [User guide](docs/guide/README.md): the window, from a first cut to motion graphics, sound, generation and export
@@ -175,7 +216,10 @@ come with kimchi, made with the same SDK. See [docs/PLUGINS.md](docs/PLUGINS.md)
 - [Configuration](docs/CONFIGURATION.md): settings, environment variables, files and folders
 - [The project file](docs/PROJECT_FORMAT.md)
 - [Switching from another editor](docs/SWITCHING.md) and [what kimchi reads and writes](docs/COMPATIBILITY.md)
+- [Plugins](docs/PLUGINS.md): the formats kimchi loads, the plugin SDK and its ABI
 - [Architecture](docs/ARCHITECTURE.md) and [development](docs/DEVELOPMENT.md), for working on kimchi itself
+- [Performance](docs/PERFORMANCE.md): renderer measurements and how to reproduce them
+- Everything else is listed in [docs/README.md](docs/README.md); what changed in each version is in the [changelog](CHANGELOG.md)
 
 ## Architecture
 
@@ -198,6 +242,9 @@ crates/
   kimchi-cli       `kimchi-cli`: any command, on the running app or a project file
   kimchi-mcp       `kimchi-mcp`: the registry as MCP tools (`--live`, `--file`)
   kimchi-release   signs updates and writes latest.json for releases
+plugins/
+  examples         kimchi-plugin-examples: Halftone, Chromatic aberration (effects), Gradient (a generator) and
+                   Radial wipe (a transition), built with the kimchi-plugin SDK
 ```
 
 - Every change is an `Edit` (plain data) applied by `kimchi-core`, behind a named command in `kimchi-control`.
@@ -210,40 +257,9 @@ crates/
   corners and hard shadows, film grain and dithered light behind the chrome, solid work surfaces, Chakra Petch
   and IBM Plex Mono, every area titled and its tools grouped, dark and light, tested contrast.
 
-## Install
-
-Grab the build for your system from the [latest release](https://github.com/ludovic111/kimchi/releases/latest)
-(or [lsuite.xyz/kimchi](https://lsuite.xyz/kimchi)):
-
-| System | File |
-| --- | --- |
-| macOS, Apple Silicon | `kimchi_aarch64.dmg` |
-| macOS, Intel | `kimchi_x64.dmg` |
-| Windows | `kimchi_x64-setup.exe` (installer) or `kimchi_x64-portable.zip` |
-| Linux | `kimchi_amd64.AppImage` or `kimchi_amd64.deb` |
-
-ffmpeg is bundled, and so are `kimchi-cli` and `kimchi-mcp`. The macOS build is signed with a Developer ID and
-notarized by Apple, so it opens like any other app.
-
-**Updates.** kimchi checks GitHub Releases when it starts and every few hours, and installs a new version in one
-click, or by itself with Settings › Updates › "Download and install updates by themselves" (also
-`kimchi-cli app.checkUpdates` / `app.installUpdate`). Every update is signed and its signature checked before
-anything is replaced; on macOS and with the AppImage the previous copy is kept until the new one has started. On
-Windows the verified installer runs when kimchi restarts or quits. With the `.deb` or the portable `.zip`, kimchi
-tells you about the update and links to the file. Turn the checks off with the setting `updates.checkOnStart` or
-`KIMCHI_NO_UPDATE=1`. Installs of 0.1.x (the Tauri builds) update to the new app through their own updater. After
-an update, kimchi shows what changed (from [CHANGELOG.md](CHANGELOG.md); What's new in the top bar's … menu any time).
-
-**Logs and crash reports.** Each run writes a log to `logs/` in kimchi's data folder (`kimchi.log`, the previous
-runs as `kimchi.1.log`…), and problems leave a report in `logs/crashes/`: a panic with its backtrace, or a run that
-ended without quitting. Settings › Diagnostics shows them, and Report a problem (in the command palette, or Help on macOS) opens a GitHub issue with the
-version and system filled in. Nothing is sent anywhere by kimchi itself. The level is the setting
-`diagnostics.logLevel` (`info`, `debug`, `trace`) or `RUST_LOG`; `kimchi-cli app.logs` and `app.crashReports` read
-them too.
-
 ## Development
 
-Requirements: a recent stable Rust (1.92 or later on Linux). On Linux, GPUI's and the audio libraries:
+Requirements: Rust 1.92 or later (`rust-version` in `Cargo.toml`). On Linux, GPUI's and the audio libraries:
 `sudo apt install pkg-config clang libasound2-dev libdbus-1-dev libfontconfig-dev libfreetype-dev libssl-dev libvulkan-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev libglib2.0-dev`
 (other distributions: see `script/linux` in the [Zed repository](https://github.com/zed-industries/zed)).
 In development kimchi uses the ffmpeg on your `PATH`, or the static build `scripts/fetch-ffmpeg.sh` puts in
@@ -291,9 +307,21 @@ Secrets the workflow uses: `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_K
 `APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_API_KEY_P8_BASE64`,
 `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` (Developer ID and notarization, shared with the other lsuite apps).
 
+## Limits
+
+- Playback, selection, panels, notifications, screenshots and the built-in agent (`agent.*`) need the running window:
+  `kimchi-cli --file` and `--headless` refuse them with a hint. In file and headless mode the undo history lasts as long
+  as the process. One request at a time per MCP server, so prefer `generate.jobs` and `generate.wait` for long
+  generations. See [docs/AI_CONTROL.md](docs/AI_CONTROL.md#limits).
+
 ## License
 
 [MIT](LICENSE). Originally forked from OpenCut. The bundled ffmpeg is distributed under its own licence (GPL),
 included in the app as `FFMPEG-LICENSE.txt`.
+
+Fonts: Chakra Petch, IBM Plex Mono, Manrope, Instrument Sans and Instrument Serif, under the SIL Open Font License
+(`OFL.txt` beside each in `crates/kimchi-desktop/fonts/` and `crates/kimchi-media/fonts/`). Icons: Lucide (ISC,
+`crates/kimchi-desktop/assets/icons/LICENSE.lucide.txt`). The logos of other services and apps are the trademarks of
+their owners, used only to identify them: see [SOURCES.md](crates/kimchi-desktop/assets/logos/SOURCES.md).
 
 If kimchi is useful to you, [sponsoring](https://lsuite.xyz/kimchi/support) keeps it going.
