@@ -75,7 +75,9 @@ Rules that keep it working:
   the keychain (`KIMCHI_KEYCHAIN=1` forces it; an unsigned build makes macOS ask for the login
   password). On Linux without a desktop: `Xvfb :77` + `openbox`, `DISPLAY=:77`, screenshots with
   `import -window <id>` (ImageMagick; `ui.screenshot` is macOS-only) and clicks with `xdotool`. UI tests run the real views headless (`crates/kimchi-desktop/src/tests.rs`,
-  `views/timeline/tests.rs`).
+  `views/timeline/tests.rs`). On the Linux box the `rustc-low-priority` wrapper is a `/bin/sh` script and dash drops
+  env vars with hyphens, so the `kimchi-cli` / `kimchi-mcp` integration tests (`CARGO_BIN_EXE_kimchi-cli`) need
+  `RUSTC_WRAPPER= cargo test …` (workspace crates rebuild, dependencies don't).
 
 ## lsuite (notes updated 2026-10-07, 0.11.0)
 
@@ -133,7 +135,9 @@ kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is
       context/look`; `harness.look` is in `vision::LOOKS`). Live context before every model step: `api::refresh_context`
       appends an updated `<context>` block to the tool results when it changed, with what others changed
       (`Session::edits_since`, fed by `registry::call_in`; `harness.context` and checkpoints aren't recorded). Over MCP the
-      same block ends a tool result when something changed (`KIMCHI_MCP_CONTEXT=0`); prompts are the skills (old prompt
+      same block ends a tool result when something changed, edits add a finish-routine reminder until the agent looks or
+      measures, and both also go in `structuredContent.harnessNotes` (Claude Code shows the structured result *instead of*
+      the text; without it the finish routine was skipped) (`KIMCHI_MCP_CONTEXT=0`); prompts are the skills (old prompt
       names are aliases), resources `kimchi://brief`, `kimchi://skills/<name>`. Per-run checkpoint unchanged.
       `kimchi-cli --file x.json ask "…" [--provider --model --json]` runs the built-in agent headless (CLI providers get a
       private bridge, `Session::bridge_path`). Evals: `evals/run.py` (12 jobs in `evals/jobs.json`, fixtures made with
