@@ -72,10 +72,10 @@ jobs:
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
           if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
             # GitHub's published SSH host keys (api.github.com/meta), so the fetch can verify github.com.
+            # HostKeyAlias: the ssh-agent action reaches github.com through a per-key host alias.
             mkdir -p ~/.ssh
             curl -fsSL https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > ~/.ssh/known_hosts.github
-            sort -u ~/.ssh/known_hosts.github ~/.ssh/known_hosts 2>/dev/null > ~/.ssh/known_hosts.new || true
-            mv ~/.ssh/known_hosts.new ~/.ssh/known_hosts && rm ~/.ssh/known_hosts.github
+            echo "GIT_SSH_COMMAND=ssh -o HostKeyAlias=github.com -o UserKnownHostsFile=$HOME/.ssh/known_hosts.github -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
           fi
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
