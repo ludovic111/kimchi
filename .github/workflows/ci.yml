@@ -62,9 +62,21 @@ jobs:
           ssh-private-key: ${{ secrets.RYOLUNE_DEPLOY_KEY }}
       - name: Fetch ryolune over SSH
         shell: bash
+        # Scoped to this job (not git config --global): on ludodesktop the runners of all repos share
+        # one user, and a global rewrite would send ryolune's own checkout over SSH.
         run: |
-          git config --global url."ssh://git@github.com/ludovic111/ryolune".insteadOf "https://github.com/ludovic111/ryolune"
+          git config --global --unset-all url."ssh://git@github.com/ludovic111/ryolune".insteadOf || true
+          echo "GIT_CONFIG_COUNT=1" >> "$GITHUB_ENV"
+          echo "GIT_CONFIG_KEY_0=url.ssh://git@github.com/ludovic111/ryolune.insteadOf" >> "$GITHUB_ENV"
+          echo "GIT_CONFIG_VALUE_0=https://github.com/ludovic111/ryolune" >> "$GITHUB_ENV"
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
+          if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            # GitHub's published SSH host keys (api.github.com/meta), so the fetch can verify github.com.
+            mkdir -p ~/.ssh
+            curl -fsSL https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > ~/.ssh/known_hosts.github
+            sort -u ~/.ssh/known_hosts.github ~/.ssh/known_hosts 2>/dev/null > ~/.ssh/known_hosts.new || true
+            mv ~/.ssh/known_hosts.new ~/.ssh/known_hosts && rm ~/.ssh/known_hosts.github
+          fi
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
       - name: Scripts parse
