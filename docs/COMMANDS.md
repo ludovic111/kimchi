@@ -1953,7 +1953,7 @@ Save (or with no key, remove) the API key the built-in agent uses, in the OS key
 
 ### `app.checkUpdates`
 
-Check lsuite for a newer kimchi and report it. Updates come with the free lsuite account: signed out, the answer says to sign in (in the lsuite app) instead of failing. _(read only)_
+Check lsuite for a newer kimchi and report it. _(read only)_
 
 ### `app.installUpdate`
 
@@ -2114,39 +2114,11 @@ Build a plugin crate, make the bundle (plugin.toml and the library) and install 
 | --- | --- | --- | --- |
 | `name` | string | required | The crate's name. |
 
-## account
-
-### `account.status`
-
-The lsuite account shared by every lsuite app on this computer (~/.lsuite/account.json), which runs the agent on lsuite AI with no other setup: signed in or not, email, plan, the allowance used this month and when it resets, the plan's models, and where to manage the plan. Never shows the key. _(read only)_
-
-| Parameter | Type | | Description |
-| --- | --- | --- | --- |
-| `offline` | boolean |  | Only what the account file says, without asking the server (default false). |
-
-### `account.plans`
-
-The lsuite AI plans as the lsuite server lists them: prices, models and monthly allowances (a demo for now: no payment is taken). _(read only)_
-
-### `account.signIn`
-
-Sign in to lsuite AI (every lsuite app on this computer is signed in with it). Without key, opens the lsuite sign-in page in the browser and waits for it to come back; with key, uses the key the account page shows (lsk_…), for CLIs and computers without a browser. _(changes things · person only)_
-
-| Parameter | Type | | Description |
-| --- | --- | --- | --- |
-| `key` | string |  | The key from the account page (lsk_…). |
-| `wait` | boolean |  | Wait for the browser to finish the sign-in (default true); false answers at once with the address and finishes in the background. |
-| `cancel` | boolean |  | Stop a sign-in that is waiting for the browser. |
-
-### `account.signOut`
-
-Sign out of lsuite AI on this computer (every lsuite app), and tell the server to forget the key. _(changes things · person only)_
-
 ## agent
 
 ### `agent.providers`
 
-What can run the built-in agent: lsuite AI (the lsuite account: sign in and it works, see account.status), coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen. _(read only · needs the window)_
+What can run the built-in agent: coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen. _(read only · needs the window)_
 
 | Parameter | Type | | Description |
 | --- | --- | --- | --- |

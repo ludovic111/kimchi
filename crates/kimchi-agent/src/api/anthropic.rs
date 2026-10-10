@@ -84,16 +84,15 @@ pub(super) async fn step(api: &Api, run: &Run, set: &ToolSet, messages: &[Messag
         "messages": wire(messages),
         "stream": true,
     });
-    if api.base == ProviderKind::Anthropic.default_base_url() || api.kind == ProviderKind::Lsuite {
+    if api.base == ProviderKind::Anthropic.default_base_url() {
         // Caches the conversation so far for the next round of the loop.
         body["cache_control"] = json!({ "type": "ephemeral" });
     }
     let key = api.key.clone().unwrap_or_default();
     let url = format!("{}/v1/messages", api.base);
-    let label = if api.kind == ProviderKind::Lsuite { "lsuite AI" } else { "the Anthropic API" };
     let response = http::post(
         &run.cancel,
-        label,
+        "the Anthropic API",
         || api.http.post(&url).header("x-api-key", &key).header("anthropic-version", VERSION),
         &body,
     )

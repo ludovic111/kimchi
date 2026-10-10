@@ -1,10 +1,9 @@
 //! Automatic updates, through lsuite (lsuite `DISTRIBUTION.md`).
 //!
-//! kimchi's builds come through the lsuite account: the check reads
-//! `<server>/api/apps/kimchi/latest.json` with the account's token (`Authorization: Bearer`, from
-//! `~/.lsuite/account.json`; `<server>` is `LSUITE_ACCOUNT_SERVER`, else the account's, else
-//! lsuite.xyz), and the archives download through the same server's file route with the token.
-//! Signed out (or with a revoked token), the check says [`SIGN_IN`] instead of failing.
+//! kimchi's builds come through lsuite, with no account: the check reads
+//! `<server>/api/apps/kimchi/latest.json` (`<server>` is `LSUITE_SERVER`, else lsuite.xyz), and
+//! the archives download through the same server's file route (a redirect to the file's own
+//! address).
 //!
 //! Every release carries a `latest.json` in the Tauri updater format (kimchi 0.1.x was a Tauri
 //! app, and those installs still update through it):
@@ -33,8 +32,7 @@
 //! `KIMCHI_NO_UPDATE=1` or `settings.updates.checkOnStart = false` turn off the checks at start and
 //! every [`RECHECK`] ([`run_in_background`], which also installs by itself with
 //! `updates.autoInstall`); `app.checkUpdates` and `app.installUpdate` always work. `KIMCHI_UPDATE_URL`
-//! points the check at another `latest.json`, without the token unless it is on the lsuite server
-//! (signatures are still checked against [`PUBLIC_KEY`];
+//! points the check at another `latest.json` (signatures are still checked against [`PUBLIC_KEY`];
 //! debug builds accept `KIMCHI_UPDATE_PUBKEY` instead, for testing with a throwaway key).
 
 use std::collections::BTreeMap;
@@ -55,8 +53,6 @@ use crate::session::{CmdResult, Event, Session, ToastKind};
 pub const MANIFEST_PATH: &str = "/api/apps/kimchi/latest.json";
 /// Where people get kimchi by hand: the lsuite app, which installs and updates the apps.
 pub const RELEASES_URL: &str = "https://lsuite.xyz/launcher";
-/// What a signed-out check says.
-pub const SIGN_IN: &str = "Sign in to lsuite (in the lsuite app) to get updates.";
 /// The update key (base64 of a minisign public key file), the same as `plugins.updater.pubkey` in
 /// the Tauri builds. Its secret half is the `TAURI_SIGNING_PRIVATE_KEY` release secret.
 pub const PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRDMDcxNTc4RjA1N0Q5QTcKUldTbjJWZndlQlVIVEZyRWNtU2tqeWxCaFNvTGQxbU1qczFIMGY5cUYzVVdBWkxOL0FvalJocEkK";
@@ -95,9 +91,6 @@ pub struct UpdateStatus {
     /// from the source tree, an app still in Downloads…).
     #[serde(default)]
     pub install_blocked: Option<String>,
-    /// No lsuite account is signed in (or its token was refused): updates need one ([`SIGN_IN`]).
-    #[serde(default)]
-    pub sign_in: bool,
 }
 
 #[derive(Debug, Default)]
@@ -114,30 +107,14 @@ struct Found {
     version: String,
     url: String,
     signature: String,
-    /// The account's token, for downloads from the lsuite server.
-    token: Option<String>,
 }
 
-/// Where the check goes and with which token.
-struct Source {
-    url: String,
-    /// The lsuite server's address, which gets the token.
-    server: String,
-    token: Option<String>,
-}
-
-/// The manifest to read: `KIMCHI_UPDATE_URL` (tests), else the lsuite server's, with the
-/// account's token. `None` when signed out.
-fn source() -> Option<Source> {
-    let server = crate::account::server();
-    let token = crate::account::load().map(|a| a.token).filter(|t| !t.trim().is_empty());
-    if let Some(url) = std::env::var("KIMCHI_UPDATE_URL").ok().filter(|u| !u.trim().is_empty()) {
-        // The token goes only to the lsuite server, never to another address.
-        let token = token.filter(|_| same_origin(&url, &server));
-        return Some(Source { url, server, token });
-    }
-    let token = token?;
-    Some(Source { url: format!("{}{MANIFEST_PATH}", server.trim_end_matches('/')), server, token: Some(token) })
+/// The manifest to read: `KIMCHI_UPDATE_URL` (tests), else the lsuite server's.
+fn manifest_url() -> String {
+    std::env::var("KIMCHI_UPDATE_URL")
+        .ok()
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| format!("{}{MANIFEST_PATH}", crate::lsuite::server()))
 }
 
 /// Whether `url` is on `server` (scheme, host and port).
@@ -148,15 +125,9 @@ pub fn same_origin(url: &str, server: &str) -> bool {
     }
 }
 
-/// Where to send someone who downloads by hand: the lsuite app's page on the account's server.
+/// Where to send someone who downloads by hand: the lsuite app's page on the lsuite server.
 pub fn download_page() -> String {
-    format!("{}/launcher", crate::account::server().trim_end_matches('/'))
-}
-
-/// Why a check failed: the server wants a (new) sign-in, or anything else.
-enum CheckError {
-    SignIn,
-    Other(String),
+    format!("{}/launcher", crate::lsuite::server())
 }
 
 /// `latest.json`, in the Tauri updater's format.
@@ -204,11 +175,7 @@ pub async fn check(s: &Arc<Session>, manual: bool) -> CmdResult<UpdateStatus> {
             return Ok(u.status.clone());
         }
     }
-    let src = source();
-    let fetched = match &src {
-        None => Err(CheckError::SignIn),
-        Some(src) => fetch_manifest(&src.url, src.token.as_deref()).await,
-    };
+    let fetched = fetch_manifest(&manifest_url()).await;
     let install = current_install();
     let status = {
         let mut u = s.update.lock();
@@ -221,11 +188,10 @@ pub async fn check(s: &Arc<Session>, manual: bool) -> CmdResult<UpdateStatus> {
                 let newer = is_newer(&m.version, CURRENT);
                 let asset = select(m, &platform_keys_for(&install)).filter(|_| newer);
                 let blocked = install_support(&install).err();
-                let token = src.as_ref().and_then(|src| src.token.clone().filter(|_| asset.is_some_and(|a| same_origin(&a.url, &src.server))));
-                // A file on the lsuite server needs the token, which a browser doesn't have: by hand,
-                // people get it through the lsuite app.
-                let by_hand = asset.map(|a| if token.is_some() { download_page() } else { a.url.clone() });
-                u.found = asset.map(|a| Found { version: m.version.clone(), url: a.url.clone(), signature: a.signature.clone(), token: token.clone() });
+                // The apps come through the lsuite app: a file on the lsuite server is got there by
+                // hand, not in the browser.
+                let by_hand = asset.map(|a| if same_origin(&a.url, &crate::lsuite::server()) { download_page() } else { a.url.clone() });
+                u.found = asset.map(|a| Found { version: m.version.clone(), url: a.url.clone(), signature: a.signature.clone() });
                 u.status = UpdateStatus {
                     current: CURRENT.into(),
                     available: newer.then(|| m.version.clone()),
@@ -237,19 +203,12 @@ pub async fn check(s: &Arc<Session>, manual: bool) -> CmdResult<UpdateStatus> {
                     checked_at: now,
                     download_url: newer.then(|| by_hand.unwrap_or_else(download_page)),
                     install_blocked: if newer { blocked } else { None },
-                    sign_in: false,
                 };
             }
-            Err(CheckError::SignIn) => {
-                // Not a failure: updates come with the (free) lsuite account.
-                u.found = None;
-                u.status = UpdateStatus { current: CURRENT.into(), checked_at: now, error: Some(SIGN_IN.into()), sign_in: true, ..Default::default() };
-            }
-            Err(CheckError::Other(e)) => {
+            Err(e) => {
                 tracing::debug!("update check failed: {e}");
                 u.status.current = CURRENT.into();
                 u.status.checked_at = now;
-                u.status.sign_in = false;
                 u.status.error = manual.then(|| e.clone());
             }
         }
@@ -257,7 +216,7 @@ pub async fn check(s: &Arc<Session>, manual: bool) -> CmdResult<UpdateStatus> {
     };
     s.emit(Event::Update { status: status.clone() });
     match fetched {
-        Err(CheckError::Other(e)) if manual => Err(e),
+        Err(e) if manual => Err(e),
         _ => Ok(status),
     }
 }
@@ -319,21 +278,16 @@ fn client(timeout: Option<Duration>) -> Result<reqwest::Client, String> {
     b.build().map_err(|e| e.to_string())
 }
 
-async fn fetch_manifest(url: &str, token: Option<&str>) -> Result<Manifest, CheckError> {
-    let offline = |e: reqwest::Error| CheckError::Other(format!("Couldn't reach lsuite to check for updates ({e})."));
-    let mut req = client(Some(Duration::from_secs(30))).map_err(CheckError::Other)?.get(url);
-    if let Some(t) = token {
-        req = req.bearer_auth(t);
-    }
-    let res = req.send().await.map_err(offline)?;
+async fn fetch_manifest(url: &str) -> Result<Manifest, String> {
+    let offline = |e: reqwest::Error| format!("Couldn't reach lsuite to check for updates ({e}).");
+    let res = client(Some(Duration::from_secs(30)))?.get(url).send().await.map_err(offline)?;
     match res.status() {
-        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => return Err(CheckError::SignIn),
-        reqwest::StatusCode::NOT_FOUND => return Err(CheckError::Other("No kimchi release with an update manifest has been published yet.".into())),
-        s if !s.is_success() => return Err(CheckError::Other(format!("lsuite answered {s} to the update check."))),
+        reqwest::StatusCode::NOT_FOUND => return Err("No kimchi release with an update manifest has been published yet.".into()),
+        s if !s.is_success() => return Err(format!("lsuite answered {s} to the update check.")),
         _ => {}
     }
     let bytes = res.bytes().await.map_err(offline)?;
-    serde_json::from_slice(&bytes).map_err(|e| CheckError::Other(format!("The update manifest isn't valid: {e}")))
+    serde_json::from_slice(&bytes).map_err(|e| format!("The update manifest isn't valid: {e}"))
 }
 
 /// Whether `candidate` is a newer version than `current` (semver; a leading `v` is allowed).
@@ -547,13 +501,8 @@ async fn download_verified(s: &Arc<Session>, found: &Found, file: &Path, public_
     let mut verifier = pk.verify_stream(&sig).map_err(signature_error)?;
 
     let failed = |e: reqwest::Error| format!("The download failed ({e}).");
-    let mut req = client(None)?.get(&found.url).header(reqwest::header::ACCEPT, "application/octet-stream");
-    // The lsuite server's file route wants the token; it answers with a redirect to the file's
-    // own short-lived address, where the token isn't sent (reqwest drops it across hosts).
-    if let Some(t) = &found.token {
-        req = req.bearer_auth(t);
-    }
-    let res = req.send().await.map_err(failed)?;
+    // The lsuite server's file route answers with a redirect to the file's own address.
+    let res = client(None)?.get(&found.url).header(reqwest::header::ACCEPT, "application/octet-stream").send().await.map_err(failed)?;
     if !res.status().is_success() {
         return Err(format!("The download failed: the server answered {}.", res.status()));
     }
@@ -965,60 +914,44 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn updates_come_from_lsuite_with_the_account_token() {
-        use wiremock::matchers::{header, method, path};
+    async fn updates_come_from_lsuite_with_no_account() {
+        use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/apps/kimchi/latest.json"))
-            .and(header("authorization", "Bearer lsk_good"))
             .respond_with(ResponseTemplate::new(200).set_body_json(lsuite_manifest(&server.uri())))
             .mount(&server)
             .await;
-        // Any other token (or none) is refused, as lsuite.xyz does.
-        Mock::given(method("GET"))
-            .and(path("/api/apps/kimchi/latest.json"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({ "error": { "type": "authentication_error", "message": "Sign in to lsuite to get the apps: the account is free." } })))
-            .with_priority(10)
-            .mount(&server)
-            .await;
         let dir = tempfile::tempdir().unwrap();
-        let _env = crate::account::testing(&dir.path().join("lsuite"), Some(&server.uri()));
+        // An account file left by an older version is ignored.
+        std::fs::create_dir_all(dir.path().join("lsuite")).unwrap();
+        std::fs::write(dir.path().join("lsuite/account.json"), r#"{"format":1,"server":"http://127.0.0.1:1","token":"lsk_old"}"#).unwrap();
+        let _env = crate::lsuite::testing(&dir.path().join("lsuite"), Some(&server.uri()));
         let s = session(dir.path());
 
-        // Signed out: no request, and no failure either, even when asked by hand.
-        let st = check(&s, true).await.unwrap();
-        assert!(st.sign_in && st.available.is_none(), "{st:?}");
-        assert_eq!(st.error.as_deref(), Some(SIGN_IN));
-
-        let account = |token: &str| crate::account::Account { format: crate::account::FORMAT, server: server.uri(), token: token.into(), ..Default::default() };
-        crate::account::save(&account("lsk_good")).unwrap();
         let st = check(&s, true).await.unwrap();
         assert_eq!(st.available.as_deref(), Some("99.0.0"), "{st:?}");
-        assert!(!st.sign_in && st.error.is_none());
+        assert!(st.error.is_none());
         assert_eq!(st.notes.as_deref(), Some("Everything is new."));
-        // Downloading by hand goes through the lsuite app: the file route needs the token.
+        // Downloading by hand goes through the lsuite app.
         assert_eq!(st.download_url.as_deref(), Some(format!("{}/launcher", server.uri()).as_str()));
         let found = s.update.lock().found.clone().unwrap();
-        assert_eq!(found.token.as_deref(), Some("lsk_good"));
         assert!(found.url.starts_with(&server.uri()));
-
-        // A revoked token: sign in again.
-        crate::account::save(&account("lsk_revoked")).unwrap();
-        let st = check(&s, true).await.unwrap();
-        assert!(st.sign_in && st.available.is_none(), "{st:?}");
+        // No Authorization header, ever.
+        let sent = server.received_requests().await.unwrap();
+        assert!(!sent.is_empty() && sent.iter().all(|r| !r.headers.contains_key("authorization")), "{sent:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn downloads_from_lsuite_carry_the_token_and_keep_the_signature_check() {
-        use wiremock::matchers::{header, method, path};
+    async fn downloads_from_lsuite_follow_the_redirect_and_keep_the_signature_check() {
+        use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
         let data = b"the new kimchi".repeat(1000);
         // The file route redirects to the file's own address, as lsuite.xyz does with GitHub's.
         Mock::given(method("GET"))
             .and(path("/api/apps/kimchi/files/kimchi-v99.0.0/kimchi_amd64.AppImage"))
-            .and(header("authorization", "Bearer lsk_good"))
             .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/signed/kimchi_amd64.AppImage", server.uri())))
             .expect(2)
             .mount(&server)
@@ -1028,7 +961,7 @@ mod tests {
         let s = session(dir.path());
         let k = keys();
         let url = format!("{}/api/apps/kimchi/files/kimchi-v99.0.0/kimchi_amd64.AppImage", server.uri());
-        let found = Found { version: "99.0.0".into(), url: url.clone(), signature: sign(&k, &data, "timestamp:1\tfile:kimchi_amd64.AppImage\tversion:99.0.0"), token: Some("lsk_good".into()) };
+        let found = Found { version: "99.0.0".into(), url: url.clone(), signature: sign(&k, &data, "timestamp:1\tfile:kimchi_amd64.AppImage\tversion:99.0.0") };
         let file = dir.path().join("kimchi.AppImage");
         download_verified(&s, &found, &file, &k.pk_b64).await.unwrap();
         assert_eq!(std::fs::read(&file).unwrap(), data);
@@ -1040,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn the_token_goes_only_to_the_lsuite_server() {
+    fn files_on_the_lsuite_server_are_got_through_the_lsuite_app() {
         assert!(same_origin("https://lsuite.xyz/api/apps/kimchi/latest.json", "https://lsuite.xyz"));
         assert!(same_origin("http://127.0.0.1:4331/x", "http://127.0.0.1:4331/"));
         assert!(!same_origin("https://example.com/latest.json", "https://lsuite.xyz"));

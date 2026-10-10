@@ -5,7 +5,13 @@ updates, and the release workflow puts the section in the update's notes.
 
 ## Unreleased
 
+lsuite is now entirely free: no account, no plans.
+
+### Better
+- **Updates need no account.** kimchi gets its updates from lsuite without signing in to anything, and Settings › Updates no longer asks you to sign in. Updates are still signed and checked exactly as before.
+
 ### Removed
+- **lsuite AI and the lsuite account.** The agent runs on the model you already have: Claude Code, Codex, Gemini CLI, an API key (Anthropic, OpenAI, Gemini and more) or a local Ollama model. If lsuite AI was your choice, the agent uses Claude Code until you pick another provider; your conversations stay. The `account.*` commands and the "Run Claude Code on lsuite AI" switch are gone, and kimchi no longer reads `~/.lsuite/account.json` (it leaves the file alone).
 - **The zenith agent provider.** zenith is discontinued, so the Agent panel no longer offers it. If it was your choice, the agent uses Claude Code until you pick another provider; your conversations stay.
 
 ## 0.11.0 — 2026-10-08

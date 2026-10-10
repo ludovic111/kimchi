@@ -15,7 +15,7 @@ machine was shared with other builds, so the times vary from run to run; the tab
 The start times are dominated by the shared machine (the same 0.9.1 binary took from 0.5 to 2 s).
 At rest 0.10.0 wakes less (the captions panel no longer checks four times a second when nothing
 is transcribing). It holds about 10 MB more: the stock SDK plugins, the plugin catalogue and the
-lsuite account. The first start also scans the plugin folders in child processes (158 frei0r
+lsuite account (removed since). The first start also scans the plugin folders in child processes (158 frei0r
 plugins: 6.8 s of wall time in the background, 2.4 s of CPU); later starts read the cache (0.5 s).
 How: start the app, poll the compositor until its window shows,
 sample `/proc/<pid>/stat` and `VmRSS`.

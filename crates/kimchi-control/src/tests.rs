@@ -1835,7 +1835,7 @@ async fn a_plugin_is_made_built_installed_used_and_reloaded() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    let _env = crate::account::testing(&dir.path().join("lsuite"), None);
+    let _env = crate::lsuite::testing(&dir.path().join("lsuite"), None);
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     crate::plugin_dev::set_target_dir_for_tests(workspace.join("target/plugin-tests"));
     let s = session(dir.path());

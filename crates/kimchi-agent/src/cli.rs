@@ -359,13 +359,6 @@ async fn claude(run: &mut Run, exe: &Path, live: &Live, workspace: &Path, resume
     }
     let mut cmd = Command::new(exe);
     cmd.args(claude_args(&config.0, &run.config.model(), resume, system.as_ref().map(|f| f.0.as_path()))).current_dir(workspace).env("PATH", child_path(exe));
-    // On lsuite AI when the person picked it: the plan pays, not their own Claude sign-in.
-    if let Some(env) = crate::lsuite::claude_code_env(&run.session.settings().agent) {
-        cmd.env_remove("ANTHROPIC_API_KEY");
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
-    }
     let input = if resume.is_some() { prompt.to_string() } else { with_context(conv, prompt) };
     run.status("Starting Claude Code…");
     run_child(run, cmd, input, "Claude Code", parse_claude).await

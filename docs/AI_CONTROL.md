@@ -559,9 +559,7 @@ kimchi-cli handoff.fromRyolune --start 0
 
 A few things deliberately stay with the person: API keys (`generate.setKey` and
 `app.setAgentKey` are refused for agents), the agent's own settings and permissions (`app.setSetting` refuses `agent.*` keys from
-an agent), the choice of which model runs the built-in agent (`agent.setProvider`), and signing in or out of
-lsuite AI (`account.signIn`, `account.signOut`; agents may read `account.status` and `account.plans`,
-which never show the key). The built-in
+an agent), and the choice of which model runs the built-in agent (`agent.setProvider`). The built-in
 agent doesn't see the `agent.*` commands: it can't drive itself. Agents never see keys:
 `generate.providers` reports only where a key comes from and its last four characters.
 

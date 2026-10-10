@@ -3,7 +3,7 @@
 ## Install
 
 kimchi is in beta on **Linux** (x86-64); **macOS and Windows are coming soon**. Get it in the
-[lsuite app](https://lsuite.xyz/launcher) with your free lsuite account: it installs and updates
+[lsuite app](https://lsuite.xyz/launcher), with no account: it installs and updates
 every lsuite app.
 
 | System | File the lsuite app installs |
@@ -45,9 +45,8 @@ Generate; the result lands on the timeline at the playhead. See [Generation](gen
 
 ## Asking the agent
 
-Press ⌘J to open the Agent panel and describe what you want done to the cut. With no setup at all,
-sign in to **lsuite AI** (one click and your browser) and it works; or it uses your Claude Code,
-Codex, an API key, or a local Ollama model. It shows each change it makes, and can undo its whole
+Press ⌘J to open the Agent panel and describe what you want done to the cut. It uses your Claude Code,
+Codex, Gemini CLI, an API key, or a local Ollama model. It shows each change it makes, and can undo its whole
 run in one click. See [The agent](agent.md).
 
 ## Where to go next

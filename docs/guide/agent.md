@@ -9,25 +9,12 @@ Open it with ⌘J (Ctrl+J) or the **Agent** button in the top bar.
 
 ## Choosing who runs it
 
-Choose who runs it in the panel's header, or in **Settings › Agent**. The first choice needs no
-setup at all:
-
-**lsuite AI** (the default on a new install). Sign in once with your lsuite account and the agent
-works: Claude models on a monthly plan, nothing to install, no key to paste. Press **Sign in**; the
-lsuite page opens in your browser, you sign in (or make an account and pick a plan), press
-**Connect kimchi**, and you're back in kimchi, signed in. Every lsuite app on the computer is signed
-in with it (ryolune). On a computer without a browser, **Use a key** takes the key your
-account page shows (`lsk_…`). Signed in, Settings › Agent shows your plan and how much of the
-month's allowance is used (`Pro · 38 % used · resets 1 Nov`), **Manage plan** (your account page)
-and **Sign out**. When the allowance runs out, the run stops with one line saying so and a
-**Manage plan** button; kimchi never switches to another provider by itself. lsuite AI is a demo
-for now: choosing a plan charges nothing.
-
-Or bring your own:
+Choose who runs it in the panel's header, or in **Settings › Agent**. It runs the model you
+already have (Claude Code on a new install):
 
 | Choice | What it needs | Model |
 | --- | --- | --- |
-| Claude Code | The `claude` command installed and signed in (or **Run Claude Code on lsuite AI**, below) | Its own default |
+| Claude Code | The `claude` command installed and signed in | Its own default |
 | Codex | The `codex` command installed and signed in | Its own default |
 | Anthropic API | An Anthropic API key, saved in Settings › Agent or in `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` |
 | OpenAI API | An OpenAI API key, or `OPENAI_API_KEY` | `gpt-5` |
@@ -36,15 +23,12 @@ Or bring your own:
 Gemini CLI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras,
 Azure OpenAI, Amazon Bedrock, LM Studio and any OpenAI-compatible server are in the list too.
 
-Pick the model in the panel's header: it lists the models lsuite AI and Ollama report, and
+Pick the model in the panel's header: it lists the models the chosen provider reports, and
 you can type any model name. Claude Code and Codex use your existing subscription or sign-in. API
 keys are billed by the provider per use, separately from any chat subscription. **Model** in
 Settings › Agent overrides the default; **Address** points the Anthropic, OpenAI or Ollama choice at
 a proxy or another compatible server; an OpenAI-compatible address needs no key. The OpenAI key is
 the same one image generation uses.
-
-**Run Claude Code on lsuite AI**: with Claude Code chosen and your lsuite account signed in, this
-switch in Settings › Agent makes Claude Code use your lsuite plan instead of its own sign-in.
 
 Settings › Agent shows whether each choice is ready and, if not, why. kimchi looks for `claude`
 and `codex` on your login shell's `PATH` and in the usual install folders.
@@ -125,7 +109,7 @@ client alike. Editing the open project is always allowed.
 
 There is no prompt asking you to approve a command: a command that needs a permission that is off
 is refused, and the card shows why. Some things are never open to agents: API keys, these
-permissions, the choice of model that runs the agent, and signing in or out of lsuite AI. Agents never see your keys (only their
+permissions, and the choice of model that runs the agent. Agents never see your keys (only their
 last four characters).
 
 Permissions apply to agents, not to scripts: plain `kimchi-cli` runs any command. A terminal agent

@@ -30,7 +30,7 @@ const fn themed(file: &'static str) -> Option<LogoFile> {
 /// Ids: agent providers (`kimchi_agent::ProviderKind::id`), generation providers
 /// (`kimchi_gen::providers`), MCP clients and the lsuite apps.
 pub const LOGOS: &[(&str, Option<LogoFile>)] = &[
-    // lsuite AI (the agent's lsuite provider): the lsuite mark.
+    // lsuite plugins (Plugins, the inspector): the lsuite mark.
     ("lsuite", one("lsuite")),
     // Claude: the agent's Claude Code and Anthropic API, and Claude Desktop over MCP.
     ("claude", one("claude")),

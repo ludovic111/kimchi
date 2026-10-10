@@ -79,7 +79,7 @@ Rules that keep it working:
   env vars with hyphens, so the `kimchi-cli` / `kimchi-mcp` integration tests (`CARGO_BIN_EXE_kimchi-cli`) need
   `RUSTC_WRAPPER= cargo test …` (workspace crates rebuild, dependencies don't).
 
-## lsuite (notes updated 2026-10-08, 0.11.0)
+## lsuite (notes updated 2026-10-10)
 
 kimchi is part of **lsuite** with ryolune (music); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
@@ -90,7 +90,7 @@ out); the platform code, bundle scripts and signing steps stay in the source. Re
 platforms only; the macOS and Windows files were removed from every earlier kimchi release (GitHub and lsuite-builds).
 Docs say "beta on Linux, macOS and Windows coming soon".
 
-- [x] **Command registry**: 200 `family.verb` commands (project, media, track, clip, transition,
+- [x] **Command registry**: 196 `family.verb` commands (project, media, track, clip, transition,
       captions, audio, motion, timeline, history, generate, export, handoff, app, agent, ui), one undo history for every client,
       batches as one step, `project.overview`, names or ids everywhere. Everything the window does has a command:
       `agent.*` drives the Agent panel's conversation (`kimchi_agent::Host`), `ui.action` runs any shortcut or
@@ -112,16 +112,12 @@ Docs say "beta on Linux, macOS and Windows coming soon".
       `kimchi-control/src/discovery.rs`), `handoff.toRyolune` / `handoff.fromRyolune` through
       ryolune's bridge.
 - [x] Support links go to `https://lsuite.xyz/kimchi/support`.
-- [x] **lsuite AI** (lsuite `AI.md`, 0.10.0): `kimchi-control/src/account.rs` (the shared `~/.lsuite/account.json`,
-      0600, atomic; loopback sign-in on 127.0.0.1 with `state`, or a pasted `lsk_` key; `/api/account/me` for plan and
-      allowance; `LSUITE_ACCOUNT_SERVER`), `account.status/plans/signIn/signOut` (signing in and out is person-only),
-      `kimchi-agent/src/lsuite.rs` + the `lsuite` provider (first in `ProviderKind::ALL`, group "No setup"; the
-      Anthropic wire at `<server>/api/ai` with the token; errors explained in one line, the allowance one starts with
-      `lsuite::ALLOWANCE` and the panel adds Manage plan), Claude Code on lsuite AI with `agent.claudeCodeOnLsuite`
-      (`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`). Window: `views/lsuite.rs` (the account card, used in Settings ›
-      Agent, the Agent panel's notice and the setup's assistant step), `Store::account`. Decided: new installs default to
-      `agent.provider = "lsuite"` (old settings keep theirs); the lsuite mark is the site's `assets/img/lsuite.svg`.
-      Tests: `account.rs` (wiremock: loopback, key, revoked) and `kimchi-agent` (`lsuite_ai_runs_on_the_account…`).
+- [x] **Fully free** (owner, 2026-10-10): no lsuite account, lsuite AI, Pass, Cloud or Marketplace. The agent runs
+      only on bring-your-own providers (Claude Code, Codex, Gemini CLI, API keys, local servers); the default is
+      `claude-code`, and settings or history naming the old `lsuite` provider read as Claude Code
+      (`ProviderKind::parse` fallback, `saved_provider`). `kimchi-control/src/lsuite.rs` only knows `~/.lsuite`
+      (`LSUITE_HOME`) and the server (`LSUITE_SERVER`, else lsuite.xyz); an old `~/.lsuite/account.json` is ignored,
+      never deleted. The lsuite mark stays as the lsuite plugins' format logo.
 - [x] **Plugins** (lsuite `PLUGINS.md`, 0.10.0): SDK `crates/kimchi-plugin` (frozen ABI 1 modelled on ryolune's
       `sdk/src/ffi.rs`: entry + `repr(C)` vtables, JSON manifest, panics caught and the instance poisoned), host
       `kimchi-media/src/render/plugins/` (`native.rs` lsuite bundles + stock linked in, `frei0r.rs`, `catalogue.rs` scan
@@ -149,9 +145,8 @@ Docs say "beta on Linux, macOS and Windows coming soon".
       private bridge, `Session::bridge_path`). Evals: `evals/run.py` (12 jobs in `evals/jobs.json`, fixtures made with
       ffmpeg, scores in `evals/RESULTS.md`); add a job when a skill is added, and run them before a release.
 - [x] **Distribution through lsuite** (lsuite `DISTRIBUTION.md`, 0.11.0): the updater reads
-      `<server>/api/apps/kimchi/latest.json` with the account's token (`update::source`; the token only goes to the lsuite
-      server's origin, also for downloads); signed out or a refused token → `UpdateStatus.sign_in` and `update::SIGN_IN`,
-      not an error; `KIMCHI_UPDATE_URL` still overrides. `release.yml` only makes a draft; `scripts/publish-build.sh
+      `<server>/api/apps/kimchi/latest.json` with no token (`update::manifest_url`); downloads go through the server's
+      file route (a 302 to the file); `KIMCHI_UPDATE_URL` still overrides. `release.yml` only makes a draft; `scripts/publish-build.sh
       <version>` copies it to `ludovic111/lsuite-builds` as `kimchi-v<version>` (checks SHA256SUMS, refuses a published
       release or an existing target) and deletes the draft. Never publish the draft in this repository.
 - [x] **Real logos** of the editors kimchi really works with (`ui/logos.rs`, `assets/logos/SOURCES.md`): setup, Home,
@@ -276,7 +271,7 @@ Audio sound generation, Studio modelling workbench and animation tools). CI and 
 - [ ] The new windows (setup, import/export, look picker) were only checked by headless UI tests; look at them.
 - [ ] Docs-found, still open: `kimchi-cli` bypasses agent permissions; no menu bar on Linux/Windows.
 
-## Plugins and lsuite AI (0.10.0, 2026-10-07, overnight)
+## Plugins (0.10.0, 2026-10-07, overnight; lsuite AI, also shipped then, was removed on 2026-10-10)
 
 Done overnight by an agent (see the lsuite notes above for the pieces). Checked: the workspace tests (the plugin recipe
 end to end in `kimchi-control` tests: new → build with an error → fix → publish → on a clip in a rendered frame → rebuilt
@@ -284,14 +279,14 @@ and used at once → switched off → removed), the loopback sign-in and an agen
 (`../lsuite` `server.js` + `ai.js`, port 4331), 158 real frei0r filters scanned and drawn, hot reload in the running
 window on vscreen.
 
-- [ ] macOS: the loopback sign-in (`open` the browser), loading copies of a plugin's `.dylib` (hot reload; dyld and
+- [ ] macOS: loading copies of a plugin's `.dylib` (hot reload; dyld and
       install names), frei0r from Homebrew (`/opt/homebrew/lib/frei0r-1`), `plugin.build` with the Dock's bare PATH.
-- [ ] Windows: none of it was run (DLL copies, `rundll32` for the browser).
+- [ ] Windows: none of it was run (DLL copies).
 - [ ] "Build with your agent" with a real model: the demo server answers with a canned line, and no API key is on this
       machine, so the agent never wrote a plugin by itself; the recipe commands are tested directly.
 - [ ] The inspector's Plugins section: no keyframe toggles yet (commands only), colours/points/text shown read-only.
-- [ ] A run sends ~38k input tokens (every command as a tool): on lsuite AI that is ~20 credits a message before caching.
-      Consider the trimmed tool set for lsuite AI, or caching the tool list across turns.
+- [ ] A run sends ~38k input tokens (every command as a tool). Consider a trimmed tool set, or caching the tool list
+      across turns.
 - [ ] frei0r: `defish0r` gives no answer in the scan child (listed as failed); three-input mixers are refused.
 
 ## Next session

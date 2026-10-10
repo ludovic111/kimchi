@@ -1,7 +1,6 @@
 //! Every command's spec and handler. Specs are listed here in one table so the
 //! docs, the CLI help and the MCP tools are generated in a stable order.
 
-pub mod account;
 pub mod agent;
 pub mod app;
 pub mod audio;
@@ -947,7 +946,7 @@ pub static SPECS: &[Spec] = &[
         opt("secretAccessKey", String, "bedrock: the secret access key."),
         opt("sessionToken", String, "bedrock: the session token of temporary credentials."),
     ]).perm(Perm::PersonOnly),
-    query("app.checkUpdates", "Check lsuite for a newer kimchi and report it. Updates come with the free lsuite account: signed out, the answer says to sign in (in the lsuite app) instead of failing.", &[]),
+    query("app.checkUpdates", "Check lsuite for a newer kimchi and report it.", &[]),
     edit("app.installUpdate", "Download, verify (signature) and install the update found by app.checkUpdates; kimchi restarts into it.", &[]).perm(Perm::AppControl),
     edit("app.restart", "Quit and start kimchi again (into an installed update, when there is one).", &[]).perm(Perm::AppControl).window(),
     query("app.whatsNew", "Release notes: what changed in this version, in another (version), or in every version since one (since). Markdown, newest first.", &[
@@ -997,19 +996,8 @@ pub static SPECS: &[Spec] = &[
     ]).perm(Perm::Plugins),
     edit("plugin.build", "Build a plugin crate (cargo build --release). Returns ok, and the compiler's errors as {file, line, column, message, rendered}. The first build fetches and compiles the SDK; later ones take seconds.", &[req("name", String, "The crate's name.")]).perm(Perm::Plugins),
     edit("plugin.publishLocal", "Build a plugin crate, make the bundle (plugin.toml and the library) and install it (plugin.install): its plugins are usable in kimchi at once, replacing an earlier build without a restart.", &[req("name", String, "The crate's name.")]).perm(Perm::Plugins),
-    // ---- account ----------------------------------------------------------
-    query("account.status", "The lsuite account shared by every lsuite app on this computer (~/.lsuite/account.json), which runs the agent on lsuite AI with no other setup: signed in or not, email, plan, the allowance used this month and when it resets, the plan's models, and where to manage the plan. Never shows the key.", &[
-        opt("offline", Boolean, "Only what the account file says, without asking the server (default false)."),
-    ]),
-    query("account.plans", "The lsuite AI plans as the lsuite server lists them: prices, models and monthly allowances (a demo for now: no payment is taken).", &[]),
-    edit("account.signIn", "Sign in to lsuite AI (every lsuite app on this computer is signed in with it). Without key, opens the lsuite sign-in page in the browser and waits for it to come back; with key, uses the key the account page shows (lsk_…), for CLIs and computers without a browser.", &[
-        opt("key", String, "The key from the account page (lsk_…)."),
-        opt("wait", Boolean, "Wait for the browser to finish the sign-in (default true); false answers at once with the address and finishes in the background."),
-        opt("cancel", Boolean, "Stop a sign-in that is waiting for the browser."),
-    ]).perm(Perm::PersonOnly),
-    edit("account.signOut", "Sign out of lsuite AI on this computer (every lsuite app), and tell the server to forget the key.", &[]).perm(Perm::PersonOnly),
     // ---- agent ------------------------------------------------------------
-    query("agent.providers", "What can run the built-in agent: lsuite AI (the lsuite account: sign in and it works, see account.status), coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen.", &[
+    query("agent.providers", "What can run the built-in agent: coding CLIs on this computer (Claude Code, Codex, Gemini CLI), model APIs (Anthropic, OpenAI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras, Azure OpenAI, Amazon Bedrock, any OpenAI-compatible server) and local servers (Ollama, LM Studio); whether each is ready and why not (and what to do next), its key and address, its models (modelList: the chosen provider's fetched from it, the others' as last fetched or built in), and which one is chosen.", &[
         opt("refresh", Boolean, "Fetch the chosen provider's model list again now."),
     ]).window(),
     query("agent.models", "The models a provider offers for the agent (the chosen one by default): fetched from the provider's own list where it has one (kept for a few hours), else a short built-in list; models that can't use tools are marked tools=false.", &[
@@ -1145,7 +1133,6 @@ pub async fn dispatch(s: &Arc<Session>, cx: &Ctx, a: Args) -> CmdResult {
         "harness" => Box::pin(harness::run(s, cx, a)).await,
         "app" => Box::pin(app::run(s, cx, a)).await,
         "agent" => Box::pin(agent::run(s, cx, a)).await,
-        "account" => Box::pin(account::run(s, cx, a)).await,
         "plugin" => Box::pin(plugins::run(s, cx, a)).await,
         "ui" => Box::pin(ui::run(s, cx, a)).await,
         _ => Err(unhandled(cx)),

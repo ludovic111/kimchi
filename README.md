@@ -135,7 +135,7 @@ a video save node are treated as video models; an optional
 
 kimchi is in beta on **Linux** (x86-64). **macOS and Windows are coming soon.**
 
-Get kimchi in the [lsuite app](https://lsuite.xyz/launcher), with a free lsuite account: it installs and
+Get kimchi in the [lsuite app](https://lsuite.xyz/launcher), with no account: it installs and
 updates every lsuite app. kimchi is free and open source (MIT), so you can also build it from source (see Development below).
 
 | System | File the lsuite app installs |
@@ -145,9 +145,8 @@ updates every lsuite app. kimchi is free and open source (MIT), so you can also 
 
 ffmpeg is bundled, and so are `kimchi-cli` and `kimchi-mcp`.
 
-**Updates.** kimchi checks lsuite when it starts and every few hours, with your lsuite account (signed out, it
-says to sign in in the lsuite app), and installs a new version in one
-click, or by itself with Settings › Updates › "Download and install updates by themselves" (also
+**Updates.** kimchi checks lsuite when it starts and every few hours (no account needed), and installs a new
+version in one click, or by itself with Settings › Updates › "Download and install updates by themselves" (also
 `kimchi-cli app.checkUpdates` / `app.installUpdate`). Every update is signed and its signature checked before
 anything is replaced; with the AppImage the previous copy is kept until the new one has started. With the `.deb`,
 kimchi tells you about the update and links to the lsuite app. Turn the checks off with the setting `updates.checkOnStart` or
@@ -173,9 +172,7 @@ kimchi-cli project.overview                                      # the running a
 kimchi-cli --file cut.json clip.addText text="Opening title"      # a project file
 ```
 
-The **Agent** panel (⌘J) works with no setup on **lsuite AI**: sign in once with your lsuite account (every lsuite app is
-signed in with it) and the agent runs Claude models on a monthly plan, with your allowance shown in Settings › Agent
-(a demo for now: no payment is taken). Or it runs the model you already have: Claude Code (which can also run on lsuite AI), Codex, Gemini CLI, an Anthropic, OpenAI,
+The **Agent** panel (⌘J) runs the model you already have: Claude Code, Codex, Gemini CLI, an Anthropic, OpenAI,
 Google Gemini or Amazon Bedrock key, any OpenAI-compatible service (OpenRouter, Groq, Mistral, DeepSeek, xAI,
 Together, Fireworks, Cerebras, Azure OpenAI, LM Studio…) or a local Ollama model.
 

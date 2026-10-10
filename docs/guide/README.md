@@ -18,7 +18,7 @@ How to make videos in the kimchi window. For driving kimchi from scripts and AI 
    and ryolune.
 8. [Generation](generation.md): connecting models, the Generate panel, generating in the edit,
    provenance, ComfyUI workflows.
-9. [The agent](agent.md): the Agent panel, lsuite AI and your own models, undoing a run,
+9. [The agent](agent.md): the Agent panel and the models that run it, undoing a run,
    permissions.
 10. [Plugins](plugins.md): stock and installed plugins, the formats kimchi loads, building one with
     your agent.

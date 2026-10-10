@@ -12,7 +12,6 @@ pub mod home;
 pub mod inspector;
 pub mod jobs;
 pub mod left_panel;
-pub mod lsuite;
 pub mod media_panel;
 pub mod mixer;
 pub mod motion_panel;
