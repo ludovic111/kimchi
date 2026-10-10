@@ -22,18 +22,24 @@ pub struct Release {
     pub notes: String,
 }
 
-/// Every release in `changelog`, newest first (the file's order).
+/// Every release in `changelog`, newest first (the file's order). An `## Unreleased` section
+/// (changes waiting for the next version) is not a release and is skipped.
 pub fn parse(changelog: &str) -> Vec<Release> {
     let mut out: Vec<Release> = vec![];
+    let mut unreleased = false;
     for line in changelog.lines() {
         if let Some(head) = line.strip_prefix("## ") {
             let head = head.trim();
+            unreleased = head.eq_ignore_ascii_case("unreleased");
+            if unreleased {
+                continue;
+            }
             let (version, date) = match head.split_once(['—', '–']).or_else(|| head.split_once(" - ")) {
                 Some((v, d)) => (v.trim(), Some(d.trim().to_string()).filter(|d| !d.is_empty())),
                 None => (head, None),
             };
             out.push(Release { version: version.trim_start_matches('v').to_string(), date, notes: String::new() });
-        } else if let Some(r) = out.last_mut() {
+        } else if let Some(r) = out.last_mut().filter(|_| !unreleased) {
             r.notes.push_str(line);
             r.notes.push('\n');
         }
@@ -99,6 +105,8 @@ mod tests {
         assert_eq!(r[0], Release { version: "0.2.0".into(), date: Some("2026-01-02".into()), notes: "### New\n- b".into() });
         assert_eq!(r[1].date, None);
         assert_eq!(section(md, "v0.1.0").as_deref(), Some("- a"));
+        let md = "# Changelog\n\n## Unreleased\n### Removed\n- c\n\n## 0.2.0 — 2026-01-02\n- b\n";
+        assert_eq!(parse(md), vec![Release { version: "0.2.0".into(), date: Some("2026-01-02".into()), notes: "- b".into() }]);
     }
 
     #[test]

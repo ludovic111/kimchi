@@ -31,7 +31,6 @@ pub mod providers;
 mod sigv4;
 mod status;
 mod tools;
-pub mod zenith;
 
 #[cfg(test)]
 mod tests;
@@ -73,8 +72,6 @@ pub enum ProviderKind {
     /// lsuite AI: the lsuite account's plan, no other setup ([`lsuite`]).
     #[serde(rename = "lsuite")]
     Lsuite,
-    #[serde(rename = "zenith")]
-    Zenith,
     #[serde(rename = "claude-code")]
     ClaudeCode,
     #[serde(rename = "codex")]
@@ -117,9 +114,8 @@ pub enum ProviderKind {
 
 impl ProviderKind {
     /// Every provider, grouped: lsuite AI, the CLIs, the model APIs, the local servers.
-    pub const ALL: [ProviderKind; 21] = [
+    pub const ALL: [ProviderKind; 20] = [
         ProviderKind::Lsuite,
-        ProviderKind::Zenith,
         ProviderKind::ClaudeCode,
         ProviderKind::Codex,
         ProviderKind::GeminiCli,
@@ -198,9 +194,8 @@ impl ProviderKind {
     }
 
     /// Runs as the person's installed CLI, connected back through `kimchi-mcp --live`.
-    /// Zenith is on this computer too, but runs through its own server (`zenith`), not as a CLI.
     pub fn is_cli(self) -> bool {
-        self.group() == providers::Group::Cli && self != ProviderKind::Zenith
+        self.group() == providers::Group::Cli
     }
 }
 
@@ -331,8 +326,25 @@ pub struct CliSession {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Conversation {
     pub messages: Vec<Message>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "saved_cli_session")]
     pub cli_session: Option<CliSession>,
+}
+
+/// A saved CLI session, dropped when it names a provider kimchi no longer has (the
+/// conversation itself stays).
+fn saved_cli_session<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<CliSession>, D::Error> {
+    #[derive(Deserialize)]
+    struct Saved {
+        provider: String,
+        id: String,
+    }
+    Ok(Option::<Saved>::deserialize(d)?.and_then(|s| ProviderKind::parse(&s.provider).map(|provider| CliSession { provider, id: s.id })))
+}
+
+/// A provider read back from saved history; one kimchi no longer has reads as Claude Code
+/// (the same fallback as [`AgentConfig::from_settings`]), so old history still opens.
+pub(crate) fn saved_provider<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ProviderKind, D::Error> {
+    Ok(ProviderKind::parse(&String::deserialize(d)?).unwrap_or(ProviderKind::ClaudeCode))
 }
 
 impl Conversation {
@@ -425,7 +437,6 @@ struct Shared {
     changes: AtomicUsize,
     conversation: Mutex<Conversation>,
     finished: AtomicBool,
-    zenith_thread: Mutex<Option<(std::path::PathBuf, String)>>,
     steering: Mutex<std::collections::VecDeque<String>>,
     steered: tokio::sync::Notify,
 }
@@ -525,14 +536,10 @@ impl Agent {
         let cancel = run.cancel.clone();
         let prompt = prompt.into();
         session.runtime().spawn(async move {
-            let mut outcome = tokio::select! {
+            let outcome = tokio::select! {
                 r = run.execute(prompt, conversation) => Some(r),
                 _ = cancel.cancelled() => None,
             };
-            if !matches!(outcome, Some(Ok(_))) && run.config.provider == ProviderKind::Zenith
-                && let Err(error) = zenith::interrupt(&run).await {
-                outcome = Some(Err(format!("Could not confirm zenith stopped: {error}")));
-            }
             run.finish(outcome);
         });
         run_handle
@@ -661,8 +668,6 @@ impl Run {
         while !matches!(self.commands.try_recv(), Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed)) {}
         let mut request = prompt;
         let mut context = conversation;
-        // Zenith hands steering to its running turn itself (`zenith::steer_queued`).
-        if self.config.provider == ProviderKind::Zenith { return zenith::run(self, request, context).await; }
         loop {
             let shared = self.shared.clone();
             let outcome = tokio::select! {
@@ -687,7 +692,7 @@ impl Run {
     }
 
     fn finish(&mut self, outcome: Option<Result<String, String>>) {
-        if self.config.provider.is_cli() || self.config.provider == ProviderKind::Zenith {
+        if self.config.provider.is_cli() {
             self.drain_commands(Source::Mcp);
         }
         let checkpoint = *self.shared.checkpoint.lock();

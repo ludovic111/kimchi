@@ -3,6 +3,11 @@
 What changed in each kimchi release. The app shows the newest section in **What's new** after it
 updates, and the release workflow puts the section in the update's notes.
 
+## Unreleased
+
+### Removed
+- **The zenith agent provider.** zenith is discontinued, so the Agent panel no longer offers it. If it was your choice, the agent uses Claude Code until you pick another provider; your conversations stay.
+
 ## 0.11.0 — 2026-10-08
 
 kimchi is in beta on **Linux** while lsuite is in beta. **macOS and Windows are coming soon.**

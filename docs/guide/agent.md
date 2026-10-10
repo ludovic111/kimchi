@@ -16,7 +16,7 @@ setup at all:
 works: Claude models on a monthly plan, nothing to install, no key to paste. Press **Sign in**; the
 lsuite page opens in your browser, you sign in (or make an account and pick a plan), press
 **Connect kimchi**, and you're back in kimchi, signed in. Every lsuite app on the computer is signed
-in with it (ryolune, zenith). On a computer without a browser, **Use a key** takes the key your
+in with it (ryolune). On a computer without a browser, **Use a key** takes the key your
 account page shows (`lsk_…`). Signed in, Settings › Agent shows your plan and how much of the
 month's allowance is used (`Pro · 38 % used · resets 1 Nov`), **Manage plan** (your account page)
 and **Sign out**. When the allowance runs out, the run stops with one line saying so and a
@@ -32,12 +32,11 @@ Or bring your own:
 | Anthropic API | An Anthropic API key, saved in Settings › Agent or in `ANTHROPIC_API_KEY` | `claude-sonnet-5-5` |
 | OpenAI API | An OpenAI API key, or `OPENAI_API_KEY` | `gpt-5` |
 | Ollama | Ollama running on this computer with a model that supports tools (for example `ollama pull qwen3`) | The most recently pulled |
-| Zenith | Zenith installed (lsuite); its providers and models appear in the panel | Chosen in Zenith or in the panel |
 
 Gemini CLI, Google Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks, Cerebras,
 Azure OpenAI, Amazon Bedrock, LM Studio and any OpenAI-compatible server are in the list too.
 
-Pick the model in the panel's header: it lists the models lsuite AI, Zenith and Ollama report, and
+Pick the model in the panel's header: it lists the models lsuite AI and Ollama report, and
 you can type any model name. Claude Code and Codex use your existing subscription or sign-in. API
 keys are billed by the provider per use, separately from any chat subscription. **Model** in
 Settings › Agent overrides the default; **Address** points the Anthropic, OpenAI or Ollama choice at

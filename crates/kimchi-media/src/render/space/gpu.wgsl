@@ -200,13 +200,13 @@ fn sky(d: vec3<f32>) -> vec3<f32> {
     let sun = g.sun.xyz;
     let e = sun.y;
     let day = smoothstep_(-0.1, 0.35, e);
-    let zenith = mix(vec3<f32>(0.05, 0.05, 0.12), vec3<f32>(0.12, 0.26, 0.62), day);
+    let overhead = mix(vec3<f32>(0.05, 0.05, 0.12), vec3<f32>(0.12, 0.26, 0.62), day);
     let horizon = mix(vec3<f32>(0.85, 0.45, 0.25), vec3<f32>(0.68, 0.78, 0.92), smoothstep_(-0.05, 0.4, e));
     let light = 0.08 + 0.92 * smoothstep_(-0.12, 0.2, e);
     let y = d.y;
     var c: vec3<f32>;
     if (y >= 0.0) {
-        c = mix(horizon, zenith, pow(min(y, 1.0), 0.45));
+        c = mix(horizon, overhead, pow(min(y, 1.0), 0.45));
     } else {
         let ground = vec3<f32>(0.16, 0.15, 0.14) * light;
         c = mix(horizon * 0.5, ground, sqrt(min(-y, 1.0)));

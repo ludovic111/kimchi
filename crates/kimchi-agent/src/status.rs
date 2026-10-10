@@ -170,15 +170,6 @@ pub async fn status_of(session: &Arc<Session>, kind: ProviderKind) -> ProviderSt
     };
     match kind {
         ProviderKind::Lsuite => lsuite_status(&mut s).await,
-        ProviderKind::Zenith => match crate::zenith::models().await {
-            Ok(models) => {
-                s.ready = true;
-                s.message = "Connected to zenith. Conversations use your lsuite agents and their permissions.".into();
-                s.detail = crate::zenith::executable().map(|p| p.display().to_string()).unwrap_or_default();
-                s.models = models;
-            }
-            Err(e) => s.message = e,
-        },
         ProviderKind::ClaudeCode | ProviderKind::Codex | ProviderKind::GeminiCli => cli_status(session, kind, &mut s).await,
         ProviderKind::Bedrock => match bedrock::resolve(session.secret("bedrock").as_deref(), &config.base_url) {
             Ok(t) => {

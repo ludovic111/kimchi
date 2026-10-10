@@ -1105,6 +1105,23 @@ async fn unreadable_history_is_never_overwritten() {
     assert!(host.snapshot().storage_error.is_some());
 }
 
+#[test]
+fn history_from_a_removed_provider_still_opens() {
+    let conversation: Conversation = serde_json::from_value(json!({ "messages": [], "cli_session": { "provider": "retired-provider", "id": "t1" } })).unwrap();
+    assert_eq!(conversation.cli_session, None);
+    let conversation: Conversation = serde_json::from_value(json!({ "messages": [], "cli_session": { "provider": "codex", "id": "t1" } })).unwrap();
+    assert_eq!(conversation.cli_session, Some(CliSession { provider: ProviderKind::Codex, id: "t1".into() }));
+    let run = RunInfo {
+        id: 1, prompt: "Hi".into(), provider: ProviderKind::Codex, model: String::new(), source: Source::Window, state: RunState::Done,
+        activity: None, reply: String::new(), error: None, checkpoint: None, changes: 0, commands: 0, reverted: false,
+        started_at: chrono::Utc::now(), finished_at: None, input_tokens: 0, output_tokens: 0,
+    };
+    let mut saved = serde_json::to_value(&run).unwrap();
+    assert_eq!(serde_json::from_value::<RunInfo>(saved.clone()).unwrap().provider, ProviderKind::Codex);
+    saved["provider"] = json!("retired-provider");
+    assert_eq!(serde_json::from_value::<RunInfo>(saved).unwrap().provider, ProviderKind::ClaudeCode);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn lsuite_ai_runs_on_the_account_and_says_when_the_allowance_is_out() {
     use kimchi_control::account;

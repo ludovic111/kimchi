@@ -177,8 +177,7 @@ The **Agent** panel (⌘J) works with no setup on **lsuite AI**: sign in once wi
 signed in with it) and the agent runs Claude models on a monthly plan, with your allowance shown in Settings › Agent
 (a demo for now: no payment is taken). Or it runs the model you already have: Claude Code (which can also run on lsuite AI), Codex, Gemini CLI, an Anthropic, OpenAI,
 Google Gemini or Amazon Bedrock key, any OpenAI-compatible service (OpenRouter, Groq, Mistral, DeepSeek, xAI,
-Together, Fireworks, Cerebras, Azure OpenAI, LM Studio…), a local Ollama model, or **zenith**
-([below](#works-with-the-rest-of-lsuite)).
+Together, Fireworks, Cerebras, Azure OpenAI, LM Studio…) or a local Ollama model.
 
 It shows one card per command and lets you revert a whole run. **It can see**: it looks at the frames it renders and at your media, and every
 picture it looked at shows in its card. Each request carries what you're looking at (selection, playhead, the clip open
@@ -201,9 +200,6 @@ come with kimchi, made with the same SDK. See [docs/PLUGINS.md](docs/PLUGINS.md)
 - **ryolune**: kimchi hands cuts to [ryolune](https://lsuite.xyz/ryolune) to score them and takes its audio back
   (`handoff.toRyolune`, `handoff.fromRyolune`). ryolune's effects, plugin host and `.ryolune` songs are part of
   kimchi's sound (see [What it does](#what-it-does)).
-- **zenith**: the Agent panel can run on [zenith](https://lsuite.xyz/zenith). zenith uses
-  its own provider accounts and threads through the lsuite command interface; install zenith and run
-  its server to select it.
 
 ## Documentation
 
@@ -231,8 +227,8 @@ crates/
   kimchi-captions  SRT / WebVTT, and speech to text with Whisper (candle, on the CPU)
   kimchi-gen       the generation harness: Provider trait, 16 providers, keys, job queue
   kimchi-control   the command registry, session, permissions, loopback bridge, lsuite discovery, updater
-  kimchi-agent     the built-in agent (Claude Code, Codex, Gemini, Anthropic, OpenAI and compatible, Bedrock, Ollama,
-                   zenith), pictures and the context block
+  kimchi-agent     the built-in agent (Claude Code, Codex, Gemini, Anthropic, OpenAI and compatible, Bedrock, Ollama),
+                   pictures and the context block
   kimchi-interop   other editors: OTIO, FCPXML, Premiere XML and EDL, LUT and preset formats, keyboard layouts
   kimchi-plugin    the video plugin SDK: effects, generators and transitions in Rust, loaded through a stable C ABI
   kimchi-desktop   the window (GPUI), binary `kimchi`

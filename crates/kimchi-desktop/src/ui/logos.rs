@@ -98,7 +98,6 @@ pub const LOGOS: &[(&str, Option<LogoFile>)] = &[
     ("shotcut", one("shotcut")),
     // lsuite.
     ("ryolune", one("ryolune")),
-    ("zenith", one("zenith")),
 ];
 
 /// The logo for an id (any case), if it has one.
@@ -146,7 +145,7 @@ mod tests {
     fn known_ids() -> Vec<String> {
         let mut ids: Vec<String> = kimchi_agent::ProviderKind::ALL.iter().map(|k| k.id().to_string()).collect();
         ids.extend(kimchi_gen::providers::all().iter().map(|p| p.info().id));
-        ids.extend(["claude-desktop", "cursor", "vscode", "ryolune", "zenith"].map(String::from));
+        ids.extend(["claude-desktop", "cursor", "vscode", "ryolune"].map(String::from));
         ids
     }
 
