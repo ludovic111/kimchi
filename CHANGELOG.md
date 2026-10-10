@@ -5,7 +5,10 @@ updates, and the release workflow puts the section in the update's notes.
 
 ## Unreleased
 
-lsuite is now entirely free: no account, no plans.
+lsuite is now entirely free: no account, no plans. kimchi is in beta on **Linux** and **macOS**; Windows is coming soon.
+
+### New
+- **kimchi is back on macOS**, for Apple Silicon and Intel Macs, signed and notarized, in the lsuite app next to the Linux build. It updates in place like before.
 
 ### Better
 - **Updates need no account.** kimchi gets its updates from lsuite without signing in to anything, and Settings › Updates no longer asks you to sign in. Updates are still signed and checked exactly as before.

@@ -2,17 +2,20 @@
 
 ## Install
 
-kimchi is in beta on **Linux** (x86-64); **macOS and Windows are coming soon**. Get it in the
+kimchi is in beta on **Linux** (x86-64) and **macOS** (Apple Silicon and Intel); **Windows is coming soon**. Get it in the
 [lsuite app](https://lsuite.xyz/launcher), with no account: it installs and updates
 every lsuite app.
 
 | System | File the lsuite app installs |
 | --- | --- |
 | Linux | `kimchi_amd64.AppImage` or `kimchi_amd64.deb` |
-| macOS, Windows | Coming soon |
+| macOS, Apple Silicon | `kimchi_aarch64.dmg` |
+| macOS, Intel | `kimchi_x64.dmg` |
+| Windows | Coming soon |
 
 ffmpeg comes with kimchi, along with the `kimchi-cli` and `kimchi-mcp` command-line tools. (The
-speech model for captions downloads the first time you transcribe.)
+speech model for captions downloads the first time you transcribe.) The macOS app is signed with a
+Developer ID and notarized by Apple.
 
 kimchi checks for updates and offers to install them; see [Updates](settings.md#updates).
 

@@ -19,16 +19,18 @@ permissions:
 jobs:
   build:
     name: ${{ inputs.app }} · ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
+    # macOS rows run on the Mac mini (MAC_RUNNER=macos-latest sends them back to GitHub). This
+    # workflow only runs by hand (workflow_dispatch), never for a fork's pull request.
+    runs-on: ${{ matrix.mac && (vars.MAC_RUNNER || 'ludovics-mac-mini') || matrix.os }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux only while lsuite is in beta (decided 2026-10-08): macOS and Windows are coming
-          # soon. Put these lines back to build them again; the steps for them are kept below.
-          # - { os: macos-14, target: aarch64-apple-darwin, script: bundle-macos.sh }
-          # - { os: macos-15-intel, target: x86_64-apple-darwin, script: bundle-macos.sh }
+          # Linux and macOS (both Mac targets on the Mac mini, Intel cross-compiled). Windows is coming
+          # soon: put its line back to build it again; the steps for it are kept below.
+          - { mac: true, target: aarch64-apple-darwin, script: bundle-macos.sh }
+          - { mac: true, target: x86_64-apple-darwin, script: bundle-macos.sh }
           # - { os: windows-latest, target: x86_64-pc-windows-msvc, script: bundle-windows.sh }
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, script: bundle-linux.sh }
     defaults:
@@ -50,8 +52,10 @@ jobs:
           repository: ludovic111/${{ inputs.app }}
           ref: ${{ inputs.ref }}
           persist-credentials: false
+          # On the Mac mini, keep target/ between runs (incremental builds).
+          clean: ${{ runner.environment == 'github-hosted' }}
       - name: Linux dependencies
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         working-directory: .
         run: |
           sudo apt-get update
@@ -64,9 +68,16 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           key: suite-${{ inputs.app }}-${{ matrix.target }}
           workspaces: ${{ inputs.app == 'lsuite' && 'launcher -> target' || '. -> target' }}
+      # The Mac mini runs as its owner: save the keychain search list before the app's signing
+      # script adds its throwaway keychain, so the cleanup puts it back exactly as it was.
+      - name: Save the keychain search list
+        if: runner.os == 'macOS'
+        working-directory: .
+        run: security list-keychains -d user | sed -e 's/^ *"//' -e 's/"$//' > "$RUNNER_TEMP/keychains-before"
       - name: Prepare Apple signing
         if: runner.os == 'macOS'
         env:
@@ -81,7 +92,10 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           SCRIPT: ${{ matrix.script }}
-        run: bash "scripts/$SCRIPT" "$TARGET"
+        # target/dist may hold an earlier job's files on the Mac mini (target/ is kept): start clean.
+        run: |
+          rm -rf target/dist
+          bash "scripts/$SCRIPT" "$TARGET"
       - name: Sign updater archives
         env:
           APP: ${{ inputs.app }}
@@ -98,8 +112,13 @@ jobs:
         if: always() && runner.os == 'macOS'
         working-directory: .
         run: |
+          if [ -f "$RUNNER_TEMP/keychains-before" ]; then
+            keychains=()
+            while IFS= read -r k; do [ -n "$k" ] && keychains+=("$k"); done < "$RUNNER_TEMP/keychains-before"
+            security list-keychains -d user -s ${keychains[@]+"${keychains[@]}"}
+          fi
           if [ -f "$RUNNER_TEMP/signing.keychain-db" ]; then security delete-keychain "$RUNNER_TEMP/signing.keychain-db"; fi
-          rm -f "$RUNNER_TEMP/notary.p8"
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/keychains-before"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.app }}-${{ matrix.target }}

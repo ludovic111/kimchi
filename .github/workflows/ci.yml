@@ -18,21 +18,24 @@ concurrency:
 jobs:
   rust:
     name: Rust (${{ matrix.os }})
-    runs-on: ${{ (matrix.os == 'ubuntu-22.04' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && (vars.LINUX_RUNNER || 'ludodesktop') || matrix.os }}
+    # Our own machines (ludodesktop for Linux, the Mac mini for macOS) never run a fork's pull
+    # request: those go to GitHub's runners. MAC_RUNNER=macos-latest sends macOS back to GitHub.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (matrix.os == 'macos' && (vars.MAC_RUNNER || 'ludovics-mac-mini') || vars.LINUX_RUNNER || 'ludodesktop') || (matrix.os == 'macos' && 'macos-latest' || matrix.os) }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        # Linux only, on ludodesktop. macOS only when started by hand: gh workflow run CI --ref <branch>.
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-22.04", "macos-latest"]' || '["ubuntu-22.04"]') }}
+        # Linux on every push, on ludodesktop. macOS (the Mac mini) only when started by hand:
+        # gh workflow run CI --ref <branch>. Windows is coming soon.
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-22.04", "macos"]' || '["ubuntu-22.04"]') }}
     steps:
       - uses: actions/checkout@v4
         with:
-          # On ludodesktop, keep target/ between runs (incremental builds).
+          # On our own runners, keep target/ between runs (incremental builds).
           clean: ${{ runner.environment == 'github-hosted' }}
       # GPUI's Linux backends (X11 + Wayland, Vulkan, fontconfig) and the keychain (D-Bus);
-      # see script/linux in the zed repository. kimchi-media's tests use the static ffmpeg the app
-      # ships (Ubuntu 22.04's own ffmpeg 4.4 is too old for them).
+      # see script/linux in the zed repository. kimchi-media's tests use the ffmpeg the app ships
+      # (Ubuntu 22.04's own ffmpeg 4.4 is too old for them), on macOS too (nothing is brew-installed).
       - name: Linux dependencies
         if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         run: |
@@ -40,45 +43,47 @@ jobs:
           sudo apt-get install -y pkg-config clang libasound2-dev libdbus-1-dev libfontconfig-dev libfreetype-dev \
             libssl-dev libvulkan-dev libwayland-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libzstd-dev libglib2.0-dev
-      - name: Linux ffmpeg
-        if: runner.os == 'Linux'
+      - name: ffmpeg
         run: |
-          bash scripts/fetch-ffmpeg.sh x86_64-unknown-linux-gnu
-          echo "KIMCHI_FFMPEG=$PWD/target/ffmpeg/x86_64-unknown-linux-gnu/kimchi-ffmpeg" >> "$GITHUB_ENV"
-          echo "KIMCHI_FFPROBE=$PWD/target/ffmpeg/x86_64-unknown-linux-gnu/kimchi-ffprobe" >> "$GITHUB_ENV"
-      - name: macOS dependencies
-        if: runner.os == 'macOS'
-        run: brew install ffmpeg
+          triple=${{ runner.os == 'macOS' && 'aarch64-apple-darwin' || 'x86_64-unknown-linux-gnu' }}
+          bash scripts/fetch-ffmpeg.sh "$triple"
+          echo "KIMCHI_FFMPEG=$PWD/target/ffmpeg/$triple/kimchi-ffmpeg" >> "$GITHUB_ENV"
+          echo "KIMCHI_FFPROBE=$PWD/target/ffmpeg/$triple/kimchi-ffprobe" >> "$GITHUB_ENV"
       - name: Own Rust install per repo on ludodesktop
         # The runners of several repos run at once; a shared ~/.rustup makes their installs collide.
-        if: runner.environment == 'self-hosted'
+        # (The Mac mini's runners already have their own RUSTUP_HOME and CARGO_HOME.)
+        if: runner.environment == 'self-hosted' && runner.os == 'Linux'
         run: |
           echo "RUSTUP_HOME=$HOME/.rustup-${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
           echo "CARGO_HOME=$HOME/.cargo-${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      # The private ryolune engine, over SSH with its deploy key. GitHub's runners use the ssh-agent
+      # action; our own runners (ludodesktop, the Mac mini, which runs as its owner's account) get
+      # the key and GitHub's host keys in $RUNNER_TEMP and nothing in ~/.ssh or ~/.gitconfig, and
+      # the URL rewrite is scoped to the job (GIT_CONFIG_*, never git config --global).
       - name: Read access to the private ryolune engine
+        if: runner.environment == 'github-hosted'
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.RYOLUNE_DEPLOY_KEY }}
-      - name: Fetch ryolune over SSH
-        shell: bash
-        # Scoped to this job (not git config --global): on ludodesktop the runners of all repos share
-        # one user, and a global rewrite would send ryolune's own checkout over SSH.
+      - name: Read access to the private ryolune engine (own runner)
+        if: runner.environment == 'self-hosted'
+        env:
+          RYOLUNE_DEPLOY_KEY: ${{ secrets.RYOLUNE_DEPLOY_KEY }}
         run: |
-          git config --global --unset-all url."ssh://git@github.com/ludovic111/ryolune".insteadOf || true
+          umask 077
+          printf '%s\n' "$RYOLUNE_DEPLOY_KEY" > "$RUNNER_TEMP/ryolune-deploy-key"
+          # GitHub's published SSH host keys (api.github.com/meta), so the fetch can verify github.com.
+          curl -fsSL https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/known_hosts"
+          echo "GIT_SSH_COMMAND=ssh -i $RUNNER_TEMP/ryolune-deploy-key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
+      - name: Fetch ryolune over SSH
+        run: |
           echo "GIT_CONFIG_COUNT=1" >> "$GITHUB_ENV"
           echo "GIT_CONFIG_KEY_0=url.ssh://git@github.com/ludovic111/ryolune.insteadOf" >> "$GITHUB_ENV"
           echo "GIT_CONFIG_VALUE_0=https://github.com/ludovic111/ryolune" >> "$GITHUB_ENV"
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
-          if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
-            # GitHub's published SSH host keys (api.github.com/meta), so the fetch can verify github.com.
-            # HostKeyAlias: the ssh-agent action reaches github.com through a per-key host alias.
-            mkdir -p ~/.ssh
-            curl -fsSL https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > ~/.ssh/known_hosts.github
-            echo "GIT_SSH_COMMAND=ssh -o HostKeyAlias=github.com -o UserKnownHostsFile=$HOME/.ssh/known_hosts.github -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
-          fi
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
       - name: Scripts parse
@@ -87,3 +92,6 @@ jobs:
         run: cargo test --workspace --locked
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Remove the deploy key
+        if: always() && runner.environment == 'self-hosted'
+        run: rm -f "$RUNNER_TEMP/ryolune-deploy-key" "$RUNNER_TEMP/known_hosts"

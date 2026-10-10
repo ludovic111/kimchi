@@ -11,6 +11,9 @@ for name in APPLE_CERTIFICATE_P12_BASE64 APPLE_SIGNING_IDENTITY APPLE_API_KEY_P8
   fi
 done
 keychain="$RUNNER_TEMP/signing.keychain-db"
+# The Mac mini's runner is its owner's account: save the keychain search list first, so the
+# workflows' cleanup step puts it back exactly as it was (one path per line).
+security list-keychains -d user | sed -e 's/^ *"//' -e 's/"$//' > "$RUNNER_TEMP/keychains-before"
 password=$(uuidgen)
 security create-keychain -p "$password" "$keychain"
 security set-keychain-settings -lut 21600 "$keychain"
@@ -22,9 +25,9 @@ security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "${APPLE_CERTI
 rm -f "$RUNNER_TEMP/developer-id.p12"
 security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
 # Search the new keychain first, keeping the runner's own keychains after it.
-existing=$(security list-keychains -d user | sed -e 's/^ *"//' -e 's/"$//')
-# shellcheck disable=SC2086
-security list-keychains -d user -s "$keychain" $existing
+existing=()
+while IFS= read -r k; do [ -n "$k" ] && [ "$k" != "$keychain" ] && existing+=("$k"); done < "$RUNNER_TEMP/keychains-before"
+security list-keychains -d user -s "$keychain" ${existing[@]+"${existing[@]}"}
 if ! security find-identity -v -p codesigning "$keychain" | grep -qF "$APPLE_SIGNING_IDENTITY"; then
   echo "The certificate does not hold a valid identity \"$APPLE_SIGNING_IDENTITY\" (was the private key exported with it?)." >&2
   security find-identity -v -p codesigning "$keychain" >&2
