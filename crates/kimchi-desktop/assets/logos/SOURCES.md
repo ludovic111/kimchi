@@ -53,7 +53,6 @@ to these files.
 | `cursor.png` | Cursor (MCP setup) | https://cursor.com/apple-touch-icon.png |
 | `vscode.png` | VS Code (MCP setup) | https://code.visualstudio.com/apple-touch-icon.png |
 | `ryolune.png` | ryolune (hand-offs) | ryolune's app icon, `desktop/icons/icon.png` in github.com/ludovic111/ryolune |
-| `zenith.png` | zenith | zenith's app icon, `crates/zenith-app/icons/icon.png` in the zenith repository |
 
 Stable Diffusion WebUI (AUTOMATIC1111) and generic OpenAI-compatible servers have no logo of their own;
 the window shows a generic icon for them.

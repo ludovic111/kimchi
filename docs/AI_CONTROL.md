@@ -284,15 +284,6 @@ Memory is shared across the project's conversations and added to each new reques
 edits it; an agent cannot change it. History is stored in `<data>/agent-conversations.json` using
 atomic replacement. Restored runs cannot revert old, session-local undo checkpoints.
 
-Select **Zenith · lsuite** in the Agent panel, or use
-`agent.setProvider provider=zenith model=<provider-instance>/<model>`. Kimchi discovers `zenith-cli`
-through lsuite's installed-app record or PATH (`KIMCHI_ZENITH_CLI` overrides it), reads its model
-catalogue, and creates a Zenith workspace per Kimchi project. Follow-ups resume the same Zenith
-thread. Steering interrupts the remote turn, waits for it to stop, then sends the new direction.
-Zenith retains its own accounts and approval policy; approvals and questions are handled in Zenith.
-Its agents use Kimchi's live MCP tools under the existing permissions and undo history. Both apps
-must be installed with their CLI/MCP companions and Zenith's server must be running.
-
 Audio uses `generate.submit` with `task=text_to_audio` or `task=text_to_speech`. For example:
 
 ```sh

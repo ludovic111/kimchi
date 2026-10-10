@@ -81,7 +81,7 @@ Rules that keep it working:
 
 ## lsuite (notes updated 2026-10-08, 0.11.0)
 
-kimchi is part of **lsuite** with ryolune (music) and zenith (code); its page is lsuite.xyz/kimchi
+kimchi is part of **lsuite** with ryolune (music); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
 
 **Linux only while lsuite is in beta** (owner, 2026-10-08): macOS and Windows are "coming soon". `release.yml` and
@@ -259,8 +259,7 @@ Integrated by a coordinator session from parallel sessions: #10 design system v2
 grain `ui/grain.rs`, Chakra Petch, new mark), #8 docs (`docs/guide/`, configuration, project format,
 architecture), #12 harness (`kimchi_control::vision`, `Part::Image`, `media.look`, `kimchi_agent::context`
 block per request, MCP image content), #11 Studio/agent (two sidebars: everything left, agents right;
-conversations per project with memory, `agent.steer`, model selector, zenith provider in
-`kimchi-agent/src/zenith.rs` using zenith-cli `thread.new/send/get/interrupt/steer`, ElevenLabs and Stable
+conversations per project with memory, `agent.steer`, model selector, ElevenLabs and Stable
 Audio sound generation, Studio modelling workbench and animation tools). CI and releases fetch
 `ryolune-engine` over SSH with the `RYOLUNE_DEPLOY_KEY` deploy key (ryolune was private for a day; it's public again).
 

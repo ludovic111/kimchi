@@ -79,7 +79,6 @@ pub const KEYMAPS: &[&str] = &["kimchi", "premiere", "finalcut", "resolve", "avi
 /// has one variant per id.
 pub const AGENT_PROVIDERS: &[&str] = &[
     "lsuite",
-    "zenith",
     "claude-code",
     "codex",
     "gemini-cli",

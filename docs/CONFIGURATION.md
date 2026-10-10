@@ -36,7 +36,7 @@ only with the **Settings** permission, and never the `agent.*` ones.
 | `updates.autoInstall` | boolean | `false` | | Download and install updates found by the automatic check without asking; the new version runs from the next start. |
 | `updates.showWhatsNew` | boolean | `true` | | Show the release notes once after an update. |
 | `diagnostics.logLevel` | string | `debug` | `info`, `debug`, `trace` | How much goes in the log (Normal, Detailed, Everything). `RUST_LOG` overrides it. |
-| `agent.provider` | string | `lsuite` | `lsuite`, `zenith`, `claude-code`, `codex`, `gemini-cli`, `anthropic`, `openai`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `azure-openai`, `bedrock`, `ollama`, `lmstudio`, `openai-compatible` | Who runs the built-in agent. `lsuite` is lsuite AI (the lsuite account); settings from before 0.10 keep the one they name. |
+| `agent.provider` | string | `lsuite` | `lsuite`, `claude-code`, `codex`, `gemini-cli`, `anthropic`, `openai`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `azure-openai`, `bedrock`, `ollama`, `lmstudio`, `openai-compatible` | Who runs the built-in agent. `lsuite` is lsuite AI (the lsuite account); settings from before 0.10 keep the one they name. |
 | `agent.model` | string | `""` | a model id | Empty uses the provider's default. |
 | `agent.baseUrl` | string | `""` | a URL | For the Anthropic, OpenAI and Ollama choices: another server or a proxy. Empty uses the provider's. |
 | `agent.permissions.enabled` | boolean | `true` | | Let agents and MCP clients act in kimchi at all. |

@@ -1,5 +1,5 @@
 //! lsuite AI: the one lsuite account every app on this computer shares (`AI.md` in the lsuite
-//! repository). Signing in from kimchi signs in ryolune and zenith too, and the other way round.
+//! repository). Signing in from kimchi signs in ryolune too, and the other way round.
 //!
 //! - The account lives in `~/.lsuite/account.json` (`LSUITE_HOME` replaces `~/.lsuite`), mode
 //!   0600, written atomically: `{format: 1, server, email, name, plan, token, signedInAt}`. It is

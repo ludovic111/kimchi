@@ -250,4 +250,4 @@ Settings › Models, or the first-run setup's "Connect your provider". Keys stay
 
 ## The assistant
 
-The Agent panel runs one of: `lsuite`, `zenith`, `claude-code`, `codex`, `gemini-cli`, `anthropic`, `openai`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `azure-openai`, `bedrock`, `ollama`, `lmstudio`, `openai-compatible`. Settings › Agent, `agent.providers`, `agent.setProvider`. Any MCP client can drive kimchi too: `kimchi-mcp --live`.
+The Agent panel runs one of: `lsuite`, `claude-code`, `codex`, `gemini-cli`, `anthropic`, `openai`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `azure-openai`, `bedrock`, `ollama`, `lmstudio`, `openai-compatible`. Settings › Agent, `agent.providers`, `agent.setProvider`. Any MCP client can drive kimchi too: `kimchi-mcp --live`.

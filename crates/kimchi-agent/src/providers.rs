@@ -156,21 +156,6 @@ pub const ALL: &[Info] = &[
     },
     // ---- on this computer ----
     Info {
-        kind: ProviderKind::Zenith,
-        id: "zenith",
-        label: "zenith · lsuite",
-        group: Group::Cli,
-        tagline: "Your lsuite agents and their permissions, through zenith.",
-        wire: Wire::Cli,
-        default_model: "",
-        default_base_url: "",
-        needs_base_url: false,
-        base_url_hint: "",
-        key: None,
-        models: &[],
-        website: "https://lsuite.xyz/zenith",
-    },
-    Info {
         kind: ProviderKind::ClaudeCode,
         id: "claude-code",
         label: "Claude Code",

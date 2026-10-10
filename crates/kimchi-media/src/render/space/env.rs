@@ -206,12 +206,12 @@ fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 pub(crate) fn sky(d: V3, sun: V3, sun_color: [f32; 3], strength: f32) -> [f32; 3] {
     let e = sun.1;
     let day = smoothstep(-0.1, 0.35, e);
-    let zenith = mix3([0.05, 0.05, 0.12], [0.12, 0.26, 0.62], day);
+    let overhead = mix3([0.05, 0.05, 0.12], [0.12, 0.26, 0.62], day);
     let horizon = mix3([0.85, 0.45, 0.25], [0.68, 0.78, 0.92], smoothstep(-0.05, 0.4, e));
     let light = 0.08 + 0.92 * smoothstep(-0.12, 0.2, e);
     let y = d.1;
     let mut c = if y >= 0.0 {
-        mix3(horizon, zenith, y.min(1.0).powf(0.45))
+        mix3(horizon, overhead, y.min(1.0).powf(0.45))
     } else {
         let ground = [0.16 * light, 0.15 * light, 0.14 * light];
         mix3([horizon[0] * 0.5, horizon[1] * 0.5, horizon[2] * 0.5], ground, (-y).min(1.0).sqrt())
@@ -423,8 +423,8 @@ mod tests {
         assert!((g.radiance(V3(0.0, 1.0, 0.0))[2] - 0.8).abs() < 1e-5);
         // The sky is blue overhead, brightest towards the sun.
         let s = env(EnvKind::Sky);
-        let zenith = s.radiance(V3(0.0, 1.0, 0.0));
-        assert!(zenith[2] > zenith[0], "blue overhead: {zenith:?}");
+        let overhead = s.radiance(V3(0.0, 1.0, 0.0));
+        assert!(overhead[2] > overhead[0], "blue overhead: {overhead:?}");
         let toward = s.radiance(V3(0.3, 0.8, 0.5).norm());
         let away = s.radiance(V3(-0.3, 0.8, -0.5).norm());
         assert!(toward[0] > away[0] * 1.5, "glow around the sun: {toward:?} vs {away:?}");

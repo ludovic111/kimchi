@@ -49,6 +49,7 @@ pub struct RunInfo {
     /// Persistent run sequence shared by all saved conversations.
     pub id: u64,
     pub prompt: String,
+    #[serde(deserialize_with = "crate::saved_provider")]
     pub provider: ProviderKind,
     /// The model asked for (empty: the provider's default).
     pub model: String,
