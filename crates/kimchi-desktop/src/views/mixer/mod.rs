@@ -265,7 +265,6 @@ pub struct MixerView {
     store: Entity<Store>,
     playback: Entity<Playback>,
     drag: Option<MixDrag>,
-    drags: u64,
     /// Values shown while a drag's commands are on their way (by control key).
     shown: HashMap<String, f64>,
     /// After a drag: the project its last command was sent on; `shown` clears once it changes.
@@ -300,7 +299,6 @@ impl MixerView {
             store,
             playback,
             drag: None,
-            drags: 0,
             shown: HashMap::new(),
             settle: None,
             bounds: Rc::default(),
@@ -443,9 +441,9 @@ impl MixerView {
         });
     }
 
+    /// A key of its own for one drag: all its changes are one undo step, however slow.
     fn next_key(&mut self, what: &str) -> String {
-        self.drags += 1;
-        format!("mixer-{what}-{}", self.drags)
+        format!("gesture:mixer-{what}-{}", crate::ui::scrub::new_gesture())
     }
 
     // ---- pointer ---------------------------------------------------------------------------

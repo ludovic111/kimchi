@@ -20,7 +20,7 @@ use super::slider::Slider;
 use super::Inspector;
 use crate::store::StoreExt;
 use crate::theme::{ActiveTheme, MONO, size as sz};
-use crate::ui::scrub::{Scrub, ScrubChange};
+use crate::ui::scrub::{Scrub, ScrubChange, Step};
 use crate::ui::{Button, switch};
 
 /// Correction sliders: (property, label, minimum). Maximums are 1.
@@ -57,7 +57,7 @@ impl EffectFields {
             let e = cx.new(|cx| Slider::new(min, 1.0, cx).neutral(neutral));
             subs.push(cx.subscribe(&e, move |this: &mut Inspector, _, ch: &ScrubChange, cx| {
                 let (params, key) = to(ch.value);
-                this.set_effects(params, key, ch.final_, cx);
+                this.set_effects(params, key, ch.step(), cx);
             }));
             e
         };
@@ -71,14 +71,14 @@ impl EffectFields {
         let lut_strength = slider(cx, 0.0, 1.0, Box::new(|v| (json!({ "lutStrength": v }), "lutStrength")));
         let key_color = cx.new(|cx| ColorField::new(None, cx));
         subs.push(cx.subscribe(&key_color, |this: &mut Inspector, _, ch: &ColorChange, cx| {
-            this.set_effects(json!({ "chromaKey": ch.0.get(..7).unwrap_or(&ch.0) }), "keyColor", true, cx)
+            this.set_effects(json!({ "chromaKey": ch.0.get(..7).unwrap_or(&ch.0) }), "keyColor", Step::Final, cx)
         }));
         let transition_len = cx.new(|_| Scrub::new("Length", 0.05, 2).unit("s").range(0.05, 30.0));
         subs.push(cx.subscribe(&transition_len, |this: &mut Inspector, _, ch: &ScrubChange, cx| {
             let Some(id) = this.single(cx) else { return };
             let mut p = json!({ "clipIds": [id], "duration": ch.value });
-            if !ch.final_ {
-                p["coalesce"] = json!(format!("{id}:transition"));
+            if let Some(k) = ch.step().coalesce(format!("{id}:transition")) {
+                p["coalesce"] = json!(k);
             }
             this.store.update(cx, |s, cx| s.run("transition.set", p, cx));
         }));
@@ -89,14 +89,14 @@ impl EffectFields {
 impl Inspector {
     /// `clip.setEffects` on the selected clip (a keyframe at the playhead when the property is
     /// animated); a drag shares one coalesce key.
-    pub(super) fn set_effects(&mut self, mut params: Value, key: &str, final_: bool, cx: &mut Context<Self>) {
-        if self.keyframe_instead(&params, key, final_, cx) {
+    pub(super) fn set_effects(&mut self, mut params: Value, key: &str, step: Step, cx: &mut Context<Self>) {
+        if self.keyframe_instead(&params, key, step, cx) {
             return;
         }
         let Some(id) = self.single(cx) else { return };
         params["clipIds"] = json!([id]);
-        if !final_ {
-            params["coalesce"] = json!(format!("{id}:{key}"));
+        if let Some(k) = step.coalesce(format!("{id}:{key}")) {
+            params["coalesce"] = json!(k);
         }
         self.store.update(cx, |s, cx| s.run("clip.setEffects", params, cx));
     }

@@ -7,11 +7,52 @@ use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::drag;
 use crate::ui::input::{InputEvent, TextInput};
 
-/// `final_` is false while dragging (use a coalesce key), true when committed.
+/// `final_` is false while dragging (use a coalesce key), true when committed. Every change of
+/// one pointer drag, its final one included, carries the same `gesture` (`None` when typed or
+/// nudged with the keyboard).
 #[derive(Clone, Copy, Debug)]
 pub struct ScrubChange {
     pub value: f64,
     pub final_: bool,
+    pub gesture: Option<u64>,
+}
+
+impl ScrubChange {
+    pub fn step(&self) -> Step {
+        match (self.final_, self.gesture) {
+            (true, _) => Step::Final,
+            (false, Some(g)) => Step::Drag(g),
+            (false, None) => Step::Live,
+        }
+    }
+}
+
+/// A fresh id for one pointer drag, unique in this process.
+pub fn new_gesture() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How a change from a control lands in the undo history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Committed: its own step (none when it changes nothing).
+    Final,
+    /// One pointer drag: all its changes are one step, however long it takes.
+    Drag(u64),
+    /// A live change outside a drag (typing): it folds with the next ones within about a second.
+    Live,
+}
+
+impl Step {
+    /// The coalesce key for changes to `base` (a clip and property, say); `None` when final.
+    pub fn coalesce(self, base: impl std::fmt::Display) -> Option<String> {
+        match self {
+            Step::Final => None,
+            Step::Drag(g) => Some(format!("gesture:{base}:{g}")),
+            Step::Live => Some(base.to_string()),
+        }
+    }
 }
 
 pub struct Scrub {
@@ -22,7 +63,8 @@ pub struct Scrub {
     pub max: f64,
     pub decimals: usize,
     value: f64,
-    drag: Option<(Pixels, f64, bool)>,
+    /// Where a drag started, the value then, whether it moved, and its gesture.
+    drag: Option<(Pixels, f64, bool, u64)>,
     editor: Option<(Entity<TextInput>, Subscription)>,
 }
 
@@ -67,30 +109,30 @@ impl Scrub {
         if self.editor.is_some() {
             return;
         }
-        self.drag = Some((e.position.x, self.value, false));
+        self.drag = Some((e.position.x, self.value, false, new_gesture()));
         cx.notify();
     }
 
     fn moved(&mut self, e: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let Some((x0, start, moved)) = self.drag else { return };
+        let Some((x0, start, moved, gesture)) = self.drag else { return };
         let dx = f32::from(e.position.x - x0) as f64;
         if !moved && dx.abs() <= 2.0 {
             return;
         }
         let mult = if e.modifiers.shift { 10.0 } else if e.modifiers.alt { 0.1 } else { 1.0 };
         let v = self.clamp(start + (dx / 2.0).round() * self.step * mult);
-        self.drag = Some((x0, start, true));
+        self.drag = Some((x0, start, true, gesture));
         if v != self.value {
             self.value = v;
-            cx.emit(ScrubChange { value: v, final_: false });
+            cx.emit(ScrubChange { value: v, final_: false, gesture: Some(gesture) });
         }
         cx.notify();
     }
 
     fn up(&mut self, _: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((_, _, moved)) = self.drag.take() else { return };
+        let Some((_, _, moved, gesture)) = self.drag.take() else { return };
         if moved {
-            cx.emit(ScrubChange { value: self.value, final_: true });
+            cx.emit(ScrubChange { value: self.value, final_: true, gesture: Some(gesture) });
         } else {
             self.edit(window, cx);
         }
@@ -112,7 +154,7 @@ impl Scrub {
                 let text = input.read(cx).text().to_string();
                 if let Ok(v) = text.trim().trim_end_matches(this.unit.as_ref()).trim().parse::<f64>() {
                     this.value = this.clamp(v);
-                    cx.emit(ScrubChange { value: this.value, final_: true });
+                    cx.emit(ScrubChange { value: this.value, final_: true, gesture: None });
                 }
                 this.editor = None;
                 cx.notify();

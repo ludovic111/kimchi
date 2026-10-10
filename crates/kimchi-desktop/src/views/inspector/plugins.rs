@@ -41,8 +41,8 @@ impl Inspector {
         let (slot, name) = (slot.to_string(), name.to_string());
         let sub = cx.subscribe(&s, move |this: &mut Inspector, _, ch: &ScrubChange, cx| {
             let mut params = json!({ "clipId": clip, "slot": slot, "params": one(&name, json!(ch.value)) });
-            if !ch.final_ {
-                params["coalesce"] = json!(format!("{clip}:plugin:{slot}:{name}"));
+            if let Some(k) = ch.step().coalesce(format!("{clip}:plugin:{slot}:{name}")) {
+                params["coalesce"] = json!(k);
             }
             this.store.update(cx, |s, cx| s.run("clip.setPlugin", params, cx));
         });

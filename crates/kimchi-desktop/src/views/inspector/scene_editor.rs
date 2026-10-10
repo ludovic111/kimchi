@@ -13,7 +13,7 @@ use super::{Inspector, grid2};
 use crate::store::StoreExt;
 use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
-use crate::ui::scrub::{Scrub, ScrubChange};
+use crate::ui::scrub::{Scrub, ScrubChange, Step};
 use crate::ui::Button;
 
 /// How a property is edited.
@@ -272,12 +272,12 @@ impl Inspector {
                 let field = match kind {
                     Kind::Number(step, decimals, min, max) => {
                         let e = cx.new(|_| Scrub::new(label, step, decimals).range(min, max));
-                        subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ScrubChange, cx| this.item_change(name, json!(ch.value), ch.final_, cx)));
+                        subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ScrubChange, cx| this.item_change(name, json!(ch.value), ch.step(), cx)));
                         Field::Number(e)
                     }
                     Kind::Color => {
                         let e = cx.new(|cx| ColorField::new(None, cx));
-                        subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ColorChange, cx| this.item_change(name, json!(ch.0), true, cx)));
+                        subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ColorChange, cx| this.item_change(name, json!(ch.0), Step::Final, cx)));
                         Field::Color(e)
                     }
                     Kind::Text => {
@@ -285,7 +285,7 @@ impl Inspector {
                         subs.push(cx.subscribe(&e, move |this: &mut Self, _, ev: &InputEvent, cx| {
                             if let InputEvent::Changed(text) = ev {
                                 let v = json!(text);
-                                this.item_change(name, v, false, cx);
+                                this.item_change(name, v, Step::Live, cx);
                             }
                         }));
                         Field::Text(e)
@@ -383,12 +383,12 @@ impl Inspector {
         body.into_any_element()
     }
 
-    fn item_change(&mut self, name: &'static str, value: Value, final_: bool, cx: &mut Context<Self>) {
+    fn item_change(&mut self, name: &'static str, value: Value, step: Step, cx: &mut Context<Self>) {
         let Some((clip, item)) = self.item_fields.key.clone() else { return };
         let time = self.store.read(cx).playback.read(cx).playhead;
         let mut p = json!({ "clipId": clip, "id": item, "props": { name: value }, "time": time });
-        if !final_ {
-            p["coalesce"] = json!(format!("{clip}:{item}:{name}"));
+        if let Some(k) = step.coalesce(format!("{clip}:{item}:{name}")) {
+            p["coalesce"] = json!(k);
         }
         self.store.update(cx, |s, cx| s.run("motion.updateLayer", p, cx));
     }

@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use crate::store::{Store, StoreEvent, StoreExt};
 use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::input::TextInput;
-use crate::ui::scrub::{Scrub, ScrubChange};
+use crate::ui::scrub::{Scrub, ScrubChange, Step};
 use crate::ui::{Button, caps, icon, segmented, switch};
 
 /// A speech model as `captions.models` lists it.
@@ -47,8 +47,8 @@ impl CaptionsPanel {
         let size = cx.new(|_| Scrub::new("Size", 1.0, 0).range(8.0, 400.0));
         let height = cx.new(|_| Scrub::new("Height", 2.0, 0));
         let mut subs = vec![cx.observe(&store, |_, _, cx| cx.notify())];
-        subs.push(cx.subscribe(&size, |this: &mut Self, _, ch: &ScrubChange, cx| this.restyle(json!({ "style": { "fontSize": ch.value } }), "size", ch.final_, cx)));
-        subs.push(cx.subscribe(&height, |this: &mut Self, _, ch: &ScrubChange, cx| this.restyle(json!({ "y": ch.value }), "y", ch.final_, cx)));
+        subs.push(cx.subscribe(&size, |this: &mut Self, _, ch: &ScrubChange, cx| this.restyle(json!({ "style": { "fontSize": ch.value } }), "size", ch.step(), cx)));
+        subs.push(cx.subscribe(&height, |this: &mut Self, _, ch: &ScrubChange, cx| this.restyle(json!({ "y": ch.value }), "y", ch.step(), cx)));
         // Watch the transcription (started here or by any other client).
         let poll = cx.spawn(async move |this, cx| {
             let mut busy = false;
@@ -99,9 +99,9 @@ impl CaptionsPanel {
         .detach();
     }
 
-    fn restyle(&mut self, mut params: Value, key: &str, final_: bool, cx: &mut Context<Self>) {
-        if !final_ {
-            params["coalesce"] = json!(format!("captions:{key}"));
+    fn restyle(&mut self, mut params: Value, key: &str, step: Step, cx: &mut Context<Self>) {
+        if let Some(k) = step.coalesce(format!("captions:{key}")) {
+            params["coalesce"] = json!(k);
         }
         self.store.update(cx, |s, cx| s.run("captions.setStyle", params, cx));
     }

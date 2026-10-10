@@ -113,7 +113,6 @@ pub struct TimelineBody {
     peaks: PeaksCache,
     rename: Option<(Id, Entity<TextInput>, Subscription)>,
     agent: AgentMarks,
-    drags: u64,
     /// A clip, handle or marker took this mouse down; the lane / ruler under it ignores it.
     /// (Propagation isn't stopped, so the workspace still closes menus and takes focus.)
     consumed: bool,
@@ -168,7 +167,6 @@ impl TimelineBody {
             peaks: PeaksCache::default(),
             rename: None,
             agent: AgentMarks::default(),
-            drags: 0,
             consumed: false,
             volume: None,
             focus: cx.focus_handle(),
@@ -490,8 +488,8 @@ impl TimelineBody {
     fn drag_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         let Some(drag) = self.drag.take() else { return };
         self.guide = None;
-        self.drags += 1;
-        let key = format!("timeline-drag-{}", self.drags);
+        // The drag's commands are one undo step, however slowly they land.
+        let key = format!("gesture:timeline-drag-{}", crate::ui::scrub::new_gesture());
         let Some(p) = self.store.read(cx).project.clone() else {
             cx.notify();
             return;

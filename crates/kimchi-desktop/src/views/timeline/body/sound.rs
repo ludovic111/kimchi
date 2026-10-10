@@ -148,8 +148,7 @@ impl TimelineBody {
             return;
         }
         let Some(clip) = self.store.read(cx).clip(d.clip).cloned() else { return };
-        self.drags += 1;
-        let key = format!("volume-line-{}", self.drags);
+        let key = format!("gesture:volume-line-{}", crate::ui::scrub::new_gesture());
         match d.key {
             None => self.store.update(cx, |s, cx| s.run("clip.update", json!({ "clipId": d.clip, "volume": d.volume, "coalesce": key }), cx)),
             Some(i) => {

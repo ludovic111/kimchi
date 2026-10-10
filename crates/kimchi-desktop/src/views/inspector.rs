@@ -34,7 +34,7 @@ use serde_json::{Value, json};
 use crate::store::{Store, StoreExt};
 use crate::theme::{ActiveTheme, MONO, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
-use crate::ui::scrub::{Scrub, ScrubChange};
+use crate::ui::scrub::{Scrub, ScrubChange, Step};
 use crate::ui::fold::Fold;
 use crate::ui::{Button, GlassExt, caps, icon, kbd, segmented, switch, tooltip};
 use color::{ColorChange, ColorField};
@@ -114,7 +114,7 @@ impl Inspector {
         // A scrub that updates the selected clip.
         let mut clip_scrub = |cx: &mut Context<Self>, s: Scrub, key: &'static str, to: ToParams| {
             let e = cx.new(|_| s);
-            subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ScrubChange, cx| this.update_clip(to(ch.value), key, ch.final_, cx)));
+            subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ScrubChange, cx| this.update_clip(to(ch.value), key, ch.step(), cx)));
             e
         };
         let x = clip_scrub(cx, Scrub::new("X", 1.0, 0), "x", |v| json!({ "x": v }));
@@ -131,7 +131,7 @@ impl Inspector {
 
         let mut clip_slider = |cx: &mut Context<Self>, max: f64, key: &'static str, to: ToParams| {
             let e = cx.new(|cx| Slider::new(0.0, max, cx));
-            subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ScrubChange, cx| this.update_clip(to(ch.value), key, ch.final_, cx)));
+            subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ScrubChange, cx| this.update_clip(to(ch.value), key, ch.step(), cx)));
             e
         };
         let opacity = clip_slider(cx, 1.0, "opacity", |v| json!({ "opacity": v }));
@@ -173,16 +173,16 @@ impl Inspector {
             if let InputEvent::Changed(text) = e {
                 let name = kimchi_control::commands::clip::text_name(text);
                 // Typing is one undo step per pause (the coalesce key).
-                this.update_clip(json!({ "style": { "content": text }, "name": name }), "content", false, cx);
+                this.update_clip(json!({ "style": { "content": text }, "name": name }), "content", Step::Live, cx);
             }
         }));
 
         let font = cx.new(FontPicker::new);
-        subs.push(cx.subscribe(&font, |this: &mut Self, _, e: &FontPicked, cx| this.update_clip(json!({ "style": { "fontFamily": e.0.to_string() } }), "font", true, cx)));
+        subs.push(cx.subscribe(&font, |this: &mut Self, _, e: &FontPicked, cx| this.update_clip(json!({ "style": { "fontFamily": e.0.to_string() } }), "font", Step::Final, cx)));
 
         let mut color = |cx: &mut Context<Self>, alpha: Option<&'static str>, to: fn(&str) -> Value| {
             let e = cx.new(|cx| ColorField::new(alpha, cx));
-            subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ColorChange, cx| this.update_clip(to(&ch.0), "color", true, cx)));
+            subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ColorChange, cx| this.update_clip(to(&ch.0), "color", Step::Final, cx)));
             e
         };
         let text_color = color(cx, None, |c| json!({ "style": { "color": c } }));
@@ -237,17 +237,17 @@ impl Inspector {
         (s.selection.len() == 1).then(|| s.selection[0]).filter(|id| s.clip(*id).is_some())
     }
 
-    /// `clip.update` on the selected clip; while a control moves (`final_` false) the edits
-    /// share a coalesce key, so the whole gesture is one undo step.
-    fn update_clip(&mut self, mut params: Value, key: &str, final_: bool, cx: &mut Context<Self>) {
+    /// `clip.update` on the selected clip; while a control moves the edits share a coalesce key
+    /// (one per drag), so the whole gesture is one undo step.
+    fn update_clip(&mut self, mut params: Value, key: &str, step: Step, cx: &mut Context<Self>) {
         // An animated property gets a keyframe at the playhead instead.
-        if self.keyframe_instead(&params, key, final_, cx) {
+        if self.keyframe_instead(&params, key, step, cx) {
             return;
         }
         let Some(id) = self.single(cx) else { return };
         params["clipId"] = json!(id);
-        if !final_ {
-            params["coalesce"] = json!(format!("{id}:{key}"));
+        if let Some(k) = step.coalesce(format!("{id}:{key}")) {
+            params["coalesce"] = json!(k);
         }
         self.store.update(cx, |s, cx| s.run("clip.update", params, cx));
     }
@@ -392,7 +392,7 @@ impl Inspector {
                                     TextAlign::Center => "center",
                                     TextAlign::Right => "right",
                                 };
-                                e1.update(cx, |this, cx| this.update_clip(json!({ "style": { "align": v } }), "align", true, cx));
+                                e1.update(cx, |this, cx| this.update_clip(json!({ "style": { "align": v } }), "align", Step::Final, cx));
                             },
                             cx,
                         ))
@@ -401,15 +401,15 @@ impl Inspector {
                                 .flex()
                                 .flex_col()
                                 .gap(px(8.))
-                                .child(switch("italic", "Italic", italic, move |v, _, cx| e2.update(cx, |this, cx| this.update_clip(json!({ "style": { "italic": v } }), "italic", true, cx)), cx))
-                                .child(switch("shadow", "Shadow", shadow, move |v, _, cx| e3.update(cx, |this, cx| this.update_clip(json!({ "style": { "shadow": v } }), "shadow", true, cx)), cx))
+                                .child(switch("italic", "Italic", italic, move |v, _, cx| e2.update(cx, |this, cx| this.update_clip(json!({ "style": { "italic": v } }), "italic", Step::Final, cx)), cx))
+                                .child(switch("shadow", "Shadow", shadow, move |v, _, cx| e3.update(cx, |this, cx| this.update_clip(json!({ "style": { "shadow": v } }), "shadow", Step::Final, cx)), cx))
                                 .child(switch(
                                     "box",
                                     "Box behind the words",
                                     boxed,
                                     move |v, _, cx| {
                                         let bg = if v { json!("#000000cc") } else { Value::Null };
-                                        e4.update(cx, |this, cx| this.update_clip(json!({ "style": { "background": bg } }), "box", true, cx))
+                                        e4.update(cx, |this, cx| this.update_clip(json!({ "style": { "background": bg } }), "box", Step::Final, cx))
                                     },
                                     cx,
                                 )),
@@ -462,7 +462,7 @@ impl Inspector {
             body.push(
                 self.fold("transform", "Transform", cx)
                     .trailing(Button::icon("reset-transform", "rotate-ccw", "Reset position, scale, rotation and opacity").small().on_click(move |_, _, cx| {
-                        reset_this.update(cx, |this, cx| this.update_clip(json!({ "x": 0, "y": 0, "scale": 1, "rotation": 0, "opacity": 1, "fit": reset_fit }), "reset", true, cx))
+                        reset_this.update(cx, |this, cx| this.update_clip(json!({ "x": 0, "y": 0, "scale": 1, "rotation": 0, "opacity": 1, "fit": reset_fit }), "reset", Step::Final, cx))
                     }))
                     .child(grid2().child(self.x.clone()).child(self.y.clone()).child(self.scale.clone()).child(self.rotation.clone()))
                     .child(labeled("Opacity", self.opacity.clone().into_any_element(), format!("{}%", (opacity * 100.0).round()), cx))
@@ -477,7 +477,7 @@ impl Inspector {
                                     Fit::Cover => "cover",
                                     Fit::Stretch => "stretch",
                                 };
-                                this.update(cx, |this, cx| this.update_clip(json!({ "fit": v }), "fit", true, cx));
+                                this.update(cx, |this, cx| this.update_clip(json!({ "fit": v }), "fit", Step::Final, cx));
                             },
                             cx,
                         ))
