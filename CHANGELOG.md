@@ -3,15 +3,16 @@
 What changed in each kimchi release. The app shows the newest section in **What's new** after it
 updates, and the release workflow puts the section in the update's notes.
 
-## Unreleased
+## 0.12.0 — 2026-10-11
 
-lsuite is now entirely free: no account, no plans. kimchi is in beta on **Linux** and **macOS**; Windows is coming soon.
+lsuite is now entirely free: no account, no plans. kimchi is in beta on **Linux** and **macOS**; Windows is coming soon. This release also brings everything listed under 0.11.0, which didn't ship on its own.
 
 ### New
 - **kimchi is back on macOS**, for Apple Silicon and Intel Macs, signed and notarized, in the lsuite app next to the Linux build. It updates in place like before.
 
 ### Better
 - **Updates need no account.** kimchi gets its updates from lsuite without signing in to anything, and Settings › Updates no longer asks you to sign in. Updates are still signed and checked exactly as before.
+- **A slow drag is still one undo step.** Dragging a slider, a number, a fader or a knob, or a clip on the timeline, undoes in one step however long you take or however busy your computer is.
 
 ### Removed
 - **lsuite AI and the lsuite account.** The agent runs on the model you already have: Claude Code, Codex, Gemini CLI, an API key (Anthropic, OpenAI, Gemini and more) or a local Ollama model. If lsuite AI was your choice, the agent uses Claude Code until you pick another provider; your conversations stay. The `account.*` commands and the "Run Claude Code on lsuite AI" switch are gone, and kimchi no longer reads `~/.lsuite/account.json` (it leaves the file alone).

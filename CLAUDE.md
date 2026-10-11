@@ -79,7 +79,7 @@ Rules that keep it working:
   env vars with hyphens, so the `kimchi-cli` / `kimchi-mcp` integration tests (`CARGO_BIN_EXE_kimchi-cli`) need
   `RUSTC_WRAPPER= cargo test …` (workspace crates rebuild, dependencies don't).
 
-## lsuite (notes updated 2026-10-10)
+## lsuite (notes updated 2026-10-11, 0.12.0)
 
 kimchi is part of **lsuite** with ryolune (music); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
