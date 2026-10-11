@@ -180,7 +180,7 @@ jobs:
           cat >> "$RUNNER_TEMP/notes.md" <<'EOF'
 
           ### Get it
-          Get kimchi in the lsuite app (lsuite.xyz/launcher), with your free lsuite account. kimchi
+          Get kimchi in the lsuite app (lsuite.xyz/launcher), with no account. kimchi
           updates itself from there on.
           EOF
           # Checks every signature against kimchi's update key before writing the manifest.

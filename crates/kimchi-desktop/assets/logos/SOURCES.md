@@ -10,7 +10,7 @@ to these files.
 
 | File | Used for | Downloaded from |
 | --- | --- | --- |
-| `lsuite.png` | lsuite AI (the agent's lsuite provider) | the lsuite mark, `assets/img/lsuite.svg` in the lsuite site repository (github.com/ludovic111/lsuite), rasterised with ImageMagick |
+| `lsuite.png` | lsuite plugins (Plugins › Formats, Installed; the inspector) | the lsuite mark, `assets/img/lsuite.svg` in the lsuite site repository (github.com/ludovic111/lsuite), rasterised with ImageMagick |
 | `frei0r.png` | frei0r (Plugins › Formats, Installed) | the frei0r wordmark, https://frei0r.dyne.org/pics/frei0r.png (docs/public/pics in github.com/dyne/frei0r), cropped to the wordmark |
 | `frei0r-dark.png` | the same (dark theme) | the same file in white |
 | `clap.png` | CLAP sound plugins | `artwork/CLAP Icon.svg` in github.com/free-audio/clap, rasterised |

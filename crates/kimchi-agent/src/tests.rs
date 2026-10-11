@@ -282,8 +282,8 @@ fn tools_cover_the_registry_except_person_only_commands() {
 #[test]
 fn settings_choose_the_provider() {
     let mut a = kimchi_control::settings::AgentSettings::default();
-    // New installs start on lsuite AI (no setup).
-    assert_eq!(AgentConfig::from_settings(&a).provider, ProviderKind::Lsuite);
+    // New installs start on Claude Code.
+    assert_eq!(AgentConfig::from_settings(&a).provider, ProviderKind::ClaudeCode);
     a.provider = "anthropic".into();
     let c = AgentConfig::from_settings(&a);
     assert_eq!((c.provider, c.model(), c.base_url()), (ProviderKind::Anthropic, "claude-sonnet-5-5".to_string(), "https://api.anthropic.com".to_string()));
@@ -1122,70 +1122,11 @@ fn history_from_a_removed_provider_still_opens() {
     assert_eq!(serde_json::from_value::<RunInfo>(saved).unwrap().provider, ProviderKind::ClaudeCode);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn lsuite_ai_runs_on_the_account_and_says_when_the_allowance_is_out() {
-    use kimchi_control::account;
-    use wiremock::matchers::header;
-    let dir = tempfile::tempdir().unwrap();
-    let s = with_project(dir.path()).await;
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/api/ai/v1/messages"))
-        .and(header("x-api-key", "lsk_test_123456"))
-        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/event-stream").set_body_string(anthropic_text("Hello from lsuite AI.")))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/ai/v1/messages"))
-        .respond_with(ResponseTemplate::new(402).set_body_json(json!({ "error": { "type": "allowance_exceeded", "message": "This month's allowance is used up." } })))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/api/account/me"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "email": "ada@example.com", "plan": "plus", "status": "active", "usage": { "used": 100, "limit": 1000, "resetsAt": "2026-11-01T00:00:00Z" }, "models": ["claude-sonnet-5-5", "claude-haiku-4-5"] })))
-        .mount(&server)
-        .await;
-    let _env = account::testing(&dir.path().join("lsuite"), Some(&server.uri()));
-
-    // Signed out: one clear line, nothing sent.
-    let mut run = Agent::start(&s, AgentConfig::new(ProviderKind::Lsuite), "Hi", Conversation::new());
-    let events = collect(&mut run).await;
-    assert!(matches!(events.last(), Some(AgentEvent::Error { message, .. }) if message == crate::lsuite::SIGNED_OUT), "{events:?}");
-    let st = status_of(&s, ProviderKind::Lsuite).await;
-    assert!(!st.ready && st.next == Some(Next::SignIn), "{st:?}");
-
-    account::save(&account::Account { format: 1, server: server.uri(), email: "ada@example.com".into(), name: "Ada".into(), plan: "plus".into(), token: "lsk_test_123456".into(), signed_in_at: None }).unwrap();
-    let st = status_of(&s, ProviderKind::Lsuite).await;
-    assert!(st.ready, "{st:?}");
-    assert!(st.message.starts_with("Plus · 10 % used · resets 1 Nov"), "{}", st.message);
-    assert_eq!(st.models, ["claude-sonnet-5-5", "claude-haiku-4-5"]);
-
-    // Signed in: the Anthropic provider at <server>/api/ai with the account's key.
-    let mut run = Agent::start(&s, AgentConfig::new(ProviderKind::Lsuite), "Hi", Conversation::new());
-    let events = collect(&mut run).await;
-    assert!(matches!(events.last(), Some(AgentEvent::Done { summary, .. }) if summary == "Hello from lsuite AI."), "{events:?}");
-    let sent: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.url.path() == "/api/ai/v1/messages").collect();
-    let body: Value = serde_json::from_slice(&sent[0].body).unwrap();
-    assert_eq!(body["model"], "claude-sonnet-5-5");
-    assert_eq!(body["stream"], true);
-
-    // The allowance runs out: one line naming Manage plan, and no other provider is tried.
-    let mut run = Agent::start(&s, AgentConfig::new(ProviderKind::Lsuite), "Again", Conversation::new());
-    let events = collect(&mut run).await;
-    match events.last() {
-        Some(AgentEvent::Error { message, .. }) => {
-            assert!(message.starts_with(crate::lsuite::ALLOWANCE), "{message}");
-            assert!(message.contains(&format!("{}/account", server.uri())) && !message.contains('\n'), "{message}");
-        }
-        e => panic!("expected an error, got {e:?}"),
-    }
-
-    // Claude Code runs on lsuite AI only when the person picks it.
-    let mut settings = s.settings().agent;
-    assert!(crate::lsuite::claude_code_env(&settings).is_none());
-    settings.claude_code_on_lsuite = true;
-    let env = crate::lsuite::claude_code_env(&settings).unwrap();
-    assert_eq!(env[0], ("ANTHROPIC_BASE_URL", format!("{}/api/ai", server.uri())));
-    assert_eq!(env[1], ("ANTHROPIC_AUTH_TOKEN", "lsk_test_123456".to_string()));
+#[test]
+fn settings_from_lsuite_ai_days_still_load() {
+    // lsuite AI is gone: settings that chose it (and its Claude Code switch) still load, and the
+    // agent runs on Claude Code until the person picks another provider.
+    let a: kimchi_control::settings::AgentSettings = serde_json::from_value(json!({ "provider": "lsuite", "claudeCodeOnLsuite": true })).unwrap();
+    assert_eq!(AgentConfig::from_settings(&a).provider, ProviderKind::ClaudeCode);
+    assert!(ProviderKind::ALL.iter().all(|k| k.id() != "lsuite"));
 }

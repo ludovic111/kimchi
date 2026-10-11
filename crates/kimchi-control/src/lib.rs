@@ -7,7 +7,6 @@
 //!   token-protected loopback socket; [`discovery`] tells other lsuite apps
 //!   where kimchi is.
 
-pub mod account;
 pub mod bridge;
 pub mod commands;
 pub mod compat;
@@ -16,6 +15,7 @@ pub mod discovery;
 pub mod harness;
 pub mod keymaps;
 pub mod looks;
+pub mod lsuite;
 pub mod plugin_dev;
 pub mod registry;
 pub mod release_notes;

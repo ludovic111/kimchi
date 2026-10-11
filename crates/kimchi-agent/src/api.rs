@@ -88,7 +88,7 @@ impl Api {
         let info = c.provider.info();
         let http = http::client();
         let mut base = c.base_url();
-        let mut key = c.api_key(&run.session);
+        let key = c.api_key(&run.session);
         let mut model = c.model();
         let mut wire = info.wire;
         let mut bedrock = None;
@@ -100,12 +100,6 @@ impl Api {
         };
         match c.provider {
             ProviderKind::ClaudeCode | ProviderKind::Codex | ProviderKind::GeminiCli => return Err("This provider runs as a CLI.".into()),
-            ProviderKind::Lsuite => {
-                // The account file is read for each run: another lsuite app may have signed in or out.
-                let account = kimchi_control::account::load().ok_or(crate::lsuite::SIGNED_OUT)?;
-                base = kimchi_control::account::ai_base(&account.server);
-                key = Some(account.token);
-            }
             // Another address is a compatible server, which may not need a key.
             ProviderKind::OpenAi if base != info.default_base_url => wire = Wire::Chat(Quirks { tool_limit: Some(128), usage: false, ..Quirks::STANDARD }),
             ProviderKind::Bedrock => {
@@ -183,7 +177,7 @@ impl Api {
     /// without them, and none for the rest of the run.
     async fn step(&self, run: &Run, tools: &ToolSet, messages: &[Message], round: usize) -> Result<Step, String> {
         match self.request(run, tools, messages, round).await {
-            Err(e) if !matches!(self.kind, ProviderKind::Anthropic | ProviderKind::Lsuite) && self.sees() && has_pictures(messages) && refuses_pictures(&e) => {
+            Err(e) if self.kind != ProviderKind::Anthropic && self.sees() && has_pictures(messages) && refuses_pictures(&e) => {
                 tracing::info!("{}: {} doesn't take pictures ({e}); going on without them", self.base, self.model);
                 self.vision.store(false, Ordering::Release);
                 self.request(run, tools, messages, round).await
@@ -220,7 +214,7 @@ pub(crate) async fn run(run: &mut Run, prompt: String, mut conv: Conversation) -
         }
         run.status(format!("Thinking with {}…", api.model));
         run.break_text();
-        let Step { parts, calls } = api.step(run, &tools, &conv.messages, round).await.map_err(|e| if api.kind == ProviderKind::Lsuite { crate::lsuite::explain(&e) } else { e })?;
+        let Step { parts, calls } = api.step(run, &tools, &conv.messages, round).await?;
         conv.messages.push(Message { role: Role::Assistant, parts });
         run.set_conversation(&conv);
         if calls.is_empty() {

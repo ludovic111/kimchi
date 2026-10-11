@@ -25,7 +25,6 @@ mod eventstream;
 pub mod context;
 mod host;
 mod http;
-pub mod lsuite;
 pub mod models;
 pub mod providers;
 mod sigv4;
@@ -69,9 +68,6 @@ pub const MAX_HISTORY: usize = 80;
 /// about each.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderKind {
-    /// lsuite AI: the lsuite account's plan, no other setup ([`lsuite`]).
-    #[serde(rename = "lsuite")]
-    Lsuite,
     #[serde(rename = "claude-code")]
     ClaudeCode,
     #[serde(rename = "codex")]
@@ -113,9 +109,8 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    /// Every provider, grouped: lsuite AI, the CLIs, the model APIs, the local servers.
-    pub const ALL: [ProviderKind; 20] = [
-        ProviderKind::Lsuite,
+    /// Every provider, grouped: the CLIs, the model APIs, the local servers.
+    pub const ALL: [ProviderKind; 19] = [
         ProviderKind::ClaudeCode,
         ProviderKind::Codex,
         ProviderKind::GeminiCli,
@@ -162,7 +157,6 @@ impl ProviderKind {
         }
         Some(match id.as_str() {
             "claude" | "claudecode" => ProviderKind::ClaudeCode,
-            "lsuite-ai" | "lsuiteai" | "lsuite.xyz" => ProviderKind::Lsuite,
             "gemini-code" | "geminicli" => ProviderKind::GeminiCli,
             "google" | "google-gemini" | "ai-studio" | "aistudio" => ProviderKind::Gemini,
             "x.ai" | "grok" => ProviderKind::Xai,

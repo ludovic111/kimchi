@@ -694,7 +694,7 @@ pub const NO_PROJECT: &str = "No project is open. Open one with project.open or 
 /// Points the video plugin catalogue at this session's folders and switches (`settings.plugins`).
 pub fn configure_plugins(s: &Session) {
     let st = s.settings();
-    kimchi_media::render::plugins::configure(&s.data_dir, &crate::account::lsuite_home(), &st.plugins.video_folders);
+    kimchi_media::render::plugins::configure(&s.data_dir, &crate::lsuite::lsuite_home(), &st.plugins.video_folders);
     kimchi_media::render::plugins::set_disabled(&st.plugins.disabled);
 }
 

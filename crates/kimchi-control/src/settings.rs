@@ -74,11 +74,9 @@ impl Default for ShortcutSettings {
 /// Keyboard layouts kimchi can take from other editors (`app.keymaps` describes them).
 pub const KEYMAPS: &[&str] = &["kimchi", "premiere", "finalcut", "resolve", "avid", "capcut", "kdenlive", "shotcut", "vegas", "imovie"];
 
-/// What can run the built-in agent (`settings.agent.provider`): lsuite AI (the lsuite account, no
-/// setup), the person's coding CLIs, model APIs, and local servers. `kimchi_agent::ProviderKind`
-/// has one variant per id.
+/// What can run the built-in agent (`settings.agent.provider`): the person's coding CLIs, model
+/// APIs, and local servers. `kimchi_agent::ProviderKind` has one variant per id.
 pub const AGENT_PROVIDERS: &[&str] = &[
-    "lsuite",
     "claude-code",
     "codex",
     "gemini-cli",
@@ -112,16 +110,11 @@ pub struct AgentSettings {
     pub model: String,
     /// Base URL for `ollama` (and OpenAI-compatible servers).
     pub base_url: String,
-    /// Claude Code runs on lsuite AI (the lsuite account's plan) instead of the person's own
-    /// Claude sign-in, when signed in to lsuite.
-    pub claude_code_on_lsuite: bool,
 }
 
 impl Default for AgentSettings {
     fn default() -> Self {
-        // lsuite AI first: install, sign in once, and the agent works. Settings files from before
-        // 0.10 keep the provider they name.
-        Self { enabled: true, permissions: Permissions::default(), provider: "lsuite".into(), model: String::new(), base_url: String::new(), claude_code_on_lsuite: false }
+        Self { enabled: true, permissions: Permissions::default(), provider: "claude-code".into(), model: String::new(), base_url: String::new() }
     }
 }
 

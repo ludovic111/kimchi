@@ -14,8 +14,6 @@ use crate::ProviderKind;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Group {
-    /// lsuite AI: sign in to the lsuite account and it works.
-    Lsuite,
     /// A coding CLI installed on this computer, with `kimchi-mcp --live` attached.
     Cli,
     /// A model API, with a key.
@@ -25,11 +23,10 @@ pub enum Group {
 }
 
 impl Group {
-    pub const ALL: [Group; 4] = [Group::Lsuite, Group::Cli, Group::Api, Group::Local];
+    pub const ALL: [Group; 3] = [Group::Cli, Group::Api, Group::Local];
 
     pub fn label(self) -> &'static str {
         match self {
-            Group::Lsuite => "No setup",
             Group::Cli => "On this computer",
             Group::Api => "Model APIs",
             Group::Local => "Local servers",
@@ -38,7 +35,6 @@ impl Group {
 
     pub fn id(self) -> &'static str {
         match self {
-            Group::Lsuite => "lsuite",
             Group::Cli => "cli",
             Group::Api => "api",
             Group::Local => "local",
@@ -136,24 +132,6 @@ const fn chat(tool_limit: Option<usize>) -> Wire {
 }
 
 pub const ALL: &[Info] = &[
-    // ---- lsuite AI ----
-    Info {
-        kind: ProviderKind::Lsuite,
-        id: "lsuite",
-        label: "lsuite AI",
-        group: Group::Lsuite,
-        tagline: "No setup. Sign in and your agent works.",
-        // Anthropic's Messages API, served by the lsuite server at `<server>/api/ai` with the
-        // account's token as the key (`Api::prepare`).
-        wire: Wire::Anthropic,
-        default_model: "claude-sonnet-5-5",
-        default_base_url: "",
-        needs_base_url: false,
-        base_url_hint: "",
-        key: None,
-        models: &["claude-sonnet-5-5", "claude-haiku-4-5", "claude-opus-5-5"],
-        website: "https://lsuite.xyz",
-    },
     // ---- on this computer ----
     Info {
         kind: ProviderKind::ClaudeCode,

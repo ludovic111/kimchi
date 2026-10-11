@@ -11,7 +11,7 @@ Every setting is saved as soon as you change it (API keys when you press **Save*
 | --- | --- |
 | Appearance | Mode (System, Dark, Light) and Transparency. See [The window](window.md#light-and-dark). |
 | Audio | Output and input devices, the Normalize target, scrubbing, snap to beats, the voice-over count-in, plugins, and ryolune. See [Sound](sound.md). |
-| Agent | Who runs the agent (lsuite AI first: sign in, your plan and allowance, Manage plan, Sign out), its model, address and key, and the permissions. See [The agent](agent.md). |
+| Agent | Who runs the agent, its model, address and key, and the permissions. See [The agent](agent.md). |
 | Updates | Check now, and how updates happen. See below. |
 | Diagnostics | Crash reports, this run's log, how much detail goes in the log, and reporting a problem. See below. |
 | About & AI control | Links, and the lines that connect Claude Code, Codex, Cursor, Claude Desktop or VS Code to kimchi. |
@@ -19,9 +19,8 @@ Every setting is saved as soon as you change it (API keys when you press **Save*
 
 ## Updates
 
-kimchi checks lsuite for a new version when it starts and every 6 hours, with your free lsuite
-account (sign in from the lsuite app, lsuite.xyz/launcher; one sign-in covers every lsuite app).
-Signed out, Settings › Updates says to sign in instead. When a new version is out, a button in the
+kimchi checks lsuite for a new version when it starts and every 6 hours (no account
+needed). When a new version is out, a button in the
 top bar offers it. Every update is signed, and the signature is checked before anything is
 replaced.
 
@@ -36,7 +35,7 @@ How an update installs depends on how kimchi was installed:
 | Install | Update |
 | --- | --- |
 | AppImage | Replaced in place; the previous copy is kept until the new one has started. |
-| `.deb` | kimchi says an update is out and links to the lsuite app, which gets it with your account. |
+| `.deb` | kimchi says an update is out and links to the lsuite app, which gets it. |
 
 kimchi is in beta on Linux; the macOS and Windows builds (which update in place, and through the
 verified installer on Windows) are coming soon.
@@ -82,8 +81,7 @@ moved or deleted, `project.overview` lists it under problems; put the file back 
 Click the refresh button in the model picker to reload model lists, which are otherwise kept for
 30 minutes.
 
-**The agent says it isn't ready.** Settings › Agent shows the reason for each choice: for lsuite AI,
-sign in (or choose a plan, or wait for next month's allowance: Manage plan); for Claude
+**The agent says it isn't ready.** Settings › Agent shows the reason for each choice: for Claude
 Code and Codex, the command must be installed and signed in (`claude auth status`,
 `codex login status`); for the APIs, a key; for Ollama, a running server with a model.
 

@@ -96,7 +96,7 @@ impl SettingsDialog {
         let key = field(cx, true);
         let base = field(cx, true);
         let option = field(cx, false);
-        let agent = agent::AgentState::new(window, cx);
+        let agent = agent::AgentState::new(cx);
         let mut subs = vec![cx.observe_in(&store, window, |this: &mut Self, store, _, cx| {
             let dialog = store.read(cx).dialog.clone();
             let open = matches!(dialog, Some(Dialog::Settings { .. }));
@@ -516,9 +516,6 @@ impl SettingsDialog {
                 )
                 .when_some(u.install_blocked.clone().filter(|_| !u.can_install), |d, why| d.child(div().text_size(px(sz::SM)).text_color(t.text_2).child(why)))
                 .into_any_element()
-        } else if u.sign_in {
-            // Updates come with the free lsuite account, signed in from the lsuite app.
-            note("key-round", kimchi_control::update::SIGN_IN, t.text_2, cx).into_any_element()
         } else if u.checked_at.is_some() && u.error.is_none() {
             note("circle-check", "kimchi is up to date.", t.success, cx).into_any_element()
         } else {
@@ -550,7 +547,7 @@ impl SettingsDialog {
                     ),
             )
             .child(status)
-            .when_some(u.error.clone().filter(|_| !u.sign_in), |d, e| d.child(note("circle-alert", &e, t.danger, cx)))
+            .when_some(u.error.clone(), |d, e| d.child(note("circle-alert", &e, t.danger, cx)))
             .child(
                 div()
                     .flex()

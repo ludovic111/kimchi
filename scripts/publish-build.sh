@@ -3,7 +3,7 @@
 # release v<version> that the Release workflow made in ludovic111/kimchi to a new release
 # kimchi-v<version> of the private ludovic111/lsuite-builds (same notes, same files: the platform
 # files, latest.json, *.sig, SHA256SUMS), then deletes the draft. The lsuite app and kimchi's
-# updater get it from there through lsuite.xyz, with the person's account; signatures are
+# updater get it from there through lsuite.xyz (no account needed); signatures are
 # unchanged, so the server can't alter a build unnoticed.
 #   scripts/publish-build.sh <version> [--keep-draft]
 # Needs `gh`, signed in with access to both repositories. KIMCHI_REPO and LSUITE_BUILDS_REPO

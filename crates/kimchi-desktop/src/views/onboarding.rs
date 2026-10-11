@@ -112,8 +112,6 @@ pub struct Onboarding {
     show_all: bool,
     copied: bool,
     scroll: ScrollHandle,
-    /// lsuite AI's account card (the first choice of the assistant step).
-    lsuite: Entity<crate::views::lsuite::LsuiteCard>,
     _subs: Vec<Subscription>,
 }
 
@@ -163,7 +161,6 @@ impl Onboarding {
             show_all: false,
             copied: false,
             scroll: ScrollHandle::new(),
-            lsuite: cx.new(|cx| crate::views::lsuite::LsuiteCard::new(window, cx)),
             _subs: subs,
         }
     }
@@ -826,18 +823,6 @@ impl Onboarding {
                 format!("The Agent panel ({}) edits with you: a rough cut from your clips, captions, titles, a colour pass. You see every change and can take a whole run back.", crate::actions::hint(&crate::actions::ToggleAgent).unwrap_or_default()),
                 cx,
             ))
-            .child({
-                let using = chosen.as_deref() == Some("lsuite");
-                let ready = self.store.read(cx).account.as_ref().is_some_and(|a| a.signed_in && a.can_run && !a.expired);
-                block(cx)
-                    .when(using, |d| d.border_color(t.accent_ring))
-                    .child(div().flex().items_center().child(div().flex_1().child(caps("No setup", cx))).child({
-                        let b = Button::new("agent-lsuite", if using { "In use" } else { "Use lsuite AI" }).small().selected(using);
-                        let b = if ready && !using { b.primary() } else { b };
-                        b.on_click(cx.listener(|this, _, _, cx| this.use_agent("lsuite".into(), None, cx)))
-                    }))
-                    .child(self.lsuite.clone())
-            })
             .when(!found.is_empty(), |d| d.child(div().flex().flex_col().gap(px(8.)).child(caps("On this computer", cx)).children(found)))
             .child(block(cx).child(caps("With an API key", cx)).children(keys))
             .child(self.choice("agent-none".into(), none, div().flex_none().size(px(26.)).flex().items_center().justify_center().child(icon("circle-slash")).into_any_element(), "No assistant".into(), "The Agent panel stays hidden. Settings › Agent brings it back.".into(), None, |this, _| {

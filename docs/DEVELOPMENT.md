@@ -286,11 +286,11 @@ The release workflow checks that the tag matches the version, builds Linux (macO
 Intel, signed and notarized when the Apple secrets are set, and Windows are paused for now: their lines
 are commented out in the workflow's matrix),
 signs the update files, writes `latest.json` and `SHA256SUMS`, and makes a **draft** GitHub release.
-Never publish the draft: kimchi's builds come only through the lsuite app and lsuite.xyz, with a free
-lsuite account (lsuite `DISTRIBUTION.md`). `scripts/publish-build.sh` checks the draft's files
+Never publish the draft: kimchi's builds come only through the lsuite app and lsuite.xyz, with no
+account (lsuite `DISTRIBUTION.md`). `scripts/publish-build.sh` checks the draft's files
 against `SHA256SUMS`, copies them to the private `ludovic111/lsuite-builds` as `kimchi-vX.Y.Z`, then
 deletes the draft. That rolls the update out: installed copies read
-`<server>/api/apps/kimchi/latest.json` with the account's token, and download through the server.
+`<server>/api/apps/kimchi/latest.json` (no token), and download through the server.
 
 Updates are signed with minisign, with the key of the original Tauri builds, through
 `kimchi-release`:

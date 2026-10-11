@@ -36,7 +36,7 @@ only with the **Settings** permission, and never the `agent.*` ones.
 | `updates.autoInstall` | boolean | `false` | | Download and install updates found by the automatic check without asking; the new version runs from the next start. |
 | `updates.showWhatsNew` | boolean | `true` | | Show the release notes once after an update. |
 | `diagnostics.logLevel` | string | `debug` | `info`, `debug`, `trace` | How much goes in the log (Normal, Detailed, Everything). `RUST_LOG` overrides it. |
-| `agent.provider` | string | `lsuite` | `lsuite`, `claude-code`, `codex`, `gemini-cli`, `anthropic`, `openai`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `azure-openai`, `bedrock`, `ollama`, `lmstudio`, `openai-compatible` | Who runs the built-in agent. `lsuite` is lsuite AI (the lsuite account); settings from before 0.10 keep the one they name. |
+| `agent.provider` | string | `claude-code` | `claude-code`, `codex`, `gemini-cli`, `anthropic`, `openai`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`, `azure-openai`, `bedrock`, `ollama`, `lmstudio`, `openai-compatible` | Who runs the built-in agent. A provider kimchi no longer has (such as `lsuite`) reads as `claude-code`. |
 | `agent.model` | string | `""` | a model id | Empty uses the provider's default. |
 | `agent.baseUrl` | string | `""` | a URL | For the Anthropic, OpenAI and Ollama choices: another server or a proxy. Empty uses the provider's. |
 | `agent.permissions.enabled` | boolean | `true` | | Let agents and MCP clients act in kimchi at all. |
@@ -46,7 +46,6 @@ only with the **Settings** permission, and never the `agent.*` ones.
 | `agent.permissions.settings` | boolean | `false` | | Change settings (other than `agent.*`). |
 | `agent.permissions.appControl` | boolean | `false` | | Quit kimchi, install an update. |
 | `agent.permissions.plugins` | boolean | `false` | | Write, build, install, remove and switch plugins. Turned on by sending a request from Plugins › Build with your agent. |
-| `agent.claudeCodeOnLsuite` | boolean | `false` | | Claude Code runs on lsuite AI (the lsuite account's plan, through `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`) instead of its own sign-in, when signed in to lsuite. |
 | `plugins.videoFolders` | array of strings | `[]` | folder paths | More folders to look for video plugins in (lsuite bundles and frei0r), besides the standard ones. |
 | `plugins.disabled` | array of strings | `[]` | plugin ids | Plugins switched off (Plugins' switches, `plugin.disable`), and plugins that crashed and were switched off. |
 
@@ -88,12 +87,11 @@ The OpenAI image provider and the agent's OpenAI choice share one keychain entry
 | `KIMCHI_NO_WHATS_NEW` | app | Any value stops What's new from opening after an update. |
 | `KIMCHI_NO_SYSTEM_FONTS` | all | Any value: text in the picture (titles, captions, motion text) uses only the fonts bundled with kimchi. |
 | `KIMCHI_WINDOW_SIZE` | app | The window's size when it opens, as `WIDTHxHEIGHT` (for example `2000x1250`). |
-| `KIMCHI_UPDATE_URL` | app | Another `latest.json` to check for updates (tests). By default kimchi asks the lsuite server, `<server>/api/apps/kimchi/latest.json`, with the signed-in lsuite account's token; signed out, the check says to sign in to lsuite in the lsuite app. The token is only sent to the lsuite server. |
+| `KIMCHI_UPDATE_URL` | app | Another `latest.json` to check for updates (tests). By default kimchi asks the lsuite server, `<server>/api/apps/kimchi/latest.json` (no account, no token). |
 | `KIMCHI_MCP_CONTEXT` | `kimchi-mcp` | `0` stops tool results from ending with an updated `<context>` block when the project or the window changed, and edits' results from reminding the agent to look at its work. |
 | `KIMCHI_MCP` | app | The `kimchi-mcp` program given to Claude Code and Codex, if the file exists. Otherwise kimchi looks next to itself, then on `PATH`. |
-| `LSUITE_HOME` | all | Where lsuite apps register, hand files over, keep the shared lsuite account and lsuite plugins (default `~/.lsuite`). |
-| `LSUITE_ACCOUNT_SERVER` | all | The lsuite account server for lsuite AI and updates (default: the signed-in account's, else `https://lsuite.xyz`), for a local demo server such as `http://127.0.0.1:4321`. |
-| `KIMCHI_NO_BROWSER` | all | Any value other than `0`: signing in to lsuite AI doesn't open a browser (scripts). |
+| `LSUITE_HOME` | all | Where lsuite apps register, hand files over and keep lsuite plugins (default `~/.lsuite`). |
+| `LSUITE_SERVER` | all | The lsuite server updates come from (default `https://lsuite.xyz`), for a local demo server such as `http://127.0.0.1:4321`. |
 | `KIMCHI_PLUGIN_PATH` | all | More folders (a list, separated like `PATH`) of lsuite plugin bundles. |
 | `KIMCHI_PLUGIN_SDK` | all | A local `kimchi-plugin` folder that `plugin.new` points new plugin crates at, instead of the repository's tag. |
 | `FREI0R_PATH` | all | The folders to look for frei0r plugins in (a list); replaces the usual ones. |
@@ -184,7 +182,6 @@ file.
 | --- | --- |
 | `~/Documents/kimchi/comfyui-workflows/` | ComfyUI workflows that become models (changeable in Settings). |
 | `~/.lsuite/apps/kimchi.json` | kimchi's registration with lsuite, so other apps and agents find it. See below. |
-| `~/.lsuite/account.json` | The lsuite account (lsuite AI), shared by every lsuite app: `{format: 1, server, email, name, plan, token, signedInAt}`, readable by you only (0600). The token is a secret: kimchi never logs it or shows it (only `lsk_…` and its last four characters). Signing out removes the file. |
 | `~/.lsuite/plugins/kimchi/<id>/` | Installed lsuite plugins (bundles: `plugin.toml` and the library). |
 | `~/.lsuite/plugins-src/kimchi/<name>/` | Plugin crates made by `plugin.new` (and the agent); `.target/` is their shared build folder. |
 | `~/.lsuite/handoff/ryolune/`, `~/.lsuite/handoff/kimchi/` | Files handed to and from ryolune. |

@@ -36,8 +36,6 @@ pub enum Next {
     Model,
     /// Restart or reinstall kimchi (its MCP bridge is missing).
     Restart,
-    /// Choose a plan, or more allowance (lsuite AI).
-    Plan,
 }
 
 /// A button for the next thing to do: a link to open, or a command to run in a terminal.
@@ -120,12 +118,6 @@ pub struct ProviderStatus {
     /// Nothing leaves this computer.
     pub on_device: bool,
     pub website: &'static str,
-    /// lsuite AI: the account, its plan and allowance (never the key).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub account: Option<kimchi_control::account::Status>,
-    /// Claude Code: it runs on lsuite AI (`settings.agent.claudeCodeOnLsuite` and signed in).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub on_lsuite: bool,
 }
 
 /// Every provider with whether it is usable, for the panel, its settings and the first-run setup.
@@ -165,11 +157,8 @@ pub async fn status_of(session: &Arc<Session>, kind: ProviderKind) -> ProviderSt
         base_url_hint: info.base_url_hint,
         on_device: info.group == Group::Local && kind != ProviderKind::OpenAiCompatible,
         website: info.website,
-        account: None,
-        on_lsuite: false,
     };
     match kind {
-        ProviderKind::Lsuite => lsuite_status(&mut s).await,
         ProviderKind::ClaudeCode | ProviderKind::Codex | ProviderKind::GeminiCli => cli_status(session, kind, &mut s).await,
         ProviderKind::Bedrock => match bedrock::resolve(session.secret("bedrock").as_deref(), &config.base_url) {
             Ok(t) => {
@@ -258,45 +247,6 @@ fn key_provider_status(config: &AgentConfig, key: &Option<KeyStatus>, s: &mut Pr
         s.action = None;
         s.message = format!("Ready to try the server at {} (no key).", s.base_url);
     }
-}
-
-async fn lsuite_status(s: &mut ProviderStatus) {
-    let st = kimchi_control::account::status(false).await;
-    s.detail = kimchi_control::account::ai_base(&st.server);
-    s.base_url = s.detail.clone();
-    let manage = st.manage_url.clone();
-    if !st.models.is_empty() {
-        s.models = st.models.clone();
-        if let Some(d) = st.default_model.clone().filter(|d| st.models.contains(d)) {
-            s.default_model = d;
-        } else if !st.models.iter().any(|m| m == &s.default_model) {
-            s.default_model = st.models[0].clone();
-        }
-    }
-    let who = if st.email.is_empty() { "your lsuite account".to_string() } else { st.email.clone() };
-    if !st.signed_in {
-        s.message = "No setup. Sign in and your agent works.".into();
-        s.next = Some(Next::SignIn);
-    } else if st.expired {
-        s.message = st.error.clone().unwrap_or_default();
-        s.next = Some(Next::SignIn);
-    } else if !st.can_run {
-        s.message = format!("Signed in as {who}, without a plan that includes AI. Choose one to start (a demo: nothing is charged).");
-        s.next = Some(Next::Plan);
-        s.action = Action::link("Manage plan", &manage);
-    } else if st.usage.as_ref().is_some_and(|u| u.exhausted()) {
-        s.message = format!("{}. This month's allowance is used up.", st.summary);
-        s.next = Some(Next::Plan);
-        s.action = Action::link("Manage plan", &manage);
-    } else if let Some(e) = &st.error {
-        // Signed in, but the plan couldn't be checked: try anyway.
-        s.ready = true;
-        s.message = format!("Signed in as {who}. Couldn't check the plan just now ({e}).");
-    } else {
-        s.ready = true;
-        s.message = format!("{} · {who}", st.summary);
-    }
-    s.account = Some(st);
 }
 
 async fn ollama_status(config: &AgentConfig, s: &mut ProviderStatus) {
@@ -426,10 +376,7 @@ async fn cli_status(session: &Session, kind: ProviderKind, s: &mut ProviderStatu
         Some(v) => format!("{label} {v}"),
         None => label.to_string(),
     };
-    let on_lsuite = kind == ProviderKind::ClaudeCode && crate::lsuite::claude_code_env(&session.settings().agent).is_some();
-    s.on_lsuite = on_lsuite;
     let signed_in = match kind {
-        ProviderKind::ClaudeCode if on_lsuite => Some(true),
         ProviderKind::ClaudeCode => probe(&exe, &["auth", "status"]).await.and_then(|(_, out)| serde_json::from_str::<Value>(&out).ok().and_then(|v| v["loggedIn"].as_bool())),
         ProviderKind::Codex => probe(&exe, &["login", "status"]).await.map(|(ok, _)| ok),
         // No status command: its settings and cached sign-in say, or a Gemini key in kimchi.
@@ -470,5 +417,5 @@ async fn cli_status(session: &Session, kind: ProviderKind, s: &mut ProviderStatu
         _ => "Claude",
     };
     s.ready = true;
-    s.message = if on_lsuite { format!("{name} is installed. It runs on lsuite AI (your lsuite plan).") } else { format!("{name} is {state}. It uses your own {account} account.") };
+    s.message = format!("{name} is {state}. It uses your own {account} account.");
 }
