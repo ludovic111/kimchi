@@ -41,7 +41,6 @@ pub struct EffectPanel {
     /// Top-left corner, once dragged (else it sits at the top right of the window).
     position: Option<Point<Pixels>>,
     drag: Option<PanelDrag>,
-    drags: u64,
     /// Values shown while a drag's commands are on their way.
     shown: HashMap<u32, f64>,
     typing: Option<(u32, Entity<TextInput>, Subscription)>,
@@ -78,7 +77,7 @@ impl EffectPanel {
                 }
             }),
         ];
-        Self { store, playback, position: None, drag: None, drags: 0, shown: HashMap::new(), typing: None, infos: HashMap::new(), _subs: subs }
+        Self { store, playback, position: None, drag: None, shown: HashMap::new(), typing: None, infos: HashMap::new(), _subs: subs }
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
@@ -234,8 +233,8 @@ impl EffectPanel {
                         this.set(target, &slot, id, json!(info2.default), None, cx);
                         return;
                     }
-                    this.drags += 1;
-                    let key = format!("effect-{slot}-{id}-{}", this.drags);
+                    // One undo step for the whole drag, however slow.
+                    let key = format!("gesture:effect-{slot}-{id}-{}", crate::ui::scrub::new_gesture());
                     this.drag = Some(PanelDrag::Knob { id, y0: ev.position.y, n0: info2.normalize(value), info: info2.clone(), key });
                     cx.notify();
                 }))

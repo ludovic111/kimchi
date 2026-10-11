@@ -20,7 +20,7 @@ use super::slider::Slider;
 use super::{Inspector, section};
 use crate::store::StoreExt;
 use crate::theme::{ActiveTheme, MONO, size as sz};
-use crate::ui::scrub::{Scrub, ScrubChange};
+use crate::ui::scrub::{Scrub, ScrubChange, Step};
 use crate::ui::{Button, caps, icon, segmented, switch, tooltip};
 use crate::views::mixer::{open_browser, run_cmd, target_key, widgets};
 
@@ -44,18 +44,18 @@ impl AudioFields {
         let gain = cx.new(|cx| Slider::new(GAIN_FLOOR, 12.0, cx).neutral(0.0));
         subs.push(cx.subscribe(&gain, |this: &mut Inspector, _, ch: &ScrubChange, cx| {
             let v = if ch.value <= GAIN_FLOOR + 0.01 { 0.0 } else { db_to_gain(ch.value).min(4.0) };
-            this.update_clip(json!({ "volume": v }), "volume", ch.final_, cx);
+            this.update_clip(json!({ "volume": v }), "volume", ch.step(), cx);
         }));
         let pan = cx.new(|cx| Slider::new(-1.0, 1.0, cx).neutral(0.0));
-        subs.push(cx.subscribe(&pan, |this: &mut Inspector, _, ch: &ScrubChange, cx| this.set_clip_pan(ch.value, ch.final_, cx)));
+        subs.push(cx.subscribe(&pan, |this: &mut Inspector, _, ch: &ScrubChange, cx| this.set_clip_pan(ch.value, ch.step(), cx)));
         let pitch = cx.new(|_| Scrub::new("Pitch", 0.1, 1).unit(" st").range(-24.0, 24.0));
-        subs.push(cx.subscribe(&pitch, |this: &mut Inspector, _, ch: &ScrubChange, cx| this.set_sound(json!({ "pitch": ch.value }), "pitch", ch.final_, cx)));
+        subs.push(cx.subscribe(&pitch, |this: &mut Inspector, _, ch: &ScrubChange, cx| this.set_sound(json!({ "pitch": ch.value }), "pitch", ch.step(), cx)));
         let strip_gain = cx.new(|cx| Slider::new(-48.0, 12.0, cx).neutral(0.0));
-        subs.push(cx.subscribe(&strip_gain, |this: &mut Inspector, _, ch: &ScrubChange, cx| this.set_strip(json!({ "gainDb": if ch.value <= -47.99 { MIN_DB } else { ch.value } }), "gain", ch.final_, cx)));
+        subs.push(cx.subscribe(&strip_gain, |this: &mut Inspector, _, ch: &ScrubChange, cx| this.set_strip(json!({ "gainDb": if ch.value <= -47.99 { MIN_DB } else { ch.value } }), "gain", ch.step(), cx)));
         let strip_pan = cx.new(|cx| Slider::new(-1.0, 1.0, cx).neutral(0.0));
-        subs.push(cx.subscribe(&strip_pan, |this: &mut Inspector, _, ch: &ScrubChange, cx| this.set_strip(json!({ "pan": ch.value }), "pan", ch.final_, cx)));
+        subs.push(cx.subscribe(&strip_pan, |this: &mut Inspector, _, ch: &ScrubChange, cx| this.set_strip(json!({ "pan": ch.value }), "pan", ch.step(), cx)));
         let duck_amount = cx.new(|_| Scrub::new("Down by", 0.5, 1).unit(" dB").range(-48.0, 0.0));
-        subs.push(cx.subscribe(&duck_amount, |this: &mut Inspector, _, ch: &ScrubChange, cx| this.set_strip(json!({ "duck": { "amountDb": ch.value } }), "duck", ch.final_, cx)));
+        subs.push(cx.subscribe(&duck_amount, |this: &mut Inspector, _, ch: &ScrubChange, cx| this.set_strip(json!({ "duck": { "amountDb": ch.value } }), "duck", ch.step(), cx)));
         Self { gain, pan, pitch, strip_gain, strip_pan, duck_amount, measured: None }
     }
 }
@@ -67,28 +67,28 @@ fn db_label(db: f64) -> String {
 
 impl Inspector {
     /// `audio.setClip` on the selected clip.
-    fn set_sound(&mut self, mut params: Value, key: &str, final_: bool, cx: &mut Context<Self>) {
+    fn set_sound(&mut self, mut params: Value, key: &str, step: Step, cx: &mut Context<Self>) {
         let Some(id) = self.single(cx) else { return };
         params["clipIds"] = json!([id]);
-        if !final_ {
-            params["coalesce"] = json!(format!("{id}:{key}"));
+        if let Some(k) = step.coalesce(format!("{id}:{key}")) {
+            params["coalesce"] = json!(k);
         }
         self.store.update(cx, |s, cx| s.run("audio.setClip", params, cx));
     }
 
     /// The clip's pan, or a pan keyframe at the playhead when it is animated.
-    fn set_clip_pan(&mut self, v: f64, final_: bool, cx: &mut Context<Self>) {
+    fn set_clip_pan(&mut self, v: f64, step: Step, cx: &mut Context<Self>) {
         let Some(id) = self.single(cx) else { return };
         let animated = self.store.read(cx).clip(id).is_some_and(|c| c.keyframes.contains_key("pan"));
         if animated {
             let playhead = self.store.read(cx).playback.read(cx).playhead;
             let mut p = json!({ "clipId": id, "property": "pan", "time": playhead, "value": v });
-            if !final_ {
-                p["coalesce"] = json!(format!("{id}:pan:key"));
+            if let Some(k) = step.coalesce(format!("{id}:pan:key")) {
+                p["coalesce"] = json!(k);
             }
             self.store.update(cx, |s, cx| s.run("clip.addKeyframe", p, cx));
         } else {
-            self.set_sound(json!({ "pan": v }), "pan", final_, cx);
+            self.set_sound(json!({ "pan": v }), "pan", step, cx);
         }
     }
 
@@ -99,7 +99,7 @@ impl Inspector {
     }
 
     /// A change to the picked strip: `audio.setTrack`, `setBus` or `setMaster`.
-    fn set_strip(&mut self, mut params: Value, key: &str, final_: bool, cx: &mut Context<Self>) {
+    fn set_strip(&mut self, mut params: Value, key: &str, step: Step, cx: &mut Context<Self>) {
         let Some(t) = self.strip_target(cx) else { return };
         let p = self.store.read(cx).project.clone();
         // An automated fader or pan gets a keyframe at the playhead.
@@ -107,8 +107,8 @@ impl Inspector {
         if automated {
             let (property, value) = if key == "gain" { ("gainDb", params["gainDb"].clone()) } else { ("pan", params["pan"].clone()) };
             let mut p = json!({ "target": target_key(t), "property": property, "value": value });
-            if !final_ {
-                p["coalesce"] = json!(format!("{}:{key}:key", target_key(t)));
+            if let Some(k) = step.coalesce(format!("{}:{key}:key", target_key(t))) {
+                p["coalesce"] = json!(k);
             }
             self.store.update(cx, |s, cx| s.run("audio.addAutomationKey", p, cx));
             return;
@@ -127,8 +127,8 @@ impl Inspector {
             }
             _ => "audio.setMaster",
         };
-        if !final_ {
-            params["coalesce"] = json!(format!("{}:{key}", target_key(t)));
+        if let Some(k) = step.coalesce(format!("{}:{key}", target_key(t))) {
+            params["coalesce"] = json!(k);
         }
         self.store.update(cx, |s, cx| s.run(name, params, cx));
     }
@@ -566,7 +566,7 @@ mod tests {
         cx.run_until_parked();
         let inspector = cx.update(|_, cx| view.read(cx).editor().read(cx).inspector.clone());
         let gain = cx.update(|_, cx| inspector.read(cx).audio.gain.clone());
-        cx.update(|_, cx| gain.update(cx, |_, cx| cx.emit(ScrubChange { value: -6.0, final_: true })));
+        cx.update(|_, cx| gain.update(cx, |_, cx| cx.emit(ScrubChange { value: -6.0, final_: true, gesture: None })));
         let p = f.settle(cx, |p| p.clip(clip).is_some_and(|c| (c.volume - 0.501).abs() < 1e-3));
         assert!((p.clip(clip).unwrap().volume - 0.501).abs() < 1e-3);
 
@@ -578,7 +578,7 @@ mod tests {
         }));
         cx.run_until_parked();
         let fader = cx.update(|_, cx| inspector.read(cx).audio.strip_gain.clone());
-        cx.update(|_, cx| fader.update(cx, |_, cx| cx.emit(ScrubChange { value: -4.0, final_: true })));
+        cx.update(|_, cx| fader.update(cx, |_, cx| cx.emit(ScrubChange { value: -4.0, final_: true, gesture: None })));
         let p = f.settle(cx, |p| p.track(track).is_some_and(|t| t.mix.gain_db == -4.0));
         assert_eq!(p.track(track).unwrap().mix.gain_db, -4.0);
     }

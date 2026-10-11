@@ -1,12 +1,13 @@
 name: Release
 
-# Builds kimchi for Linux (macOS and Windows are coming soon: see the matrix) with the scripts in scripts/
+# Builds kimchi for Linux and macOS (Apple Silicon and Intel, both on the Mac mini, Intel cross-compiled;
+# Windows is coming soon: see the matrix) with the scripts in scripts/
 # (no Node, no Tauri), signs the updater files with the update key, and attaches everything plus
 # latest.json (read by the in-app updaters, including kimchi 0.1.x's Tauri updater) to a DRAFT
 # GitHub release, which stays private. The builds are not published here any more (lsuite
 # DISTRIBUTION.md): `scripts/publish-build.sh <version>` copies the draft's files to the private
 # ludovic111/lsuite-builds as kimchi-v<version>, where the lsuite app and the in-app updater get
-# them through lsuite.xyz with the person's account, then deletes the draft. Never publish the draft.
+# them through lsuite.xyz (no account needed), then deletes the draft. Never publish the draft.
 #
 # Asset names are stable (no version) so the lsuite app and the updaters always find them:
 # kimchi_aarch64.dmg, kimchi_x64.dmg, kimchi_{aarch64,x64}.app.tar.gz, kimchi_x64-setup.exe,
@@ -27,7 +28,8 @@ concurrency:
 jobs:
   build:
     name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
+    # macOS rows run on the Mac mini (MAC_RUNNER=macos-latest sends them back to GitHub).
+    runs-on: ${{ matrix.mac && (vars.MAC_RUNNER || 'ludovics-mac-mini') || matrix.os }}
     timeout-minutes: 90
     env:
       HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 != '' && secrets.APPLE_API_KEY_P8_BASE64 != '' }}
@@ -35,10 +37,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux only while lsuite is in beta (decided 2026-10-08): macOS and Windows are coming soon.
-          # Put these lines back to build them again; everything after the build handles any platforms.
-          # - { name: macOS (Apple Silicon), os: macos-latest, target: aarch64-apple-darwin, script: bundle-macos.sh }
-          # - { name: macOS (Intel), os: macos-latest, target: x86_64-apple-darwin, script: bundle-macos.sh }
+          - { name: macOS (Apple Silicon), mac: true, target: aarch64-apple-darwin, script: bundle-macos.sh }
+          - { name: macOS (Intel), mac: true, target: x86_64-apple-darwin, script: bundle-macos.sh }
+          # Windows is coming soon: put this line back to build it again (everything after the build handles it).
           # - { name: Windows, os: windows-latest, target: x86_64-pc-windows-msvc, script: bundle-windows.sh }
           - { name: Linux, os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, script: bundle-linux.sh }
     defaults:
@@ -46,6 +47,9 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          # On the Mac mini, keep target/ between runs (incremental builds).
+          clean: ${{ runner.environment == 'github-hosted' }}
 
       - name: Check the tag matches the version
         if: startsWith(github.ref, 'refs/tags/')
@@ -59,7 +63,7 @@ jobs:
       # GPUI's Linux backends (X11 + Wayland, Vulkan, fontconfig) and the keychain (D-Bus);
       # see script/linux in the zed repository.
       - name: Linux build dependencies
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config clang libasound2-dev libdbus-1-dev libfontconfig-dev libfreetype-dev \
@@ -76,16 +80,33 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      # The private ryolune engine, over SSH with its deploy key. GitHub's runners use the ssh-agent
+      # action; our own runners (ludodesktop, the Mac mini, which runs as its owner's account) get
+      # the key and GitHub's host keys in $RUNNER_TEMP and nothing in ~/.ssh or ~/.gitconfig, and
+      # the URL rewrite is scoped to the job (GIT_CONFIG_*, never git config --global).
       - name: Read access to the private ryolune engine
+        if: runner.environment == 'github-hosted'
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.RYOLUNE_DEPLOY_KEY }}
-      - name: Fetch ryolune over SSH
-        shell: bash
+      - name: Read access to the private ryolune engine (own runner)
+        if: runner.environment == 'self-hosted'
+        env:
+          RYOLUNE_DEPLOY_KEY: ${{ secrets.RYOLUNE_DEPLOY_KEY }}
         run: |
-          git config --global url."ssh://git@github.com/ludovic111/ryolune".insteadOf "https://github.com/ludovic111/ryolune"
+          umask 077
+          printf '%s\n' "$RYOLUNE_DEPLOY_KEY" > "$RUNNER_TEMP/ryolune-deploy-key"
+          # GitHub's published SSH host keys (api.github.com/meta), so the fetch can verify github.com.
+          curl -fsSL https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/known_hosts"
+          echo "GIT_SSH_COMMAND=ssh -i $RUNNER_TEMP/ryolune-deploy-key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
+      - name: Fetch ryolune over SSH
+        run: |
+          echo "GIT_CONFIG_COUNT=1" >> "$GITHUB_ENV"
+          echo "GIT_CONFIG_KEY_0=url.ssh://git@github.com/ludovic111/ryolune.insteadOf" >> "$GITHUB_ENV"
+          echo "GIT_CONFIG_VALUE_0=https://github.com/ludovic111/ryolune" >> "$GITHUB_ENV"
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           key: ${{ matrix.target }}
 
@@ -117,13 +138,26 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bash scripts/${{ matrix.script }} ${{ runner.os == 'macOS' && matrix.target || '' }}
+        # target/dist may hold another job's files on the Mac mini (target/ is kept): start clean.
+        run: |
+          rm -rf target/dist
+          bash scripts/${{ matrix.script }} ${{ runner.os == 'macOS' && matrix.target || '' }}
 
+      # The Mac mini runs as its owner: put the keychain search list back exactly as it was, then
+      # delete the throwaway keychain (the default keychain is never touched).
       - name: Remove signing keychain
         if: always() && runner.os == 'macOS'
         run: |
+          if [ -f "$RUNNER_TEMP/keychains-before" ]; then
+            keychains=()
+            while IFS= read -r k; do [ -n "$k" ] && keychains+=("$k"); done < "$RUNNER_TEMP/keychains-before"
+            security list-keychains -d user -s ${keychains[@]+"${keychains[@]}"}
+          fi
           if [ -f "$RUNNER_TEMP/signing.keychain-db" ]; then security delete-keychain "$RUNNER_TEMP/signing.keychain-db"; fi
-          rm -f "$RUNNER_TEMP/notary.p8"
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/keychains-before"
+      - name: Remove the deploy key
+        if: always() && runner.environment == 'self-hosted'
+        run: rm -f "$RUNNER_TEMP/ryolune-deploy-key" "$RUNNER_TEMP/known_hosts"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -154,9 +188,10 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.RYOLUNE_DEPLOY_KEY }}
       - name: Fetch ryolune over SSH
-        shell: bash
         run: |
-          git config --global url."ssh://git@github.com/ludovic111/ryolune".insteadOf "https://github.com/ludovic111/ryolune"
+          echo "GIT_CONFIG_COUNT=1" >> "$GITHUB_ENV"
+          echo "GIT_CONFIG_KEY_0=url.ssh://git@github.com/ludovic111/ryolune.insteadOf" >> "$GITHUB_ENV"
+          echo "GIT_CONFIG_VALUE_0=https://github.com/ludovic111/ryolune" >> "$GITHUB_ENV"
           echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:

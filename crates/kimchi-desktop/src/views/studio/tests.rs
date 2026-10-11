@@ -92,6 +92,13 @@ fn wait(cx: &mut VisualTestContext, done: impl Fn(&mut VisualTestContext) -> boo
     }
 }
 
+/// Waits until the Studio has heard back from every command it sent, so their follow-ups (the key
+/// selection a retime or a key drag moves to) can't land after the test's next step.
+fn studio_idle(st: &Entity<Studio>, cx: &mut VisualTestContext) {
+    wait(cx, |cx| cx.update(|_, cx| st.read(cx).pending_edits == 0));
+    assert_eq!(cx.update(|_, cx| st.read(cx).pending_edits), 0, "the Studio's commands were answered");
+}
+
 #[gpui::test]
 fn the_studio_opens_on_3d_and_2d_clips_and_its_outliner_selects(cx: &mut TestAppContext) {
     let (f, view, cx) = setup(cx);
@@ -192,7 +199,7 @@ fn stacks_are_built_from_their_tables_and_edited_in_properties(cx: &mut TestAppC
     let key = format!("{id}|modifiers.twist.angle");
     wait(cx, |cx| cx.update(|_, cx| props.read(cx).scrub_of(&key).is_some()));
     let scrub = cx.update(|_, cx| props.read(cx).scrub_of(&key)).unwrap_or_else(|| panic!("no field {key}"));
-    cx.update(|_, cx| scrub.update(cx, |_, cx| cx.emit(ScrubChange { value: 45.0, final_: true })));
+    cx.update(|_, cx| scrub.update(cx, |_, cx| cx.emit(ScrubChange { value: 45.0, final_: true, gesture: None })));
     let angle = |p: &Project| match scene_of(p, clip) {
         Scene::Space(s) => s.objects[0].modifiers.iter().find(|m| m.kind == "twist").map(|m| m.n("angle")),
         _ => None,
@@ -1684,6 +1691,7 @@ fn timeline_drags_snap_to_project_frames_and_alt_allows_subframes(cx: &mut TestA
             let after=f.settle(cx,|p| moved(p) && spaced(p));
             assert!(moved(&after),"graph={graph}, free={free}");
             assert!(spaced(&after),"selection spacing stays exact");
+            studio_idle(&st,cx);
             f.call("history.undo",json!({}));
             store_settles(cx,|s| scene_of(s.project.as_ref().unwrap(),clip)==before);
         }
@@ -1715,7 +1723,8 @@ fn keyboard_retiming_previews_cancels_and_commits_atomically(cx: &mut TestAppCon
             s.focus.contains_focused(w,cx) && s.area==super::Area::Timeline && !s.keys.is_empty()
         });
         wait(cx,ready);
-        assert!(ready(cx),"the Studio's timeline holds the keyboard with keys selected");
+        let why=cx.update(|w,cx| {let s=st.read(cx); (s.focus.contains_focused(w,cx),s.area,s.keys.len())});
+        assert!(ready(cx),"the Studio's timeline holds the keyboard with keys selected (focused, area, keys): {why:?}");
         cx.simulate_keystrokes(key);
         wait(cx,|cx| cx.update(|_,cx| timeline.read(cx).retiming_for_test()));
         assert!(cx.update(|_,cx| timeline.read(cx).retiming_for_test()));
@@ -1746,6 +1755,7 @@ fn keyboard_retiming_previews_cancels_and_commits_atomically(cx: &mut TestAppCon
         assert_eq!(keys.len(),2);
         keys[0].time=1.013; keys[1].time=2.013;
         assert_eq!(after,before,"retiming preserves values, easing and base properties");
+        studio_idle(&st,cx);
         f.call("history.undo",json!({}));
         store_settles(cx,|s| scene_of(s.project.as_ref().unwrap(),clip)==before);
     }
@@ -2024,6 +2034,7 @@ fn graph_numeric_value_transforms_preserve_other_components_and_key_times(cx: &m
         }
         assert_eq!(after,before,"other components, times, easing and base properties stay intact");
         assert_eq!(f.call("history.list",json!({}))["undo"].as_array().unwrap().len(),history["undo"].as_array().unwrap().len()+1);
+        studio_idle(&st,cx);
         f.call("history.undo",json!({}));
         store_settles(cx,|s| scene_of(s.project.as_ref().unwrap(),clip)==before);
     }

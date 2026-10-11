@@ -91,7 +91,8 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-CI runs exactly these two on Ubuntu 22.04 and macOS, and `bash -n` on every script. There is no
+CI runs exactly these two on Linux (ludodesktop) on every push and, when started by hand
+(`gh workflow run CI --ref <branch>`), on macOS (the Mac mini), and `bash -n` on every script. There is no
 `rustfmt` check; `crates/kimchi-media` has its own `rustfmt.toml` (120 columns).
 
 | Where | What |
@@ -282,9 +283,9 @@ needs resvg or rsvg-convert and python3, and makes the `.icns` only on a Mac. Pa
 5. When the workflow is done, `scripts/publish-build.sh X.Y.Z` (needs `gh` with access to both
    repositories).
 
-The release workflow checks that the tag matches the version, builds Linux (macOS, Apple Silicon and
-Intel, signed and notarized when the Apple secrets are set, and Windows are paused for now: their lines
-are commented out in the workflow's matrix),
+The release workflow checks that the tag matches the version, builds Linux and macOS (Apple Silicon and
+Intel, both on the Mac mini, Intel cross-compiled; signed and notarized when the Apple secrets are set;
+Windows is coming soon: its line is commented out in the workflow's matrix),
 signs the update files, writes `latest.json` and `SHA256SUMS`, and makes a **draft** GitHub release.
 Never publish the draft: kimchi's builds come only through the lsuite app and lsuite.xyz, with no
 account (lsuite `DISTRIBUTION.md`). `scripts/publish-build.sh` checks the draft's files

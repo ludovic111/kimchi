@@ -42,9 +42,10 @@ impl Fixture {
     }
 }
 
-/// How long UI tests wait for work to finish: generous, as tests share a busy machine,
+/// How long UI tests wait for work to finish: generous, as tests share a busy machine (CI runs on a
+/// loaded 4-thread box),
 /// and a wait ends as soon as its condition holds.
-pub(crate) const PATIENCE: Duration = Duration::from_secs(20);
+pub(crate) const PATIENCE: Duration = Duration::from_secs(60);
 
 /// The platform's command key, as the shortcuts are bound (`actions.rs`).
 #[cfg(target_os = "macos")]
@@ -322,8 +323,10 @@ fn the_colour_sliders_grade_the_clip_in_one_step(cx: &mut TestAppContext) {
     let id = select_the_clip(&f, cx);
     let inspector = cx.update(|_, cx| view.read(cx).editor().read(cx).inspector.clone());
     let slider = cx.update(|_, cx| inspector.read(cx).effect_slider("contrast")).expect("a contrast slider");
+    // One pointer drag: every change, the final one too, carries its gesture.
+    let gesture = crate::ui::scrub::new_gesture();
     for (v, final_) in [(0.1, false), (0.4, false), (0.4, true)] {
-        cx.update(|_, cx| slider.update(cx, |_, cx| cx.emit(crate::ui::scrub::ScrubChange { value: v, final_ })));
+        cx.update(|_, cx| slider.update(cx, |_, cx| cx.emit(crate::ui::scrub::ScrubChange { value: v, final_, gesture: Some(gesture) })));
         f.settle(cx, |p| p.clip(id).is_some_and(|c| (c.effects.contrast - v).abs() < 1e-9));
     }
     let p = f.settle(cx, |p| p.clip(id).is_some_and(|c| (c.effects.contrast - 0.4).abs() < 1e-9));

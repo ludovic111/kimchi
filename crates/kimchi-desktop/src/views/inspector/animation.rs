@@ -18,7 +18,7 @@ use super::{Inspector, grid2, section};
 use crate::store::StoreExt;
 use crate::theme::{ActiveTheme, size as sz};
 use crate::ui::input::{InputEvent, TextInput};
-use crate::ui::scrub::{Scrub, ScrubChange};
+use crate::ui::scrub::{Scrub, ScrubChange, Step};
 use crate::ui::{Button, caps, segmented, switch};
 
 /// Properties with a keyframe toggle: (property, label).
@@ -63,7 +63,7 @@ fn key_at(keys: Option<&Vec<Keyframe>>, local: f64, tol: f64) -> Option<&Keyfram
 impl Inspector {
     /// `clip.update` params from a scrub, sent as a keyframe at the playhead when the
     /// property is animated. Returns false when there was nothing animated to set.
-    pub(super) fn keyframe_instead(&mut self, params: &Value, key: &str, final_: bool, cx: &mut Context<Self>) -> bool {
+    pub(super) fn keyframe_instead(&mut self, params: &Value, key: &str, step: Step, cx: &mut Context<Self>) -> bool {
         let Some(id) = self.single(cx) else { return false };
         let s = self.store.read(cx);
         let Some(clip) = s.clip(id) else { return false };
@@ -78,8 +78,8 @@ impl Inspector {
         let (Some(value), true) = (value, clip.keyframes.contains_key(key)) else { return false };
         let playhead = s.playback.read(cx).playhead;
         let mut p = json!({ "clipId": id, "property": key, "time": playhead, "value": value });
-        if !final_ {
-            p["coalesce"] = json!(format!("{id}:{key}:key"));
+        if let Some(k) = step.coalesce(format!("{id}:{key}:key")) {
+            p["coalesce"] = json!(k);
         }
         self.store.update(cx, |s, cx| s.run("clip.addKeyframe", p, cx));
         true
@@ -295,19 +295,19 @@ impl Inspector {
                         subs.push(cx.subscribe(&e, move |this: &mut Self, _, ev: &InputEvent, cx| {
                             if let InputEvent::Changed(text) = ev {
                                 let v = json!(text);
-                                this.template_change(name, v, false, cx);
+                                this.template_change(name, v, Step::Live, cx);
                             }
                         }));
                         Field::Text(e)
                     }
                     "color" | "colorOrNone" => {
                         let e = cx.new(|cx| ColorField::new(None, cx));
-                        subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ColorChange, cx| this.template_change(name, json!(ch.0), true, cx)));
+                        subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ColorChange, cx| this.template_change(name, json!(ch.0), Step::Final, cx)));
                         Field::Color(e)
                     }
                     "number" => {
                         let e = cx.new(|_| Scrub::new(humanize(name), 0.05, 2).range(-1e9, 1e9));
-                        subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ScrubChange, cx| this.template_change(name, json!(ch.value), ch.final_, cx)));
+                        subs.push(cx.subscribe(&e, move |this: &mut Self, _, ch: &ScrubChange, cx| this.template_change(name, json!(ch.value), ch.step(), cx)));
                         Field::Number(e)
                     }
                     _ => Field::Plain,
@@ -340,11 +340,11 @@ impl Inspector {
         }
     }
 
-    fn template_change(&mut self, name: &'static str, value: Value, final_: bool, cx: &mut Context<Self>) {
+    fn template_change(&mut self, name: &'static str, value: Value, step: Step, cx: &mut Context<Self>) {
         let Some(id) = self.template.clip else { return };
         let mut p = json!({ "clipId": id, "values": { name: value } });
-        if !final_ {
-            p["coalesce"] = json!(format!("{id}:tpl:{name}"));
+        if let Some(k) = step.coalesce(format!("{id}:tpl:{name}")) {
+            p["coalesce"] = json!(k);
         }
         self.store.update(cx, |s, cx| s.run("motion.setTemplate", p, cx));
     }

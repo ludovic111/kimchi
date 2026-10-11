@@ -21,7 +21,8 @@ pub struct Slider {
     /// Where the fill starts and what a double-click resets to.
     neutral: Option<f64>,
     value: f64,
-    dragging: bool,
+    /// The pointer drag in progress, if any.
+    dragging: Option<u64>,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     focus: FocusHandle,
 }
@@ -30,7 +31,7 @@ impl EventEmitter<ScrubChange> for Slider {}
 
 impl Slider {
     pub fn new(min: f64, max: f64, cx: &mut Context<Self>) -> Self {
-        Self { min, max, neutral: None, value: min, dragging: false, bounds: Rc::default(), focus: cx.focus_handle() }
+        Self { min, max, neutral: None, value: min, dragging: None, bounds: Rc::default(), focus: cx.focus_handle() }
     }
 
     pub fn neutral(mut self, v: f64) -> Self {
@@ -40,7 +41,7 @@ impl Slider {
 
     /// Shows `v` (from the project) unless a drag is in progress.
     pub fn set_value(&mut self, v: f64) {
-        if !self.dragging {
+        if self.dragging.is_none() {
             self.value = v;
         }
     }
@@ -57,7 +58,7 @@ impl Slider {
         let v = v.clamp(self.min, self.max);
         if v != self.value || final_ {
             self.value = v;
-            cx.emit(ScrubChange { value: v, final_ });
+            cx.emit(ScrubChange { value: v, final_, gesture: self.dragging });
         }
         cx.notify();
     }
@@ -70,23 +71,24 @@ impl Slider {
             self.set(n, true, cx);
             return;
         }
-        self.dragging = true;
+        self.dragging = Some(crate::ui::scrub::new_gesture());
         let v = self.at(e.position.x);
         self.set(v, false, cx);
     }
 
     fn moved(&mut self, e: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.dragging {
+        if self.dragging.is_some() {
             let v = self.at(e.position.x);
             self.set(v, false, cx);
         }
     }
 
     fn up(&mut self, e: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.dragging {
-            self.dragging = false;
+        if self.dragging.is_some() {
             let v = self.at(e.position.x);
+            // The final change still belongs to the drag.
             self.set(v, true, cx);
+            self.dragging = None;
         }
     }
 
@@ -151,11 +153,11 @@ impl gpui::Render for Slider {
                             .size(px(14.))
                             .bg(gpui::white())
                             .border_1()
-                            .border_color(if focused || self.dragging { t.accent } else { t.line_strong })
+                            .border_color(if focused || self.dragging.is_some() { t.accent } else { t.line_strong })
                             .shadow_sm(),
                     ),
             )
-            .when(self.dragging, |d| d.child(drag::track(cx.entity(), Self::moved, Self::up)))
+            .when(self.dragging.is_some(), |d| d.child(drag::track(cx.entity(), Self::moved, Self::up)))
             .rounded(px(sz::R_XS))
     }
 }
