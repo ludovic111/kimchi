@@ -1,6 +1,6 @@
 name: Release
 
-# Builds kimchi for Linux and macOS (Apple Silicon and Intel, both on the Mac mini, Intel cross-compiled;
+# Builds kimchi for Linux and macOS (Apple Silicon and Intel, both on a self-hosted Mac runner, Intel cross-compiled;
 # Windows is coming soon: see the matrix) with the scripts in scripts/
 # (no Node, no Tauri), signs the updater files with the update key, and attaches everything plus
 # latest.json (read by the in-app updaters, including kimchi 0.1.x's Tauri updater) to a DRAFT
@@ -28,7 +28,7 @@ concurrency:
 jobs:
   build:
     name: ${{ matrix.name }}
-    # macOS rows run on the Mac mini (MAC_RUNNER=macos-latest sends them back to GitHub).
+    # macOS rows run on a self-hosted Mac runner (MAC_RUNNER=macos-latest sends them back to GitHub).
     runs-on: ${{ matrix.mac && (vars.MAC_RUNNER || 'ludovics-mac-mini') || matrix.os }}
     timeout-minutes: 90
     env:
@@ -48,7 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # On the Mac mini, keep target/ between runs (incremental builds).
+          # On the self-hosted Mac runner, keep target/ between runs (incremental builds).
           clean: ${{ runner.environment == 'github-hosted' }}
 
       - name: Check the tag matches the version
@@ -81,7 +81,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       # The private ryolune engine, over SSH with its deploy key. GitHub's runners use the ssh-agent
-      # action; our own runners (ludodesktop, the Mac mini, which runs as its owner's account) get
+      # action; our own self-hosted runners (Linux, and a Mac that runs as the maintainer's account) get
       # the key and GitHub's host keys in $RUNNER_TEMP and nothing in ~/.ssh or ~/.gitconfig, and
       # the URL rewrite is scoped to the job (GIT_CONFIG_*, never git config --global).
       - name: Read access to the private ryolune engine
@@ -138,12 +138,12 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        # target/dist may hold another job's files on the Mac mini (target/ is kept): start clean.
+        # target/dist may hold another job's files on the self-hosted Mac runner (target/ is kept): start clean.
         run: |
           rm -rf target/dist
           bash scripts/${{ matrix.script }} ${{ runner.os == 'macOS' && matrix.target || '' }}
 
-      # The Mac mini runs as its owner: put the keychain search list back exactly as it was, then
+      # The self-hosted Mac runner runs as the maintainer's account: put the keychain search list back exactly as it was, then
       # delete the throwaway keychain (the default keychain is never touched).
       - name: Remove signing keychain
         if: always() && runner.os == 'macOS'

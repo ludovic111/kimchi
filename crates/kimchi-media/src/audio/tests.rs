@@ -279,13 +279,14 @@ fn cpu_seconds() -> Option<f64> {
 
 #[tokio::test]
 async fn beats_of_real_music() {
-    // The test media of this machine, when it is there.
+    // The local test media (`$HOME/.cache/kimchi-shots/media/music.m4a`), when it is there.
     let Some(tools) = tools() else { return };
-    let path = Path::new("/home/ludovic/.cache/kimchi-shots/media/music.m4a");
+    let Some(home) = std::env::var_os("HOME") else { return };
+    let path = PathBuf::from(home).join(".cache/kimchi-shots/media/music.m4a");
     if !path.exists() {
         return;
     }
-    let a = asset(&tools, path).await;
+    let a = asset(&tools, &path).await;
     let samples = asset_samples(&tools, &a, 22_050).await.unwrap();
     // (This machine's `music.m4a` is a steady synthetic tone: no onsets, so no beats is right.)
     let Some(beats) = kimchi_audio::beats::detect(&samples, 22_050) else {

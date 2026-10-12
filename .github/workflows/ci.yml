@@ -18,14 +18,14 @@ concurrency:
 jobs:
   rust:
     name: Rust (${{ matrix.os }})
-    # Our own machines (ludodesktop for Linux, the Mac mini for macOS) never run a fork's pull
+    # The maintainer's self-hosted runners (Linux and macOS) never run a fork's pull
     # request: those go to GitHub's runners. MAC_RUNNER=macos-latest sends macOS back to GitHub.
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (matrix.os == 'macos' && (vars.MAC_RUNNER || 'ludovics-mac-mini') || vars.LINUX_RUNNER || 'ludodesktop') || (matrix.os == 'macos' && 'macos-latest' || matrix.os) }}
-    timeout-minutes: 120  # the ThinkPad (4 threads) builds from cold in over an hour
+    timeout-minutes: 120  # a 4-thread self-hosted runner builds from cold in over an hour
     strategy:
       fail-fast: false
       matrix:
-        # Linux on every push, on ludodesktop. macOS (the Mac mini) only when started by hand:
+        # Linux on every push, on a self-hosted runner. macOS (a self-hosted Mac) only when started by hand:
         # gh workflow run CI --ref <branch>. Windows is coming soon.
         os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-22.04", "macos"]' || '["ubuntu-22.04"]') }}
     steps:
@@ -49,9 +49,9 @@ jobs:
           bash scripts/fetch-ffmpeg.sh "$triple"
           echo "KIMCHI_FFMPEG=$PWD/target/ffmpeg/$triple/kimchi-ffmpeg" >> "$GITHUB_ENV"
           echo "KIMCHI_FFPROBE=$PWD/target/ffmpeg/$triple/kimchi-ffprobe" >> "$GITHUB_ENV"
-      - name: Own Rust install per repo on ludodesktop
+      - name: Own Rust install per repo on the self-hosted Linux runner
         # The runners of several repos run at once; a shared ~/.rustup makes their installs collide.
-        # (The Mac mini's runners already have their own RUSTUP_HOME and CARGO_HOME.)
+        # (The self-hosted Mac runners already have their own RUSTUP_HOME and CARGO_HOME.)
         if: runner.environment == 'self-hosted' && runner.os == 'Linux'
         run: |
           echo "RUSTUP_HOME=$HOME/.rustup-${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
@@ -60,7 +60,7 @@ jobs:
         with:
           components: clippy
       # The private ryolune engine, over SSH with its deploy key. GitHub's runners use the ssh-agent
-      # action; our own runners (ludodesktop, the Mac mini, which runs as its owner's account) get
+      # action; our own self-hosted runners (Linux, and a Mac that runs as the maintainer's account) get
       # the key and GitHub's host keys in $RUNNER_TEMP and nothing in ~/.ssh or ~/.gitconfig, and
       # the URL rewrite is scoped to the job (GIT_CONFIG_*, never git config --global).
       - name: Read access to the private ryolune engine

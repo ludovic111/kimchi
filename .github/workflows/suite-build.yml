@@ -19,7 +19,7 @@ permissions:
 jobs:
   build:
     name: ${{ inputs.app }} · ${{ matrix.target }}
-    # macOS rows run on the Mac mini (MAC_RUNNER=macos-latest sends them back to GitHub). This
+    # macOS rows run on a self-hosted Mac runner (MAC_RUNNER=macos-latest sends them back to GitHub). This
     # workflow only runs by hand (workflow_dispatch), never for a fork's pull request.
     runs-on: ${{ matrix.mac && (vars.MAC_RUNNER || 'ludovics-mac-mini') || matrix.os }}
     timeout-minutes: 120
@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux and macOS (both Mac targets on the Mac mini, Intel cross-compiled). Windows is coming
+          # Linux and macOS (both Mac targets on a self-hosted Mac runner, Intel cross-compiled). Windows is coming
           # soon: put its line back to build it again; the steps for it are kept below.
           - { mac: true, target: aarch64-apple-darwin, script: bundle-macos.sh }
           - { mac: true, target: x86_64-apple-darwin, script: bundle-macos.sh }
@@ -52,7 +52,7 @@ jobs:
           repository: ludovic111/${{ inputs.app }}
           ref: ${{ inputs.ref }}
           persist-credentials: false
-          # On the Mac mini, keep target/ between runs (incremental builds).
+          # On the self-hosted Mac runner, keep target/ between runs (incremental builds).
           clean: ${{ runner.environment == 'github-hosted' }}
       - name: Linux dependencies
         if: runner.os == 'Linux' && runner.environment == 'github-hosted'
@@ -72,7 +72,7 @@ jobs:
         with:
           key: suite-${{ inputs.app }}-${{ matrix.target }}
           workspaces: ${{ inputs.app == 'lsuite' && 'launcher -> target' || '. -> target' }}
-      # The Mac mini runs as its owner: save the keychain search list before the app's signing
+      # The self-hosted Mac runner runs as the maintainer's account: save the keychain search list before the app's signing
       # script touches it (in a file of this workflow's own, whatever the app's script saves), so the
       # cleanup puts it back exactly as it was.
       - name: Save the keychain search list
@@ -93,7 +93,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           SCRIPT: ${{ matrix.script }}
-        # target/dist may hold an earlier job's files on the Mac mini (target/ is kept): start clean.
+        # target/dist may hold an earlier job's files on the self-hosted Mac runner (target/ is kept): start clean.
         run: |
           rm -rf target/dist
           bash "scripts/$SCRIPT" "$TARGET"
