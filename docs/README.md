@@ -5,6 +5,7 @@
 - [User guide](guide/README.md): the window, from a first cut to motion graphics, sound,
   generation, the agent and export.
 - [Keyboard shortcuts](guide/shortcuts.md).
+- [Features](FEATURES.md): everything kimchi does, by area, and the generation providers it supports.
 
 **Driving kimchi from AI and scripts**
 

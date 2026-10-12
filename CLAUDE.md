@@ -85,9 +85,9 @@ kimchi is part of **lsuite** with ryolune (music); its page is lsuite.xyz/kimchi
 (`../lsuite/kimchi/index.html`). Contract: `../lsuite/STANDARD.md` and `../lsuite/design/DESIGN.md`.
 
 **Linux and macOS** (owner, 2026-10-10; Linux only from 2026-10-08): Windows is "coming soon". `release.yml` and
-`suite-build.yml` (nori, folio, the lsuite launcher) build Linux and macOS; both Mac targets run on the Mac mini
-(self-hosted runner `ludovics-mac-mini`; `MAC_RUNNER=macos-latest` sends them back to GitHub; Intel cross-compiled),
-and so does CI's macOS job (only on `workflow_dispatch`). The Mac runner is the owner's own account: no
+`suite-build.yml` (nori, folio, the lsuite launcher) build Linux and macOS; both Mac targets run on the maintainer's
+self-hosted Mac runner (`MAC_RUNNER=macos-latest` sends them back to GitHub; Intel cross-compiled),
+and so does CI's macOS job (only on `workflow_dispatch`). The Mac runner is the maintainer's own account: no
 `git config --global`, nothing in `~/.ssh` (the ryolune deploy key and GitHub's host keys go in `$RUNNER_TEMP`, with
 `GIT_SSH_COMMAND` and `GIT_CONFIG_*`, removed in an `always()` step), no `brew install` (CI's ffmpeg comes from
 `scripts/fetch-ffmpeg.sh`), and the signing keychain cleanup restores the saved search list

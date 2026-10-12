@@ -11,7 +11,7 @@ for name in APPLE_CERTIFICATE_P12_BASE64 APPLE_SIGNING_IDENTITY APPLE_API_KEY_P8
   fi
 done
 keychain="$RUNNER_TEMP/signing.keychain-db"
-# The Mac mini's runner is its owner's account: save the keychain search list first, so the
+# The self-hosted Mac runner is the maintainer's account: save the keychain search list first, so the
 # workflows' cleanup step puts it back exactly as it was (one path per line).
 security list-keychains -d user | sed -e 's/^ *"//' -e 's/"$//' > "$RUNNER_TEMP/keychains-before"
 password=$(uuidgen)
